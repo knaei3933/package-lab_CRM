@@ -1,6 +1,7 @@
-# KANEI CRM MVP (M0 + M1)
+# KANEI CRM MVP (M0 + M1 + M2)
 
-Isolated M0 foundation with the M1 transaction structure. This repository intentionally does not connect to the legacy
+Isolated M0 foundation with the M1 transaction structure and the M2 document
+intake. This repository intentionally does not connect to the legacy
 `kanei-crm` or `pouch-clacul` systems.
 
 ## Local services
@@ -89,3 +90,57 @@ M1 endpoints (all composite test data, assignment-scoped authorization):
 Tests: `tests/m1/core-rules.test.ts` (state machine, date separation, units) and
 `tests/m1/m1-transaction.test.ts` (T-14, T-15, T-16, T-17, gate behavior, audit
 immutability, commission readiness).
+
+## M2 document intake and PO precedence
+
+New tables (migration `0004_m2_documents`): `documents`, `document_versions`,
+plus authenticity-checklist columns on `seven_purchase_orders`. Migration
+`0005_m2_document_integrity` extends the M0 `audit_events` immutability pattern:
+`document_versions` rows are append-only (a correction is a new version row,
+never a rewrite of recorded bytes), and `pre_order_references` are append-only
+so `original_received_at` stays immutable reference data.
+
+- `document_versions.sha256` is always computed by the server from the received
+  bytes; `storage_path` is a server-generated randomized path inside a private
+  storage folder (`DOCUMENT_STORAGE_DIR`, default a `0700` folder under the OS
+  temp dir). The client filename is display metadata only and is never part of
+  the path. Size and type checks (`DOCUMENT_MAX_BYTES`, an allowlist of
+  content types plus magic-byte sniffing) run before anything is persisted, and
+  only uploads that pass both checks reach a row.
+- Identical bytes always share one physical file: the same document re-uploaded
+  resolves to its existing version (T-27 idempotency, no new events/approvals/
+  orders), and the same bytes uploaded to another project create a separate
+  documents row referencing the same physical file (T-26).
+- A PO document uploaded before any verified PO becomes an append-only
+  `pre_order_references` row carrying `original_received_at`.
+- Two gate axes stay separate (design section 5.6): the date axis reads
+  `official_registered_at` ONLY — checklist verification can never substitute
+  for the missing registration date (T-06) — and the authenticity axis comes
+  from a human record, never from metadata (T-18).
+- The seven authenticity checklist items (design section 5.10): issuer name,
+  document number and issue date, sending channel, past-transaction
+  comparison, quote comparison, tamper-hint notes (advisory only, stored
+  verbatim, never deciding the verdict), and a confirmation reply that is
+  required exactly when the reviewer marked the document uncertain. A
+  quote-vs-PO mismatch stores `verification_status = 'mismatch'` with
+  `review_pending = true`, and every precedence gate stays closed (T-19).
+- Registering an official artifact (proof / approval / send / acceptance
+  evidence) or a supply order against a purchase order requires that PO to be
+  both officially registered and checklist-verified; anything else returns 422
+  and persists nothing (T-04, T-05). M1 endpoints are unchanged: the film order
+  transition gate still reads `official_registered_at` only.
+
+M2 endpoints (composite test data, assignment-scoped authorization):
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/api/projects/:projectId/documents` | Upload a document version (JSON `contentBase64` or multipart `file`) |
+| POST | `/api/documents/:documentId/verify` | Record a human document verification (separate from the hash) |
+| POST | `/api/seven-purchase-orders/:poId/verification-checklist` | Record the 7-item authenticity checklist (`verified_by`/`verified_at`/`verification_note`) |
+| POST | `/api/pre-order-references/:preOrderId/promote-official` | Stamp `official_registered_at` + `promoted_at`/`promoted_by` after checklist verification |
+| POST | `/api/seven-purchase-orders/:poId/supply-orders` | Register a film supply order against a verified PO |
+
+Tests: `tests/m2/core-rules.test.ts` (document vocabulary, precedence gate
+T-06, checklist T-18/T-19) and `tests/m2/m2-documents.test.ts` (T-04, T-05,
+T-18, T-19, T-26, T-27, pre-order immutability, promote-official, size/type
+rejections, multipart intake, document verification).

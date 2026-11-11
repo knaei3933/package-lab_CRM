@@ -1,17 +1,26 @@
 import { Hono } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
-import { and, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { randomBytes } from 'node:crypto';
+import { stat } from 'node:fs/promises';
+import { and, desc, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import {
   canPerform,
+  evaluateSevenPoChecklist,
+  evaluateSevenPoPrecedenceGate,
   evaluateSevenPoVerificationGate,
   FILM_SUPPLY_ORDER_EXCEPTION_STATES,
   FILM_SUPPLY_ORDER_STATES,
+  isOfficialArtifactDocumentType,
   toQuantityString,
   transitionFilmSupplyOrder,
+  validateDocumentType,
+  validateIssuerEntity,
   validateProjectRoute,
   validateQuantity,
   validateUnit,
+  type DocumentType,
   type FilmSupplyOrderState,
+  type IssuerEntity,
   type MeasureUnit,
   type UnitDomain
 } from '@kanei/core';
@@ -19,6 +28,8 @@ import {
   accounts,
   auditEvents,
   commissionReadiness,
+  documentVersions,
+  documents,
   filmDeliveries,
   filmSupplyOrderLines,
   filmSupplyOrders,
@@ -33,6 +44,12 @@ import {
 } from '@kanei/db/schema';
 import { uuidv7 } from '@kanei/db';
 import { getSessionUser, issueToken, readSessionToken, toActor, type AppDatabase } from './auth.js';
+import {
+  documentStorageRoot,
+  evaluateDocumentContent,
+  writeStoredFile,
+  type DocumentContentCheck
+} from './document-storage.js';
 import { hashPassword, verifyPassword } from './password.js';
 
 export interface AppOptions {
@@ -986,5 +1003,530 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     return context.json(row ?? { id: readinessId, projectId, ...readiness }, 201);
   });
 
+  // ------------------------------------------------- M2: document intake (design
+  // section 5.4). The server computes the digest, generates the storage path and
+  // records size/type check results; the client filename is display metadata.
+  interface DocumentUploadInput {
+    documentType: DocumentType;
+    issuerEntity: IssuerEntity;
+    filename: string;
+    contentType: unknown;
+    bytes: Buffer;
+    note: string | null;
+    preOrderReferenceId: string | null;
+    sevenPurchaseOrderId: string | null;
+    originalReceivedAt: Date | null;
+  }
+
+  type UploadPayloadResult =
+    | { ok: true; input: DocumentUploadInput }
+    | { ok: false; code: string; message: string };
+
+  async function readDocumentUpload(context: any): Promise<UploadPayloadResult> {
+    const contentTypeHeader = context.req.header('content-type') ?? '';
+    let raw: Record<string, unknown>;
+    let bytes: Buffer;
+    let filename: unknown;
+
+    if (contentTypeHeader.includes('multipart/form-data')) {
+      const body = await context.req.parseBody().catch(() => null) as Record<string, unknown> | null;
+      if (!body) return { ok: false, code: 'INVALID_UPLOAD_PAYLOAD', message: 'multipart payload could not be read' };
+      const file = body.file;
+      if (!(file instanceof File)) {
+        return { ok: false, code: 'DOCUMENT_FILE_REQUIRED', message: 'a file part named "file" is required' };
+      }
+      bytes = Buffer.from(await file.arrayBuffer());
+      filename = typeof body.filename === 'string' && body.filename.length > 0 ? body.filename : file.name;
+      raw = body;
+    } else {
+      const body = await context.req.json().catch(() => null) as any;
+      if (!body) return { ok: false, code: 'INVALID_UPLOAD_PAYLOAD', message: 'request body must be JSON or multipart' };
+      if (typeof body?.contentBase64 !== 'string') {
+        return { ok: false, code: 'DOCUMENT_CONTENT_REQUIRED', message: 'contentBase64 is required' };
+      }
+      bytes = Buffer.from(body.contentBase64, 'base64');
+      filename = body?.filename;
+      raw = body;
+    }
+
+    if (typeof filename !== 'string' || filename.length === 0) {
+      return { ok: false, code: 'DOCUMENT_FILENAME_REQUIRED', message: 'filename is required (display metadata only)' };
+    }
+    const typeCheck = validateDocumentType(raw.documentType);
+    if (!typeCheck.ok) return { ok: false, code: typeCheck.code, message: typeCheck.message };
+    const issuerCheck = validateIssuerEntity(raw.issuerEntity);
+    if (!issuerCheck.ok) return { ok: false, code: issuerCheck.code, message: issuerCheck.message };
+
+    const contentType = raw.contentType ?? (raw.file instanceof File ? raw.file.type : undefined);
+    const receivedAt = parseOptionalDate(raw.originalReceivedAt);
+    if (!receivedAt.ok) return { ok: false, code: 'INVALID_DATE', message: '原本受領日が不正です' };
+
+    return {
+      ok: true,
+      input: {
+        documentType: typeCheck.documentType,
+        issuerEntity: issuerCheck.issuerEntity,
+        filename,
+        contentType,
+        bytes,
+        note: optionalText(raw.note),
+        preOrderReferenceId: typeof raw.preOrderReferenceId === 'string' ? raw.preOrderReferenceId : null,
+        sevenPurchaseOrderId: typeof raw.sevenPurchaseOrderId === 'string' ? raw.sevenPurchaseOrderId : null,
+        originalReceivedAt: receivedAt.date
+      }
+    };
+  }
+
+  app.post('/api/projects/:projectId/documents', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const projectId = context.req.param('projectId');
+    const decision = canPerform(toActor(user), 'document:create', 'F1', projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
+
+    const payload = await readDocumentUpload(context);
+    if (!payload.ok) return context.json({ error: payload.message, code: payload.code }, 422);
+    const input = payload.input;
+
+    // Size and type checks run before anything is persisted, so a rejected
+    // upload leaves no rows and no file.
+    const contentCheck: DocumentContentCheck = evaluateDocumentContent(input.bytes, input.contentType);
+    if (!contentCheck.ok) return context.json({ error: contentCheck.message, code: contentCheck.code }, 422);
+
+    // A logical document is (project, type, issuer, filename). Re-uploading the
+    // same bytes to it resolves to the existing version and writes nothing (T-27).
+    const [existingDocument] = await db.select().from(documents).where(and(
+      eq(documents.projectId, projectId),
+      eq(documents.documentType, input.documentType),
+      eq(documents.issuerEntity, input.issuerEntity),
+      eq(documents.originalFilename, input.filename)
+    )).limit(1);
+    if (existingDocument) {
+      const [existingVersion] = await db.select().from(documentVersions).where(and(
+        eq(documentVersions.documentId, existingDocument.id),
+        eq(documentVersions.sha256, contentCheck.sha256)
+      )).limit(1);
+      if (existingVersion) {
+        return context.json({ document: existingDocument, version: existingVersion, idempotent: true }, 200);
+      }
+    }
+
+    // Precedence gate (T-04, T-05): official artifacts are downstream of a
+    // purchase order that is officially registered AND checklist-verified.
+    let linkedPo: typeof sevenPurchaseOrders.$inferSelect | null = null;
+    if (input.sevenPurchaseOrderId) {
+      const [po] = await db.select().from(sevenPurchaseOrders)
+        .where(eq(sevenPurchaseOrders.id, input.sevenPurchaseOrderId)).limit(1);
+      if (!po || po.projectId !== projectId) {
+        return context.json({ error: 'セブン発注書がこの案件に見つかりません', code: 'SEVEN_PO_PROJECT_MISMATCH' }, 422);
+      }
+      linkedPo = po;
+    }
+    if (isOfficialArtifactDocumentType(input.documentType)) {
+      if (!linkedPo) {
+        return context.json({ error: '検証済みのセブン発注書の紐付けが必要です', code: 'SEVEN_PO_REQUIRED' }, 422);
+      }
+      const gate = evaluateSevenPoPrecedenceGate(linkedPo);
+      if (!gate.ok) return context.json({ error: gate.message, code: gate.code }, 422);
+    }
+
+    // Pre-order reference flow: a PO document arriving before a verified PO
+    // becomes an append-only pre_order_references row.
+    let preOrderReferenceId: string | null = null;
+    let newReference: typeof preOrderReferences.$inferInsert | null = null;
+    if (input.documentType === 'seven_po') {
+      if (input.preOrderReferenceId) {
+        const [reference] = await db.select().from(preOrderReferences).where(and(
+          eq(preOrderReferences.id, input.preOrderReferenceId),
+          eq(preOrderReferences.projectId, projectId)
+        )).limit(1);
+        if (!reference) {
+          return context.json({ error: '先行発注参照が見つかりません', code: 'PRE_ORDER_REFERENCE_NOT_FOUND' }, 422);
+        }
+        preOrderReferenceId = reference.id;
+      } else {
+        const now = new Date();
+        const referenceId = uuidv7(now);
+        newReference = {
+          id: referenceId,
+          projectId,
+          referenceCode: `PRE-${now.getTime().toString(36).toUpperCase()}-${randomHex(4)}`,
+          note: input.note ?? `先行発注参照（${input.filename}）`,
+          originalReceivedAt: input.originalReceivedAt ?? now,
+          createdByUserId: user.id,
+          createdAt: now,
+          updatedAt: now
+        };
+        preOrderReferenceId = referenceId;
+      }
+    }
+
+    // Identical bytes always keep referencing the same physical file (T-26).
+    const storageRoot = documentStorageRoot();
+    const [sharedVersion] = await db.select({ storagePath: documentVersions.storagePath })
+      .from(documentVersions)
+      .where(eq(documentVersions.sha256, contentCheck.sha256))
+      .orderBy(desc(documentVersions.createdAt))
+      .limit(1);
+    const storagePath = await resolveStoragePath(storageRoot, contentCheck.sha256, input.bytes, sharedVersion?.storagePath);
+
+    const now = new Date();
+    const documentId = existingDocument?.id ?? uuidv7(now);
+    let versionNumber = 1;
+    if (existingDocument) {
+      const [maxRow] = await db.select({ maxVersion: sql<number>`coalesce(max(${documentVersions.versionNumber}), 0)` })
+        .from(documentVersions)
+        .where(eq(documentVersions.documentId, existingDocument.id));
+      versionNumber = (maxRow?.maxVersion ?? 0) + 1;
+    }
+    const newDocument: typeof documents.$inferInsert | null = existingDocument ? null : {
+      id: documentId,
+      projectId,
+      documentType: input.documentType,
+      issuerEntity: input.issuerEntity,
+      originalFilename: input.filename,
+      note: input.note,
+      preOrderReferenceId,
+      sevenPurchaseOrderId: linkedPo?.id ?? null,
+      verificationStatus: 'unverified',
+      verifiedByUserId: null,
+      verifiedAt: null,
+      verificationNote: null,
+      createdByUserId: user.id,
+      createdAt: now,
+      updatedAt: now
+    };
+    const versionRow = {
+      id: uuidv7(now),
+      documentId,
+      versionNumber,
+      sha256: contentCheck.sha256,
+      byteSize: contentCheck.byteSize,
+      storagePath,
+      originalFilename: input.filename,
+      declaredMimeType: contentCheck.declaredMimeType,
+      detectedMimeType: contentCheck.detectedMimeType,
+      sizeCheckPassed: contentCheck.sizeCheckPassed,
+      typeCheckPassed: contentCheck.typeCheckPassed,
+      createdByUserId: user.id,
+      createdAt: now
+    };
+
+    await db.transaction(async (tx) => {
+      if (newReference) {
+        await tx.insert(preOrderReferences).values(newReference);
+        await tx.insert(auditEvents).values({
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'PRE_ORDER_REFERENCE_CREATED',
+          entityType: 'pre_order_reference',
+          entityId: newReference.id,
+          afterState: newReference,
+          occurredAt: now,
+          requestMetadata: { operation: 'document:create', documentType: input.documentType }
+        });
+      }
+      if (newDocument) {
+        await tx.insert(documents).values(newDocument);
+        await tx.insert(auditEvents).values({
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'DOCUMENT_CREATED',
+          entityType: 'document',
+          entityId: documentId,
+          afterState: newDocument,
+          occurredAt: now,
+          requestMetadata: { operation: 'document:create' }
+        });
+      }
+      await tx.insert(documentVersions).values(versionRow);
+      await tx.insert(auditEvents).values({
+        id: uuidv7(now),
+        actorUserId: user.id,
+        action: 'DOCUMENT_VERSION_UPLOADED',
+        entityType: 'document_version',
+        entityId: versionRow.id,
+        afterState: versionRow,
+        occurredAt: now,
+        requestMetadata: { operation: 'document:create', documentId }
+      });
+    });
+
+    return context.json(
+      { document: newDocument ?? existingDocument, version: versionRow, idempotent: false },
+      newDocument ? 201 : 200
+    );
+  });
+
+  app.post('/api/documents/:documentId/verify', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const documentId = context.req.param('documentId');
+
+    const [current] = await db.select().from(documents).where(eq(documents.id, documentId)).limit(1);
+    if (!current) return context.json({ error: '書類が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'document:verify', 'F1', current.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const body = await context.req.json().catch(() => null) as any;
+    const status = body?.verificationStatus;
+    if (status !== 'verified' && status !== 'mismatch') {
+      return context.json({
+        error: 'verificationStatus は verified または mismatch です',
+        code: 'INVALID_VERIFICATION_STATUS'
+      }, 422);
+    }
+
+    const now = new Date();
+    const updated = {
+      verificationStatus: status,
+      verifiedByUserId: user.id,
+      verifiedAt: now,
+      verificationNote: optionalText(body?.verificationNote),
+      updatedAt: now
+    };
+    await db.transaction(async (tx) => {
+      await tx.update(documents).set(updated).where(eq(documents.id, documentId));
+      await tx.insert(auditEvents).values({
+        id: uuidv7(now),
+        actorUserId: user.id,
+        action: 'DOCUMENT_VERIFICATION_RECORDED',
+        entityType: 'document',
+        entityId: documentId,
+        beforeState: {
+          verificationStatus: current.verificationStatus,
+          verifiedAt: current.verifiedAt,
+          verifiedByUserId: current.verifiedByUserId
+        },
+        afterState: { ...current, ...updated },
+        occurredAt: now,
+        requestMetadata: { operation: 'document:verify' }
+      });
+    });
+    return context.json({ ...current, ...updated });
+  });
+
+  // --------------------------- M2: seven PO authenticity checklist (design
+  // section 5.10). verificationStatus is only ever written here, from a human
+  // record of all required items; estimating authenticity from metadata is
+  // impossible by construction.
+  app.post('/api/seven-purchase-orders/:poId/verification-checklist', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const poId = context.req.param('poId');
+
+    const [current] = await db.select().from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, poId)).limit(1);
+    if (!current) return context.json({ error: 'セブン発注書が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'seven_po:verify', 'F1', current.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const body = await context.req.json().catch(() => null) as any;
+    const evaluation = evaluateSevenPoChecklist(body);
+    if (!evaluation.ok) {
+      return context.json({
+        error: evaluation.message,
+        code: evaluation.code,
+        missing: evaluation.missing
+      }, 422);
+    }
+
+    const now = new Date();
+    const updated = {
+      verificationStatus: evaluation.status,
+      verifiedByUserId: user.id,
+      verifiedAt: now,
+      verificationNote: evaluation.checklist.verificationNote,
+      authenticityChecklist: evaluation.checklist,
+      reviewPending: evaluation.reviewPending,
+      reviewNote: evaluation.reviewPending
+        ? evaluation.checklist.quoteComparisonNote ?? '見積と発注書の突合結果に不一致があります'
+        : null,
+      updatedAt: now
+    };
+    await db.transaction(async (tx) => {
+      await tx.update(sevenPurchaseOrders).set(updated).where(eq(sevenPurchaseOrders.id, poId));
+      await tx.insert(auditEvents).values({
+        id: uuidv7(now),
+        actorUserId: user.id,
+        action: 'SEVEN_PO_VERIFICATION_RECORDED',
+        entityType: 'seven_purchase_order',
+        entityId: poId,
+        beforeState: {
+          verificationStatus: current.verificationStatus,
+          verifiedAt: current.verifiedAt,
+          verifiedByUserId: current.verifiedByUserId,
+          reviewPending: current.reviewPending
+        },
+        afterState: { ...current, ...updated },
+        occurredAt: now,
+        requestMetadata: { operation: 'seven_po:verify' }
+      });
+    });
+    return context.json({ ...current, ...updated });
+  });
+
+  // Official registration of a pre-order reference: stamps official_registered_at
+  // together with promoted_at/promoted_by, but only once the linked seven
+  // purchase order passed the authenticity checklist.
+  app.post('/api/pre-order-references/:preOrderId/promote-official', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const preOrderId = context.req.param('preOrderId');
+
+    const [reference] = await db.select().from(preOrderReferences).where(eq(preOrderReferences.id, preOrderId)).limit(1);
+    if (!reference) return context.json({ error: '先行発注参照が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'pre_order:promote', 'F1', reference.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const [po] = await db.select().from(sevenPurchaseOrders)
+      .where(eq(sevenPurchaseOrders.preOrderReferenceId, reference.id))
+      .orderBy(desc(sevenPurchaseOrders.createdAt))
+      .limit(1);
+    if (!po) {
+      return context.json({ error: 'この参照に紐づくセブン発注書がありません', code: 'SEVEN_PO_NOT_LINKED' }, 422);
+    }
+    if (po.reviewPending) {
+      return context.json({ error: '見積と発注書の突合レビューが未解決です', code: 'PO_REVIEW_PENDING' }, 422);
+    }
+    if (po.verificationStatus !== 'verified') {
+      return context.json({ error: 'セブン発注書の真正性確認が完了していません', code: 'SEVEN_PO_NOT_VERIFIED' }, 422);
+    }
+
+    const body = await context.req.json().catch(() => null) as any;
+    const registeredAt = parseOptionalDate(body?.officialRegisteredAt);
+    if (!registeredAt.ok) return context.json({ error: '公式登録日が不正です', code: 'INVALID_DATE' }, 422);
+
+    const now = new Date();
+    const updated = {
+      officialRegisteredAt: registeredAt.date ?? now,
+      promotedAt: now,
+      promotedByUserId: user.id,
+      updatedAt: now
+    };
+    await db.transaction(async (tx) => {
+      await tx.update(sevenPurchaseOrders).set(updated).where(eq(sevenPurchaseOrders.id, po.id));
+      await tx.insert(auditEvents).values({
+        id: uuidv7(now),
+        actorUserId: user.id,
+        action: 'PRE_ORDER_PROMOTED_OFFICIAL',
+        entityType: 'seven_purchase_order',
+        entityId: po.id,
+        beforeState: {
+          officialRegisteredAt: po.officialRegisteredAt,
+          promotedAt: po.promotedAt,
+          promotedByUserId: po.promotedByUserId
+        },
+        afterState: { ...po, ...updated },
+        occurredAt: now,
+        requestMetadata: { operation: 'pre_order:promote_official', preOrderReferenceId: reference.id }
+      });
+    });
+    return context.json({ ...po, ...updated });
+  });
+
+  // Supply-order registration against a seven purchase order (T-04, T-05):
+  // the precedence gate is evaluated before anything is written.
+  app.post('/api/seven-purchase-orders/:poId/supply-orders', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const poId = context.req.param('poId');
+
+    const [po] = await db.select().from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, poId)).limit(1);
+    if (!po) return context.json({ error: 'セブン発注書が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'supply_order:create', 'F1', po.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const gate = evaluateSevenPoPrecedenceGate(po);
+    if (!gate.ok) return context.json({ error: gate.message, code: gate.code }, 422);
+
+    const body = await context.req.json().catch(() => null) as any;
+    if (typeof body?.code !== 'string' || body.code.length === 0) {
+      return context.json({ error: '発注コードが必要です', code: 'ORDER_CODE_REQUIRED' }, 422);
+    }
+    const rawLines = Array.isArray(body?.lines) ? body.lines : [];
+    const lines: OrderLineInput[] = [];
+    for (const rawLine of rawLines) {
+      const lineCheck = validateOrderLineInput('film', rawLine);
+      if (!lineCheck.ok) return context.json({ error: lineCheck.message, code: lineCheck.code }, 422);
+      lines.push(lineCheck.line);
+    }
+
+    const now = new Date();
+    const orderId = uuidv7(now);
+    const order = {
+      id: orderId,
+      projectId: po.projectId,
+      code: body.code,
+      status: 'DRAFT' as const,
+      sevenPurchaseOrderId: po.id,
+      holdReason: null,
+      exceptionNote: null,
+      createdByUserId: user.id,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null
+    };
+    await db.transaction(async (tx) => {
+      await tx.insert(filmSupplyOrders).values(order);
+      if (lines.length > 0) {
+        await tx.insert(filmSupplyOrderLines).values(lines.map((line) => ({
+          id: uuidv7(now),
+          filmSupplyOrderId: orderId,
+          lineNumber: line.lineNumber,
+          description: line.description,
+          orderedQuantity: line.orderedQuantity,
+          unit: line.unit
+        })));
+      }
+      await tx.insert(auditEvents).values({
+        id: uuidv7(now),
+        actorUserId: user.id,
+        action: 'FILM_SUPPLY_ORDER_CREATED',
+        entityType: 'film_supply_order',
+        entityId: orderId,
+        afterState: { ...order, lineCount: lines.length, registeredFromSevenPoId: po.id },
+        occurredAt: now,
+        requestMetadata: { operation: 'supply_order:create', sevenPurchaseOrderId: po.id }
+      });
+    });
+
+    const createdLines = await db.select().from(filmSupplyOrderLines)
+      .where(eq(filmSupplyOrderLines.filmSupplyOrderId, orderId));
+    return context.json({ ...order, lines: createdLines }, 201);
+  });
+
   return app;
+}
+
+/**
+ * Reuses the physical file that already holds these bytes when it is present
+ * (T-26); otherwise writes them once under a fresh random path.
+ */
+async function resolveStoragePath(
+  storageRoot: string,
+  sha256: string,
+  bytes: Buffer,
+  knownPath?: string
+): Promise<string> {
+  if (knownPath) {
+    try {
+      await stat(knownPath);
+      return knownPath;
+    } catch {
+      // The physical file is gone (e.g. storage wiped while the DB survived):
+      // fall through and store the bytes again under a new random path.
+    }
+  }
+  const stored = await writeStoredFile(storageRoot, sha256, bytes);
+  return stored.storagePath;
+}
+
+function randomHex(length: number): string {
+  return Array.from(randomBytes(Math.ceil(length / 2)), (byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+    .slice(0, length)
+    .toUpperCase();
 }
