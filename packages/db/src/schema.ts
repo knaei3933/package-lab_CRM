@@ -49,6 +49,43 @@ export const approvalEvidenceSource = pgEnum('approval_evidence_source', ['email
  */
 export const verificationStatus = pgEnum('verification_status', ['unverified', 'verified', 'mismatch']);
 
+/**
+ * M4 maker purchase order vocabulary (design section 5.8). The maker PO is a
+ * snapshot-first record: the paper the maker receives is frozen as bytes and a
+ * hash, the CEO approves exactly that hash, and manual sending is proven by
+ * evidence. DRAFT is the only status that has never been approved;
+ * SNAPSHOT_VOIDED means the order data drifted away from the approved snapshot,
+ * so the frozen paper no longer describes the real order and a fresh approval
+ * is required.
+ */
+export const makerPurchaseOrderStatus = pgEnum('maker_purchase_order_status', [
+  'DRAFT',
+  'APPROVED_FOR_MANUAL_SEND',
+  'SEND_UNVERIFIED',
+  'MAKER_PO_SENT_MANUALLY',
+  'MAKER_PO_ACCEPTED',
+  'SNAPSHOT_VOIDED'
+]);
+
+/** Maker PO lifecycle events (design section 5.8). Append-only. */
+export const makerPoEventType = pgEnum('maker_po_event_type', [
+  'CEO_APPROVED',
+  'SNAPSHOT_VOIDED',
+  'SEND_EVIDENCE_REGISTERED',
+  'ACCEPT_EVIDENCE_REGISTERED',
+  'SEND_REJECTED'
+]);
+
+/**
+ * Whether a maker PO event's external evidence passed server verification.
+ * Events that carry no external evidence (a CEO approval, a snapshot void, a
+ * refused send) stay UNVERIFIED by construction.
+ */
+export const makerPoEventVerificationStatus = pgEnum('maker_po_event_verification_status', [
+  'VERIFIED',
+  'UNVERIFIED'
+]);
+
 export const filmSupplyOrderStatus = pgEnum('film_supply_order_status', [
   'DRAFT',
   'SEVEN_PO_VERIFIED',
@@ -292,8 +329,10 @@ export const documents = pgTable('documents', {
   check('documents_official_artifact_requires_po', sql`${table.documentType} in ('seven_po', 'filling_quote_seven', 'film_quote_kanei') or ${table.sevenPurchaseOrderId} is not null`),
   check('documents_verification_fields_pair', sql`(${table.verificationStatus} = 'unverified' and ${table.verifiedAt} is null and ${table.verifiedByUserId} is null) or (${table.verificationStatus} in ('verified', 'mismatch') and ${table.verifiedAt} is not null and ${table.verifiedByUserId} is not null)`),
   // The artwork binding is a pair: a document is bound to a design only through
-  // an order, never to a design on its own.
-  check('documents_artwork_binding_pair', sql`(${table.filmSupplyOrderId} is null and ${table.designKey} is null) or (${table.filmSupplyOrderId} is not null and ${table.designKey} is not null)`),
+  // an order, never to a design on its own. M4 widens the order linkage for
+  // order-level evidence: send and acceptance evidence is about the whole maker
+  // paper, so it carries the order without naming a design.
+  check('documents_artwork_binding_pair', sql`(${table.filmSupplyOrderId} is null and ${table.designKey} is null) or (${table.filmSupplyOrderId} is not null and ${table.designKey} is not null) or (${table.filmSupplyOrderId} is not null and ${table.designKey} is null)`),
   index('documents_project_idx').on(table.projectId),
   index('documents_type_idx').on(table.documentType),
   index('documents_seven_purchase_order_idx').on(table.sevenPurchaseOrderId),
@@ -509,11 +548,96 @@ export const commissionReadiness = pgTable('commission_readiness', {
   check('commission_readiness_ready_requires_ready_at', sql`(${table.isReady} = false) or (${table.readyAt} is not null)`)
 ]);
 
+/**
+ * M4 maker purchase orders (design section 5.8). A maker PO is the frozen
+ * paper the F1 film maker receives: `snapshot` is the immutable JSON the maker
+ * is sent (order, items with quantities, specs, artwork file hashes, amounts
+ * and the recipient address) and `snapshot_sha256` is its server-computed
+ * digest. The CEO approves exactly that digest; registering manual send
+ * evidence recomputes the digest from current order data and refuses the send
+ * (voiding the snapshot) when the two disagree. Status transitions are
+ * server-enforced; the event history lives in the append-only maker_po_events.
+ */
+export const makerPurchaseOrders = pgTable('maker_purchase_orders', {
+  id: uuid('id').primaryKey(),
+  filmSupplyOrderId: uuid('film_supply_order_id').notNull().references(() => filmSupplyOrders.id, { onDelete: 'cascade' }),
+  /**
+   * Immutable snapshot content: order identity, items with quantities, specs,
+   * artwork file hashes, amounts and the recipient address. Rewritten only by
+   * a CEO approval, which re-freezes current order data and stamps its hash.
+   */
+  snapshot: jsonb('snapshot').notNull(),
+  /** Server-computed sha256 over the canonical JSON of `snapshot`. Never a client value. */
+  snapshotSha256: text('snapshot_sha256').notNull(),
+  status: makerPurchaseOrderStatus('status').notNull().default('DRAFT'),
+  ceoApprovedByUserId: uuid('ceo_approved_by_user_id').references(() => users.id),
+  ceoApprovedAt: timestamp('ceo_approved_at', { withTimezone: true }),
+  createdByUserId: uuid('created_by_user_id').notNull().references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  check('maker_purchase_orders_sha256_format', sql`${table.snapshotSha256} ~ '^[0-9a-f]{64}$'`),
+  // The approval stamp is a pair: who approved and when are recorded together.
+  check('maker_purchase_orders_ceo_approval_pair', sql`(${table.ceoApprovedAt} is null) = (${table.ceoApprovedByUserId} is null)`),
+  // Every status except DRAFT is only reachable through a CEO approval.
+  check('maker_purchase_orders_status_requires_ceo_approval', sql`${table.status} = 'DRAFT' or ${table.ceoApprovedAt} is not null`),
+  index('maker_purchase_orders_order_idx').on(table.filmSupplyOrderId),
+  index('maker_purchase_orders_status_idx').on(table.status)
+]);
+
+/**
+ * M4 maker PO event log (design section 5.8). Append-only (migration 0010),
+ * exactly like audit_events / deliveries / document_versions /
+ * artwork_approval_events: a voided snapshot is a new SNAPSHOT_VOIDED event, a
+ * refused send is a new SEND_REJECTED event, and UPDATE/DELETE are rejected by
+ * trigger. Evidence columns (evidence_document_version_id, sender_address,
+ * recipients, sent_at, attachment_hashes) record the manual-send facts as the
+ * server verified them; verification_status says whether the evidence itself
+ * passed verification (VERIFIED) or the event carries no verified external
+ * evidence (UNVERIFIED — a sent_at-only registration, a CEO approval, a void
+ * or a rejection).
+ */
+export const makerPoEvents = pgTable('maker_po_events', {
+  id: uuid('id').primaryKey(),
+  makerPurchaseOrderId: uuid('maker_purchase_order_id').notNull().references(() => makerPurchaseOrders.id, { onDelete: 'cascade' }),
+  eventType: makerPoEventType('event_type').notNull(),
+  /** The evidence document version this event is proven by, when one exists. */
+  evidenceDocumentVersionId: uuid('evidence_document_version_id').references(() => documentVersions.id),
+  senderAddress: text('sender_address'),
+  /** Array of recipient addresses as proven by the send evidence. */
+  recipients: jsonb('recipients'),
+  /** When the maker actually received the mail, taken from the evidence. */
+  sentAt: timestamp('sent_at', { withTimezone: true }),
+  /** Array of sha256 hashes of the sent attachments, including the evidence itself. */
+  attachmentHashes: jsonb('attachment_hashes'),
+  verificationStatus: makerPoEventVerificationStatus('verification_status').notNull().default('UNVERIFIED'),
+  recordedByUserId: uuid('recorded_by_user_id').notNull().references(() => users.id),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  index('maker_po_events_po_idx').on(table.makerPurchaseOrderId),
+  index('maker_po_events_type_idx').on(table.eventType),
+  index('maker_po_events_evidence_idx').on(table.evidenceDocumentVersionId)
+]);
+
 export const filmSupplyOrdersRelations = relations(filmSupplyOrders, ({ many, one }) => ({
   lines: many(filmSupplyOrderLines),
   deliveries: many(filmDeliveries),
+  makerPurchaseOrders: many(makerPurchaseOrders),
   project: one(projects, { fields: [filmSupplyOrders.projectId], references: [projects.id] }),
   sevenPurchaseOrder: one(sevenPurchaseOrders, { fields: [filmSupplyOrders.sevenPurchaseOrderId], references: [sevenPurchaseOrders.id] })
+}));
+
+export const makerPurchaseOrdersRelations = relations(makerPurchaseOrders, ({ many, one }) => ({
+  events: many(makerPoEvents),
+  filmSupplyOrder: one(filmSupplyOrders, { fields: [makerPurchaseOrders.filmSupplyOrderId], references: [filmSupplyOrders.id] }),
+  ceoApprovedBy: one(users, { fields: [makerPurchaseOrders.ceoApprovedByUserId], references: [users.id] }),
+  createdBy: one(users, { fields: [makerPurchaseOrders.createdByUserId], references: [users.id] })
+}));
+
+export const makerPoEventsRelations = relations(makerPoEvents, ({ one }) => ({
+  makerPurchaseOrder: one(makerPurchaseOrders, { fields: [makerPoEvents.makerPurchaseOrderId], references: [makerPurchaseOrders.id] }),
+  evidenceDocumentVersion: one(documentVersions, { fields: [makerPoEvents.evidenceDocumentVersionId], references: [documentVersions.id] }),
+  recordedBy: one(users, { fields: [makerPoEvents.recordedByUserId], references: [users.id] })
 }));
 
 export const documentsRelations = relations(documents, ({ many, one }) => ({

@@ -78,6 +78,18 @@ export function isOfficialArtifactDocumentType(documentType: DocumentType): bool
   return (OFFICIAL_ARTIFACT_DOCUMENT_TYPES as readonly string[]).includes(documentType);
 }
 
+/**
+ * Document types that carry the M3 artwork binding: they are always about one
+ * design of one order, so binding them to an order without naming the design is
+ * a validation error. The M4 evidence types (send, acceptance) bind to the
+ * order alone (design section 5.4: documents carry project_id and order_id).
+ */
+export const ARTWORK_BOUND_DOCUMENT_TYPES = ['proof', 'approval_evidence'] as const;
+
+export function isArtworkBoundDocumentType(documentType: DocumentType): boolean {
+  return (ARTWORK_BOUND_DOCUMENT_TYPES as readonly string[]).includes(documentType);
+}
+
 export interface SevenPoPrecedenceGateInput {
   officialRegisteredAt: Date | string | null;
   verificationStatus: VerificationStatus;

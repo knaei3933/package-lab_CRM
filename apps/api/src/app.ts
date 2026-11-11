@@ -4,9 +4,16 @@ import { randomBytes } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { and, desc, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import {
+  buildMakerPoSnapshot,
   canPerform,
+  computeMakerPoSnapshotSha256,
   deriveOrderApprovalGate,
   evaluateApprovalEvidenceBinding,
+  evaluateMakerPoAcceptEvidence,
+  evaluateMakerPoApproval,
+  evaluateMakerPoCreationGate,
+  evaluateMakerPoSendEvidence,
+  evaluateMakerPoSendTransition,
   evaluateRevisionRegistrationGate,
   evaluateSevenPoChecklist,
   evaluateSevenPoPrecedenceGate,
@@ -14,17 +21,20 @@ import {
   FILM_SUPPLY_ORDER_EXCEPTION_STATES,
   FILM_SUPPLY_ORDER_STATES,
   hasApprovalHistoryForDesign,
+  isArtworkBoundDocumentType,
   isExceptionFilmSupplyOrderState,
   isOfficialArtifactDocumentType,
   isTerminalFilmSupplyOrderState,
   shouldAdvanceToDualApproved,
   toQuantityString,
   transitionFilmSupplyOrder,
+  transitionMakerPurchaseOrder,
   validateApprovalDecision,
   validateApprovalEvidenceSource,
   validateApprovalOrganization,
   validateDocumentType,
   validateIssuerEntity,
+  validateMakerPoStatus,
   validateProjectRoute,
   validateQuantity,
   validateUnit,
@@ -34,6 +44,9 @@ import {
   type DocumentType,
   type FilmSupplyOrderState,
   type IssuerEntity,
+  type MakerPoEvidenceDocument,
+  type MakerPoSnapshot,
+  type MakerPoSnapshotArtworkFile,
   type MeasureUnit,
   type UnitDomain
 } from '@kanei/core';
@@ -51,6 +64,8 @@ import {
   fillingDeliveries,
   fillingOrderLines,
   fillingOrders,
+  makerPoEvents,
+  makerPurchaseOrders,
   preOrderReferences,
   projects,
   sevenPurchaseOrders,
@@ -93,6 +108,17 @@ interface OrderLineInput {
 type OrderLineValidation =
   | { ok: true; line: OrderLineInput }
   | { ok: false; code: string; message: string };
+
+/** Database executor that can read: the pool or one open transaction. */
+type MakerPoQueryExecutor = Pick<AppDatabase, 'select'>;
+
+/**
+ * A maker PO transition lost its row-level race (T-25): another transaction
+ * moved the PO between the read and the conditional update. The transaction is
+ * rolled back and the caller receives 422 MAKER_PO_STATE_CHANGED, so exactly
+ * one of two simultaneous transition requests is ever effective.
+ */
+class MakerPoStateConflict extends Error {}
 
 /**
  * Validates one order line against the unit vocabulary of its domain. Unit
@@ -1132,9 +1158,11 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const contentCheck: DocumentContentCheck = evaluateDocumentContent(input.bytes, input.contentType);
     if (!contentCheck.ok) return context.json({ error: contentCheck.message, code: contentCheck.code }, 422);
 
-    // M3 artwork binding: a document may declare which film supply order and
-    // design it belongs to. Approval evidence must carry this binding (T-35),
-    // so it is validated once at intake and trusted everywhere else.
+    // M3/M4 order linkage: a document may declare which film supply order it
+    // belongs to. Artwork-bound types (proof, approval evidence) additionally
+    // name the design (T-35), while send and acceptance evidence is about the
+    // whole maker paper and carries the order alone (design section 5.4). The
+    // binding is validated once at intake and trusted everywhere else.
     let artworkBindingOrderId: string | null = null;
     if (input.filmSupplyOrderId) {
       const [boundOrder] = await db.select().from(filmSupplyOrders)
@@ -1145,7 +1173,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           code: 'FILM_SUPPLY_ORDER_PROJECT_MISMATCH'
         }, 422);
       }
-      if (!input.designKey) {
+      if (!input.designKey && isArtworkBoundDocumentType(input.documentType)) {
         return context.json({ error: '発注に紐付ける場合はデザインキーが必要です', code: 'DESIGN_KEY_REQUIRED' }, 422);
       }
       artworkBindingOrderId = boundOrder.id;
@@ -1242,6 +1270,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         .where(eq(documentVersions.documentId, existingDocument.id));
       versionNumber = (maxRow?.maxVersion ?? 0) + 1;
     }
+    // A document's first version shares the document's identity: the version
+    // that created the logical document is addressable by either id, so
+    // evidence records (approval, send, acceptance) can be resolved from the
+    // document or from the version that was cited. Later versions of the same
+    // logical document get their own identity.
+    const versionId = versionNumber === 1 ? documentId : uuidv7(now);
     const newDocument: typeof documents.$inferInsert | null = existingDocument ? null : {
       id: documentId,
       projectId,
@@ -1262,7 +1296,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       updatedAt: now
     };
     const versionRow = {
-      id: uuidv7(now),
+      id: versionId,
       documentId,
       versionNumber,
       sha256: contentCheck.sha256,
@@ -1882,6 +1916,750 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       missingApprovals: gate.missingApprovals,
       designs: gate.designs
     });
+  });
+
+  // --------------------------- M4: maker purchase orders with manual-send
+  // evidence (design section 5.8, gates G8 to G10). The maker PO is a
+  // snapshot-first record: the paper the maker receives is frozen as JSON plus
+  // a server-computed digest, the CEO approves exactly that digest, and the
+  // manual (outside-the-system) send is only ever recorded as evidence.
+  //
+  // Every transition re-reads the PO row FOR UPDATE inside a transaction and
+  // writes it conditionally on the status it was read with, so two simultaneous
+  // transition requests (approval + send, or two sends) result in exactly one
+  // effective transition and a consistent audit trail (T-25). Every write in
+  // this section records its audit_events row in the same transaction.
+  async function loadMakerPoSnapshotParts(executor: MakerPoQueryExecutor, orderId: string): Promise<{
+    order: typeof filmSupplyOrders.$inferSelect;
+    lines: Array<{ lineNumber: number; description: string; orderedQuantity: string; unit: string }>;
+    artworkFiles: MakerPoSnapshotArtworkFile[];
+    sevenPoNumber: string | null;
+  }> {
+    const [order] = await executor.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, orderId)).limit(1);
+    if (!order) throw new Error('maker PO snapshot source order is missing');
+
+    const lines = await executor.select({
+      lineNumber: filmSupplyOrderLines.lineNumber,
+      description: filmSupplyOrderLines.description,
+      orderedQuantity: filmSupplyOrderLines.orderedQuantity,
+      unit: filmSupplyOrderLines.unit
+    }).from(filmSupplyOrderLines)
+      .where(eq(filmSupplyOrderLines.filmSupplyOrderId, orderId))
+      .orderBy(filmSupplyOrderLines.lineNumber);
+
+    // Current revision per design: highest revision_no wins. Ordering by design
+    // ascending and revision descending makes the first row per design current.
+    const revisions = await executor.select({
+      designKey: artworkRevisions.designKey,
+      revisionNo: artworkRevisions.revisionNo,
+      fileSha256: documentVersions.sha256
+    }).from(artworkRevisions)
+      .innerJoin(documentVersions, eq(documentVersions.id, artworkRevisions.fileDocumentVersionId))
+      .where(eq(artworkRevisions.filmSupplyOrderId, orderId))
+      .orderBy(artworkRevisions.designKey, desc(artworkRevisions.revisionNo));
+    const artworkFiles: MakerPoSnapshotArtworkFile[] = [];
+    const seenDesigns = new Set<string>();
+    for (const revision of revisions) {
+      if (seenDesigns.has(revision.designKey)) continue;
+      seenDesigns.add(revision.designKey);
+      artworkFiles.push({
+        designKey: revision.designKey,
+        revisionNo: revision.revisionNo,
+        fileSha256: revision.fileSha256
+      });
+    }
+
+    let sevenPoNumber: string | null = null;
+    if (order.sevenPurchaseOrderId) {
+      const [po] = await executor.select({ poNumber: sevenPurchaseOrders.poNumber })
+        .from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).limit(1);
+      sevenPoNumber = po?.poNumber ?? null;
+    }
+    return { order, lines, artworkFiles, sevenPoNumber };
+  }
+
+  /**
+   * Rebuilds the snapshot from current order data plus the frozen request-only
+   * parts (amounts, recipient address). Only order-side data can therefore move
+   * the digest: a quantity change (T-23) or a new artwork revision (T-24)
+   * breaks snapshot identity, an edit of the frozen amounts cannot.
+   */
+  function rebuildMakerPoSnapshot(
+    parts: Awaited<ReturnType<typeof loadMakerPoSnapshotParts>>,
+    storedSnapshot: MakerPoSnapshot
+  ): MakerPoSnapshot {
+    return buildMakerPoSnapshot({
+      order: { id: parts.order.id, code: parts.order.code, sevenPoNumber: parts.sevenPoNumber },
+      items: parts.lines,
+      artworkFiles: parts.artworkFiles,
+      amounts: storedSnapshot.amounts ?? null,
+      recipientAddress: storedSnapshot.recipient.address
+    });
+  }
+
+  async function loadMakerPoEvidenceDocument(
+    executor: MakerPoQueryExecutor,
+    versionId: string
+  ): Promise<MakerPoEvidenceDocument | null> {
+    const [row] = await executor.select({
+      documentId: documents.id,
+      versionId: documentVersions.id,
+      sha256: documentVersions.sha256,
+      documentType: documents.documentType,
+      projectId: documents.projectId,
+      filmSupplyOrderId: documents.filmSupplyOrderId,
+      designKey: documents.designKey,
+      verificationStatus: documents.verificationStatus
+    }).from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(eq(documentVersions.id, versionId)).limit(1);
+    return row ?? null;
+  }
+
+  app.post('/api/film-supply-orders/:orderId/maker-purchase-orders', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const orderId = context.req.param('orderId');
+
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'maker_po:create', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const creationGate = evaluateMakerPoCreationGate({ orderStatus: order.status });
+    if (!creationGate.ok) return context.json({ error: creationGate.message, code: creationGate.code }, 422);
+
+    const body = await context.req.json().catch(() => null) as any;
+    if (typeof body?.recipientAddress !== 'string' || body.recipientAddress.trim().length === 0) {
+      return context.json({ error: '宛先住所が必要です', code: 'RECIPIENT_ADDRESS_REQUIRED' }, 422);
+    }
+    let amounts: { currency: string; totalAmount: string } | null = null;
+    if (body?.amounts !== undefined && body?.amounts !== null) {
+      if (typeof body.amounts?.currency !== 'string' || body.amounts.currency.length === 0
+        || typeof body.amounts?.totalAmount !== 'string' || body.amounts.totalAmount.length === 0) {
+        return context.json({ error: '金額は currency と totalAmount の文字列です', code: 'INVALID_MAKER_PO_AMOUNTS' }, 422);
+      }
+      amounts = { currency: body.amounts.currency, totalAmount: body.amounts.totalAmount };
+    }
+
+    const parts = await loadMakerPoSnapshotParts(db, orderId);
+    const snapshot = buildMakerPoSnapshot({
+      order: { id: parts.order.id, code: parts.order.code, sevenPoNumber: parts.sevenPoNumber },
+      items: parts.lines,
+      artworkFiles: parts.artworkFiles,
+      amounts,
+      recipientAddress: body.recipientAddress
+    });
+    const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
+
+    const now = new Date();
+    const poId = uuidv7(now);
+    const purchaseOrder = {
+      id: poId,
+      filmSupplyOrderId: orderId,
+      snapshot,
+      snapshotSha256,
+      status: 'DRAFT' as const,
+      ceoApprovedByUserId: null,
+      ceoApprovedAt: null,
+      createdByUserId: user.id,
+      createdAt: now,
+      updatedAt: now
+    };
+    await db.transaction(async (tx) => {
+      await tx.insert(makerPurchaseOrders).values(purchaseOrder);
+      await tx.insert(auditEvents).values({
+        id: uuidv7(now),
+        actorUserId: user.id,
+        action: 'MAKER_PO_CREATED',
+        entityType: 'maker_purchase_order',
+        entityId: poId,
+        afterState: { ...purchaseOrder, orderCode: parts.order.code },
+        occurredAt: now,
+        requestMetadata: { operation: 'maker_po:create', filmSupplyOrderId: orderId }
+      });
+    });
+    return context.json(purchaseOrder, 201);
+  });
+
+  app.post('/api/maker-purchase-orders/:poId/ceo-approval', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const poId = context.req.param('poId');
+
+    const [existing] = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.id, poId)).limit(1);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    const [order] = await db.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+
+    // CEO approval is intentionally never delegated: staff attempts get 403
+    // (T-31 pattern).
+    const decision = canPerform(toActor(user), 'ceo_approve', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '代表者のみ承認できます' }, 403);
+
+    const poStatus = validateMakerPoStatus(existing.status);
+    if (!poStatus.ok) return context.json({ error: poStatus.message, code: poStatus.code }, 422);
+    const approval = evaluateMakerPoApproval(poStatus.value);
+    if (!approval.ok) {
+      return context.json({ error: approval.message, code: approval.code, from: approval.from }, 422);
+    }
+
+    const now = new Date();
+    try {
+      const outcome = await db.transaction(async (tx) => {
+        const [po] = await tx.select().from(makerPurchaseOrders)
+          .where(eq(makerPurchaseOrders.id, poId)).limit(1).for('update');
+        if (!po || po.status !== approval.from) throw new MakerPoStateConflict();
+
+        // The approval re-freezes current order data and stamps the digest it
+        // approved: a voided snapshot can only come back through this door.
+        const parts = await loadMakerPoSnapshotParts(tx, po.filmSupplyOrderId);
+        const snapshot = rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot);
+        const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
+
+        const updated = await tx.update(makerPurchaseOrders).set({
+          snapshot,
+          snapshotSha256,
+          status: 'APPROVED_FOR_MANUAL_SEND' as const,
+          ceoApprovedByUserId: user.id,
+          ceoApprovedAt: now,
+          updatedAt: now
+        }).where(and(
+          eq(makerPurchaseOrders.id, poId),
+          eq(makerPurchaseOrders.status, po.status)
+        )).returning({ id: makerPurchaseOrders.id });
+        if (updated.length === 0) throw new MakerPoStateConflict();
+
+        const approvalEvent = {
+          id: uuidv7(now),
+          makerPurchaseOrderId: poId,
+          eventType: 'CEO_APPROVED' as const,
+          verificationStatus: 'UNVERIFIED' as const,
+          recordedByUserId: user.id,
+          recordedAt: now
+        };
+        await tx.insert(makerPoEvents).values(approvalEvent);
+
+        await tx.insert(auditEvents).values({
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_PO_CEO_APPROVED',
+          entityType: 'maker_po_event',
+          entityId: approvalEvent.id,
+          beforeState: { status: po.status, snapshotSha256: po.snapshotSha256 },
+          afterState: { status: 'APPROVED_FOR_MANUAL_SEND', snapshotSha256, approvedByUserId: user.id },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:ceo_approve', makerPurchaseOrderId: poId }
+        });
+        await tx.insert(auditEvents).values({
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_PO_STATUS_CHANGED',
+          entityType: 'maker_purchase_order',
+          entityId: poId,
+          beforeState: { status: po.status },
+          afterState: { status: 'APPROVED_FOR_MANUAL_SEND', snapshotSha256 },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:ceo_approve' }
+        });
+
+        // The film supply order chain mirrors the maker PO when the transition
+        // is legal there; exception states (change review, hold) are left alone.
+        const [currentOrder] = await tx.select().from(filmSupplyOrders)
+          .where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
+        if (currentOrder && transitionFilmSupplyOrder(currentOrder.status, 'APPROVED_FOR_MANUAL_SEND').ok) {
+          await tx.update(filmSupplyOrders).set({ status: 'APPROVED_FOR_MANUAL_SEND', updatedAt: now })
+            .where(eq(filmSupplyOrders.id, currentOrder.id));
+          await tx.insert(auditEvents).values({
+            id: uuidv7(now),
+            actorUserId: user.id,
+            action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+            entityType: 'film_supply_order',
+            entityId: currentOrder.id,
+            beforeState: { status: currentOrder.status },
+            afterState: { status: 'APPROVED_FOR_MANUAL_SEND' },
+            occurredAt: now,
+            requestMetadata: { operation: 'maker_po:ceo_approve', reason: 'maker_po_approved' }
+          });
+        }
+
+        return {
+          purchaseOrder: {
+            id: poId,
+            filmSupplyOrderId: po.filmSupplyOrderId,
+            snapshot,
+            snapshotSha256,
+            status: 'APPROVED_FOR_MANUAL_SEND' as const,
+            ceoApprovedByUserId: user.id,
+            ceoApprovedAt: now,
+            createdByUserId: po.createdByUserId,
+            createdAt: po.createdAt,
+            updatedAt: now
+          },
+          approvalEvent
+        };
+      });
+      return context.json(outcome, 200);
+    } catch (error) {
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
+      }
+      throw error;
+    }
+  });
+
+  app.post('/api/maker-purchase-orders/:poId/send-evidence', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const poId = context.req.param('poId');
+
+    const [existing] = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.id, poId)).limit(1);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    const [order] = await db.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'maker_po:send_evidence', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const body = await context.req.json().catch(() => null) as any;
+    const sentAt = parseOptionalDate(body?.sentAt);
+    if (!sentAt.ok) return context.json({ error: '送信日時が不正です', code: 'INVALID_DATE' }, 422);
+
+    const now = new Date();
+    try {
+      const outcome = await db.transaction(async (tx) => {
+        const [po] = await tx.select().from(makerPurchaseOrders)
+          .where(eq(makerPurchaseOrders.id, poId)).limit(1).for('update');
+        if (!po) throw new MakerPoStateConflict();
+        const poStatus = validateMakerPoStatus(po.status);
+        if (!poStatus.ok) return { kind: 'error' as const, code: poStatus.code, message: poStatus.message };
+
+        const sendGate = evaluateMakerPoSendTransition(poStatus.value);
+        if (!sendGate.ok) {
+          return { kind: 'blocked' as const, code: sendGate.code, from: sendGate.from, message: sendGate.message };
+        }
+
+        // Snapshot identity at the moment of registration (G10): the digest is
+        // recomputed from current order data and compared with the approved one.
+        const parts = await loadMakerPoSnapshotParts(tx, po.filmSupplyOrderId);
+        const storedSnapshot = po.snapshot as MakerPoSnapshot;
+        const currentSnapshot = rebuildMakerPoSnapshot(parts, storedSnapshot);
+        const currentSnapshotSha256 = computeMakerPoSnapshotSha256(currentSnapshot);
+        const requestedEvidenceId = typeof body?.evidenceDocumentVersionId === 'string'
+          && body.evidenceDocumentVersionId.length > 0
+          ? body.evidenceDocumentVersionId as string
+          : null;
+        const evidenceDocument = requestedEvidenceId
+          ? await loadMakerPoEvidenceDocument(tx, requestedEvidenceId)
+          : null;
+
+        const evaluation = evaluateMakerPoSendEvidence({
+          evidenceDocumentVersionId: requestedEvidenceId,
+          senderAddress: body?.senderAddress,
+          recipients: body?.recipients,
+          sentAt: sentAt.date,
+          attachmentHashes: body?.attachmentHashes
+        }, {
+          order: { id: order.id, projectId: order.projectId },
+          approvedSnapshotSha256: po.snapshotSha256,
+          currentSnapshotSha256,
+          snapshot: currentSnapshot,
+          evidenceDocument
+        });
+
+        if (!evaluation.ok) {
+          if (evaluation.outcome === 'invalid_request') {
+            return { kind: 'invalid' as const, code: evaluation.code, message: evaluation.message };
+          }
+
+          // A refused send is itself recorded: SNAPSHOT_VOIDED marks the frozen
+          // paper dead (a fresh CEO approval is required), SEND_REJECTED records
+          // that a send was claimed and did not check out.
+          const targetStatus = evaluation.outcome === 'snapshot_voided'
+            ? 'SNAPSHOT_VOIDED' as const
+            : poStatus.value;
+          if (targetStatus !== poStatus.value) {
+            const voided = await tx.update(makerPurchaseOrders).set({ status: targetStatus, updatedAt: now })
+              .where(and(eq(makerPurchaseOrders.id, poId), eq(makerPurchaseOrders.status, poStatus.value)))
+              .returning({ id: makerPurchaseOrders.id });
+            if (voided.length === 0) throw new MakerPoStateConflict();
+            await tx.insert(auditEvents).values({
+              id: uuidv7(now),
+              actorUserId: user.id,
+              action: 'MAKER_PO_STATUS_CHANGED',
+              entityType: 'maker_purchase_order',
+              entityId: poId,
+              beforeState: { status: poStatus.value },
+              afterState: { status: targetStatus, approvedSnapshotSha256: po.snapshotSha256, currentSnapshotSha256 },
+              occurredAt: now,
+              requestMetadata: { operation: 'maker_po:send_evidence', reason: 'snapshot_mismatch' }
+            });
+          }
+          const refusedEvent = {
+            id: uuidv7(now),
+            makerPurchaseOrderId: poId,
+            eventType: evaluation.outcome === 'snapshot_voided' ? 'SNAPSHOT_VOIDED' as const : 'SEND_REJECTED' as const,
+            evidenceDocumentVersionId: evidenceDocument?.versionId ?? null,
+            senderAddress: typeof body?.senderAddress === 'string' && body.senderAddress.trim().length > 0
+              ? body.senderAddress.trim()
+              : null,
+            recipients: Array.isArray(body?.recipients) ? body.recipients : null,
+            sentAt: sentAt.date,
+            attachmentHashes: null,
+            verificationStatus: 'UNVERIFIED' as const,
+            recordedByUserId: user.id,
+            recordedAt: now
+          };
+          await tx.insert(makerPoEvents).values(refusedEvent);
+          await tx.insert(auditEvents).values({
+            id: uuidv7(now),
+            actorUserId: user.id,
+            action: evaluation.outcome === 'snapshot_voided' ? 'MAKER_PO_SNAPSHOT_VOIDED' : 'MAKER_PO_SEND_REJECTED',
+            entityType: 'maker_po_event',
+            entityId: refusedEvent.id,
+            beforeState: { status: poStatus.value },
+            afterState: {
+              status: targetStatus,
+              code: evaluation.code,
+              approvedSnapshotSha256: po.snapshotSha256,
+              currentSnapshotSha256
+            },
+            occurredAt: now,
+            requestMetadata: { operation: 'maker_po:send_evidence', makerPurchaseOrderId: poId }
+          });
+          return {
+            kind: 'refused' as const,
+            evaluation,
+            event: refusedEvent,
+            status: targetStatus,
+            snapshotHashes: { approved: po.snapshotSha256, current: currentSnapshotSha256 }
+          };
+        }
+
+        const targetStatus = evaluation.verificationStatus === 'VERIFIED'
+          ? 'MAKER_PO_SENT_MANUALLY' as const
+          : 'SEND_UNVERIFIED' as const;
+        const updated = await tx.update(makerPurchaseOrders).set({ status: targetStatus, updatedAt: now })
+          .where(and(eq(makerPurchaseOrders.id, poId), eq(makerPurchaseOrders.status, poStatus.value)))
+          .returning({ id: makerPurchaseOrders.id });
+        if (updated.length === 0) throw new MakerPoStateConflict();
+
+        const sentAtValue = typeof evaluation.sentAt === 'string' ? new Date(evaluation.sentAt) : evaluation.sentAt;
+        const sendEvent = {
+          id: uuidv7(now),
+          makerPurchaseOrderId: poId,
+          eventType: 'SEND_EVIDENCE_REGISTERED' as const,
+          evidenceDocumentVersionId: evaluation.verificationStatus === 'VERIFIED'
+            ? evaluation.evidenceDocumentVersionId
+            : null,
+          senderAddress: evaluation.verificationStatus === 'VERIFIED' ? evaluation.senderAddress : null,
+          recipients: evaluation.verificationStatus === 'VERIFIED' ? evaluation.recipients : null,
+          sentAt: sentAtValue,
+          attachmentHashes: evaluation.verificationStatus === 'VERIFIED' ? evaluation.attachmentHashes : null,
+          verificationStatus: evaluation.verificationStatus,
+          recordedByUserId: user.id,
+          recordedAt: now
+        };
+        await tx.insert(makerPoEvents).values(sendEvent);
+
+        await tx.insert(auditEvents).values({
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: evaluation.verificationStatus === 'VERIFIED'
+            ? 'MAKER_PO_SEND_EVIDENCE_REGISTERED'
+            : 'MAKER_PO_SEND_RECORDED_UNVERIFIED',
+          entityType: 'maker_po_event',
+          entityId: sendEvent.id,
+          beforeState: { status: poStatus.value },
+          afterState: { status: targetStatus, event: sendEvent },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:send_evidence', makerPurchaseOrderId: poId }
+        });
+        await tx.insert(auditEvents).values({
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_PO_STATUS_CHANGED',
+          entityType: 'maker_purchase_order',
+          entityId: poId,
+          beforeState: { status: poStatus.value },
+          afterState: { status: targetStatus },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:send_evidence' }
+        });
+
+        if (targetStatus === 'MAKER_PO_SENT_MANUALLY') {
+          const [currentOrder] = await tx.select().from(filmSupplyOrders)
+            .where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
+          if (currentOrder && transitionFilmSupplyOrder(currentOrder.status, 'MAKER_PO_SENT_MANUALLY').ok) {
+            await tx.update(filmSupplyOrders).set({ status: 'MAKER_PO_SENT_MANUALLY', updatedAt: now })
+              .where(eq(filmSupplyOrders.id, currentOrder.id));
+            await tx.insert(auditEvents).values({
+              id: uuidv7(now),
+              actorUserId: user.id,
+              action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+              entityType: 'film_supply_order',
+              entityId: currentOrder.id,
+              beforeState: { status: currentOrder.status },
+              afterState: { status: 'MAKER_PO_SENT_MANUALLY' },
+              occurredAt: now,
+              requestMetadata: { operation: 'maker_po:send_evidence', reason: 'maker_po_sent' }
+            });
+          }
+        }
+
+        return {
+          kind: 'applied' as const,
+          status: targetStatus,
+          verificationStatus: evaluation.verificationStatus,
+          event: sendEvent,
+          purchaseOrder: {
+            id: poId,
+            filmSupplyOrderId: po.filmSupplyOrderId,
+            snapshot: storedSnapshot,
+            snapshotSha256: po.snapshotSha256,
+            status: targetStatus,
+            ceoApprovedByUserId: po.ceoApprovedByUserId,
+            ceoApprovedAt: po.ceoApprovedAt,
+            createdByUserId: po.createdByUserId,
+            createdAt: po.createdAt,
+            updatedAt: now
+          }
+        };
+      });
+
+      if (outcome.kind === 'error') return context.json({ error: outcome.message, code: outcome.code }, 422);
+      if (outcome.kind === 'blocked') {
+        return context.json({ error: outcome.message, code: outcome.code, from: outcome.from }, 422);
+      }
+      if (outcome.kind === 'invalid') return context.json({ error: outcome.message, code: outcome.code }, 422);
+      if (outcome.kind === 'refused') {
+        return context.json({
+          error: outcome.evaluation.message,
+          code: outcome.evaluation.code,
+          status: outcome.status,
+          event: outcome.event,
+          approvedSnapshotSha256: outcome.evaluation.outcome === 'snapshot_voided'
+            ? outcome.snapshotHashes.approved
+            : undefined,
+          currentSnapshotSha256: outcome.evaluation.outcome === 'snapshot_voided'
+            ? outcome.snapshotHashes.current
+            : undefined
+        }, 422);
+      }
+      return context.json({
+        status: outcome.status,
+        verificationStatus: outcome.verificationStatus,
+        event: outcome.event,
+        purchaseOrder: outcome.purchaseOrder
+      }, 200);
+    } catch (error) {
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
+      }
+      throw error;
+    }
+  });
+
+  app.post('/api/maker-purchase-orders/:poId/accept-evidence', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const poId = context.req.param('poId');
+
+    const [existing] = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.id, poId)).limit(1);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    const [order] = await db.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'maker_po:accept_evidence', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const body = await context.req.json().catch(() => null) as any;
+    const acceptedAt = parseOptionalDate(body?.acceptedAt);
+    if (!acceptedAt.ok) return context.json({ error: '受領日時が不正です', code: 'INVALID_DATE' }, 422);
+
+    const now = new Date();
+    try {
+      const outcome = await db.transaction(async (tx) => {
+        const [po] = await tx.select().from(makerPurchaseOrders)
+          .where(eq(makerPurchaseOrders.id, poId)).limit(1).for('update');
+        if (!po) throw new MakerPoStateConflict();
+        const poStatus = validateMakerPoStatus(po.status);
+        if (!poStatus.ok) return { kind: 'error' as const, code: poStatus.code, message: poStatus.message };
+
+        // MAKER_PO_ACCEPTED is only reachable from MAKER_PO_SENT_MANUALLY, and
+        // only through a verified acceptance evidence document (T-22).
+        const acceptTransition = transitionMakerPurchaseOrder(poStatus.value, 'MAKER_PO_ACCEPTED');
+        if (!acceptTransition.ok) {
+          return {
+            kind: 'blocked' as const,
+            code: 'MAKER_PO_TRANSITION_BLOCKED' as const,
+            from: poStatus.value,
+            message: `a maker purchase order in ${poStatus.value} cannot be accepted; acceptance follows a proven send only`
+          };
+        }
+
+        const requestedEvidenceId = typeof body?.evidenceDocumentVersionId === 'string'
+          && body.evidenceDocumentVersionId.length > 0
+          ? body.evidenceDocumentVersionId as string
+          : null;
+        const evaluation = evaluateMakerPoAcceptEvidence({
+          evidenceDocumentVersionId: requestedEvidenceId,
+          attachmentHashes: body?.attachmentHashes,
+          acceptedAt: acceptedAt.date
+        }, {
+          order: { id: order.id, projectId: order.projectId },
+          evidenceDocument: requestedEvidenceId
+            ? await loadMakerPoEvidenceDocument(tx, requestedEvidenceId)
+            : null
+        });
+
+        if (!evaluation.ok) {
+          // A refused acceptance persists nothing: MAKER_PO_ACCEPTED is only
+          // ever reached behind a verified acceptance document (T-22).
+          if (evaluation.outcome === 'invalid_request') {
+            return { kind: 'invalid' as const, code: evaluation.code, message: evaluation.message };
+          }
+          return { kind: 'refused' as const, evaluation };
+        }
+
+        const updated = await tx.update(makerPurchaseOrders).set({ status: 'MAKER_PO_ACCEPTED', updatedAt: now })
+          .where(and(eq(makerPurchaseOrders.id, poId), eq(makerPurchaseOrders.status, poStatus.value)))
+          .returning({ id: makerPurchaseOrders.id });
+        if (updated.length === 0) throw new MakerPoStateConflict();
+
+        const acceptEvent = {
+          id: uuidv7(now),
+          makerPurchaseOrderId: poId,
+          eventType: 'ACCEPT_EVIDENCE_REGISTERED' as const,
+          evidenceDocumentVersionId: evaluation.evidenceDocumentVersionId,
+          attachmentHashes: evaluation.attachmentHashes,
+          sentAt: evaluation.acceptedAt instanceof Date
+            ? evaluation.acceptedAt
+            : evaluation.acceptedAt === null
+              ? null
+              : new Date(evaluation.acceptedAt),
+          verificationStatus: evaluation.verificationStatus,
+          recordedByUserId: user.id,
+          recordedAt: now
+        };
+        await tx.insert(makerPoEvents).values(acceptEvent);
+
+        await tx.insert(auditEvents).values({
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_PO_ACCEPT_EVIDENCE_REGISTERED',
+          entityType: 'maker_po_event',
+          entityId: acceptEvent.id,
+          beforeState: { status: poStatus.value },
+          afterState: { status: 'MAKER_PO_ACCEPTED', event: acceptEvent },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:accept_evidence', makerPurchaseOrderId: poId }
+        });
+        await tx.insert(auditEvents).values({
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_PO_STATUS_CHANGED',
+          entityType: 'maker_purchase_order',
+          entityId: poId,
+          beforeState: { status: poStatus.value },
+          afterState: { status: 'MAKER_PO_ACCEPTED' },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:accept_evidence' }
+        });
+
+        const [currentOrder] = await tx.select().from(filmSupplyOrders)
+          .where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
+        if (currentOrder && transitionFilmSupplyOrder(currentOrder.status, 'MAKER_PO_ACCEPTED').ok) {
+          await tx.update(filmSupplyOrders).set({ status: 'MAKER_PO_ACCEPTED', updatedAt: now })
+            .where(eq(filmSupplyOrders.id, currentOrder.id));
+          await tx.insert(auditEvents).values({
+            id: uuidv7(now),
+            actorUserId: user.id,
+            action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+            entityType: 'film_supply_order',
+            entityId: currentOrder.id,
+            beforeState: { status: currentOrder.status },
+            afterState: { status: 'MAKER_PO_ACCEPTED' },
+            occurredAt: now,
+            requestMetadata: { operation: 'maker_po:accept_evidence', reason: 'maker_po_accepted' }
+          });
+        }
+
+        return {
+          kind: 'applied' as const,
+          status: 'MAKER_PO_ACCEPTED' as const,
+          event: acceptEvent,
+          purchaseOrder: {
+            id: poId,
+            filmSupplyOrderId: po.filmSupplyOrderId,
+            snapshot: po.snapshot as MakerPoSnapshot,
+            snapshotSha256: po.snapshotSha256,
+            status: 'MAKER_PO_ACCEPTED' as const,
+            ceoApprovedByUserId: po.ceoApprovedByUserId,
+            ceoApprovedAt: po.ceoApprovedAt,
+            createdByUserId: po.createdByUserId,
+            createdAt: po.createdAt,
+            updatedAt: now
+          }
+        };
+      });
+
+      if (outcome.kind === 'error') return context.json({ error: outcome.message, code: outcome.code }, 422);
+      if (outcome.kind === 'blocked') {
+        return context.json({ error: outcome.message, code: outcome.code, from: outcome.from }, 422);
+      }
+      if (outcome.kind === 'invalid') return context.json({ error: outcome.message, code: outcome.code }, 422);
+      if (outcome.kind === 'refused') {
+        return context.json({ error: outcome.evaluation.message, code: outcome.evaluation.code }, 422);
+      }
+      return context.json({ status: outcome.status, event: outcome.event, purchaseOrder: outcome.purchaseOrder }, 200);
+    } catch (error) {
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
+      }
+      throw error;
+    }
+  });
+
+  app.get('/api/maker-purchase-orders/:poId', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const poId = context.req.param('poId');
+
+    const [po] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1);
+    if (!po) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    const [order] = await db.select({ projectId: filmSupplyOrders.projectId })
+      .from(filmSupplyOrders).where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'maker_po:read', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const events = await db.select().from(makerPoEvents)
+      .where(eq(makerPoEvents.makerPurchaseOrderId, poId))
+      .orderBy(makerPoEvents.recordedAt, makerPoEvents.id);
+    return context.json({ purchaseOrder: po, events });
+  });
+
+  app.get('/api/film-supply-orders/:orderId/maker-purchase-orders', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const orderId = context.req.param('orderId');
+
+    const [order] = await db.select({ projectId: filmSupplyOrders.projectId })
+      .from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'maker_po:read', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const rows = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.filmSupplyOrderId, orderId))
+      .orderBy(desc(makerPurchaseOrders.createdAt));
+    return context.json({ makerPurchaseOrders: rows });
   });
 
   return app;

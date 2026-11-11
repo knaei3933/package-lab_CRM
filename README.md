@@ -1,9 +1,9 @@
-# KANEI CRM MVP (M0 + M1 + M2 + M3)
+# KANEI CRM MVP (M0 + M1 + M2 + M3 + M4)
 
 Isolated M0 foundation with the M1 transaction structure, the M2 document
-intake, and the M3 proof revisions and dual approval. This repository
-intentionally does not connect to the legacy `kanei-crm` or `pouch-clacul`
-systems.
+intake, the M3 proof revisions and dual approval, and the M4 maker purchase
+orders with manual-send evidence. This repository intentionally does not
+connect to the legacy `kanei-crm` or `pouch-clacul` systems.
 
 ## Local services
 
@@ -206,3 +206,81 @@ T-34, hash binding, evidence binding, revision gate) and
 `tests/m3/m3-approvals.test.ts` (T-07 to T-13, T-34, T-35 against the API and
 database, including append-only rejections, revision numbering, the
 `MAKER_PO_READY` gate and same-transaction audit rows).
+
+Repair note: migration `0008_m3_fix_append_only_and_order_linkage` re-applies
+the M3 append-only trigger definitions verbatim (so a database migrated from an
+earlier revision of migration `0007` raises rejections whose message again
+contains `append-only`, T-12) and ensures the documents order linkage columns
+(`film_supply_order_id`, `design_key`) exist with their foreign key, pair check
+and index. A document's first `document_versions` row shares the document's id,
+so an evidence record is addressable by the document id or by the version id
+that was cited.
+
+## M4 maker purchase orders with manual-send evidence
+
+New tables (migration `0009_m4_maker_purchase_orders`): `maker_purchase_orders`
+and `maker_po_events`. Migration `0010_m4_maker_po_event_integrity` extends the
+M0 `audit_events` immutability pattern: `maker_po_events` are append-only and
+UPDATE/DELETE are rejected by trigger with a message naming the contract.
+
+- `maker_purchase_orders` is the frozen paper (design section 5.8): `snapshot`
+  holds the order identity, items with quantities, specs (the approved artwork
+  file hashes per design), amounts and the recipient address, and
+  `snapshot_sha256` is computed by the server over the canonical JSON of that
+  snapshot — never taken from the client. The status enum is `DRAFT`,
+  `APPROVED_FOR_MANUAL_SEND`, `SEND_UNVERIFIED`, `MAKER_PO_SENT_MANUALLY`,
+  `MAKER_PO_ACCEPTED`, `SNAPSHOT_VOIDED`, with `ceo_approved_by`/`ceo_approved_at`
+  stamping who approved which digest. The database pins the invariants: digest
+  format, the approval stamp pair, and that only `DRAFT` was never approved.
+- Snapshot identity (G10, T-23, T-24): the digest is recomputed from current
+  order data at every transition that matters. Registering send evidence on an
+  order whose data drifted (a changed line quantity, a new artwork revision)
+  refuses the send, voids the snapshot and requires a fresh CEO approval — which
+  re-freezes the current data under a new digest. Amounts and recipient are
+  request-only parts and are frozen at creation, so only order-side data can
+  void the paper.
+- CEO approval (G8): only the `admin` role can approve; staff attempts get 403
+  (T-31 pattern). Approval is the only exit from `DRAFT` and the only way back
+  from `SNAPSHOT_VOIDED`, and it records a `CEO_APPROVED` event. The film supply
+  order chain mirrors the maker PO whenever the mirror transition is legal there
+  (exception states such as `CHANGE_REVIEW` are left untouched).
+- Manual send (G9, T-21): registering send evidence (a `send_evidence` document
+  bound to the order plus sender address, recipients, sent time and attachment
+  hashes) is verified by the server against the order and the frozen recipient
+  and moves the PO to `MAKER_PO_SENT_MANUALLY` as `VERIFIED`. Registering only a
+  `sent_at` timestamp moves the PO to `SEND_UNVERIFIED` as `UNVERIFIED`, and
+  `SEND_UNVERIFIED` has no outgoing transitions — a send nobody can prove blocks
+  the paper. A rejected evidence (wrong type, foreign order or company, or
+  recipients not covering the frozen address) is refused and recorded as a
+  `SEND_REJECTED` event; a malformed request persists nothing.
+- Acceptance (T-22): `MAKER_PO_ACCEPTED` is only reachable from
+  `MAKER_PO_SENT_MANUALLY` and only behind an `acceptance_evidence` document of
+  the same order and company that a human has verified
+  (`ACCEPT_EVIDENCE_REGISTERED`, `VERIFIED`).
+- Concurrency (T-25): every transition re-reads the PO row `FOR UPDATE` inside a
+  transaction and writes it conditionally on the status it was read with, so two
+  simultaneous transitions (two sends, or two approvals) result in exactly one
+  effective transition and a consistent audit trail; the loser receives 422
+  `MAKER_PO_STATE_CHANGED` (or `MAKER_PO_TRANSITION_BLOCKED`, depending on which
+  state its locked read observed).
+- Order-level evidence binding (design section 5.4): documents carry
+  `project_id` and `film_supply_order_id`. Artwork-bound types (proof, approval
+  evidence) additionally name the design (M3 pair), while send and acceptance
+  evidence is about the whole maker paper and carries the order alone.
+
+M4 endpoints (composite test data, assignment-scoped authorization):
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/api/film-supply-orders/:orderId/maker-purchase-orders` | Freeze the maker paper (order must be at `MAKER_PO_READY`) |
+| POST | `/api/maker-purchase-orders/:poId/ceo-approval` | CEO approves the snapshot digest (admin only) |
+| POST | `/api/maker-purchase-orders/:poId/send-evidence` | Register manual-send evidence (verified) or a bare `sent_at` (unverified) |
+| POST | `/api/maker-purchase-orders/:poId/accept-evidence` | Register verified acceptance evidence → `MAKER_PO_ACCEPTED` |
+| GET | `/api/maker-purchase-orders/:poId` | Read one maker PO with its event log |
+| GET | `/api/film-supply-orders/:orderId/maker-purchase-orders` | List the maker POs of an order |
+
+Tests: `tests/m4/core-rules.test.ts` (snapshot canonicalization and digest
+sensitivity, the state machine and its dead ends, send-evidence verification,
+acceptance requirements) and `tests/m4/m4-maker-po.test.ts` (T-20 to T-25
+against the API and database, including the 403 staff approval attempt,
+append-only `maker_po_events` and same-transaction audit rows).
