@@ -4,7 +4,19 @@ export type Operation =
   | 'project:create'
   | 'project:read'
   | 'project:update'
-  | 'ceo_approve';
+  | 'ceo_approve'
+  | 'seven_po:create'
+  | 'seven_po:register'
+  | 'pre_order:create'
+  | 'pre_order:promote'
+  | 'film_order:create'
+  | 'film_order_line:create'
+  | 'film_order:transition'
+  | 'film_delivery:create'
+  | 'filling_order:create'
+  | 'filling_order_line:create'
+  | 'filling_delivery:create'
+  | 'commission_readiness:evaluate';
 
 export interface AuthenticatedActor {
   id: string;

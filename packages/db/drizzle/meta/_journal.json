@@ -15,6 +15,20 @@
       "when": 1794375902365,
       "tag": "0001_audit_immutability",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1794721502365,
+      "tag": "0002_m1_transaction_structure",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794721562365,
+      "tag": "0003_m1_delivery_append_only",
+      "breakpoints": true
     }
   ]
 }
