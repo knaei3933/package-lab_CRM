@@ -1,4 +1,4 @@
-import { boolean, check, foreignKey, index, integer, jsonb, numeric, pgEnum, pgTable, text, timestamp, unique, uuid } from 'drizzle-orm/pg-core';
+import { boolean, check, foreignKey, index, integer, jsonb, numeric, pgEnum, pgTable, text, timestamp, unique, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
 export const userRole = pgEnum('user_role', ['admin', 'staff', 'viewer']);
@@ -32,6 +32,15 @@ export const documentType = pgEnum('document_type', [
 
 /** Who the document claims to come from. Recorded, never inferred. */
 export const issuerEntity = pgEnum('issuer_entity', ['seven', 'kanei', 'maker', 'customer_generated', 'unknown']);
+
+/**
+ * M3 dual-approval vocabulary (design section 5.7). The two organizations whose
+ * approvals the artwork gate requires, the decisions they can record, and the
+ * sources an approval evidence document may come from.
+ */
+export const approvalOrganization = pgEnum('approval_organization', ['customer', 'seven']);
+export const approvalDecision = pgEnum('approval_decision', ['APPROVE', 'REVOKE']);
+export const approvalEvidenceSource = pgEnum('approval_evidence_source', ['email', 'signed_document', 'other_verified']);
 
 /**
  * Human verification result, kept separate from the content hash: a matching
@@ -220,6 +229,23 @@ export const sevenPurchaseOrders = pgTable('seven_purchase_orders', {
   index('seven_purchase_orders_verification_status_idx').on(table.verificationStatus)
 ]);
 
+export const filmSupplyOrders = pgTable('film_supply_orders', {
+  id: uuid('id').primaryKey(),
+  projectId: uuid('project_id').notNull().references(() => projects.id),
+  code: text('code').notNull().unique(),
+  status: filmSupplyOrderStatus('status').notNull().default('DRAFT'),
+  sevenPurchaseOrderId: uuid('seven_purchase_order_id').references(() => sevenPurchaseOrders.id),
+  holdReason: text('hold_reason'),
+  exceptionNote: text('exception_note'),
+  createdByUserId: uuid('created_by_user_id').notNull().references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  deletedAt: timestamp('deleted_at', { withTimezone: true })
+}, (table) => [
+  index('film_supply_orders_project_idx').on(table.projectId),
+  index('film_supply_orders_status_idx').on(table.status)
+]);
+
 /**
  * M2 document intake (design section 5.4). A documents row is the logical
  * document inside one project; its bytes live in append-only document_versions.
@@ -235,6 +261,14 @@ export const documents = pgTable('documents', {
   note: text('note'),
   preOrderReferenceId: uuid('pre_order_reference_id').references(() => preOrderReferences.id),
   sevenPurchaseOrderId: uuid('seven_purchase_order_id').references(() => sevenPurchaseOrders.id),
+  /**
+   * M3 artwork binding: an optional record of which film supply order and
+   * design a document belongs to. Approval evidence must carry this binding so
+   * an approval can never cite paperwork of another order, design or company
+   * (T-35). Null for documents uploaded outside the artwork flow.
+   */
+  filmSupplyOrderId: uuid('film_supply_order_id').references(() => filmSupplyOrders.id),
+  designKey: text('design_key'),
   // Human verification of the document itself, deliberately separate from the
   // content hash recorded on document_versions.
   verificationStatus: verificationStatus('verification_status').notNull().default('unverified'),
@@ -257,10 +291,14 @@ export const documents = pgTable('documents', {
   // (the quotes and the PO itself) are not.
   check('documents_official_artifact_requires_po', sql`${table.documentType} in ('seven_po', 'filling_quote_seven', 'film_quote_kanei') or ${table.sevenPurchaseOrderId} is not null`),
   check('documents_verification_fields_pair', sql`(${table.verificationStatus} = 'unverified' and ${table.verifiedAt} is null and ${table.verifiedByUserId} is null) or (${table.verificationStatus} in ('verified', 'mismatch') and ${table.verifiedAt} is not null and ${table.verifiedByUserId} is not null)`),
+  // The artwork binding is a pair: a document is bound to a design only through
+  // an order, never to a design on its own.
+  check('documents_artwork_binding_pair', sql`(${table.filmSupplyOrderId} is null and ${table.designKey} is null) or (${table.filmSupplyOrderId} is not null and ${table.designKey} is not null)`),
   index('documents_project_idx').on(table.projectId),
   index('documents_type_idx').on(table.documentType),
   index('documents_seven_purchase_order_idx').on(table.sevenPurchaseOrderId),
-  index('documents_pre_order_reference_idx').on(table.preOrderReferenceId)
+  index('documents_pre_order_reference_idx').on(table.preOrderReferenceId),
+  index('documents_film_supply_order_idx').on(table.filmSupplyOrderId)
 ]);
 
 /**
@@ -298,21 +336,60 @@ export const documentVersions = pgTable('document_versions', {
   check('document_versions_checks_passed', sql`${table.sizeCheckPassed} = true and ${table.typeCheckPassed} = true`)
 ]);
 
-export const filmSupplyOrders = pgTable('film_supply_orders', {
+/**
+ * M3 proof revisions (design section 5.7). One row per registered revision of
+ * one design of one film supply order. revision_no is unique per
+ * (order, design_key) and never reused; the artwork file itself is an
+ * append-only document_versions row, so a revision's bytes are immutable and
+ * its sha256 is the revision hash every approval is bound to.
+ */
+export const artworkRevisions = pgTable('artwork_revisions', {
   id: uuid('id').primaryKey(),
-  projectId: uuid('project_id').notNull().references(() => projects.id),
-  code: text('code').notNull().unique(),
-  status: filmSupplyOrderStatus('status').notNull().default('DRAFT'),
-  sevenPurchaseOrderId: uuid('seven_purchase_order_id').references(() => sevenPurchaseOrders.id),
-  holdReason: text('hold_reason'),
-  exceptionNote: text('exception_note'),
+  filmSupplyOrderId: uuid('film_supply_order_id').notNull().references(() => filmSupplyOrders.id, { onDelete: 'cascade' }),
+  designKey: text('design_key').notNull(),
+  revisionNo: integer('revision_no').notNull(),
+  fileDocumentVersionId: uuid('file_document_version_id').notNull().references(() => documentVersions.id),
+  lotMarking: text('lot_marking'),
+  note: text('note'),
   createdByUserId: uuid('created_by_user_id').notNull().references(() => users.id),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  deletedAt: timestamp('deleted_at', { withTimezone: true })
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 }, (table) => [
-  index('film_supply_orders_project_idx').on(table.projectId),
-  index('film_supply_orders_status_idx').on(table.status)
+  unique('artwork_revisions_order_design_revision_unique').on(table.filmSupplyOrderId, table.designKey, table.revisionNo),
+  index('artwork_revisions_order_design_idx').on(table.filmSupplyOrderId, table.designKey),
+  index('artwork_revisions_file_version_idx').on(table.fileDocumentVersionId),
+  check('artwork_revisions_revision_no_positive', sql`${table.revisionNo} > 0`),
+  check('artwork_revisions_design_key_not_blank', sql`length(btrim(${table.designKey})) > 0`)
+]);
+
+/**
+ * M3 approval events (design section 5.7). Append-only (migration 0007): an
+ * approval is an external fact recorded by an internal user — recorded_by is
+ * always that internal recorder, never the external approver, whose identity is
+ * only ever recorded as text. approved_file_sha256 is the exact revision hash
+ * the decision was about, so a decision can never silently attach to different
+ * bytes. Corrections and withdrawals are new REVOKE or superseding APPROVE
+ * events; UPDATE and DELETE are rejected by trigger (T-12).
+ */
+export const artworkApprovalEvents = pgTable('artwork_approval_events', {
+  id: uuid('id').primaryKey(),
+  artworkRevisionId: uuid('artwork_revision_id').notNull().references(() => artworkRevisions.id),
+  organization: approvalOrganization('organization').notNull(),
+  decision: approvalDecision('decision').notNull(),
+  externalApproverName: text('external_approver_name'),
+  externalApproverOrg: text('external_approver_org'),
+  recordedByUserId: uuid('recorded_by_user_id').notNull().references(() => users.id),
+  evidenceDocumentVersionId: uuid('evidence_document_version_id').notNull().references(() => documentVersions.id),
+  evidenceSource: approvalEvidenceSource('evidence_source').notNull(),
+  approvedFileSha256: text('approved_file_sha256').notNull(),
+  /** When the external organization actually decided; recorded_at is when we wrote it down. */
+  eventTime: timestamp('event_time', { withTimezone: true }).notNull(),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+  supersedesEventId: uuid('supersedes_event_id').references((): AnyPgColumn => artworkApprovalEvents.id)
+}, (table) => [
+  check('artwork_approval_events_sha256_format', sql`${table.approvedFileSha256} ~ '^[0-9a-f]{64}$'`),
+  index('artwork_approval_events_revision_idx').on(table.artworkRevisionId),
+  index('artwork_approval_events_organization_idx').on(table.organization),
+  index('artwork_approval_events_supersedes_idx').on(table.supersedesEventId)
 ]);
 
 export const filmSupplyOrderLines = pgTable('film_supply_order_lines', {
@@ -448,6 +525,18 @@ export const documentsRelations = relations(documents, ({ many, one }) => ({
 
 export const documentVersionsRelations = relations(documentVersions, ({ one }) => ({
   document: one(documents, { fields: [documentVersions.documentId], references: [documents.id] })
+}));
+
+export const artworkRevisionsRelations = relations(artworkRevisions, ({ many, one }) => ({
+  approvalEvents: many(artworkApprovalEvents),
+  filmSupplyOrder: one(filmSupplyOrders, { fields: [artworkRevisions.filmSupplyOrderId], references: [filmSupplyOrders.id] }),
+  fileDocumentVersion: one(documentVersions, { fields: [artworkRevisions.fileDocumentVersionId], references: [documentVersions.id] })
+}));
+
+export const artworkApprovalEventsRelations = relations(artworkApprovalEvents, ({ one }) => ({
+  revision: one(artworkRevisions, { fields: [artworkApprovalEvents.artworkRevisionId], references: [artworkRevisions.id] }),
+  evidenceDocumentVersion: one(documentVersions, { fields: [artworkApprovalEvents.evidenceDocumentVersionId], references: [documentVersions.id] }),
+  recordedBy: one(users, { fields: [artworkApprovalEvents.recordedByUserId], references: [users.id] })
 }));
 
 export const fillingOrdersRelations = relations(fillingOrders, ({ many, one }) => ({

@@ -1,8 +1,9 @@
-# KANEI CRM MVP (M0 + M1 + M2)
+# KANEI CRM MVP (M0 + M1 + M2 + M3)
 
-Isolated M0 foundation with the M1 transaction structure and the M2 document
-intake. This repository intentionally does not connect to the legacy
-`kanei-crm` or `pouch-clacul` systems.
+Isolated M0 foundation with the M1 transaction structure, the M2 document
+intake, and the M3 proof revisions and dual approval. This repository
+intentionally does not connect to the legacy `kanei-crm` or `pouch-clacul`
+systems.
 
 ## Local services
 
@@ -144,3 +145,64 @@ Tests: `tests/m2/core-rules.test.ts` (document vocabulary, precedence gate
 T-06, checklist T-18/T-19) and `tests/m2/m2-documents.test.ts` (T-04, T-05,
 T-18, T-19, T-26, T-27, pre-order immutability, promote-official, size/type
 rejections, multipart intake, document verification).
+
+## M3 proof revisions and dual approval
+
+New tables (migration `0006_m3_artwork_approvals`): `artwork_revisions`,
+`artwork_approval_events`, plus optional artwork-binding columns
+(`film_supply_order_id`, `design_key`) on `documents`. Migration
+`0007_m3_approval_event_integrity` extends the M0 `audit_events` immutability
+pattern: `artwork_approval_events` are append-only (UPDATE and DELETE are
+rejected by trigger, T-12), `artwork_revisions` keep their identity forever
+(order, design, revision number and file can never be edited, and a revision is
+never deleted — only `lot_marking`/`note` may be corrected), and both tables are
+guarded on insert: an event must carry the exact hash of the revision file it
+approves, and its evidence document must be bound to the same order, design and
+company as that revision (T-35).
+
+- A revision is one registered version of one design of one order:
+  `revision_no` is unique per (order, `design_key`) and never reused, and the
+  artwork file is an append-only `document_versions` row whose `sha256` is the
+  revision hash. Registration is only possible for an order past
+  `SEVEN_PO_VERIFIED`.
+- An approval event records an external fact: which organization
+  (`customer` / `seven`) decided (`APPROVE` / `REVOKE`) about which revision
+  hash, decided by whom (`external_approver_name` / `external_approver_org`,
+  text only), proven by which evidence document version (required, of type
+  `approval_evidence`) from which source (`email` / `signed_document` /
+  `other_verified`), decided when (`event_time`, the external time) and written
+  down when (`recorded_at`). `recorded_by_user_id` is always the internal user
+  who recorded the fact, never the external approver. A re-approval supersedes
+  the previous event (`supersedes_event_id`).
+- Approval is derived, never stored: a valid approval for an organization
+  exists only while the latest effective event for that organization on the
+  current revision is an uncanceled APPROVE whose `approved_file_sha256` equals
+  the current revision hash. Approval never transfers across revisions — a new
+  revision starts with zero approvals (T-11) and prior approvals remain readable
+  as audit history. A REVOKE invalidates only that organization (T-13).
+- Dual approval is order-independent: customer then seven (T-09) and seven then
+  customer (T-10) both reach `DUAL_APPROVED`, while either organization alone
+  keeps the gate closed (T-07, T-08). With several designs the order gate stays
+  closed until every required design (every design with at least one registered
+  revision) holds both approvals (T-34). The gate is read from
+  `GET /api/film-supply-orders/:orderId/approval-gate` and is re-checked when
+  transitioning to `MAKER_PO_READY`, so a revocation closes a previously
+  approved order's path forward.
+- Evidence binding is recorded at document intake: uploads may carry
+  `filmSupplyOrderId` + `designKey`, which must agree with each other and with
+  the project. An approval whose evidence references a different order, design
+  or company is rejected and nothing is persisted (T-35).
+
+M3 endpoints (composite test data, assignment-scoped authorization):
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/api/film-supply-orders/:orderId/artwork-revisions` | Register a revision of one design (order must be past `SEVEN_PO_VERIFIED`; a design with prior approvals enters `CHANGE_REVIEW`, T-11) |
+| POST | `/api/artwork-revisions/:revisionId/approvals` | Record an APPROVE or REVOKE event for `customer` or `seven`, with required evidence (recorder = logged-in internal user) |
+| GET | `/api/film-supply-orders/:orderId/approval-gate` | Derived dual-approval gate per design and for the whole order |
+
+Tests: `tests/m3/core-rules.test.ts` (derived gate rules T-07 to T-11, T-13,
+T-34, hash binding, evidence binding, revision gate) and
+`tests/m3/m3-approvals.test.ts` (T-07 to T-13, T-34, T-35 against the API and
+database, including append-only rejections, revision numbering, the
+`MAKER_PO_READY` gate and same-transaction audit rows).

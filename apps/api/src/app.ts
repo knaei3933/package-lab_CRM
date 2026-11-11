@@ -5,19 +5,32 @@ import { stat } from 'node:fs/promises';
 import { and, desc, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import {
   canPerform,
+  deriveOrderApprovalGate,
+  evaluateApprovalEvidenceBinding,
+  evaluateRevisionRegistrationGate,
   evaluateSevenPoChecklist,
   evaluateSevenPoPrecedenceGate,
   evaluateSevenPoVerificationGate,
   FILM_SUPPLY_ORDER_EXCEPTION_STATES,
   FILM_SUPPLY_ORDER_STATES,
+  hasApprovalHistoryForDesign,
+  isExceptionFilmSupplyOrderState,
   isOfficialArtifactDocumentType,
+  isTerminalFilmSupplyOrderState,
+  shouldAdvanceToDualApproved,
   toQuantityString,
   transitionFilmSupplyOrder,
+  validateApprovalDecision,
+  validateApprovalEvidenceSource,
+  validateApprovalOrganization,
   validateDocumentType,
   validateIssuerEntity,
   validateProjectRoute,
   validateQuantity,
   validateUnit,
+  type ApprovalEventView,
+  type ApprovalOrganization,
+  type ArtworkRevisionView,
   type DocumentType,
   type FilmSupplyOrderState,
   type IssuerEntity,
@@ -26,6 +39,8 @@ import {
 } from '@kanei/core';
 import {
   accounts,
+  artworkApprovalEvents,
+  artworkRevisions,
   auditEvents,
   commissionReadiness,
   documentVersions,
@@ -725,6 +740,21 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       }
     }
 
+    // M3: leaving the approval chain for maker ordering requires the derived
+    // dual-approval gate to be open right now, not just a status that was set
+    // when both approvals existed (T-13). A revocation closes it again.
+    if (target === 'MAKER_PO_READY') {
+      const approvalContext = await loadApprovalContext(orderId);
+      const approvalGate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events);
+      if (!approvalGate.dualApproved) {
+        return context.json({
+          error: '全デザインの両組織承認が必要です',
+          code: 'DUAL_APPROVAL_REQUIRED',
+          missingApprovals: approvalGate.missingApprovals
+        }, 422);
+      }
+    }
+
     const now = new Date();
     const updated = { status: target, updatedAt: now };
     await db.transaction(async (tx) => {
@@ -1015,6 +1045,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     note: string | null;
     preOrderReferenceId: string | null;
     sevenPurchaseOrderId: string | null;
+    filmSupplyOrderId: string | null;
+    designKey: string | null;
     originalReceivedAt: Date | null;
   }
 
@@ -1072,6 +1104,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         note: optionalText(raw.note),
         preOrderReferenceId: typeof raw.preOrderReferenceId === 'string' ? raw.preOrderReferenceId : null,
         sevenPurchaseOrderId: typeof raw.sevenPurchaseOrderId === 'string' ? raw.sevenPurchaseOrderId : null,
+        filmSupplyOrderId: typeof raw.filmSupplyOrderId === 'string' && raw.filmSupplyOrderId.length > 0
+          ? raw.filmSupplyOrderId
+          : null,
+        designKey: optionalText(raw.designKey),
         originalReceivedAt: receivedAt.date
       }
     };
@@ -1096,6 +1132,25 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const contentCheck: DocumentContentCheck = evaluateDocumentContent(input.bytes, input.contentType);
     if (!contentCheck.ok) return context.json({ error: contentCheck.message, code: contentCheck.code }, 422);
 
+    // M3 artwork binding: a document may declare which film supply order and
+    // design it belongs to. Approval evidence must carry this binding (T-35),
+    // so it is validated once at intake and trusted everywhere else.
+    let artworkBindingOrderId: string | null = null;
+    if (input.filmSupplyOrderId) {
+      const [boundOrder] = await db.select().from(filmSupplyOrders)
+        .where(eq(filmSupplyOrders.id, input.filmSupplyOrderId)).limit(1);
+      if (!boundOrder || boundOrder.deletedAt || boundOrder.projectId !== projectId) {
+        return context.json({
+          error: '紐付け対象のフィルム発注がこの案件に見つかりません',
+          code: 'FILM_SUPPLY_ORDER_PROJECT_MISMATCH'
+        }, 422);
+      }
+      if (!input.designKey) {
+        return context.json({ error: '発注に紐付ける場合はデザインキーが必要です', code: 'DESIGN_KEY_REQUIRED' }, 422);
+      }
+      artworkBindingOrderId = boundOrder.id;
+    }
+
     // A logical document is (project, type, issuer, filename). Re-uploading the
     // same bytes to it resolves to the existing version and writes nothing (T-27).
     const [existingDocument] = await db.select().from(documents).where(and(
@@ -1105,6 +1160,11 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       eq(documents.originalFilename, input.filename)
     )).limit(1);
     if (existingDocument) {
+      const bindingConflict = (existingDocument.filmSupplyOrderId ?? null) !== artworkBindingOrderId
+        || (existingDocument.designKey ?? null) !== input.designKey;
+      if (bindingConflict) {
+        return context.json({ error: '既存の書類は別のアートワーク紐付けを持っています', code: 'DOCUMENT_BINDING_CONFLICT' }, 422);
+      }
       const [existingVersion] = await db.select().from(documentVersions).where(and(
         eq(documentVersions.documentId, existingDocument.id),
         eq(documentVersions.sha256, contentCheck.sha256)
@@ -1191,6 +1251,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       note: input.note,
       preOrderReferenceId,
       sevenPurchaseOrderId: linkedPo?.id ?? null,
+      filmSupplyOrderId: artworkBindingOrderId,
+      designKey: artworkBindingOrderId ? input.designKey : null,
       verificationStatus: 'unverified',
       verifiedByUserId: null,
       verifiedAt: null,
@@ -1496,6 +1558,330 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const createdLines = await db.select().from(filmSupplyOrderLines)
       .where(eq(filmSupplyOrderLines.filmSupplyOrderId, orderId));
     return context.json({ ...order, lines: createdLines }, 201);
+  });
+
+  // --------------------------- M3: proof revisions and dual approval (design
+  // sections 5.7 and 6.1). Approvals are external facts recorded by an internal
+  // user; the dual-approval gate is derived from the append-only event log and
+  // is never stored on the order.
+  async function loadApprovalContext(orderId: string): Promise<{
+    revisions: ArtworkRevisionView[];
+    events: ApprovalEventView[];
+  }> {
+    const revisionRows = await db.select({
+      id: artworkRevisions.id,
+      filmSupplyOrderId: artworkRevisions.filmSupplyOrderId,
+      designKey: artworkRevisions.designKey,
+      revisionNo: artworkRevisions.revisionNo,
+      fileSha256: documentVersions.sha256,
+      lotMarking: artworkRevisions.lotMarking
+    }).from(artworkRevisions)
+      .innerJoin(documentVersions, eq(documentVersions.id, artworkRevisions.fileDocumentVersionId))
+      .where(eq(artworkRevisions.filmSupplyOrderId, orderId));
+
+    const revisionIds = revisionRows.map((row) => row.id);
+    const eventRows = revisionIds.length === 0
+      ? [] as ApprovalEventView[]
+      : await db.select({
+        id: artworkApprovalEvents.id,
+        artworkRevisionId: artworkApprovalEvents.artworkRevisionId,
+        organization: artworkApprovalEvents.organization,
+        decision: artworkApprovalEvents.decision,
+        approvedFileSha256: artworkApprovalEvents.approvedFileSha256,
+        recordedAt: artworkApprovalEvents.recordedAt,
+        eventTime: artworkApprovalEvents.eventTime,
+        supersedesEventId: artworkApprovalEvents.supersedesEventId
+      }).from(artworkApprovalEvents)
+        .where(inArray(artworkApprovalEvents.artworkRevisionId, revisionIds));
+
+    return { revisions: revisionRows, events: eventRows };
+  }
+
+  app.post('/api/film-supply-orders/:orderId/artwork-revisions', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const orderId = context.req.param('orderId');
+
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'artwork_revision:create', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    // Artwork only exists downstream of a verified purchase order.
+    const registrationGate = evaluateRevisionRegistrationGate(order.status);
+    if (!registrationGate.ok) return context.json({ error: registrationGate.message, code: registrationGate.code }, 422);
+
+    const body = await context.req.json().catch(() => null) as any;
+    if (typeof body?.designKey !== 'string' || body.designKey.trim().length === 0) {
+      return context.json({ error: 'デザインキーが必要です', code: 'DESIGN_KEY_REQUIRED' }, 422);
+    }
+    const designKey = body.designKey.trim();
+    if (typeof body?.fileDocumentVersionId !== 'string' || body.fileDocumentVersionId.length === 0) {
+      return context.json({ error: '版ファイルの指定が必要です', code: 'FILE_DOCUMENT_VERSION_REQUIRED' }, 422);
+    }
+    if (body?.revisionNo !== undefined
+      && (typeof body.revisionNo !== 'number' || !Number.isInteger(body.revisionNo) || body.revisionNo <= 0)) {
+      return context.json({ error: '版番号は正の整数です', code: 'INVALID_REVISION_NUMBER' }, 422);
+    }
+
+    const [fileVersion] = await db.select({
+      versionId: documentVersions.id,
+      sha256: documentVersions.sha256,
+      projectId: documents.projectId,
+      documentType: documents.documentType,
+      boundOrderId: documents.filmSupplyOrderId,
+      boundDesignKey: documents.designKey
+    }).from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(eq(documentVersions.id, body.fileDocumentVersionId)).limit(1);
+    if (!fileVersion || fileVersion.projectId !== order.projectId) {
+      return context.json({ error: '版ファイルがこの案件に見つかりません', code: 'FILE_DOCUMENT_PROJECT_MISMATCH' }, 422);
+    }
+    if (fileVersion.documentType !== 'proof') {
+      return context.json({ error: '版ファイルは proof 書類である必要があります', code: 'FILE_DOCUMENT_TYPE_INVALID' }, 422);
+    }
+    if (fileVersion.boundOrderId !== null && fileVersion.boundOrderId !== orderId) {
+      return context.json({ error: '版ファイルは別の発注に紐付いています', code: 'FILE_DOCUMENT_ORDER_MISMATCH' }, 422);
+    }
+    if (fileVersion.boundDesignKey !== null && fileVersion.boundDesignKey !== designKey) {
+      return context.json({ error: '版ファイルは別のデザインに紐付いています', code: 'FILE_DOCUMENT_DESIGN_MISMATCH' }, 422);
+    }
+
+    const [maxRow] = await db.select({ maxRevision: sql<number>`coalesce(max(${artworkRevisions.revisionNo}), 0)` })
+      .from(artworkRevisions)
+      .where(and(eq(artworkRevisions.filmSupplyOrderId, orderId), eq(artworkRevisions.designKey, designKey)));
+    const revisionNo = body?.revisionNo ?? (maxRow?.maxRevision ?? 0) + 1;
+    const [revisionClash] = await db.select({ id: artworkRevisions.id }).from(artworkRevisions)
+      .where(and(
+        eq(artworkRevisions.filmSupplyOrderId, orderId),
+        eq(artworkRevisions.designKey, designKey),
+        eq(artworkRevisions.revisionNo, revisionNo)
+      )).limit(1);
+    if (revisionClash) return context.json({ error: '版番号が重複しています', code: 'REVISION_NUMBER_EXISTS' }, 422);
+
+    // A design that already went through approval loses its approvals when a
+    // new revision lands: the gate re-opens and the order enters change review
+    // (T-11). Approvals stay readable as audit history.
+    const approvalContext = await loadApprovalContext(orderId);
+    const invalidatedApprovals = hasApprovalHistoryForDesign(approvalContext.revisions, approvalContext.events, designKey);
+    const entersChangeReview = invalidatedApprovals
+      && order.status !== 'CHANGE_REVIEW'
+      && !isExceptionFilmSupplyOrderState(order.status)
+      && !isTerminalFilmSupplyOrderState(order.status);
+    const statusAfter = entersChangeReview ? 'CHANGE_REVIEW' as const : order.status;
+
+    const now = new Date();
+    const revisionId = uuidv7(now);
+    const revision = {
+      id: revisionId,
+      filmSupplyOrderId: orderId,
+      designKey,
+      revisionNo,
+      fileDocumentVersionId: fileVersion.versionId,
+      lotMarking: optionalText(body?.lotMarking),
+      note: optionalText(body?.note),
+      createdByUserId: user.id,
+      createdAt: now
+    };
+
+    await db.transaction(async (tx) => {
+      await tx.insert(artworkRevisions).values(revision);
+      await tx.insert(auditEvents).values({
+        id: uuidv7(now),
+        actorUserId: user.id,
+        action: 'ARTWORK_REVISION_REGISTERED',
+        entityType: 'artwork_revision',
+        entityId: revisionId,
+        afterState: { ...revision, invalidatedApprovals },
+        occurredAt: now,
+        requestMetadata: { operation: 'artwork_revision:create', filmSupplyOrderId: orderId, designKey }
+      });
+      if (entersChangeReview) {
+        await tx.update(filmSupplyOrders).set({ status: statusAfter, updatedAt: now }).where(eq(filmSupplyOrders.id, orderId));
+        await tx.insert(auditEvents).values({
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+          entityType: 'film_supply_order',
+          entityId: orderId,
+          beforeState: { status: order.status },
+          afterState: { status: statusAfter },
+          occurredAt: now,
+          requestMetadata: { operation: 'artwork_revision:create', reason: 'new_revision_invalidates_approvals', designKey }
+        });
+      }
+    });
+
+    return context.json({ ...revision, status: statusAfter, invalidatedApprovals }, 201);
+  });
+
+  app.post('/api/artwork-revisions/:revisionId/approvals', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const revisionId = context.req.param('revisionId');
+
+    const [revision] = await db.select({
+      id: artworkRevisions.id,
+      filmSupplyOrderId: artworkRevisions.filmSupplyOrderId,
+      designKey: artworkRevisions.designKey,
+      revisionNo: artworkRevisions.revisionNo,
+      fileSha256: documentVersions.sha256
+    }).from(artworkRevisions)
+      .innerJoin(documentVersions, eq(documentVersions.id, artworkRevisions.fileDocumentVersionId))
+      .where(eq(artworkRevisions.id, revisionId)).limit(1);
+    if (!revision) return context.json({ error: '版が見つかりません' }, 404);
+
+    const [order] = await db.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, revision.filmSupplyOrderId)).limit(1);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'artwork_approval:record', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const body = await context.req.json().catch(() => null) as any;
+    const organizationCheck = validateApprovalOrganization(body?.organization);
+    if (!organizationCheck.ok) return context.json({ error: organizationCheck.message, code: organizationCheck.code }, 422);
+    const decisionCheck = validateApprovalDecision(body?.decision);
+    if (!decisionCheck.ok) return context.json({ error: decisionCheck.message, code: decisionCheck.code }, 422);
+    const sourceCheck = validateApprovalEvidenceSource(body?.evidenceSource);
+    if (!sourceCheck.ok) return context.json({ error: sourceCheck.message, code: sourceCheck.code }, 422);
+    if (typeof body?.evidenceDocumentVersionId !== 'string' || body.evidenceDocumentVersionId.length === 0) {
+      return context.json({ error: '承認証跡の書類バージョンが必要です', code: 'EVIDENCE_DOCUMENT_VERSION_REQUIRED' }, 422);
+    }
+    const eventTime = parseRequiredDate(body?.eventTime);
+    if (!eventTime.ok) {
+      return context.json({ error: '承認日時（外部イベント時刻）が必要です', code: 'EVENT_TIME_REQUIRED' }, 422);
+    }
+    const organization: ApprovalOrganization = organizationCheck.value;
+
+    const [evidence] = await db.select({
+      versionId: documentVersions.id,
+      projectId: documents.projectId,
+      documentType: documents.documentType,
+      filmSupplyOrderId: documents.filmSupplyOrderId,
+      designKey: documents.designKey
+    }).from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(eq(documentVersions.id, body.evidenceDocumentVersionId)).limit(1);
+    if (!evidence) {
+      return context.json({ error: '承認証跡の書類バージョンが見つかりません', code: 'EVIDENCE_DOCUMENT_VERSION_NOT_FOUND' }, 422);
+    }
+
+    // Evidence must belong to exactly this order, this design and this company
+    // (T-35): an approval can never rest on another order's paperwork.
+    const binding = evaluateApprovalEvidenceBinding({
+      evidenceDocument: {
+        projectId: evidence.projectId,
+        documentType: evidence.documentType,
+        filmSupplyOrderId: evidence.filmSupplyOrderId,
+        designKey: evidence.designKey
+      },
+      order: { id: order.id, projectId: order.projectId },
+      revision: { designKey: revision.designKey }
+    });
+    if (!binding.ok) return context.json({ error: binding.message, code: binding.code }, 422);
+
+    const approvalContext = await loadApprovalContext(order.id);
+    let supersedesEventId: string | null = null;
+    if (typeof body?.supersedesEventId === 'string') {
+      const target = approvalContext.events.find((event) =>
+        event.id === body.supersedesEventId
+        && event.artworkRevisionId === revision.id
+        && event.organization === organization
+      );
+      if (!target) {
+        return context.json({ error: '置き換え対象の承認イベントがこの版に見つかりません', code: 'SUPERSEDED_EVENT_MISMATCH' }, 422);
+      }
+      supersedesEventId = target.id;
+    } else {
+      // Default linkage: a new event supersedes the organization's latest event
+      // on this revision, if one exists.
+      const revisionGate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events).designs
+        .find((design) => design.currentRevisionId === revision.id);
+      supersedesEventId = revisionGate?.[organization].latestEventId ?? null;
+    }
+
+    const now = new Date();
+    const eventId = uuidv7(now);
+    const approvalEvent = {
+      id: eventId,
+      artworkRevisionId: revision.id,
+      organization,
+      decision: decisionCheck.value,
+      externalApproverName: optionalText(body?.externalApproverName),
+      externalApproverOrg: optionalText(body?.externalApproverOrg),
+      recordedByUserId: user.id,
+      evidenceDocumentVersionId: evidence.versionId,
+      evidenceSource: sourceCheck.value,
+      approvedFileSha256: revision.fileSha256,
+      eventTime: eventTime.date,
+      recordedAt: now,
+      supersedesEventId
+    };
+    const gateAfter = deriveOrderApprovalGate(
+      approvalContext.revisions,
+      [...approvalContext.events, approvalEvent]
+    );
+    const advancesToDualApproved = decisionCheck.value === 'APPROVE'
+      && shouldAdvanceToDualApproved(gateAfter, order.status);
+
+    await db.transaction(async (tx) => {
+      await tx.insert(artworkApprovalEvents).values(approvalEvent);
+      await tx.insert(auditEvents).values({
+        id: uuidv7(now),
+        actorUserId: user.id,
+        action: decisionCheck.value === 'APPROVE' ? 'ARTWORK_APPROVAL_RECORDED' : 'ARTWORK_APPROVAL_REVOKED',
+        entityType: 'artwork_approval_event',
+        entityId: eventId,
+        afterState: { ...approvalEvent, designKey: revision.designKey, revisionNo: revision.revisionNo },
+        occurredAt: now,
+        requestMetadata: { operation: 'artwork_approval:record', filmSupplyOrderId: order.id }
+      });
+      if (advancesToDualApproved) {
+        await tx.update(filmSupplyOrders)
+          .set({ status: 'DUAL_APPROVED', updatedAt: now })
+          .where(eq(filmSupplyOrders.id, order.id));
+        await tx.insert(auditEvents).values({
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+          entityType: 'film_supply_order',
+          entityId: order.id,
+          beforeState: { status: order.status },
+          afterState: { status: 'DUAL_APPROVED' },
+          occurredAt: now,
+          requestMetadata: { operation: 'artwork_approval:record', reason: 'dual_approval_reached' }
+        });
+      }
+    });
+
+    return context.json({
+      approvalEvent,
+      orderStatus: advancesToDualApproved ? 'DUAL_APPROVED' : order.status,
+      dualApproved: gateAfter.dualApproved,
+      missingApprovals: gateAfter.missingApprovals
+    }, 201);
+  });
+
+  app.get('/api/film-supply-orders/:orderId/approval-gate', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const orderId = context.req.param('orderId');
+
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'artwork_approval:read', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const approvalContext = await loadApprovalContext(orderId);
+    const gate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events);
+    return context.json({
+      orderId,
+      orderStatus: order.status,
+      dualApproved: gate.dualApproved,
+      requiredDesignKeys: gate.requiredDesignKeys,
+      missingApprovals: gate.missingApprovals,
+      designs: gate.designs
+    });
   });
 
   return app;
