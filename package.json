@@ -1,0 +1,32 @@
+{
+  "name": "kanei-crm-mvp",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "packageManager": "npm@11.19.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "dev:web": "npm run dev --workspace @kanei/web",
+    "dev:api": "npm run dev --workspace @kanei/api",
+    "db:up": "docker compose up -d db",
+    "db:migrate": "drizzle-kit migrate",
+    "db:seed": "tsx packages/db/src/seed.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "drizzle-kit": "^0.31.5",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "drizzle-orm": "0.44.7"
+  }
+}
