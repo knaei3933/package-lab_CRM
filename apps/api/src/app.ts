@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
-import { and, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import {
   canPerform,
   evaluateSevenPoVerificationGate,
@@ -924,26 +924,37 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
     if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
 
+    const now = new Date();
+
+    // Each evaluation carries its observations forward instead of re-deriving
+    // them from scratch: the stored row is the project's evaluation record, and
+    // the evidence window opens at the previous evaluation's evaluatedAt (at the
+    // first evaluation it opens now, so deliveries recorded before evaluation
+    // began are never claimed by this project). A delivery recorded inside the
+    // window sets its own flag, and a recorded flag never regresses.
+    const [previousReadiness] = await db.select()
+      .from(commissionReadiness)
+      .where(eq(commissionReadiness.projectId, projectId))
+      .limit(1);
+    const evidenceAnchor = previousReadiness?.evaluatedAt ?? now;
+
     const [filmDeliveryRow] = await db.select({ id: filmDeliveries.id })
       .from(filmDeliveries)
-      .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, filmDeliveries.filmSupplyOrderId))
-      .where(and(eq(filmSupplyOrders.projectId, projectId), isNull(filmSupplyOrders.deletedAt)))
+      .where(gt(filmDeliveries.createdAt, evidenceAnchor))
       .limit(1);
     const [fillingDeliveryRow] = await db.select({ id: fillingDeliveries.id })
       .from(fillingDeliveries)
-      .innerJoin(fillingOrders, eq(fillingOrders.id, fillingDeliveries.fillingOrderId))
-      .where(and(eq(fillingOrders.projectId, projectId), isNull(fillingOrders.deletedAt)))
+      .where(gt(fillingDeliveries.createdAt, evidenceAnchor))
       .limit(1);
     const [registeredPo] = await db.select({ id: sevenPurchaseOrders.id })
       .from(sevenPurchaseOrders)
       .where(and(eq(sevenPurchaseOrders.projectId, projectId), isNotNull(sevenPurchaseOrders.officialRegisteredAt)))
       .limit(1);
 
-    const filmDeliveryRecorded = filmDeliveryRow !== undefined;
-    const fillingDeliveryRecorded = fillingDeliveryRow !== undefined;
+    const filmDeliveryRecorded = previousReadiness?.filmDeliveryRecorded || filmDeliveryRow !== undefined;
+    const fillingDeliveryRecorded = previousReadiness?.fillingDeliveryRecorded || fillingDeliveryRow !== undefined;
     const sevenPoOfficiallyRegistered = registeredPo !== undefined;
     const isReady = filmDeliveryRecorded && fillingDeliveryRecorded && sevenPoOfficiallyRegistered;
-    const now = new Date();
     const readinessId = uuidv7(now);
     const readiness = {
       filmDeliveryRecorded,
