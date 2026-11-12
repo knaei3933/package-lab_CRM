@@ -4,11 +4,11 @@ import { Pool } from 'pg';
 import * as schema from './schema.js';
 
 // Tables the database itself keeps append-only with BEFORE UPDATE / BEFORE DELETE
-// triggers (migrations 0001, 0003, 0005 and 0007). The triggers stay authoritative
-// for raw SQL, but drizzle rewraps their exception in a generic "Failed query"
-// message and the original reason only survives in error.cause. The guard below
-// rejects these writes in the client before they reach the database so callers
-// see the table name and the real reason in error.message.
+// triggers (migrations 0001, 0003, 0005, 0007 and 0010). The triggers stay
+// authoritative for raw SQL, but drizzle rewraps their exception in a generic
+// "Failed query" message and the original reason only survives in error.cause.
+// The guard below rejects these writes in the client before they reach the
+// database so callers see the table name and the real reason in error.message.
 const APPEND_ONLY_TABLES: ReadonlySet<string> = new Set([
   'artwork_approval_events',
   'artwork_revisions',
@@ -16,6 +16,7 @@ const APPEND_ONLY_TABLES: ReadonlySet<string> = new Set([
   'document_versions',
   'filling_deliveries',
   'film_deliveries',
+  'maker_po_events',
   'pre_order_references'
 ]);
 
