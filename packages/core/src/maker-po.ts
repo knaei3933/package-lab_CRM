@@ -528,7 +528,10 @@ export function evaluateMakerPoSendEvidence(
     recipients,
     sentAt: request.sentAt,
     attachmentHashes,
-    evidenceDocumentVersionId: evidence.versionId
+    // Echo the cited reference exactly as the request gave it: the caller
+    // resolved it against document_versions before asking for this evaluation,
+    // so the request value is the id the event row must carry.
+    evidenceDocumentVersionId: request.evidenceDocumentVersionId as string
   };
 }
 
