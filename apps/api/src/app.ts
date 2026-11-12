@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
 import { randomBytes } from 'node:crypto';
 import { stat } from 'node:fs/promises';
-import { and, desc, eq, gt, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import {
   buildMakerPoSnapshot,
   canPerform,
@@ -1103,12 +1103,13 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const projectId = context.req.param('projectId');
-    const decision = canPerform(toActor(user), 'audit_history:read', 'F1', projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
-
+    // An unknown project is 404 before the assignment check: staff of this
+    // company learn nothing about a project that does not exist.
     const [project] = await db.select({ id: projects.id }).from(projects)
       .where(eq(projects.id, projectId)).limit(1);
     if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'audit_history:read', 'F1', projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
     const query = context.req.query();
     const requestedLimit = Number(query.limit ?? '200');
@@ -1362,37 +1363,25 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const now = new Date();
 
     // Each evaluation carries its observations forward instead of re-deriving
-    // them from scratch: the stored row is the project's evaluation record, and
-    // the evidence window opens at the previous evaluation's evaluatedAt (at the
-    // first evaluation it opens now, so deliveries recorded before evaluation
-    // began are never claimed by this project). A delivery recorded inside the
-    // window sets its own flag, and a recorded flag never regresses.
+    // them from scratch: the stored row is the project's evaluation record and
+    // a recorded flag never regresses.
     const [previousReadiness] = await db.select()
       .from(commissionReadiness)
       .where(eq(commissionReadiness.projectId, projectId))
       .limit(1);
-    const evidenceAnchor = previousReadiness?.evaluatedAt ?? now;
 
-    const filmDeliveryRows = await db.select({ id: filmDeliveries.id })
-      .from(filmDeliveries)
-      .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, filmDeliveries.filmSupplyOrderId))
-      .where(and(eq(filmSupplyOrders.projectId, projectId), gt(filmDeliveries.createdAt, evidenceAnchor)));
-    const fillingDeliveryRows = await db.select({ id: fillingDeliveries.id })
-      .from(fillingDeliveries)
-      .innerJoin(fillingOrders, eq(fillingOrders.id, fillingDeliveries.fillingOrderId))
-      .where(and(eq(fillingOrders.projectId, projectId), gt(fillingDeliveries.createdAt, evidenceAnchor)));
     const [registeredPo] = await db.select({ id: sevenPurchaseOrders.id })
       .from(sevenPurchaseOrders)
       .where(and(eq(sevenPurchaseOrders.projectId, projectId), isNotNull(sevenPurchaseOrders.officialRegisteredAt)))
       .limit(1);
 
-    // M5 (T-36): a delivery counts for readiness only once a verified delivery
-    // evidence document is bound to it. The confirmation check reads every
-    // delivery of this project — not just the evidence window — so a delivery
-    // without evidence keeps the project at MISSING_DATA or
-    // PENDING_VERIFICATION no matter when it was recorded. This endpoint is
-    // still the only writer of commission_readiness: nothing here touches any
-    // other table, and a confirmation row is only ever read.
+    // M5 (T-36): a delivery is recorded as soon as its row exists for this
+    // project, whether or not any evidence has been bound to it yet. The
+    // confirmation check reads every delivery of this project, so a delivery
+    // without verified evidence keeps the project at PENDING_VERIFICATION —
+    // never READY — no matter when it was recorded. This endpoint is still the
+    // only writer of commission_readiness: nothing here touches any other
+    // table, and a confirmation row is only ever read.
     const allFilmDeliveries = await db.select({ id: filmDeliveries.id })
       .from(filmDeliveries)
       .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, filmDeliveries.filmSupplyOrderId))
@@ -1414,8 +1403,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         .from(deliveryConfirmations)
         .where(inArray(deliveryConfirmations.fillingDeliveryId, fillingDeliveryIds));
 
-    const filmDeliveryRecorded = previousReadiness?.filmDeliveryRecorded || filmDeliveryRows.length > 0;
-    const fillingDeliveryRecorded = previousReadiness?.fillingDeliveryRecorded || fillingDeliveryRows.length > 0;
+    const filmDeliveryRecorded = previousReadiness?.filmDeliveryRecorded || allFilmDeliveries.length > 0;
+    const fillingDeliveryRecorded = previousReadiness?.fillingDeliveryRecorded || allFillingDeliveries.length > 0;
     const sevenPoOfficiallyRegistered = registeredPo !== undefined;
     const filmDeliveryConfirmed = allFilmDeliveries.length > 0
       && filmConfirmationRows.length === allFilmDeliveries.length;

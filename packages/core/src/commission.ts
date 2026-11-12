@@ -59,11 +59,12 @@ export interface CommissionReadinessEvaluation {
 }
 
 /**
- * The explicit readiness evaluation (T-36). Data first, verification second: a
- * project with unrecorded deliveries is MISSING_DATA regardless of evidence; a
- * project whose deliveries all exist but lack verified evidence is
- * PENDING_VERIFICATION and must never be escalated to READY — neither by this
- * function nor by any caller that merely recorded a delivery.
+ * The explicit readiness evaluation (T-36). MISSING_DATA is reserved for data
+ * that is absent entirely: no delivery recorded at all, or the seven purchase
+ * order not officially registered. The moment any delivery exists the project
+ * is at least PENDING_VERIFICATION — its evidence is pending, not missing —
+ * and readiness must never be escalated to READY, neither by this function nor
+ * by any caller that merely recorded a delivery.
  */
 export function evaluateCommissionReadiness(input: CommissionReadinessInput): CommissionReadinessEvaluation {
   const blocking: CommissionReadinessEvaluation['blocking'] = [];
@@ -71,7 +72,10 @@ export function evaluateCommissionReadiness(input: CommissionReadinessInput): Co
   if (!input.fillingDeliveryRecorded) blocking.push('FILLING_DELIVERY_NOT_RECORDED');
   if (!input.sevenPoOfficiallyRegistered) blocking.push('SEVEN_PO_NOT_OFFICIALLY_REGISTERED');
 
-  if (blocking.length > 0) return { state: 'MISSING_DATA', isReady: false, blocking };
+  const noDeliveryRecorded = !input.filmDeliveryRecorded && !input.fillingDeliveryRecorded;
+  if (noDeliveryRecorded || !input.sevenPoOfficiallyRegistered) {
+    return { state: 'MISSING_DATA', isReady: false, blocking };
+  }
 
   if (!input.filmDeliveryConfirmed) blocking.push('FILM_DELIVERY_PENDING_CONFIRMATION');
   if (!input.fillingDeliveryConfirmed) blocking.push('FILLING_DELIVERY_PENDING_CONFIRMATION');
