@@ -1,4 +1,5 @@
-import { drizzle, getTableName } from 'drizzle-orm';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { getTableName } from 'drizzle-orm';
 import { Pool } from 'pg';
 import * as schema from './schema.js';
 
