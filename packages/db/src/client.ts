@@ -13,6 +13,7 @@ const APPEND_ONLY_TABLES: ReadonlySet<string> = new Set([
   'artwork_approval_events',
   'artwork_revisions',
   'audit_events',
+  'delivery_confirmations',
   'document_versions',
   'filling_deliveries',
   'film_deliveries',

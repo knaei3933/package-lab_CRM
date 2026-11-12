@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 const capabilities = [
   { title: 'F1案件登録', status: 'API契約実装済み' },
   { title: 'セッション認証', status: 'サーバー強制チェック' },
@@ -10,6 +12,9 @@ export default function HomePage() {
     <section>
       <h1 style={{ fontSize: 32, marginBottom: 8 }}>KANEI CRM MVP</h1>
       <p>隔離環境で動作するF1専用M0基盤です。既存CRMには接続しません。</p>
+      <p style={{ marginTop: 16 }}>
+        <Link href="/status" style={{ color: '#1d4ed8' }}>ステータス一覧（日本語表記）を見る</Link>
+      </p>
       <div style={{ display: 'grid', gap: 16, marginTop: 32 }}>
         {capabilities.map((item) => (
           <div key={item.title} style={{ border: '1px solid #d8dfeb', borderRadius: 8, padding: 16 }}>

@@ -106,6 +106,26 @@ export const filmSupplyOrderStatus = pgEnum('film_supply_order_status', [
   'CANCELLATION_REVIEW'
 ]);
 
+/**
+ * M5 delivery confirmation vocabulary (design sections 5.5 and 6.4). A delivery
+ * row alone is a recorded fact, not a proven one: until a verified delivery
+ * evidence document is bound to it, it stays pending confirmation and can never
+ * escalate commission readiness (T-36).
+ */
+export const deliveryConfirmationKind = pgEnum('delivery_confirmation_kind', ['film', 'filling']);
+
+/**
+ * M5 commission readiness states (design section 6.4). MISSING_DATA means the
+ * observed facts are incomplete; PENDING_VERIFICATION means deliveries exist
+ * but their evidence is not confirmed; READY is the only state in which a
+ * commission may be calculated.
+ */
+export const commissionReadinessState = pgEnum('commission_readiness_state', [
+  'MISSING_DATA',
+  'PENDING_VERIFICATION',
+  'READY'
+]);
+
 export const users = pgTable('users', {
   id: uuid('id').primaryKey(),
   username: text('username').notNull().unique(),
@@ -274,13 +294,26 @@ export const filmSupplyOrders = pgTable('film_supply_orders', {
   sevenPurchaseOrderId: uuid('seven_purchase_order_id').references(() => sevenPurchaseOrders.id),
   holdReason: text('hold_reason'),
   exceptionNote: text('exception_note'),
+  /**
+   * M5 manual receipt assumption (design sections 5.5 and 13 item 1). Written
+   * only by the recording action with a required note; nothing schedules or
+   * derives it. The three columns are one pair-plus-note unit: the timestamp
+   * exists exactly when the recorder and the note exist.
+   */
+  receiptAssumedAt: timestamp('receipt_assumed_at', { withTimezone: true }),
+  receiptAssumedByUserId: uuid('receipt_assumed_by_user_id').references(() => users.id),
+  receiptAssumedNote: text('receipt_assumed_note'),
   createdByUserId: uuid('created_by_user_id').notNull().references(() => users.id),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp('deleted_at', { withTimezone: true })
 }, (table) => [
   index('film_supply_orders_project_idx').on(table.projectId),
-  index('film_supply_orders_status_idx').on(table.status)
+  index('film_supply_orders_status_idx').on(table.status),
+  // The assumption stamp is a pair: who recorded it and when are written together.
+  check('film_supply_orders_receipt_assumption_pair', sql`(${table.receiptAssumedAt} is null) = (${table.receiptAssumedByUserId} is null)`),
+  // An assumed receipt always says why (required note on the recording action).
+  check('film_supply_orders_receipt_assumption_note', sql`${table.receiptAssumedAt} is null or length(btrim(${table.receiptAssumedNote})) > 0`)
 ]);
 
 /**
@@ -531,7 +564,10 @@ export const fillingDeliveries = pgTable('filling_deliveries', {
 /**
  * Commission readiness is written only by the explicit evaluate endpoint, never
  * as a side effect of a delivery: recording a film delivery must not create any
- * filling delivery or commission row (T-14).
+ * filling delivery or commission row (T-14). M5 (T-36) narrows what the
+ * endpoint may observe: a delivery counts for readiness only once its verified
+ * delivery evidence is bound, so readiness stays MISSING_DATA or
+ * PENDING_VERIFICATION while deliveries are pending confirmation.
  */
 export const commissionReadiness = pgTable('commission_readiness', {
   id: uuid('id').primaryKey(),
@@ -539,13 +575,48 @@ export const commissionReadiness = pgTable('commission_readiness', {
   filmDeliveryRecorded: boolean('film_delivery_recorded').notNull().default(false),
   fillingDeliveryRecorded: boolean('filling_delivery_recorded').notNull().default(false),
   sevenPoOfficiallyRegistered: boolean('seven_po_officially_registered').notNull().default(false),
+  /** Every recorded film delivery is backed by verified delivery evidence. */
+  filmDeliveryConfirmed: boolean('film_delivery_confirmed').notNull().default(false),
+  /** Every recorded filling delivery is backed by verified delivery evidence. */
+  fillingDeliveryConfirmed: boolean('filling_delivery_confirmed').notNull().default(false),
+  /** The explicit readiness state; READY is the only commission-calculable one. */
+  readinessState: commissionReadinessState('readiness_state').notNull().default('MISSING_DATA'),
   isReady: boolean('is_ready').notNull().default(false),
   readyAt: timestamp('ready_at', { withTimezone: true }),
   evaluatedAt: timestamp('evaluated_at', { withTimezone: true }).notNull(),
   evaluatedByUserId: uuid('evaluated_by_user_id').notNull().references(() => users.id),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
 }, (table) => [
-  check('commission_readiness_ready_requires_ready_at', sql`(${table.isReady} = false) or (${table.readyAt} is not null)`)
+  check('commission_readiness_ready_requires_ready_at', sql`(${table.isReady} = false) or (${table.readyAt} is not null)`),
+  // The boolean flag and the state vocabulary agree with each other.
+  check('commission_readiness_state_matches_is_ready', sql`(${table.readinessState} = 'READY') = (${table.isReady} = true)`)
+]);
+
+/**
+ * M5 delivery confirmations (design sections 5.5 and 6.4). Deliveries are
+ * append-only, so a confirmation is its own append-only row: one row binds one
+ * verified evidence document version to one delivery, recording who confirmed
+ * the receipt and when. Rows are never rewritten (migration 0012); readiness
+ * evaluation reads them and writes nothing.
+ */
+export const deliveryConfirmations = pgTable('delivery_confirmations', {
+  id: uuid('id').primaryKey(),
+  /** Which side of the film/filling boundary this delivery belongs to. */
+  deliveryKind: deliveryConfirmationKind('delivery_kind').notNull(),
+  filmDeliveryId: uuid('film_delivery_id').references(() => filmDeliveries.id),
+  fillingDeliveryId: uuid('filling_delivery_id').references(() => fillingDeliveries.id),
+  evidenceDocumentVersionId: uuid('evidence_document_version_id').notNull().references(() => documentVersions.id),
+  confirmedByUserId: uuid('confirmed_by_user_id').notNull().references(() => users.id),
+  confirmedAt: timestamp('confirmed_at', { withTimezone: true }).notNull().defaultNow(),
+  note: text('note')
+}, (table) => [
+  // Exactly one delivery is named, and it must be of the declared kind.
+  check('delivery_confirmations_single_delivery', sql`(${table.deliveryKind} = 'film' and ${table.filmDeliveryId} is not null and ${table.fillingDeliveryId} is null) or (${table.deliveryKind} = 'filling' and ${table.filmDeliveryId} is null and ${table.fillingDeliveryId} is not null)`),
+  unique('delivery_confirmations_film_delivery_unique').on(table.filmDeliveryId),
+  unique('delivery_confirmations_filling_delivery_unique').on(table.fillingDeliveryId),
+  index('delivery_confirmations_film_delivery_idx').on(table.filmDeliveryId),
+  index('delivery_confirmations_filling_delivery_idx').on(table.fillingDeliveryId),
+  index('delivery_confirmations_evidence_idx').on(table.evidenceDocumentVersionId)
 ]);
 
 /**
@@ -667,4 +738,11 @@ export const fillingOrdersRelations = relations(fillingOrders, ({ many, one }) =
   lines: many(fillingOrderLines),
   deliveries: many(fillingDeliveries),
   project: one(projects, { fields: [fillingOrders.projectId], references: [projects.id] })
+}));
+
+export const deliveryConfirmationsRelations = relations(deliveryConfirmations, ({ one }) => ({
+  filmDelivery: one(filmDeliveries, { fields: [deliveryConfirmations.filmDeliveryId], references: [filmDeliveries.id] }),
+  fillingDelivery: one(fillingDeliveries, { fields: [deliveryConfirmations.fillingDeliveryId], references: [fillingDeliveries.id] }),
+  evidenceDocumentVersion: one(documentVersions, { fields: [deliveryConfirmations.evidenceDocumentVersionId], references: [documentVersions.id] }),
+  confirmedBy: one(users, { fields: [deliveryConfirmations.confirmedByUserId], references: [users.id] })
 }));

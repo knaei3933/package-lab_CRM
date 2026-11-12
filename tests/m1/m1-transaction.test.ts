@@ -6,6 +6,8 @@ import {
   accounts,
   auditEvents,
   commissionReadiness,
+  documentVersions,
+  documents,
   filmDeliveries,
   filmSupplyOrderLines,
   filmSupplyOrders,
@@ -95,10 +97,11 @@ async function createFilmOrder(
   code: string,
   unit: string,
   orderedQuantity: number,
-  sevenPurchaseOrderId?: string
+  sevenPurchaseOrderId?: string,
+  projectIdValue: string = projectId
 ): Promise<CreatedOrder> {
   const response = await app.request(
-    `/api/projects/${projectId}/film-supply-orders`,
+    `/api/projects/${projectIdValue}/film-supply-orders`,
     jsonPost(staffToken, {
       code,
       sevenPurchaseOrderId,
@@ -113,10 +116,11 @@ async function createFillingOrder(
   app: ReturnType<typeof createApp>,
   code: string,
   unit: string,
-  orderedQuantity: number
+  orderedQuantity: number,
+  projectIdValue: string = projectId
 ): Promise<CreatedOrder> {
   const response = await app.request(
-    `/api/projects/${projectId}/filling-orders`,
+    `/api/projects/${projectIdValue}/filling-orders`,
     jsonPost(staffToken, {
       code,
       lines: [{ lineNumber: 1, description: '合成充填材', orderedQuantity, unit }]
@@ -124,6 +128,53 @@ async function createFillingOrder(
   );
   expect(response.status).toBe(201);
   return await response.json();
+}
+
+/**
+ * M5 (T-36): composite verified delivery evidence. The evidence document is
+ * inserted directly so this M1 readiness test stays focused on the readiness
+ * contract; the M5 suite exercises the real upload + verify + confirm flow.
+ */
+async function insertVerifiedDeliveryEvidence(
+  projectIdValue: string,
+  poId: string,
+  filmSupplyOrderId: string | null,
+  filename: string
+): Promise<string> {
+  const now = new Date();
+  const documentId = uuidv7(now);
+  const versionId = uuidv7(now);
+  await db.insert(documents).values({
+    id: documentId,
+    projectId: projectIdValue,
+    documentType: 'acceptance_evidence',
+    issuerEntity: 'kanei',
+    originalFilename: filename,
+    sevenPurchaseOrderId: poId,
+    filmSupplyOrderId,
+    verificationStatus: 'verified',
+    verifiedByUserId: staffId,
+    verifiedAt: now,
+    verificationNote: '合成納品確認（M1準備テスト用）',
+    createdByUserId: staffId,
+    createdAt: now,
+    updatedAt: now
+  });
+  await db.insert(documentVersions).values({
+    id: versionId,
+    documentId,
+    versionNumber: 1,
+    sha256: Array.from({ length: 64 }, () => '0123456789abcdef'[Math.floor(Math.random() * 16)]).join(''),
+    byteSize: 32,
+    storagePath: `/composite/m1/${filename}`,
+    originalFilename: filename,
+    declaredMimeType: 'text/plain',
+    sizeCheckPassed: true,
+    typeCheckPassed: true,
+    createdByUserId: staffId,
+    createdAt: now
+  });
+  return versionId;
 }
 
 beforeAll(async () => {
@@ -421,16 +472,19 @@ describe('M1 transaction structure', () => {
     });
     expect(initialRow.readyAt).toBeNull();
 
-    const fillingOrder = await createFillingOrder(app, 'TEST-M1-FILL-COMMISSION', 'pods', 10000);
-    await app.request(
+    const fillingOrder = await createFillingOrder(app, 'TEST-M1-FILL-COMMISSION', 'pods', 10000, commissionProjectId);
+    const fillingDeliveryResponse = await app.request(
       `/api/filling-orders/${fillingOrder.id}/deliveries`,
       jsonPost(staffToken, { fillingOrderLineId: firstLineId(fillingOrder), deliveredQuantity: 9000, unit: 'pods' })
     );
+    expect(fillingDeliveryResponse.status).toBe(201);
+    const fillingDelivery = await fillingDeliveryResponse.json();
     const poResponse = await app.request(
       `/api/projects/${commissionProjectId}/seven-purchase-orders`,
       jsonPost(staffToken, { poNumber: 'SEVEN-M1-COMMISSION-1', officialRegisteredAt: '2026-11-04T00:00:00.000Z' })
     );
     expect(poResponse.status).toBe(201);
+    const po = await poResponse.json();
 
     const partial = await app.request(url, jsonPost(staffToken, {}));
     expect(partial.status).toBe(201);
@@ -441,11 +495,49 @@ describe('M1 transaction structure', () => {
       isReady: false
     });
 
-    const filmOrder = await createFilmOrder(app, 'TEST-M1-FILM-COMMISSION', 'rolls', 300);
-    await app.request(
+    const filmOrder = await createFilmOrder(app, 'TEST-M1-FILM-COMMISSION', 'rolls', 300, undefined, commissionProjectId);
+    const filmDeliveryResponse = await app.request(
       `/api/film-supply-orders/${filmOrder.id}/deliveries`,
       jsonPost(staffToken, { filmSupplyOrderLineId: firstLineId(filmOrder), deliveredQuantity: 300, unit: 'rolls' })
     );
+    expect(filmDeliveryResponse.status).toBe(201);
+    const filmDelivery = await filmDeliveryResponse.json();
+
+    // M5 (T-36): recorded deliveries escalate nothing on their own — both are
+    // pending confirmation here, so the explicit evaluation must stay below
+    // READY even though film + filling + official PO are all in place.
+    const unevidenced = await app.request(url, jsonPost(staffToken, {}));
+    expect(unevidenced.status).toBe(201);
+    expect(await unevidenced.json()).toMatchObject({
+      filmDeliveryRecorded: true,
+      fillingDeliveryRecorded: true,
+      readinessState: 'PENDING_VERIFICATION',
+      isReady: false
+    });
+
+    const fillingEvidenceVersionId = await insertVerifiedDeliveryEvidence(
+      commissionProjectId,
+      po.id,
+      null,
+      'm1-filling-delivery-evidence.txt'
+    );
+    const fillingConfirmation = await app.request(
+      `/api/filling-deliveries/${fillingDelivery.id}/confirmation`,
+      jsonPost(staffToken, { evidenceDocumentVersionId: fillingEvidenceVersionId })
+    );
+    expect(fillingConfirmation.status).toBe(201);
+
+    const filmEvidenceVersionId = await insertVerifiedDeliveryEvidence(
+      commissionProjectId,
+      po.id,
+      filmOrder.id,
+      'm1-film-delivery-evidence.txt'
+    );
+    const filmConfirmation = await app.request(
+      `/api/film-deliveries/${filmDelivery.id}/confirmation`,
+      jsonPost(staffToken, { evidenceDocumentVersionId: filmEvidenceVersionId })
+    );
+    expect(filmConfirmation.status).toBe(201);
 
     const ready = await app.request(url, jsonPost(staffToken, {}));
     expect(ready.status).toBe(201);
@@ -454,6 +546,9 @@ describe('M1 transaction structure', () => {
       filmDeliveryRecorded: true,
       fillingDeliveryRecorded: true,
       sevenPoOfficiallyRegistered: true,
+      filmDeliveryConfirmed: true,
+      fillingDeliveryConfirmed: true,
+      readinessState: 'READY',
       isReady: true
     });
     expect(readyRow.readyAt).not.toBeNull();

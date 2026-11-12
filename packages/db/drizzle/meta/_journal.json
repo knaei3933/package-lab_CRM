@@ -78,6 +78,20 @@
       "when": 1795119780000,
       "tag": "0010_m4_maker_po_event_integrity",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795119840000,
+      "tag": "0011_m5_receipt_assumption_and_delivery_confirmation",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795119900000,
+      "tag": "0012_m5_delivery_confirmation_integrity",
+      "breakpoints": true
     }
   ]
 }

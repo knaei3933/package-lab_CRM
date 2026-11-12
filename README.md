@@ -284,3 +284,59 @@ sensitivity, the state machine and its dead ends, send-evidence verification,
 acceptance requirements) and `tests/m4/m4-maker-po.test.ts` (T-20 to T-25
 against the API and database, including the 403 staff approval attempt,
 append-only `maker_po_events` and same-transaction audit rows).
+
+## M5 deliveries completion, receipt assumption and Japanese status surface
+
+New tables (migration `0011_m5_receipt_assumption_and_delivery_confirmation`):
+`delivery_confirmations` (append-only, migration `0012`), plus
+`film_supply_orders.receipt_assumed_at / _by / _note` and the M5
+`commission_readiness` columns (`film_delivery_confirmed`,
+`filling_delivery_confirmed`, `readiness_state`).
+
+- Manual receipt assumption (design sections 5.5, 6.1 and 13 item 1):
+  `FILM_DELIVERED → FILM_RECEIPT_ASSUMED_NO_ISSUE` is a MANUAL recording action.
+  Nothing schedules it — the waiting period is not decided by the CEO yet — so
+  the only way in is the admin/staff endpoint with a required note and an
+  explicit evidence-free acknowledgment (`acknowledgeNoEvidence: true`); the
+  audit row is written in the same transaction. The state machine admits the
+  transition from `FILM_DELIVERED` only (exception release targets exclude the
+  terminal state), and the generic transition endpoint refuses the terminal
+  state with 422 `RECEIPT_ASSUMPTION_ACTION_REQUIRED`.
+- Delivery confirmation and commission gating (T-36): a recorded delivery row
+  alone is never enough. It stays `PENDING_CONFIRMATION` until a *verified*
+  `acceptance_evidence` document of the same company is bound to it (film
+  deliveries additionally require the order binding), and commission readiness
+  stays `MISSING_DATA` or `PENDING_VERIFICATION` while any delivery is
+  unconfirmed. `READY` — the only state in which a commission may be calculated
+  (`isCommissionCalculationAllowed`) — is reachable only through the explicit
+  evaluate endpoint, which writes `commission_readiness` and one audit row and
+  never side-effects on any other table.
+- Japanese status surface (design section 8): every film supply order state and
+  maker PO status carries exactly one Japanese label, defined once in
+  `packages/core/src/status-labels.ts` and served verbatim by
+  `GET /api/status-labels`; `apps/web` renders a server-rendered Japanese status
+  list page (`/status`) from that endpoint.
+- Audit history (design section 8 item 6): `GET
+  /api/projects/:projectId/audit-history` lists audit events with before/after
+  states, actor and time, optionally narrowed with `entityType`/`entityId`.
+  `audit_events` has no project column, so the project boundary is enforced by
+  resolving every row's entity back to its project at read time; authorization
+  is `project:read`-grade (`audit_history:read` for viewers).
+
+M5 endpoints (composite test data, assignment-scoped authorization):
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| POST | `/api/film-supply-orders/:orderId/receipt-assumption` | Record the manual receipt assumption (note + evidence-free acknowledgment required) |
+| POST | `/api/film-deliveries/:deliveryId/confirmation` | Bind verified delivery evidence to a film delivery |
+| POST | `/api/filling-deliveries/:deliveryId/confirmation` | Bind verified delivery evidence to a filling delivery |
+| POST | `/api/projects/:projectId/commission-readiness` | Explicit evidence-gated readiness evaluation (M1 endpoint, M5 semantics) |
+| GET | `/api/status-labels` | The Japanese status surface shared by API and web |
+| GET | `/api/projects/:projectId/audit-history` | Read-only audit history for one project/order |
+
+Tests: `tests/m5/core-rules.test.ts` (label completeness, receipt-assumption
+gate, T-36 readiness rules, delivery-evidence binding) and
+`tests/m5/m5-deliveries.test.ts` (T-36 against the API, evidence validation and
+append-only confirmations, receipt assumption from `FILM_DELIVERED` only with
+its same-transaction audit row, no scheduling, status-labels completeness,
+audit-history access control and project scoping).

@@ -70,6 +70,17 @@ const NEXT_NORMAL_STATE: Record<NormalFilmSupplyOrderState, NormalFilmSupplyOrde
 
 const EXCEPTION_STATES = FILM_SUPPLY_ORDER_EXCEPTION_STATES;
 
+/**
+ * M5: FILM_RECEIPT_ASSUMED_NO_ISSUE is reachable from FILM_DELIVERED and from
+ * nothing else. Releasing a hold or closing a review resumes the chain it came
+ * from, but assuming a receipt without issue is the manual recording action of
+ * design section 5.5 — never a side effect of leaving an exception state, and
+ * never scheduled (design section 13 item 1). The terminal state is therefore
+ * removed from the exception release targets.
+ */
+const EXCEPTION_RELEASE_TARGETS: readonly NormalFilmSupplyOrderState[] = FILM_SUPPLY_ORDER_STATES
+  .filter((state) => state !== FILM_SUPPLY_ORDER_TERMINAL_STATE);
+
 function withExceptions(next: readonly NormalFilmSupplyOrderState[]): readonly FilmSupplyOrderState[] {
   return [...next, ...EXCEPTION_STATES];
 }
@@ -97,10 +108,11 @@ const FILM_SUPPLY_ORDER_TRANSITIONS: Record<FilmSupplyOrderState, readonly FilmS
   FILM_DELIVERED: withExceptions([NEXT_NORMAL_STATE.FILM_DELIVERED]),
   // Assumed receipt without issue closes the film chain.
   FILM_RECEIPT_ASSUMED_NO_ISSUE: [],
-  // Releasing a hold or closing a cancellation review names the resume state.
-  ON_HOLD: FILM_SUPPLY_ORDER_STATES,
+  // Releasing a hold or closing a cancellation review names the resume state;
+  // the assumed-receipt terminal state is never one of them.
+  ON_HOLD: EXCEPTION_RELEASE_TARGETS,
   CHANGE_REVIEW: CHANGE_REVIEW_TARGETS,
-  CANCELLATION_REVIEW: FILM_SUPPLY_ORDER_STATES
+  CANCELLATION_REVIEW: EXCEPTION_RELEASE_TARGETS
 };
 
 export function isExceptionFilmSupplyOrderState(

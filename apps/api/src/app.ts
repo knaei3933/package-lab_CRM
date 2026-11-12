@@ -9,6 +9,9 @@ import {
   computeMakerPoSnapshotSha256,
   deriveOrderApprovalGate,
   evaluateApprovalEvidenceBinding,
+  evaluateCommissionReadiness,
+  evaluateDeliveryEvidence,
+  evaluateFilmReceiptAssumption,
   evaluateMakerPoAcceptEvidence,
   evaluateMakerPoApproval,
   evaluateMakerPoCreationGate,
@@ -20,11 +23,14 @@ import {
   evaluateSevenPoVerificationGate,
   FILM_SUPPLY_ORDER_EXCEPTION_STATES,
   FILM_SUPPLY_ORDER_STATES,
+  fillingDeliveryConfirmationState,
   hasApprovalHistoryForDesign,
   isArtworkBoundDocumentType,
+  isCommissionCalculationAllowed,
   isExceptionFilmSupplyOrderState,
   isOfficialArtifactDocumentType,
   isTerminalFilmSupplyOrderState,
+  japaneseStatusSurface,
   shouldAdvanceToDualApproved,
   toQuantityString,
   transitionFilmSupplyOrder,
@@ -56,6 +62,7 @@ import {
   artworkRevisions,
   auditEvents,
   commissionReadiness,
+  deliveryConfirmations,
   documentVersions,
   documents,
   filmDeliveries,
@@ -119,6 +126,15 @@ type MakerPoQueryExecutor = Pick<AppDatabase, 'select'>;
  * one of two simultaneous transition requests is ever effective.
  */
 class MakerPoStateConflict extends Error {}
+
+/**
+ * A receipt assumption lost its row-level race: the order moved away from
+ * FILM_DELIVERED between the read and the conditional update. The transaction
+ * is rolled back and the caller receives 422
+ * RECEIPT_ASSUMPTION_STATE_CHANGED, so the assumption is recorded exactly once
+ * and only from FILM_DELIVERED.
+ */
+class ReceiptAssumptionStateConflict extends Error {}
 
 /**
  * Validates one order line against the unit vocabulary of its domain. Unit
@@ -752,6 +768,18 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       return context.json({ error: '許可されていない状態遷移です', code: 'INVALID_TRANSITION', from: order.status, to: target }, 422);
     }
 
+    // M5: assuming a receipt without issue is never a generic transition. It is
+    // a manual recording action with a required note and an evidence-free
+    // acknowledgment, recorded by its own endpoint so nothing here can move an
+    // order into the terminal state implicitly (design sections 5.5 and 13
+    // item 1).
+    if (target === 'FILM_RECEIPT_ASSUMED_NO_ISSUE') {
+      return context.json({
+        error: '受領確認（問題なしとみなす）は専用の記録操作でのみ行えます',
+        code: 'RECEIPT_ASSUMPTION_ACTION_REQUIRED'
+      }, 422);
+    }
+
     if (target === 'SEVEN_PO_VERIFIED') {
       if (!order.sevenPurchaseOrderId) {
         return context.json({ error: 'セブン発注書の紐付けが必要です', code: 'SEVEN_PO_REQUIRED' }, 422);
@@ -798,6 +826,337 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       });
     });
     return context.json({ ...order, ...updated });
+  });
+
+  // --------------------------- M5: film receipt assumption and delivery
+  // confirmation (design sections 5.5, 6.1, 6.4 and 13 item 1).
+  //
+  // FILM_DELIVERED → FILM_RECEIPT_ASSUMED_NO_ISSUE is a MANUAL recording
+  // action: the waiting period is not decided by the CEO yet, so nothing in
+  // the system schedules, times or derives it. An admin or staff member
+  // records it with a required note and an explicit evidence-free
+  // acknowledgment, and the audit row is written in the same transaction.
+  app.post('/api/film-supply-orders/:orderId/receipt-assumption', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const orderId = context.req.param('orderId');
+
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'film_order:assume_receipt', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const body = await context.req.json().catch(() => null) as any;
+    const assumedAtInput = parseOptionalDate(body?.assumedAt);
+    if (!assumedAtInput.ok) {
+      return context.json({ error: '受領確認日が不正です', code: 'INVALID_RECEIPT_ASSUMED_AT' }, 422);
+    }
+
+    const evaluation = evaluateFilmReceiptAssumption({
+      currentStatus: order.status,
+      note: body?.note,
+      acknowledgeNoEvidence: body?.acknowledgeNoEvidence,
+      assumedAt: assumedAtInput.date
+    });
+    if (!evaluation.ok) {
+      return context.json({ error: evaluation.message, code: evaluation.code, from: order.status }, 422);
+    }
+
+    const now = new Date();
+    const receiptAssumedAt = evaluation.receiptAssumedAt instanceof Date
+      ? evaluation.receiptAssumedAt
+      : new Date(evaluation.receiptAssumedAt);
+    const receiptAssumedNote = (body?.note as string).trim();
+    try {
+      const auditId = await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(filmSupplyOrders)
+          .where(eq(filmSupplyOrders.id, orderId)).limit(1).for('update');
+        if (!current || current.status !== order.status) throw new ReceiptAssumptionStateConflict();
+
+        const updated = await tx.update(filmSupplyOrders).set({
+          status: evaluation.to,
+          receiptAssumedAt,
+          receiptAssumedByUserId: user.id,
+          receiptAssumedNote,
+          updatedAt: now
+        }).where(and(
+          eq(filmSupplyOrders.id, orderId),
+          eq(filmSupplyOrders.status, order.status)
+        )).returning({ id: filmSupplyOrders.id });
+        if (updated.length === 0) throw new ReceiptAssumptionStateConflict();
+
+        const auditRow = {
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'FILM_RECEIPT_ASSUMPTION_RECORDED',
+          entityType: 'film_supply_order',
+          entityId: orderId,
+          beforeState: { status: order.status, receiptAssumedAt: current.receiptAssumedAt },
+          afterState: {
+            status: evaluation.to,
+            receiptAssumedAt,
+            receiptAssumedNote,
+            evidenceFreeAcknowledgment: true
+          },
+          occurredAt: now,
+          requestMetadata: { operation: 'film_order:assume_receipt', evidenceFreeAcknowledgment: true }
+        };
+        await tx.insert(auditEvents).values(auditRow);
+        return auditRow.id;
+      });
+      return context.json({
+        orderId,
+        status: evaluation.to,
+        previousStatus: order.status,
+        receiptAssumedAt,
+        receiptAssumedNote,
+        receiptAssumedByUserId: user.id,
+        evidenceFreeAcknowledgment: true,
+        auditEventId: auditId
+      }, 200);
+    } catch (error) {
+      if (error instanceof ReceiptAssumptionStateConflict) {
+        return context.json({ error: 'フィルム発注の状態が既に変わっています', code: 'RECEIPT_ASSUMPTION_STATE_CHANGED' }, 422);
+      }
+      throw error;
+    }
+  });
+
+  // Delivery confirmation: binding one verified evidence document version to
+  // one delivery row. Deliveries are append-only, so the confirmation is its
+  // own append-only row; until it exists the delivery stays
+  // PENDING_CONFIRMATION and commission readiness cannot escalate (T-36).
+  interface DeliveryConfirmationTarget {
+    kind: 'film' | 'filling';
+    deliveryId: string;
+    orderId: string;
+    projectId: string;
+    orderDeletedAt: Date | null;
+  }
+
+  async function loadDeliveryConfirmationTarget(
+    kind: 'film' | 'filling',
+    deliveryId: string
+  ): Promise<DeliveryConfirmationTarget | null> {
+    if (kind === 'film') {
+      const [row] = await db.select({
+        deliveryId: filmDeliveries.id,
+        orderId: filmSupplyOrders.id,
+        projectId: filmSupplyOrders.projectId,
+        orderDeletedAt: filmSupplyOrders.deletedAt
+      }).from(filmDeliveries)
+        .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, filmDeliveries.filmSupplyOrderId))
+        .where(eq(filmDeliveries.id, deliveryId)).limit(1);
+      return row ? { kind, ...row } : null;
+    }
+    const [row] = await db.select({
+      deliveryId: fillingDeliveries.id,
+      orderId: fillingOrders.id,
+      projectId: fillingOrders.projectId,
+      orderDeletedAt: fillingOrders.deletedAt
+    }).from(fillingDeliveries)
+      .innerJoin(fillingOrders, eq(fillingOrders.id, fillingDeliveries.fillingOrderId))
+      .where(eq(fillingDeliveries.id, deliveryId)).limit(1);
+    return row ? { kind, ...row } : null;
+  }
+
+  async function handleDeliveryConfirmationRequest(
+    context: any,
+    kind: 'film' | 'filling'
+  ): Promise<Response> {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const deliveryId = context.req.param('deliveryId');
+
+    const target = await loadDeliveryConfirmationTarget(kind, deliveryId);
+    if (!target || target.orderDeletedAt) return context.json({ error: '納品行が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'delivery_confirmation:record', 'F1', target.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const [existing] = await db.select({ id: deliveryConfirmations.id })
+      .from(deliveryConfirmations)
+      .where(kind === 'film'
+        ? eq(deliveryConfirmations.filmDeliveryId, deliveryId)
+        : eq(deliveryConfirmations.fillingDeliveryId, deliveryId))
+      .limit(1);
+    if (existing) {
+      return context.json({ error: 'この納品行は既に確認済みです', code: 'DELIVERY_ALREADY_CONFIRMED' }, 422);
+    }
+
+    const body = await context.req.json().catch(() => null) as any;
+    const requestedEvidenceId = typeof body?.evidenceDocumentVersionId === 'string'
+      && body.evidenceDocumentVersionId.length > 0
+      ? body.evidenceDocumentVersionId as string
+      : null;
+    const [evidence] = requestedEvidenceId
+      ? await db.select({
+        versionId: documentVersions.id,
+        projectId: documents.projectId,
+        documentType: documents.documentType,
+        filmSupplyOrderId: documents.filmSupplyOrderId,
+        verificationStatus: documents.verificationStatus
+      }).from(documentVersions)
+        .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+        .where(eq(documentVersions.id, requestedEvidenceId)).limit(1)
+      : [];
+
+    const evaluation = evaluateDeliveryEvidence(requestedEvidenceId, {
+      order: {
+        projectId: target.projectId,
+        filmSupplyOrderId: kind === 'film' ? target.orderId : null
+      },
+      evidenceDocument: evidence ?? null
+    });
+    if (!evaluation.ok) {
+      return context.json({ error: evaluation.message, code: evaluation.code }, 422);
+    }
+
+    const now = new Date();
+    const confirmationId = uuidv7(now);
+    const auditId = uuidv7(now);
+    const confirmation = {
+      id: confirmationId,
+      deliveryKind: kind,
+      filmDeliveryId: kind === 'film' ? deliveryId : null,
+      fillingDeliveryId: kind === 'filling' ? deliveryId : null,
+      evidenceDocumentVersionId: evidence!.versionId,
+      confirmedByUserId: user.id,
+      confirmedAt: now,
+      note: optionalText(body?.note)
+    };
+    await db.transaction(async (tx) => {
+      await tx.insert(deliveryConfirmations).values(confirmation);
+      await tx.insert(auditEvents).values({
+        id: auditId,
+        actorUserId: user.id,
+        action: kind === 'film' ? 'FILM_DELIVERY_CONFIRMED' : 'FILLING_DELIVERY_CONFIRMED',
+        entityType: 'delivery_confirmation',
+        entityId: confirmationId,
+        afterState: { ...confirmation, projectId: target.projectId, deliveryId },
+        occurredAt: now,
+        requestMetadata: { operation: 'delivery_confirmation:record', deliveryKind: kind, deliveryId }
+      });
+    });
+
+    return context.json({
+      confirmation,
+      delivery: {
+        id: deliveryId,
+        kind,
+        confirmationState: fillingDeliveryConfirmationState(true)
+      },
+      auditEventId: auditId
+    }, 201);
+  }
+
+  app.post('/api/film-deliveries/:deliveryId/confirmation', (context) => handleDeliveryConfirmationRequest(context, 'film'));
+  app.post('/api/filling-deliveries/:deliveryId/confirmation', (context) => handleDeliveryConfirmationRequest(context, 'filling'));
+
+  // --------------------------- M5: Japanese status surface (design section 8).
+  // The labels live in @kanei/core and are served verbatim; the web skeleton
+  // renders them without re-spelling anything. Session-gated like every other
+  // endpoint; the vocabulary itself is not project-scoped.
+  app.get('/api/status-labels', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    return context.json(japaneseStatusSurface());
+  });
+
+  // --------------------------- M5: audit history (design section 8 item 6).
+  // Read-only listing of audit_events for one project, optionally narrowed to
+  // one entity (an order, a document, ...). audit_events has no project column,
+  // so the project boundary is enforced by resolving every row's entity back to
+  // its project at read time: one EXISTS per audited entity family keeps every
+  // other company's rows out of the answer.
+  function auditProjectScope(projectId: string) {
+    const directProjectTables: Array<[string, string]> = [
+      ['pre_order_references', 'project_id'],
+      ['seven_purchase_orders', 'project_id'],
+      ['film_supply_orders', 'project_id'],
+      ['filling_orders', 'project_id'],
+      ['documents', 'project_id'],
+      ['commission_readiness', 'project_id']
+    ];
+    const directScopes = directProjectTables.map(([table, projectColumn]) =>
+      sql`exists (select 1 from ${sql.raw(table)} scoped where scoped.id = ${auditEvents.entityId} and scoped.${sql.raw(projectColumn)} = ${projectId})`);
+
+    const nestedFilmOrder = sql`exists (select 1 from film_supply_orders film_order_scope where film_order_scope.id = scoped.film_supply_order_id and film_order_scope.project_id = ${projectId})`;
+    const nestedFillingOrder = sql`exists (select 1 from filling_orders filling_order_scope where filling_order_scope.id = scoped.filling_order_id and filling_order_scope.project_id = ${projectId})`;
+
+    return or(
+      eq(auditEvents.entityId, projectId),
+      ...directScopes,
+      sql`exists (select 1 from film_supply_order_lines scoped where scoped.id = ${auditEvents.entityId} and ${nestedFilmOrder})`,
+      sql`exists (select 1 from film_deliveries scoped where scoped.id = ${auditEvents.entityId} and ${nestedFilmOrder})`,
+      sql`exists (select 1 from filling_order_lines scoped where scoped.id = ${auditEvents.entityId} and ${nestedFillingOrder})`,
+      sql`exists (select 1 from filling_deliveries scoped where scoped.id = ${auditEvents.entityId} and ${nestedFillingOrder})`,
+      sql`exists (select 1 from document_versions scoped where scoped.id = ${auditEvents.entityId} and exists (select 1 from documents d where d.id = scoped.document_id and d.project_id = ${projectId}))`,
+      sql`exists (select 1 from artwork_revisions scoped where scoped.id = ${auditEvents.entityId} and ${nestedFilmOrder})`,
+      sql`exists (select 1 from artwork_approval_events scoped where scoped.id = ${auditEvents.entityId} and exists (select 1 from artwork_revisions ar where ar.id = scoped.artwork_revision_id and ${nestedFilmOrder}))`,
+      sql`exists (select 1 from maker_purchase_orders scoped where scoped.id = ${auditEvents.entityId} and ${nestedFilmOrder})`,
+      sql`exists (select 1 from maker_po_events scoped where scoped.id = ${auditEvents.entityId} and exists (select 1 from maker_purchase_orders mpo where mpo.id = scoped.maker_purchase_order_id and ${nestedFilmOrder}))`,
+      sql`exists (select 1 from delivery_confirmations scoped where scoped.id = ${auditEvents.entityId} and (exists (select 1 from film_deliveries fd where fd.id = scoped.film_delivery_id and ${nestedFilmOrder}) or exists (select 1 from filling_deliveries fdl where fdl.id = scoped.filling_delivery_id and ${nestedFillingOrder})))`
+    );
+  }
+
+  app.get('/api/projects/:projectId/audit-history', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const projectId = context.req.param('projectId');
+    const decision = canPerform(toActor(user), 'audit_history:read', 'F1', projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const [project] = await db.select({ id: projects.id }).from(projects)
+      .where(eq(projects.id, projectId)).limit(1);
+    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
+
+    const query = context.req.query();
+    const requestedLimit = Number(query.limit ?? '200');
+    const limit = Number.isInteger(requestedLimit) && requestedLimit > 0
+      ? Math.min(requestedLimit, 500)
+      : 200;
+    const entityTypeFilter = typeof query.entityType === 'string' && query.entityType.length > 0
+      ? eq(auditEvents.entityType, query.entityType)
+      : undefined;
+    const entityIdFilter = typeof query.entityId === 'string' && query.entityId.length > 0
+      ? eq(auditEvents.entityId, query.entityId)
+      : undefined;
+
+    const rows = await db.select({
+      id: auditEvents.id,
+      action: auditEvents.action,
+      entityType: auditEvents.entityType,
+      entityId: auditEvents.entityId,
+      beforeState: auditEvents.beforeState,
+      afterState: auditEvents.afterState,
+      occurredAt: auditEvents.occurredAt,
+      requestMetadata: auditEvents.requestMetadata,
+      actorId: users.id,
+      actorDisplayName: users.displayName,
+      actorRole: users.role
+    }).from(auditEvents)
+      .leftJoin(users, eq(users.id, auditEvents.actorUserId))
+      .where(and(auditProjectScope(projectId), entityTypeFilter, entityIdFilter))
+      .orderBy(auditEvents.occurredAt, auditEvents.id)
+      .limit(limit);
+
+    return context.json({
+      projectId,
+      count: rows.length,
+      events: rows.map((row) => ({
+        id: row.id,
+        action: row.action,
+        entityType: row.entityType,
+        entityId: row.entityId,
+        beforeState: row.beforeState,
+        afterState: row.afterState,
+        occurredAt: row.occurredAt,
+        requestMetadata: row.requestMetadata,
+        actor: row.actorId
+          ? { id: row.actorId, displayName: row.actorDisplayName, role: row.actorRole }
+          : null
+      }))
+    });
   });
 
   // ------------------------------------------------ M1: filling orders (design
@@ -986,7 +1345,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
   });
 
   // Commission readiness is written only here, never as a side effect of a
-  // delivery (T-14).
+  // delivery (T-14). M5 (T-36): the evaluation is explicit and evidence-gated —
+  // deliveries pending confirmation keep the state at MISSING_DATA or
+  // PENDING_VERIFICATION, no readiness escalation and no commission calculation
+  // ever happens as a side effect of recording a delivery.
   app.post('/api/projects/:projectId/commission-readiness', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
@@ -1011,30 +1373,73 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       .limit(1);
     const evidenceAnchor = previousReadiness?.evaluatedAt ?? now;
 
-    const [filmDeliveryRow] = await db.select({ id: filmDeliveries.id })
+    const filmDeliveryRows = await db.select({ id: filmDeliveries.id })
       .from(filmDeliveries)
-      .where(gt(filmDeliveries.createdAt, evidenceAnchor))
-      .limit(1);
-    const [fillingDeliveryRow] = await db.select({ id: fillingDeliveries.id })
+      .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, filmDeliveries.filmSupplyOrderId))
+      .where(and(eq(filmSupplyOrders.projectId, projectId), gt(filmDeliveries.createdAt, evidenceAnchor)));
+    const fillingDeliveryRows = await db.select({ id: fillingDeliveries.id })
       .from(fillingDeliveries)
-      .where(gt(fillingDeliveries.createdAt, evidenceAnchor))
-      .limit(1);
+      .innerJoin(fillingOrders, eq(fillingOrders.id, fillingDeliveries.fillingOrderId))
+      .where(and(eq(fillingOrders.projectId, projectId), gt(fillingDeliveries.createdAt, evidenceAnchor)));
     const [registeredPo] = await db.select({ id: sevenPurchaseOrders.id })
       .from(sevenPurchaseOrders)
       .where(and(eq(sevenPurchaseOrders.projectId, projectId), isNotNull(sevenPurchaseOrders.officialRegisteredAt)))
       .limit(1);
 
-    const filmDeliveryRecorded = previousReadiness?.filmDeliveryRecorded || filmDeliveryRow !== undefined;
-    const fillingDeliveryRecorded = previousReadiness?.fillingDeliveryRecorded || fillingDeliveryRow !== undefined;
+    // M5 (T-36): a delivery counts for readiness only once a verified delivery
+    // evidence document is bound to it. The confirmation check reads every
+    // delivery of this project — not just the evidence window — so a delivery
+    // without evidence keeps the project at MISSING_DATA or
+    // PENDING_VERIFICATION no matter when it was recorded. This endpoint is
+    // still the only writer of commission_readiness: nothing here touches any
+    // other table, and a confirmation row is only ever read.
+    const allFilmDeliveries = await db.select({ id: filmDeliveries.id })
+      .from(filmDeliveries)
+      .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, filmDeliveries.filmSupplyOrderId))
+      .where(eq(filmSupplyOrders.projectId, projectId));
+    const allFillingDeliveries = await db.select({ id: fillingDeliveries.id })
+      .from(fillingDeliveries)
+      .innerJoin(fillingOrders, eq(fillingOrders.id, fillingDeliveries.fillingOrderId))
+      .where(eq(fillingOrders.projectId, projectId));
+    const filmDeliveryIds = allFilmDeliveries.map((row) => row.id);
+    const fillingDeliveryIds = allFillingDeliveries.map((row) => row.id);
+    const filmConfirmationRows = filmDeliveryIds.length === 0
+      ? []
+      : await db.select({ id: deliveryConfirmations.id })
+        .from(deliveryConfirmations)
+        .where(inArray(deliveryConfirmations.filmDeliveryId, filmDeliveryIds));
+    const fillingConfirmationRows = fillingDeliveryIds.length === 0
+      ? []
+      : await db.select({ id: deliveryConfirmations.id })
+        .from(deliveryConfirmations)
+        .where(inArray(deliveryConfirmations.fillingDeliveryId, fillingDeliveryIds));
+
+    const filmDeliveryRecorded = previousReadiness?.filmDeliveryRecorded || filmDeliveryRows.length > 0;
+    const fillingDeliveryRecorded = previousReadiness?.fillingDeliveryRecorded || fillingDeliveryRows.length > 0;
     const sevenPoOfficiallyRegistered = registeredPo !== undefined;
-    const isReady = filmDeliveryRecorded && fillingDeliveryRecorded && sevenPoOfficiallyRegistered;
+    const filmDeliveryConfirmed = allFilmDeliveries.length > 0
+      && filmConfirmationRows.length === allFilmDeliveries.length;
+    const fillingDeliveryConfirmed = allFillingDeliveries.length > 0
+      && fillingConfirmationRows.length === allFillingDeliveries.length;
+
+    const evaluation = evaluateCommissionReadiness({
+      filmDeliveryRecorded,
+      fillingDeliveryRecorded,
+      sevenPoOfficiallyRegistered,
+      filmDeliveryConfirmed,
+      fillingDeliveryConfirmed
+    });
+    const isReady = evaluation.isReady;
     const readinessId = uuidv7(now);
     const readiness = {
       filmDeliveryRecorded,
       fillingDeliveryRecorded,
       sevenPoOfficiallyRegistered,
+      filmDeliveryConfirmed,
+      fillingDeliveryConfirmed,
+      readinessState: evaluation.state,
       isReady,
-      readyAt: isReady ? now : null,
+      readyAt: isReady ? previousReadiness?.readyAt ?? now : null,
       evaluatedAt: now,
       evaluatedByUserId: user.id,
       updatedAt: now
@@ -1049,14 +1454,19 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         action: 'COMMISSION_READINESS_EVALUATED',
         entityType: 'commission_readiness',
         entityId: projectId,
-        afterState: { projectId, ...readiness },
+        afterState: { projectId, ...readiness, blocking: evaluation.blocking },
         occurredAt: now,
         requestMetadata: { operation: 'commission_readiness:evaluate' }
       });
     });
 
     const [row] = await db.select().from(commissionReadiness).where(eq(commissionReadiness.projectId, projectId)).limit(1);
-    return context.json(row ?? { id: readinessId, projectId, ...readiness }, 201);
+    return context.json({
+      ...(row ?? { id: readinessId, projectId, ...readiness }),
+      readinessState: evaluation.state,
+      blocking: evaluation.blocking,
+      commissionCalculationAllowed: isCommissionCalculationAllowed(evaluation.state)
+    }, 201);
   });
 
   // ------------------------------------------------- M2: document intake (design

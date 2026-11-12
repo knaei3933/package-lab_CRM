@@ -23,11 +23,14 @@ export type Operation =
   | 'film_order:create'
   | 'film_order_line:create'
   | 'film_order:transition'
+  | 'film_order:assume_receipt'
   | 'film_delivery:create'
+  | 'delivery_confirmation:record'
   | 'filling_order:create'
   | 'filling_order_line:create'
   | 'filling_delivery:create'
-  | 'commission_readiness:evaluate';
+  | 'commission_readiness:evaluate'
+  | 'audit_history:read';
 
 export interface AuthenticatedActor {
   id: string;
@@ -69,7 +72,8 @@ export function canPerform(
   if (!assigned) return { allowed: false, reason: 'PROJECT_NOT_ASSIGNED' };
 
   if (actor.role === 'viewer') {
-    return operation === 'project:read'
+    const readable = operation === 'project:read' || operation === 'audit_history:read';
+    return readable
       ? { allowed: true }
       : { allowed: false, reason: 'ROLE_FORBIDDEN' };
   }
