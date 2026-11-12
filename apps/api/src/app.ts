@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
 import { randomBytes } from 'node:crypto';
 import { stat } from 'node:fs/promises';
-import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import {
   buildMakerPoSnapshot,
   canPerform,
@@ -118,6 +118,48 @@ type OrderLineValidation =
 
 /** Database executor that can read: the pool or one open transaction. */
 type MakerPoQueryExecutor = Pick<AppDatabase, 'select'>;
+
+/** Database executor that can write audit rows: the pool or one open transaction. */
+type AuditEventWriter = Pick<AppDatabase, 'insert'>;
+
+/**
+ * One audit_events row: what happened, to which entity, and in which project.
+ * The project is not derivable from the entity at read time without one EXISTS
+ * per audited entity family, so the caller — which already holds the project it
+ * is acting on — states it here and the row carries it (migration 0013).
+ */
+interface AuditEventInput {
+  projectId: string;
+  id?: string;
+  actorUserId: string | null;
+  action: string;
+  entityType: string;
+  entityId: string;
+  beforeState?: unknown;
+  afterState?: unknown;
+  occurredAt: Date;
+  requestMetadata?: unknown;
+}
+
+function auditEventRow(input: AuditEventInput) {
+  return {
+    id: input.id ?? uuidv7(input.occurredAt),
+    projectId: input.projectId,
+    actorUserId: input.actorUserId,
+    action: input.action,
+    entityType: input.entityType,
+    entityId: input.entityId,
+    beforeState: input.beforeState ?? null,
+    afterState: input.afterState ?? null,
+    occurredAt: input.occurredAt,
+    requestMetadata: input.requestMetadata ?? null
+  };
+}
+
+/** Appends one audit_events row, always stamped with the project it belongs to. */
+async function recordAuditEvent(writer: AuditEventWriter, input: AuditEventInput): Promise<void> {
+  await writer.insert(auditEvents).values(auditEventRow(input));
+}
 
 /**
  * A maker PO transition lost its row-level race (T-25): another transaction
@@ -292,7 +334,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     await db.transaction(async (tx) => {
       await tx.insert(projects).values(project);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'PROJECT_CREATED',
@@ -340,7 +383,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const updated = { name: body.name, updatedAt: new Date() };
     await db.transaction(async (tx) => {
       await tx.update(projects).set(updated).where(eq(projects.id, projectId));
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId,
         id: uuidv7(updated.updatedAt),
         actorUserId: user.id,
         action: 'PROJECT_UPDATED',
@@ -409,7 +453,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     };
     await db.transaction(async (tx) => {
       await tx.insert(sevenPurchaseOrders).values(purchaseOrder);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'SEVEN_PO_CREATED',
@@ -440,7 +485,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const updated = { officialRegisteredAt: registeredAt.date, updatedAt: new Date() };
     await db.transaction(async (tx) => {
       await tx.update(sevenPurchaseOrders).set(updated).where(eq(sevenPurchaseOrders.id, poId));
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: current.projectId,
         id: uuidv7(updated.updatedAt),
         actorUserId: user.id,
         action: 'SEVEN_PO_OFFICIALLY_REGISTERED',
@@ -486,7 +532,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     };
     await db.transaction(async (tx) => {
       await tx.insert(preOrderReferences).values(reference);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'PRE_ORDER_REFERENCE_CREATED',
@@ -536,7 +583,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     };
     await db.transaction(async (tx) => {
       await tx.insert(sevenPurchaseOrders).values(purchaseOrder);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: reference.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'PRE_ORDER_PROMOTED',
@@ -610,7 +658,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           unit: line.unit
         })));
       }
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'FILM_SUPPLY_ORDER_CREATED',
@@ -653,7 +702,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     };
     await db.transaction(async (tx) => {
       await tx.insert(filmSupplyOrderLines).values(line);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: order.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'FILM_SUPPLY_ORDER_LINE_CREATED',
@@ -732,7 +782,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     await db.transaction(async (tx) => {
       await tx.insert(filmDeliveries).values(delivery);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: order.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'FILM_DELIVERY_RECORDED',
@@ -813,7 +864,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const updated = { status: target, updatedAt: now };
     await db.transaction(async (tx) => {
       await tx.update(filmSupplyOrders).set(updated).where(eq(filmSupplyOrders.id, orderId));
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: order.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
@@ -886,6 +938,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         if (updated.length === 0) throw new ReceiptAssumptionStateConflict();
 
         const auditRow = {
+          projectId: order.projectId,
           id: uuidv7(now),
           actorUserId: user.id,
           action: 'FILM_RECEIPT_ASSUMPTION_RECORDED',
@@ -901,7 +954,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           occurredAt: now,
           requestMetadata: { operation: 'film_order:assume_receipt', evidenceFreeAcknowledgment: true }
         };
-        await tx.insert(auditEvents).values(auditRow);
+        await recordAuditEvent(tx, auditRow);
         return auditRow.id;
       });
       return context.json({
@@ -1026,7 +1079,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     };
     await db.transaction(async (tx) => {
       await tx.insert(deliveryConfirmations).values(confirmation);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: target.projectId,
         id: auditId,
         actorUserId: user.id,
         action: kind === 'film' ? 'FILM_DELIVERY_CONFIRMED' : 'FILLING_DELIVERY_CONFIRMED',
@@ -1064,41 +1118,11 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
   // --------------------------- M5: audit history (design section 8 item 6).
   // Read-only listing of audit_events for one project, optionally narrowed to
-  // one entity (an order, a document, ...). audit_events has no project column,
-  // so the project boundary is enforced by resolving every row's entity back to
-  // its project at read time: one EXISTS per audited entity family keeps every
-  // other company's rows out of the answer.
-  function auditProjectScope(projectId: string) {
-    const directProjectTables: Array<[string, string]> = [
-      ['pre_order_references', 'project_id'],
-      ['seven_purchase_orders', 'project_id'],
-      ['film_supply_orders', 'project_id'],
-      ['filling_orders', 'project_id'],
-      ['documents', 'project_id'],
-      ['commission_readiness', 'project_id']
-    ];
-    const directScopes = directProjectTables.map(([table, projectColumn]) =>
-      sql`exists (select 1 from ${sql.raw(table)} scoped where scoped.id = ${auditEvents.entityId} and scoped.${sql.raw(projectColumn)} = ${projectId})`);
-
-    const nestedFilmOrder = sql`exists (select 1 from film_supply_orders film_order_scope where film_order_scope.id = scoped.film_supply_order_id and film_order_scope.project_id = ${projectId})`;
-    const nestedFillingOrder = sql`exists (select 1 from filling_orders filling_order_scope where filling_order_scope.id = scoped.filling_order_id and filling_order_scope.project_id = ${projectId})`;
-
-    return or(
-      eq(auditEvents.entityId, projectId),
-      ...directScopes,
-      sql`exists (select 1 from film_supply_order_lines scoped where scoped.id = ${auditEvents.entityId} and ${nestedFilmOrder})`,
-      sql`exists (select 1 from film_deliveries scoped where scoped.id = ${auditEvents.entityId} and ${nestedFilmOrder})`,
-      sql`exists (select 1 from filling_order_lines scoped where scoped.id = ${auditEvents.entityId} and ${nestedFillingOrder})`,
-      sql`exists (select 1 from filling_deliveries scoped where scoped.id = ${auditEvents.entityId} and ${nestedFillingOrder})`,
-      sql`exists (select 1 from document_versions scoped where scoped.id = ${auditEvents.entityId} and exists (select 1 from documents d where d.id = scoped.document_id and d.project_id = ${projectId}))`,
-      sql`exists (select 1 from artwork_revisions scoped where scoped.id = ${auditEvents.entityId} and ${nestedFilmOrder})`,
-      sql`exists (select 1 from artwork_approval_events scoped where scoped.id = ${auditEvents.entityId} and exists (select 1 from artwork_revisions ar where ar.id = scoped.artwork_revision_id and ${nestedFilmOrder}))`,
-      sql`exists (select 1 from maker_purchase_orders scoped where scoped.id = ${auditEvents.entityId} and ${nestedFilmOrder})`,
-      sql`exists (select 1 from maker_po_events scoped where scoped.id = ${auditEvents.entityId} and exists (select 1 from maker_purchase_orders mpo where mpo.id = scoped.maker_purchase_order_id and ${nestedFilmOrder}))`,
-      sql`exists (select 1 from delivery_confirmations scoped where scoped.id = ${auditEvents.entityId} and (exists (select 1 from film_deliveries fd where fd.id = scoped.film_delivery_id and ${nestedFilmOrder}) or exists (select 1 from filling_deliveries fdl where fdl.id = scoped.filling_delivery_id and ${nestedFillingOrder})))`
-    );
-  }
-
+  // one entity (an order, a document, ...). Every row is stamped with its
+  // project when it is written (migration 0013), so the project boundary is a
+  // plain filter on that column: no other project's rows can enter the answer,
+  // and no per-entity resolver has to be extended when a new audited entity
+  // kind appears.
   app.get('/api/projects/:projectId/audit-history', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
@@ -1137,7 +1161,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       actorRole: users.role
     }).from(auditEvents)
       .leftJoin(users, eq(users.id, auditEvents.actorUserId))
-      .where(and(auditProjectScope(projectId), entityTypeFilter, entityIdFilter))
+      .where(and(eq(auditEvents.projectId, projectId), entityTypeFilter, entityIdFilter))
       .orderBy(auditEvents.occurredAt, auditEvents.id)
       .limit(limit);
 
@@ -1207,7 +1231,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           unit: line.unit
         })));
       }
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'FILLING_ORDER_CREATED',
@@ -1250,7 +1275,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     };
     await db.transaction(async (tx) => {
       await tx.insert(fillingOrderLines).values(line);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: order.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'FILLING_ORDER_LINE_CREATED',
@@ -1329,7 +1355,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     await db.transaction(async (tx) => {
       await tx.insert(fillingDeliveries).values(delivery);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: order.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'FILLING_DELIVERY_RECORDED',
@@ -1437,7 +1464,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       await tx.insert(commissionReadiness)
         .values({ id: readinessId, projectId, ...readiness })
         .onConflictDoUpdate({ target: commissionReadiness.projectId, set: readiness });
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'COMMISSION_READINESS_EVALUATED',
@@ -1713,7 +1741,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     await db.transaction(async (tx) => {
       if (newReference) {
         await tx.insert(preOrderReferences).values(newReference);
-        await tx.insert(auditEvents).values({
+        await recordAuditEvent(tx, {
+          projectId,
           id: uuidv7(now),
           actorUserId: user.id,
           action: 'PRE_ORDER_REFERENCE_CREATED',
@@ -1726,7 +1755,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       }
       if (newDocument) {
         await tx.insert(documents).values(newDocument);
-        await tx.insert(auditEvents).values({
+        await recordAuditEvent(tx, {
+          projectId,
           id: uuidv7(now),
           actorUserId: user.id,
           action: 'DOCUMENT_CREATED',
@@ -1738,7 +1768,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         });
       }
       await tx.insert(documentVersions).values(versionRow);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'DOCUMENT_VERSION_UPLOADED',
@@ -1785,7 +1816,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     };
     await db.transaction(async (tx) => {
       await tx.update(documents).set(updated).where(eq(documents.id, documentId));
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: current.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'DOCUMENT_VERIFICATION_RECORDED',
@@ -1843,7 +1875,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     };
     await db.transaction(async (tx) => {
       await tx.update(sevenPurchaseOrders).set(updated).where(eq(sevenPurchaseOrders.id, poId));
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: current.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'SEVEN_PO_VERIFICATION_RECORDED',
@@ -1903,7 +1936,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     };
     await db.transaction(async (tx) => {
       await tx.update(sevenPurchaseOrders).set(updated).where(eq(sevenPurchaseOrders.id, po.id));
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: po.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'PRE_ORDER_PROMOTED_OFFICIAL',
@@ -1976,7 +2010,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           unit: line.unit
         })));
       }
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: po.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'FILM_SUPPLY_ORDER_CREATED',
@@ -2119,7 +2154,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     await db.transaction(async (tx) => {
       await tx.insert(artworkRevisions).values(revision);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: order.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'ARTWORK_REVISION_REGISTERED',
@@ -2131,7 +2167,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       });
       if (entersChangeReview) {
         await tx.update(filmSupplyOrders).set({ status: statusAfter, updatedAt: now }).where(eq(filmSupplyOrders.id, orderId));
-        await tx.insert(auditEvents).values({
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
           id: uuidv7(now),
           actorUserId: user.id,
           action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
@@ -2259,7 +2296,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     await db.transaction(async (tx) => {
       await tx.insert(artworkApprovalEvents).values(approvalEvent);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: order.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: decisionCheck.value === 'APPROVE' ? 'ARTWORK_APPROVAL_RECORDED' : 'ARTWORK_APPROVAL_REVOKED',
@@ -2273,7 +2311,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         await tx.update(filmSupplyOrders)
           .set({ status: 'DUAL_APPROVED', updatedAt: now })
           .where(eq(filmSupplyOrders.id, order.id));
-        await tx.insert(auditEvents).values({
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
           id: uuidv7(now),
           actorUserId: user.id,
           action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
@@ -2468,7 +2507,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     };
     await db.transaction(async (tx) => {
       await tx.insert(makerPurchaseOrders).values(purchaseOrder);
-      await tx.insert(auditEvents).values({
+      await recordAuditEvent(tx, {
+        projectId: order.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'MAKER_PO_CREATED',
@@ -2542,7 +2582,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         };
         await tx.insert(makerPoEvents).values(approvalEvent);
 
-        await tx.insert(auditEvents).values({
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
           id: uuidv7(now),
           actorUserId: user.id,
           action: 'MAKER_PO_CEO_APPROVED',
@@ -2553,7 +2594,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           occurredAt: now,
           requestMetadata: { operation: 'maker_po:ceo_approve', makerPurchaseOrderId: poId }
         });
-        await tx.insert(auditEvents).values({
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
           id: uuidv7(now),
           actorUserId: user.id,
           action: 'MAKER_PO_STATUS_CHANGED',
@@ -2572,7 +2614,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         if (currentOrder && transitionFilmSupplyOrder(currentOrder.status, 'APPROVED_FOR_MANUAL_SEND').ok) {
           await tx.update(filmSupplyOrders).set({ status: 'APPROVED_FOR_MANUAL_SEND', updatedAt: now })
             .where(eq(filmSupplyOrders.id, currentOrder.id));
-          await tx.insert(auditEvents).values({
+          await recordAuditEvent(tx, {
+            projectId: order.projectId,
             id: uuidv7(now),
             actorUserId: user.id,
             action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
@@ -2686,7 +2729,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
               .where(and(eq(makerPurchaseOrders.id, poId), eq(makerPurchaseOrders.status, poStatus.value)))
               .returning({ id: makerPurchaseOrders.id });
             if (voided.length === 0) throw new MakerPoStateConflict();
-            await tx.insert(auditEvents).values({
+            await recordAuditEvent(tx, {
+              projectId: order.projectId,
               id: uuidv7(now),
               actorUserId: user.id,
               action: 'MAKER_PO_STATUS_CHANGED',
@@ -2714,7 +2758,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
             recordedAt: now
           };
           await tx.insert(makerPoEvents).values(refusedEvent);
-          await tx.insert(auditEvents).values({
+          await recordAuditEvent(tx, {
+            projectId: order.projectId,
             id: uuidv7(now),
             actorUserId: user.id,
             action: evaluation.outcome === 'snapshot_voided' ? 'MAKER_PO_SNAPSHOT_VOIDED' : 'MAKER_PO_SEND_REJECTED',
@@ -2765,7 +2810,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         };
         await tx.insert(makerPoEvents).values(sendEvent);
 
-        await tx.insert(auditEvents).values({
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
           id: uuidv7(now),
           actorUserId: user.id,
           action: evaluation.verificationStatus === 'VERIFIED'
@@ -2778,7 +2824,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           occurredAt: now,
           requestMetadata: { operation: 'maker_po:send_evidence', makerPurchaseOrderId: poId }
         });
-        await tx.insert(auditEvents).values({
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
           id: uuidv7(now),
           actorUserId: user.id,
           action: 'MAKER_PO_STATUS_CHANGED',
@@ -2796,7 +2843,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           if (currentOrder && transitionFilmSupplyOrder(currentOrder.status, 'MAKER_PO_SENT_MANUALLY').ok) {
             await tx.update(filmSupplyOrders).set({ status: 'MAKER_PO_SENT_MANUALLY', updatedAt: now })
               .where(eq(filmSupplyOrders.id, currentOrder.id));
-            await tx.insert(auditEvents).values({
+            await recordAuditEvent(tx, {
+              projectId: order.projectId,
               id: uuidv7(now),
               actorUserId: user.id,
               action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
@@ -2948,7 +2996,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         };
         await tx.insert(makerPoEvents).values(acceptEvent);
 
-        await tx.insert(auditEvents).values({
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
           id: uuidv7(now),
           actorUserId: user.id,
           action: 'MAKER_PO_ACCEPT_EVIDENCE_REGISTERED',
@@ -2959,7 +3008,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           occurredAt: now,
           requestMetadata: { operation: 'maker_po:accept_evidence', makerPurchaseOrderId: poId }
         });
-        await tx.insert(auditEvents).values({
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
           id: uuidv7(now),
           actorUserId: user.id,
           action: 'MAKER_PO_STATUS_CHANGED',
@@ -2976,7 +3026,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         if (currentOrder && transitionFilmSupplyOrder(currentOrder.status, 'MAKER_PO_ACCEPTED').ok) {
           await tx.update(filmSupplyOrders).set({ status: 'MAKER_PO_ACCEPTED', updatedAt: now })
             .where(eq(filmSupplyOrders.id, currentOrder.id));
-          await tx.insert(auditEvents).values({
+          await recordAuditEvent(tx, {
+            projectId: order.projectId,
             id: uuidv7(now),
             actorUserId: user.id,
             action: 'FILM_SUPPLY_ORDER_TRANSITIONED',

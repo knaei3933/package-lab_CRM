@@ -190,6 +190,9 @@ export const projects = pgTable('projects', {
 
 export const auditEvents = pgTable('audit_events', {
   id: uuid('id').primaryKey(),
+  // Project the audited entity belongs to, stamped by the write side. Rows from
+  // before migration 0013 stay null; the append-only triggers keep them that way.
+  projectId: uuid('project_id'),
   actorUserId: uuid('actor_user_id').references(() => users.id),
   action: text('action').notNull(),
   entityType: text('entity_type').notNull(),
@@ -200,7 +203,8 @@ export const auditEvents = pgTable('audit_events', {
   requestMetadata: jsonb('request_metadata')
 }, (table) => [
   index('audit_events_entity_idx').on(table.entityType, table.entityId),
-  index('audit_events_actor_idx').on(table.actorUserId)
+  index('audit_events_actor_idx').on(table.actorUserId),
+  index('audit_events_project_idx').on(table.projectId)
 ]);
 
 export const usersRelations = relations(users, ({ many }) => ({
