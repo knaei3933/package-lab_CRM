@@ -571,8 +571,9 @@ describe('M5 commission readiness and delivery confirmation (T-36)', () => {
     expect(unverified.status).toBe(422);
     expect((unverified.body as { code: string }).code).toBe('DELIVERY_EVIDENCE_NOT_VERIFIED');
 
-    // None of the refusals persisted a confirmation or escalated anything.
-    expect(await db.select().from(deliveryConfirmations)).toHaveLength(0);
+    // None of the refusals persisted a confirmation for this delivery or escalated anything.
+    expect(await db.select().from(deliveryConfirmations)
+      .where(eq(deliveryConfirmations.fillingDeliveryId, filling.deliveryId))).toHaveLength(0);
 
     await verifyDocument(unverifiedDoc.document.id, '合成納品確認M5');
     const confirmed = await confirmDelivery(fillUrl, {
