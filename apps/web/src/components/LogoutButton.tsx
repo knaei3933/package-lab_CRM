@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
-import { subtleButtonStyle } from '../lib/ui.js';
+import { subtleButtonStyle } from '../lib/ui';
 
 /** Criterion 1: logout calls POST /api/auth/logout and returns to the login page. */
 export function LogoutButton() {

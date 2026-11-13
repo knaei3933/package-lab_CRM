@@ -1,4 +1,4 @@
-import { apiBaseUrl } from '../../../../lib/api.js';
+import { apiBaseUrl } from '../../../../lib/api';
 
 /**
  * Same-origin login relay (criterion 1). The browser posts its credentials to

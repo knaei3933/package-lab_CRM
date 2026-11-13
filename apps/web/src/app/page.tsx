@@ -1,7 +1,7 @@
 import { redirect } from 'next/navigation';
-import { LoginForm } from '../components/LoginForm.js';
-import { apiBaseUrl, loadSessionUser } from '../lib/api.js';
-import { cardStyle, noteStyle } from '../lib/ui.js';
+import { LoginForm } from '../components/LoginForm';
+import { apiBaseUrl, loadSessionUser } from '../lib/api';
+import { cardStyle, noteStyle } from '../lib/ui';
 
 export const dynamic = 'force-dynamic';
 

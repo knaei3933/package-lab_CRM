@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
-import type { Choice } from '../lib/types.js';
-import { fieldRowStyle, inputStyle, noteStyle } from '../lib/ui.js';
+import type { Choice } from '../lib/types';
+import { fieldRowStyle, inputStyle, noteStyle } from '../lib/ui';
 
 /**
  * Presentational form fields shared by every screen. No hooks and no server

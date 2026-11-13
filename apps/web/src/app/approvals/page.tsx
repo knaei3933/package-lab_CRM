@@ -1,19 +1,19 @@
-import { ActionForm } from '../../components/ActionForm.js';
-import { ApprovalDecisionForm } from '../../components/ApprovalDecisionForm.js';
-import { SelectField, TextField } from '../../components/fields.js';
-import { recordArtworkApprovalAction, registerArtworkRevisionAction } from '../actions.js';
-import { readSelectedProjectId } from '../../lib/api.js';
-import { labelLookup, loadApprovalGate, loadWorkspace } from '../../lib/project-data.js';
-import type { ApprovalGateView, DesignApprovalGateView } from '../../lib/project-data.js';
-import { cardStyle, infoBoxStyle, monoStyle, noteStyle, tableStyle, tdStyle, thStyle } from '../../lib/ui.js';
+import { ActionForm } from '../../components/ActionForm';
+import { ApprovalDecisionForm } from '../../components/ApprovalDecisionForm';
+import { SelectField, TextField } from '../../components/fields';
+import { recordArtworkApprovalAction, registerArtworkRevisionAction } from '../actions';
+import { readSelectedProjectId } from '../../lib/api';
+import { labelLookup, loadApprovalGate, loadWorkspace } from '../../lib/project-data';
+import type { ApprovalGateView, DesignApprovalGateView } from '../../lib/project-data';
+import { cardStyle, infoBoxStyle, monoStyle, noteStyle, tableStyle, tdStyle, thStyle } from '../../lib/ui';
 import {
   APPROVAL_DECISION_LABELS,
   EVIDENCE_SOURCE_LABELS,
   formatTimestamp,
   evidenceSourceChoices,
   VERIFICATION_STATUS_LABELS
-} from '../../lib/vocabulary.js';
-import type { Choice } from '../../lib/types.js';
+} from '../../lib/vocabulary';
+import type { Choice } from '../../lib/types';
 
 export const dynamic = 'force-dynamic';
 

@@ -2,9 +2,9 @@
 
 import { useActionState, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
-import type { FormAction } from './ActionForm.js';
-import type { Choice } from '../lib/types.js';
-import { buttonStyle, errorMessageStyle, inputStyle, noteStyle, okMessageStyle, subtleButtonStyle } from '../lib/ui.js';
+import type { FormAction } from './ActionForm';
+import type { Choice } from '../lib/types';
+import { buttonStyle, errorMessageStyle, inputStyle, noteStyle, okMessageStyle, subtleButtonStyle } from '../lib/ui';
 
 interface DocumentUploadFormProps {
   action: FormAction;

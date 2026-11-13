@@ -1,9 +1,9 @@
 'use client';
 
 import { useActionState, useState } from 'react';
-import type { FormAction } from './ActionForm.js';
-import type { Choice } from '../lib/types.js';
-import { buttonStyle, errorMessageStyle, inputStyle, noteStyle, okMessageStyle } from '../lib/ui.js';
+import type { FormAction } from './ActionForm';
+import type { Choice } from '../lib/types';
+import { buttonStyle, errorMessageStyle, inputStyle, noteStyle, okMessageStyle } from '../lib/ui';
 
 export interface DeliveryOrderOption {
   id: string;

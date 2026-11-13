@@ -1,4 +1,4 @@
-import { apiBaseUrl, SESSION_COOKIE } from '../../../../lib/api.js';
+import { apiBaseUrl, SESSION_COOKIE } from '../../../../lib/api';
 
 /**
  * Same-origin logout relay: forwards the session cookie to the API's
@@ -12,9 +12,11 @@ export async function POST(request: Request): Promise<Response> {
 
   let upstream: Response;
   try {
+    const headers: Record<string, string> = {};
+    if (cookie.length > 0) headers.cookie = cookie;
     upstream = await fetch(`${apiBaseUrl}/api/auth/logout`, {
       method: 'POST',
-      headers: cookie.length > 0 ? { cookie } : undefined,
+      headers,
       cache: 'no-store'
     });
   } catch {

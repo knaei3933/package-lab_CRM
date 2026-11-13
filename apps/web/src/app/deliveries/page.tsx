@@ -1,10 +1,10 @@
-import { ActionForm } from '../../components/ActionForm.js';
-import { DeliveryRecordForm } from '../../components/DeliveryRecordForm.js';
-import { SelectField, TextField } from '../../components/fields.js';
-import { confirmDeliveryAction, evaluateCommissionReadinessAction, recordDeliveryAction } from '../actions.js';
-import { readSelectedProjectId } from '../../lib/api.js';
-import { labelLookup, loadWorkspace } from '../../lib/project-data.js';
-import type { DeliveryView } from '../../lib/project-data.js';
+import { ActionForm } from '../../components/ActionForm';
+import { DeliveryRecordForm } from '../../components/DeliveryRecordForm';
+import { SelectField, TextField } from '../../components/fields';
+import { confirmDeliveryAction, evaluateCommissionReadinessAction, recordDeliveryAction } from '../actions';
+import { readSelectedProjectId } from '../../lib/api';
+import { labelLookup, loadWorkspace } from '../../lib/project-data';
+import type { DeliveryView } from '../../lib/project-data';
 import {
   badgeStyle,
   cardStyle,
@@ -14,8 +14,8 @@ import {
   tableStyle,
   tdStyle,
   thStyle
-} from '../../lib/ui.js';
-import { formatTimestamp, READINESS_BLOCKING_LABELS, unitChoices, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary.js';
+} from '../../lib/ui';
+import { formatTimestamp, READINESS_BLOCKING_LABELS, unitChoices, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary';
 
 export const dynamic = 'force-dynamic';
 

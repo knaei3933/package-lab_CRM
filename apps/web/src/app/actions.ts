@@ -3,8 +3,8 @@
 import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { FILM_UNITS, FILLING_UNITS } from '@kanei/core';
-import { callApi, PROJECT_COOKIE, readSelectedProjectId } from '../lib/api.js';
-import type { ActionState } from '../lib/types.js';
+import { callApi, PROJECT_COOKIE, readSelectedProjectId } from '../lib/api';
+import type { ActionState } from '../lib/types';
 
 /**
  * M6 operator UI server actions: thin forms-over-API adapters. Each action

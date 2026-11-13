@@ -81,8 +81,9 @@ const EXCEPTION_STATES = FILM_SUPPLY_ORDER_EXCEPTION_STATES;
 const EXCEPTION_RELEASE_TARGETS: readonly NormalFilmSupplyOrderState[] = FILM_SUPPLY_ORDER_STATES
   .filter((state) => state !== FILM_SUPPLY_ORDER_TERMINAL_STATE);
 
-function withExceptions(next: readonly NormalFilmSupplyOrderState[]): readonly FilmSupplyOrderState[] {
-  return [...next, ...EXCEPTION_STATES];
+function withExceptions(next: readonly (NormalFilmSupplyOrderState | null)[]): readonly FilmSupplyOrderState[] {
+  const normalNexts = next.filter((state): state is NormalFilmSupplyOrderState => state !== null);
+  return [...normalNexts, ...EXCEPTION_STATES];
 }
 
 /** CHANGE_REVIEW resolves into the artwork/approval states a change restarts. */

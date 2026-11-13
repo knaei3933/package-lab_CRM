@@ -1,4 +1,4 @@
-import { callApi } from './api.js';
+import { callApi } from './api';
 
 /**
  * M6 operator UI data assembly.
@@ -433,7 +433,7 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
     const after = state(event.afterState);
     const documentId = text(after, 'documentId') ?? text(state(event.requestMetadata), 'documentId');
     const current = documentId ? documents.get(documentId) : undefined;
-    if (!current) continue;
+    if (!current || !documentId) continue;
     current.versions.push({
       id: event.entityId,
       documentId,

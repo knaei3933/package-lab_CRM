@@ -3,7 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import type { FormEvent } from 'react';
-import { buttonStyle, errorMessageStyle, inputStyle } from '../lib/ui.js';
+import { buttonStyle, errorMessageStyle, inputStyle } from '../lib/ui';
 
 /**
  * Criterion 1: the login form posts username/password to POST /api/auth/login.

@@ -1,12 +1,12 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
-import { ActionForm } from '../components/ActionForm.js';
-import { LogoutButton } from '../components/LogoutButton.js';
-import { TextField } from '../components/fields.js';
-import { loadSessionUser, readSelectedProjectId } from '../lib/api.js';
-import { monoStyle, navStyle } from '../lib/ui.js';
-import { selectProjectAction } from './actions.js';
+import { ActionForm } from '../components/ActionForm';
+import { LogoutButton } from '../components/LogoutButton';
+import { TextField } from '../components/fields';
+import { loadSessionUser, readSelectedProjectId } from '../lib/api';
+import { monoStyle, navStyle } from '../lib/ui';
+import { selectProjectAction } from './actions';
 
 export const metadata: Metadata = {
   title: 'KANEI CRM オペレーター画面',

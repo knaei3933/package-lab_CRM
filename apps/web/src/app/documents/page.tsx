@@ -1,9 +1,9 @@
-import { ActionForm } from '../../components/ActionForm.js';
-import { DocumentUploadForm } from '../../components/DocumentUploadForm.js';
-import { SelectField, TextField } from '../../components/fields.js';
-import { uploadDocumentAction, verifyDocumentAction } from '../actions.js';
-import { readSelectedProjectId } from '../../lib/api.js';
-import { labelLookup, loadWorkspace } from '../../lib/project-data.js';
+import { ActionForm } from '../../components/ActionForm';
+import { DocumentUploadForm } from '../../components/DocumentUploadForm';
+import { SelectField, TextField } from '../../components/fields';
+import { uploadDocumentAction, verifyDocumentAction } from '../actions';
+import { readSelectedProjectId } from '../../lib/api';
+import { labelLookup, loadWorkspace } from '../../lib/project-data';
 import {
   cardStyle,
   infoBoxStyle,
@@ -12,7 +12,7 @@ import {
   tableStyle,
   tdStyle,
   thStyle
-} from '../../lib/ui.js';
+} from '../../lib/ui';
 import {
   DOCUMENT_TYPE_LABELS,
   formatTimestamp,
@@ -21,7 +21,7 @@ import {
   ISSUER_ENTITY_LABELS,
   issuerEntityChoices,
   VERIFICATION_STATUS_LABELS
-} from '../../lib/vocabulary.js';
+} from '../../lib/vocabulary';
 
 export const dynamic = 'force-dynamic';
 

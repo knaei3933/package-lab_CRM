@@ -105,14 +105,19 @@ export const READINESS_BLOCKING_LABELS: Readonly<Record<string, string>> = {
 };
 
 export function unitLabel(unit: string): string {
-  return FILM_UNIT_LABELS[unit as FilmUnit] ?? FILLING_UNIT_LABELS[unit as FillingUnit] ?? unit;
+  const filmLabels = FILM_UNIT_LABELS as Readonly<Record<string, string>>;
+  const fillingLabels = FILLING_UNIT_LABELS as Readonly<Record<string, string>>;
+  return filmLabels[unit] ?? fillingLabels[unit] ?? unit;
 }
 
 export function unitChoices(domain: 'film' | 'filling'): Array<{ value: string; label: string }> {
   const units = domain === 'film' ? FILM_UNITS : FILLING_UNITS;
+  const labels: Record<string, string> = domain === 'film'
+    ? { ...FILM_UNIT_LABELS }
+    : { ...FILLING_UNIT_LABELS };
   return units.map((unit) => ({
     value: unit,
-    label: domain === 'film' ? FILM_UNIT_LABELS[unit] : FILLING_UNIT_LABELS[unit]
+    label: labels[unit] ?? unit
   }));
 }
 

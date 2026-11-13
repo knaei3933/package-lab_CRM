@@ -53,12 +53,13 @@ export async function callApi<T>(
 
   let response: Response;
   try {
-    response = await fetch(`${apiBaseUrl}${path}`, {
+    const init: RequestInit & { headers: Record<string, string> } = {
       method: options.method ?? 'GET',
       headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
       cache: 'no-store'
-    });
+    };
+    if (options.body !== undefined) init.body = JSON.stringify(options.body);
+    response = await fetch(`${apiBaseUrl}${path}`, init);
   } catch {
     return {
       ok: false,

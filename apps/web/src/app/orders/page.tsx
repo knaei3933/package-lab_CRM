@@ -1,6 +1,6 @@
-import { ActionForm } from '../../components/ActionForm.js';
-import { OrderCreateForm } from '../../components/OrderCreateForm.js';
-import { CheckboxField, SelectField, TextField } from '../../components/fields.js';
+import { ActionForm } from '../../components/ActionForm';
+import { OrderCreateForm } from '../../components/OrderCreateForm';
+import { CheckboxField, SelectField, TextField } from '../../components/fields';
 import {
   assumeFilmReceiptAction,
   createFilmSupplyOrderAction,
@@ -9,10 +9,10 @@ import {
   registerSevenPurchaseOrderAction,
   transitionFilmSupplyOrderAction,
   verifySevenPurchaseOrderAction
-} from '../actions.js';
-import { readSelectedProjectId } from '../../lib/api.js';
-import { labelLookup, loadWorkspace } from '../../lib/project-data.js';
-import type { FilmSupplyOrderView } from '../../lib/project-data.js';
+} from '../actions';
+import { readSelectedProjectId } from '../../lib/api';
+import { labelLookup, loadWorkspace } from '../../lib/project-data';
+import type { FilmSupplyOrderView } from '../../lib/project-data';
 import {
   cardStyle,
   infoBoxStyle,
@@ -21,8 +21,8 @@ import {
   tableStyle,
   tdStyle,
   thStyle
-} from '../../lib/ui.js';
-import { formatTimestamp, unitChoices, unitLabel, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary.js';
+} from '../../lib/ui';
+import { formatTimestamp, unitChoices, unitLabel, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary';
 
 export const dynamic = 'force-dynamic';
 

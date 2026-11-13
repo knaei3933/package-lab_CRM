@@ -2,8 +2,8 @@
 
 import { useActionState } from 'react';
 import type { ReactNode } from 'react';
-import type { ActionState } from '../lib/types.js';
-import { buttonStyle, errorMessageStyle, noteStyle, okMessageStyle } from '../lib/ui.js';
+import type { ActionState } from '../lib/types';
+import { buttonStyle, errorMessageStyle, noteStyle, okMessageStyle } from '../lib/ui';
 
 export type FormAction = (state: ActionState | null, formData: FormData) => Promise<ActionState>;
 
