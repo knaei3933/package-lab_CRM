@@ -35,6 +35,7 @@ const otherProjectId = uuidv7();
 const readyProjectId = uuidv7();
 
 let staffToken = '';
+let adminToken = '';
 let viewerToken = '';
 let outsiderToken = '';
 let app: ReturnType<typeof createApp>;
@@ -238,21 +239,71 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
       evidenceSource: 'email',
       eventTime: '2026-11-10T10:00:00.000Z',
       evidenceDocumentVersionId: (evidence.body as { version: { id: string } }).version.id,
+      // M7 security fix S2: each organization carries its own evidence identifier.
+      evidenceIdentifier: `MSG-M5-${organization.toUpperCase()}-0001`,
       externalApproverName: '合成承認者M5',
       externalApproverOrg: '合成承認組織M5'
     });
     expect(approval.status).toBe(201);
   }
 
-  for (const to of [
-    'MAKER_PO_READY',
-    'APPROVED_FOR_MANUAL_SEND',
-    'MAKER_PO_SENT_MANUALLY',
-    'MAKER_PO_ACCEPTED',
-    'FILM_IN_PRODUCTION',
-    'FILM_SHIPPED',
-    'FILM_DELIVERED'
-  ]) {
+  for (const to of ['MAKER_PO_READY']) {
+    const transition = await postJson(`/api/film-supply-orders/${order.id}/transitions`, { to });
+    expect(transition.status).toBe(200);
+    if (to === targetStatus) break;
+  }
+
+  // M7 security fix S1: the maker chain (APPROVED_FOR_MANUAL_SEND,
+  // MAKER_PO_SENT_MANUALLY, MAKER_PO_ACCEPTED) is only reachable through the
+  // dedicated M4 maker purchase-order endpoints, so this helper records the
+  // chain there instead of naming the states on the generic transition endpoint.
+  const makerPoCreated = await postJson(`/api/film-supply-orders/${order.id}/maker-purchase-orders`, {
+    recipientAddress: 'maker-po@example.com',
+    amounts: { currency: 'JPY', totalAmount: '480000' }
+  });
+  expect(makerPoCreated.status).toBe(201);
+  const makerPoId = (makerPoCreated.body as { id: string }).id;
+  const approved = await postAs(adminToken, `/api/maker-purchase-orders/${makerPoId}/ceo-approval`, {});
+  expect(approved.status).toBe(200);
+
+  const sendEvidence = await postJson(`/api/projects/${projectIdValue}/documents`, {
+    documentType: 'send_evidence',
+    issuerEntity: 'kanei',
+    filename: `m5-send-${tag}.txt`,
+    contentType: 'text/plain',
+    contentBase64: toBase64(`composite m5 send evidence ${tag}\n`),
+    sevenPurchaseOrderId: po.id,
+    filmSupplyOrderId: order.id
+  });
+  expect(sendEvidence.status).toBe(201);
+  const sendEvidenceVersionId = (sendEvidence.body as { version: { id: string } }).version.id;
+  await verifyDocument((sendEvidence.body as { document: { id: string } }).document.id, '合成送信証跡確認M5');
+  const sent = await postJson(`/api/maker-purchase-orders/${makerPoId}/send-evidence`, {
+    evidenceDocumentVersionId: sendEvidenceVersionId,
+    senderAddress: 'staff@kanei.example',
+    recipients: ['maker-po@example.com'],
+    sentAt: '2026-11-12T09:00:00.000Z'
+  });
+  expect(sent.status).toBe(200);
+
+  const acceptEvidence = await postJson(`/api/projects/${projectIdValue}/documents`, {
+    documentType: 'acceptance_evidence',
+    issuerEntity: 'kanei',
+    filename: `m5-accept-maker-${tag}.txt`,
+    contentType: 'text/plain',
+    contentBase64: toBase64(`composite m5 maker acceptance evidence ${tag}\n`),
+    sevenPurchaseOrderId: po.id,
+    filmSupplyOrderId: order.id
+  });
+  expect(acceptEvidence.status).toBe(201);
+  await verifyDocument((acceptEvidence.body as { document: { id: string } }).document.id, '合成受領証跡確認M5');
+  const accepted = await postJson(`/api/maker-purchase-orders/${makerPoId}/accept-evidence`, {
+    evidenceDocumentVersionId: (acceptEvidence.body as { version: { id: string } }).version.id,
+    acceptedAt: '2026-11-12T11:00:00.000Z'
+  });
+  expect(accepted.status).toBe(200);
+
+  for (const to of ['FILM_IN_PRODUCTION', 'FILM_SHIPPED', 'FILM_DELIVERED']) {
     const transition = await postJson(`/api/film-supply-orders/${order.id}/transitions`, { to });
     expect(transition.status).toBe(200);
     if (to === targetStatus) break;
@@ -390,6 +441,7 @@ beforeAll(async () => {
       expiresAt: new Date(Date.now() + 60 * 60 * 1000)
     });
     if (name === 'staff') staffToken = token;
+    if (name === 'admin') adminToken = token;
     if (name === 'viewer') viewerToken = token;
     if (name === 'outsider') outsiderToken = token;
   }
@@ -862,7 +914,10 @@ describe('M5 audit history endpoint', () => {
       expect(event.entityType).toBe('film_supply_order');
       expect(event.entityId).toBe(chain.orderId);
       expect(event.occurredAt).toBeTruthy();
-      expect(event.actor).toMatchObject({ id: staffId, role: 'staff' });
+      // The maker chain rows are written by their own endpoints: the CEO
+      // approval is the admin's, everything else on the order is the staff's.
+      expect(['staff', 'admin']).toContain(event.actor?.role);
+      expect([staffId, adminId]).toContain(event.actor?.id);
     }
     const actions = body.events.map((event) => event.action);
     expect(actions[0]).toBe('FILM_SUPPLY_ORDER_CREATED');

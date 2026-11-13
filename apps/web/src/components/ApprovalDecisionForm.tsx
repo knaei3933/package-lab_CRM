@@ -56,6 +56,18 @@ export function ApprovalDecisionForm({
           </select>
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
+          <span style={{ fontSize: 13 }}>
+            承認証跡識別子<span style={{ color: '#b91c1c' }}>（必須・組織ごとに固有）</span>
+          </span>
+          <input
+            name="evidenceIdentifier"
+            required
+            minLength={8}
+            placeholder="例：メールのMessage-IDや署名ブロックのハッシュ"
+            style={{ ...inputStyle, width: 300 }}
+          />
+        </label>
+        <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>証跡の入手経路<span style={{ color: '#b91c1c' }}>（必須）</span></span>
           <select name="evidenceSource" required style={{ ...inputStyle, width: 220 }}>
             {evidenceSourceChoices.map((choice) => (
@@ -70,8 +82,8 @@ export function ApprovalDecisionForm({
           <input type="datetime-local" name="eventTime" required defaultValue={defaultEventTime} style={{ ...inputStyle, width: 240 }} />
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>外部承認者名（任意）</span>
-          <input name="externalApproverName" style={{ ...inputStyle, width: 180 }} />
+          <span style={{ fontSize: 13 }}>承認者名（任意・そのまま記録します）</span>
+          <input name="approverName" style={{ ...inputStyle, width: 180 }} />
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>外部承認者の組織（任意）</span>

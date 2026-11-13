@@ -455,6 +455,15 @@ export const artworkApprovalEvents = pgTable('artwork_approval_events', {
   externalApproverOrg: text('external_approver_org'),
   recordedByUserId: uuid('recorded_by_user_id').notNull().references(() => users.id),
   evidenceDocumentVersionId: uuid('evidence_document_version_id').notNull().references(() => documentVersions.id),
+  /**
+   * M7 security fix S2: the per-organization identifier of the approval message
+   * or signature segment (a message id, a signature block hash). Two
+   * organizations may cite the same file version; only this identifier tells
+   * their two decisions apart, so it must never repeat across organizations on
+   * one revision. Nullable because the rows written before migration 0014 have
+   * no identifier.
+   */
+  evidenceIdentifier: text('evidence_identifier'),
   evidenceSource: approvalEvidenceSource('evidence_source').notNull(),
   approvedFileSha256: text('approved_file_sha256').notNull(),
   /** When the external organization actually decided; recorded_at is when we wrote it down. */

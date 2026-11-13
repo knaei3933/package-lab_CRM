@@ -80,6 +80,13 @@ export interface ApprovalEventView {
   recordedAt: Date | string;
   eventTime: Date | string;
   supersedesEventId: string | null;
+  /**
+   * M7 security fix S2: which evidence version and which per-organization
+   * identifier the decision rests on. Optional so the pure gate derivation can
+   * be exercised with minimal fixtures; the server always fills both.
+   */
+  evidenceDocumentVersionId?: string;
+  evidenceIdentifier?: string | null;
 }
 
 /** The read model of one artwork revision; fileSha256 is the revision hash. */

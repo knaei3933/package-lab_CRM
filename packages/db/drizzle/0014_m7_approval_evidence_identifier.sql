@@ -1,0 +1,12 @@
+-- M7 security fix S2: every artwork approval event carries the per-organization
+-- identifier of the approval message or signature segment it records (a mail
+-- message id, a signature block hash). Two organizations may cite the same
+-- evidence file version; only this identifier distinguishes their two decisions,
+-- so the same identifier must never be registered by both organizations on one
+-- revision (duplicate-message registration).
+--
+-- The column is nullable: the events recorded before this migration simply have
+-- no identifier. The append-only triggers of migration 0007 are untouched — an
+-- approval event stays a recorded fact that is never rewritten, and this change
+-- adds a field to new rows only.
+ALTER TABLE "artwork_approval_events" ADD COLUMN "evidence_identifier" text;

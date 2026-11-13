@@ -57,6 +57,47 @@ export type MakerPoVocabularyValidation<T extends string> =
   | { ok: true; value: T }
   | { ok: false; code: string; message: string };
 
+/**
+ * The film supply order states of the maker purchase-order chain (M4).
+ *
+ * These are the order-level mirrors of the maker PO statuses: the CEO approval,
+ * the send evidence and the acceptance evidence of a maker purchase order are
+ * the only writers of APPROVED_FOR_MANUAL_SEND, MAKER_PO_SENT_MANUALLY and
+ * MAKER_PO_ACCEPTED on the order. They are exported from this module — the same
+ * module that owns the maker PO transition rules — so the generic film order
+ * transition endpoint and the dedicated maker purchase-order endpoints share
+ * one vocabulary and can never drift apart.
+ */
+export const FILM_ORDER_MAKER_CHAIN_STATES = [
+  'APPROVED_FOR_MANUAL_SEND',
+  'MAKER_PO_SENT_MANUALLY',
+  'MAKER_PO_ACCEPTED'
+] as const;
+
+export type FilmOrderMakerChainState = (typeof FILM_ORDER_MAKER_CHAIN_STATES)[number];
+
+export function isFilmOrderMakerChainState(state: string): state is FilmOrderMakerChainState {
+  return (FILM_ORDER_MAKER_CHAIN_STATES as readonly string[]).includes(state);
+}
+
+export type MakerChainTransitionCheck =
+  | { ok: true }
+  | { ok: false; code: 'MAKER_CHAIN_TRANSITION_FORBIDDEN'; message: string };
+
+/**
+ * A generic film order transition may never target the maker chain: each of
+ * these states is reached by recording evidence on the maker purchase order
+ * (CEO approval, send evidence, acceptance evidence), not by naming a state.
+ */
+export function makerChainTransitionRefusal(target: string): MakerChainTransitionCheck {
+  if (!isFilmOrderMakerChainState(target)) return { ok: true };
+  return {
+    ok: false,
+    code: 'MAKER_CHAIN_TRANSITION_FORBIDDEN',
+    message: `メーカー発注の状態（${target}）は総合的な状態遷移APIからは遷移できません。メーカー発注書の専用操作（CEO承認・送信証跡・受領証跡）から記録してください。`
+  };
+}
+
 export function validateMakerPoStatus(value: unknown): MakerPoVocabularyValidation<MakerPurchaseOrderStatus> {
   if (typeof value !== 'string' || !(MAKER_PURCHASE_ORDER_STATUSES as readonly string[]).includes(value)) {
     return {

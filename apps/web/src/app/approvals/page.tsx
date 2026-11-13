@@ -151,7 +151,8 @@ export default async function ApprovalsPage() {
                         </h3>
                         <p style={noteStyle}>
                           必要な証跡：この発注とデザイン「{design.designKey}」に紐付けた承認証跡（approval_evidence）の
-                          書類バージョン。両組織が同じ版を引用します。
+                          書類バージョン。両組織が同じ版を引用できますが、承認証跡識別子（承認メッセージのMessage-IDや
+                          署名ブロックのハッシュ）は組織ごとに固有の値を入力してください。
                         </p>
                         <ApprovalDecisionForm
                           action={recordArtworkApprovalAction}

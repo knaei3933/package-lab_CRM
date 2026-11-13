@@ -201,12 +201,12 @@ fi
 require_id "approval evidence version id" "$EVIDENCE_VERSION_ID"
 
 call POST "/api/artwork-revisions/$REVISION_ID/approvals" \
-  "$(printf '{"organization":"customer","decision":"APPROVE","evidenceSource":"email","evidenceDocumentVersionId":"%s","eventTime":"%s"}' "$EVIDENCE_VERSION_ID" "$EVENT_TIME")"
+  "$(printf '{"organization":"customer","decision":"APPROVE","evidenceSource":"email","evidenceDocumentVersionId":"%s","evidenceIdentifier":"smoke-msg-customer-%s","eventTime":"%s"}' "$EVIDENCE_VERSION_ID" "$STAMP" "$EVENT_TIME")"
 step "POST /api/artwork-revisions/:id/approvals (customer)" 201 "$STATUS"
 
 call POST "/api/artwork-revisions/$REVISION_ID/approvals" \
-  "$(printf '{"organization":"seven","decision":"APPROVE","evidenceSource":"email","evidenceDocumentVersionId":"%s","eventTime":"%s"}' "$EVIDENCE_VERSION_ID" "$EVENT_TIME")"
-step "POST /api/artwork-revisions/:id/approvals (seven, same evidence)" 201 "$STATUS"
+  "$(printf '{"organization":"seven","decision":"APPROVE","evidenceSource":"email","evidenceDocumentVersionId":"%s","evidenceIdentifier":"smoke-msg-seven-%s","eventTime":"%s"}' "$EVIDENCE_VERSION_ID" "$STAMP" "$EVENT_TIME")"
+step "POST /api/artwork-revisions/:id/approvals (seven, same evidence file, own identifier)" 201 "$STATUS"
 boolean_check "second approval closes dual approval"
 
 # -------------------------------------------------- deliveries + readiness

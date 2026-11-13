@@ -20,7 +20,7 @@ import {
   evaluateRevisionRegistrationGate,
   evaluateSevenPoChecklist,
   evaluateSevenPoPrecedenceGate,
-  evaluateSevenPoVerificationGate,
+  makerChainTransitionRefusal,
   FILM_SUPPLY_ORDER_EXCEPTION_STATES,
   FILM_SUPPLY_ORDER_STATES,
   fillingDeliveryConfirmationState,
@@ -88,6 +88,7 @@ import {
   type DocumentContentCheck
 } from './document-storage.js';
 import { hashPassword, verifyPassword } from './password.js';
+import { buildAuditViewForRole, type AuditHistoryRow } from './audit-view.js';
 
 export interface AppOptions {
   db: AppDatabase;
@@ -814,6 +815,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       return context.json({ error: '遷移先状態が不正です', code: 'UNKNOWN_STATE' }, 422);
     }
     const target = body.to as FilmSupplyOrderState;
+
+    // M7 security fix S1: the maker purchase-order chain is written only by the
+    // dedicated M4 endpoints (CEO approval, send evidence, acceptance evidence).
+    // Naming one of these states here would freeze paper nobody approved, record
+    // a send nobody proved or an acceptance nobody verified.
+    const makerChainRefusal = makerChainTransitionRefusal(target);
+    if (!makerChainRefusal.ok) {
+      return context.json({ error: makerChainRefusal.message, code: makerChainRefusal.code }, 422);
+    }
+
     const transition = transitionFilmSupplyOrder(order.status, target);
     if (!transition.ok) {
       return context.json({ error: '許可されていない状態遷移です', code: 'INVALID_TRANSITION', from: order.status, to: target }, 422);
@@ -838,8 +849,13 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       const [po] = await db.select().from(sevenPurchaseOrders)
         .where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).limit(1);
       if (!po) return context.json({ error: 'セブン発注書が見つかりません', code: 'SEVEN_PO_NOT_FOUND' }, 422);
-      // Date separation rule: this gate reads official_registered_at only.
-      const gate = evaluateSevenPoVerificationGate(po);
+      // M7 security fix S4: the same precedence gate the official artifacts and
+      // the supply-order registration use. The date axis is still evaluated
+      // first and reads official_registered_at ONLY (T-06) — a recorded
+      // checklist never substitutes for the missing date — and the authenticity
+      // axis now also has to be open, so a PO nobody verified through the
+      // checklist cannot move the order forward.
+      const gate = evaluateSevenPoPrecedenceGate(po);
       if (!gate.ok) {
         return context.json({ error: gate.message, code: gate.code }, 422);
       }
@@ -1165,22 +1181,26 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       .orderBy(auditEvents.occurredAt, auditEvents.id)
       .limit(limit);
 
+    // M7 security fix S3: the rows are append-only and stay exactly as they were
+    // written; only this answer is narrowed to what the caller's role may read.
+    const selectedRows: AuditHistoryRow[] = rows.map((row) => ({
+      id: row.id,
+      action: row.action,
+      entityType: row.entityType,
+      entityId: row.entityId,
+      beforeState: row.beforeState,
+      afterState: row.afterState,
+      occurredAt: row.occurredAt,
+      requestMetadata: row.requestMetadata,
+      actor: row.actorId
+        ? { id: row.actorId, displayName: row.actorDisplayName, role: row.actorRole }
+        : null
+    }));
+
     return context.json({
       projectId,
-      count: rows.length,
-      events: rows.map((row) => ({
-        id: row.id,
-        action: row.action,
-        entityType: row.entityType,
-        entityId: row.entityId,
-        beforeState: row.beforeState,
-        afterState: row.afterState,
-        occurredAt: row.occurredAt,
-        requestMetadata: row.requestMetadata,
-        actor: row.actorId
-          ? { id: row.actorId, displayName: row.actorDisplayName, role: row.actorRole }
-          : null
-      }))
+      count: selectedRows.length,
+      events: buildAuditViewForRole(user.role, selectedRows)
     });
   });
 
@@ -2058,11 +2078,35 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         approvedFileSha256: artworkApprovalEvents.approvedFileSha256,
         recordedAt: artworkApprovalEvents.recordedAt,
         eventTime: artworkApprovalEvents.eventTime,
-        supersedesEventId: artworkApprovalEvents.supersedesEventId
+        supersedesEventId: artworkApprovalEvents.supersedesEventId,
+        evidenceDocumentVersionId: artworkApprovalEvents.evidenceDocumentVersionId,
+        evidenceIdentifier: artworkApprovalEvents.evidenceIdentifier
       }).from(artworkApprovalEvents)
         .where(inArray(artworkApprovalEvents.artworkRevisionId, revisionIds));
 
     return { revisions: revisionRows, events: eventRows };
+  }
+
+  /**
+   * M7 security fix S4: the seven purchase order precedence gate (T-04, T-05)
+   * applied to the endpoints that advance work on an order rather than to the
+   * paperwork intake alone. The date axis still reads official_registered_at
+   * only (T-06); the authenticity axis requires the recorded checklist verdict.
+   * Returns null when the gate is open, otherwise the 422 payload to answer
+   * with.
+   */
+  async function sevenPoPrecedenceRefusal(order: {
+    sevenPurchaseOrderId: string | null;
+  }): Promise<{ code: string; message: string } | null> {
+    if (!order.sevenPurchaseOrderId) {
+      return { code: 'SEVEN_PO_REQUIRED', message: '検証済みのセブン発注書の紐付けが必要です' };
+    }
+    const [po] = await db.select().from(sevenPurchaseOrders)
+      .where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).limit(1);
+    if (!po) return { code: 'SEVEN_PO_NOT_FOUND', message: 'セブン発注書が見つかりません' };
+    const gate = evaluateSevenPoPrecedenceGate(po);
+    if (!gate.ok) return { code: gate.code, message: gate.message };
+    return null;
   }
 
   app.post('/api/film-supply-orders/:orderId/artwork-revisions', async (context) => {
@@ -2078,6 +2122,15 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     // Artwork only exists downstream of a verified purchase order.
     const registrationGate = evaluateRevisionRegistrationGate(order.status);
     if (!registrationGate.ok) return context.json({ error: registrationGate.message, code: registrationGate.code }, 422);
+
+    // M7 security fix S4: the revision file is always a proof, and proof intake
+    // already applies the precedence gate; stating the gate here as well keeps
+    // the invariant at the endpoint that advances the order, independent of how
+    // the proof version came to exist.
+    const precedenceRefusal = await sevenPoPrecedenceRefusal(order);
+    if (precedenceRefusal) {
+      return context.json({ error: precedenceRefusal.message, code: precedenceRefusal.code }, 422);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.designKey !== 'string' || body.designKey.trim().length === 0) {
@@ -2217,6 +2270,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (typeof body?.evidenceDocumentVersionId !== 'string' || body.evidenceDocumentVersionId.length === 0) {
       return context.json({ error: '承認証跡の書類バージョンが必要です', code: 'EVIDENCE_DOCUMENT_VERSION_REQUIRED' }, 422);
     }
+
     const eventTime = parseRequiredDate(body?.eventTime);
     if (!eventTime.ok) {
       return context.json({ error: '承認日時（外部イベント時刻）が必要です', code: 'EVENT_TIME_REQUIRED' }, 422);
@@ -2250,9 +2304,62 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     });
     if (!binding.ok) return context.json({ error: binding.message, code: binding.code }, 422);
 
+    // M7 security fix S2: every approval event carries a per-organization
+    // evidence identifier (a message id, a signature block hash …) that says
+    // which approval message or signature segment this event is about. The file
+    // version alone does not: both organizations may legitimately cite the same
+    // file, and only these identifiers tell the two decisions apart.
+    if (typeof body?.evidenceIdentifier !== 'string' || body.evidenceIdentifier.length === 0) {
+      return context.json({
+        error: '承認証跡識別子（evidenceIdentifier）が必要です。例：メッセージIDや署名ブロックのハッシュ',
+        code: 'EVIDENCE_IDENTIFIER_REQUIRED'
+      }, 422);
+    }
+    const evidenceIdentifier = body.evidenceIdentifier.trim();
+    if (evidenceIdentifier.length < 8) {
+      return context.json({
+        error: '承認証跡識別子（evidenceIdentifier）は8文字以上で指定してください',
+        code: 'EVIDENCE_IDENTIFIER_TOO_SHORT'
+      }, 422);
+    }
+
     const approvalContext = await loadApprovalContext(order.id);
+    const revisionEvents = approvalContext.events.filter((event) => event.artworkRevisionId === revision.id);
+
+    // M7 security fix S2 (duplicate-message registration): the same
+    // organization may not register the same evidence version twice. Recording
+    // it again only counts as a correction when the event it replaces is named
+    // explicitly (supersedesEventId), so a double submission can never look like
+    // a second, independent approval.
+    const sameEvidence = revisionEvents.find((event) =>
+      event.organization === organization
+      && event.evidenceDocumentVersionId === evidence.versionId
+    );
+    const explicitSupersedeRequested = typeof body?.supersedesEventId === 'string';
+    if (sameEvidence && !explicitSupersedeRequested) {
+      return context.json({
+        error: '同じ組織で同じ承認証跡バージョンは二重に登録できません。置き換える場合は supersedesEventId を指定してください',
+        code: 'EVIDENCE_DUPLICATE_REGISTRATION'
+      }, 422);
+    }
+
+    // M7 security fix S2 (cross-organization identifier reuse): two
+    // organizations citing one file stay distinguishable only while each keeps
+    // its own identifier. The same identifier from the other organization means
+    // the same approval message is being registered twice.
+    const identifierReuse = revisionEvents.find((event) =>
+      event.organization !== organization
+      && event.evidenceIdentifier === evidenceIdentifier
+    );
+    if (identifierReuse) {
+      return context.json({
+        error: 'この承認証跡識別子（evidenceIdentifier）は別の組織が同じ版で既に登録しています。組織ごとに固有の識別子を指定してください',
+        code: 'EVIDENCE_IDENTIFIER_REUSED_ACROSS_ORGANIZATIONS'
+      }, 422);
+    }
+
     let supersedesEventId: string | null = null;
-    if (typeof body?.supersedesEventId === 'string') {
+    if (explicitSupersedeRequested) {
       const target = approvalContext.events.find((event) =>
         event.id === body.supersedesEventId
         && event.artworkRevisionId === revision.id
@@ -2277,10 +2384,15 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       artworkRevisionId: revision.id,
       organization,
       decision: decisionCheck.value,
-      externalApproverName: optionalText(body?.externalApproverName),
+      // The approver is recorded verbatim as free text. Nothing here derives the
+      // approver's organization or authority from a name or an issuerEntity:
+      // the organization is what the recorder declares, the authority is the
+      // evidence the event cites (version + per-organization identifier).
+      externalApproverName: optionalText(body?.approverName) ?? optionalText(body?.externalApproverName),
       externalApproverOrg: optionalText(body?.externalApproverOrg),
       recordedByUserId: user.id,
       evidenceDocumentVersionId: evidence.versionId,
+      evidenceIdentifier,
       evidenceSource: sourceCheck.value,
       approvedFileSha256: revision.fileSha256,
       eventTime: eventTime.date,
@@ -2467,6 +2579,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     const creationGate = evaluateMakerPoCreationGate({ orderStatus: order.status });
     if (!creationGate.ok) return context.json({ error: creationGate.message, code: creationGate.code }, 422);
+
+    // M7 security fix S4: freezing the maker paper is work, so the seven
+    // purchase order behind it has to be officially registered AND
+    // checklist-verified (same precedence gate as every official artifact).
+    // The state gate alone can be satisfied by an order parked in an exception
+    // state and released straight to MAKER_PO_READY.
+    const precedenceRefusal = await sevenPoPrecedenceRefusal(order);
+    if (precedenceRefusal) {
+      return context.json({ error: precedenceRefusal.message, code: precedenceRefusal.code }, 422);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.recipientAddress !== 'string' || body.recipientAddress.trim().length === 0) {

@@ -92,6 +92,30 @@ async function createSession(userId: string, expiresAt = new Date(Date.now() + 6
   return token;
 }
 
+/** A complete human record of the seven checklist items (design section 5.10). */
+function fullChecklist() {
+  return {
+    issuerNameRecorded: true,
+    issuerName: '合成セブン化学事業M1',
+    documentNumberRecorded: true,
+    documentNumber: 'PO-2026-1111-01',
+    issueDateRecorded: true,
+    issueDate: '2026-11-11',
+    sendingChannelRecorded: true,
+    sendingChannel: '専用ポータル',
+    pastTransactionCompared: true,
+    pastTransactionNote: '過去3件の発注書と様式が一致',
+    quoteCompared: true,
+    quoteMatchesPo: true,
+    quoteComparisonNote: '見積と仕様・数量・金額が一致',
+    tamperHints: '',
+    uncertain: false,
+    confirmationReplyRecorded: false,
+    confirmationReplyNote: '',
+    verificationNote: '合成チェックリスト記録M1'
+  };
+}
+
 async function createFilmOrder(
   app: ReturnType<typeof createApp>,
   code: string,
@@ -375,7 +399,7 @@ describe('M1 transaction structure', () => {
     await expect(db.delete(fillingDeliveries).where(eq(fillingDeliveries.id, firstRow.id))).rejects.toThrow();
   });
 
-  it('the SEVEN_PO_VERIFIED gate reads official_registered_at only; original_received_at is reference-only', async () => {
+  it('the SEVEN_PO_VERIFIED gate reads official_registered_at first and then the checklist verdict', async () => {
     const app = createApp({ db });
     const poResponse = await app.request(
       `/api/projects/${projectId}/seven-purchase-orders`,
@@ -403,6 +427,23 @@ describe('M1 transaction structure', () => {
       jsonPost(staffToken, { officialRegisteredAt: '2026-11-03T00:00:00.000Z' })
     );
     expect(registerResponse.status).toBe(200);
+
+    // M7 security fix S4: the official registration date alone no longer opens
+    // the gate — the authenticity checklist has to be recorded too.
+    const unverified = await app.request(
+      `/api/film-supply-orders/${order.id}/transitions`,
+      jsonPost(staffToken, { to: 'SEVEN_PO_VERIFIED' })
+    );
+    expect(unverified.status).toBe(422);
+    expect((await unverified.json()).code).toBe('SEVEN_PO_NOT_VERIFIED');
+    expect((await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.id)).limit(1))[0]?.status)
+      .toBe('DRAFT');
+
+    const checklist = await app.request(
+      `/api/seven-purchase-orders/${po.id}/verification-checklist`,
+      jsonPost(staffToken, fullChecklist())
+    );
+    expect(checklist.status).toBe(200);
 
     const approved = await app.request(
       `/api/film-supply-orders/${order.id}/transitions`,

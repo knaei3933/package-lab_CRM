@@ -177,11 +177,14 @@ async function registerDesignRevision(order: SupplyOrder, projectId: string, des
 }
 
 function approvalBody(overrides: Record<string, unknown> = {}) {
+  const organization = typeof overrides.organization === 'string' ? overrides.organization : 'customer';
   return {
-    organization: 'customer',
+    organization,
     decision: 'APPROVE',
     evidenceSource: 'email',
     eventTime: '2026-11-10T10:00:00.000Z',
+    // M7 security fix S2: each organization carries its own evidence identifier.
+    evidenceIdentifier: `MSG-M4-${organization.toUpperCase()}-0001`,
     externalApproverName: '合成承認者',
     externalApproverOrg: '合成エンドカスタマー',
     ...overrides

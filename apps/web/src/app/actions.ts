@@ -284,6 +284,7 @@ export async function recordArtworkApprovalAction(_prev: ActionState | null, for
   const revisionId = field(formData, 'revisionId');
   const organization = field(formData, 'organization');
   const evidenceDocumentVersionId = field(formData, 'evidenceDocumentVersionId');
+  const evidenceIdentifier = field(formData, 'evidenceIdentifier');
   const evidenceSource = field(formData, 'evidenceSource');
   const eventTime = field(formData, 'eventTime');
   if (revisionId.length === 0) return { ok: false, message: '校了対象の版が見つかりません。' };
@@ -293,16 +294,22 @@ export async function recordArtworkApprovalAction(_prev: ActionState | null, for
   if (evidenceDocumentVersionId.length === 0) {
     return { ok: false, message: '承認証跡の書類バージョンを選択してください。' };
   }
+  // M7 security fix S2: the identifier says which approval message or signature
+  // block this decision rests on, per organization.
+  if (evidenceIdentifier.trim().length < 8) {
+    return { ok: false, message: '承認証跡識別子を8文字以上で入力してください（例：メールのMessage-ID）。' };
+  }
   if (evidenceSource.length === 0) return { ok: false, message: '証跡の入手経路を選択してください。' };
   if (eventTime.length === 0) return { ok: false, message: '承認日時を入力してください。' };
   const body: Record<string, unknown> = {
     organization,
     decision: 'APPROVE',
     evidenceDocumentVersionId,
+    evidenceIdentifier: evidenceIdentifier.trim(),
     evidenceSource,
     eventTime
   };
-  const externalApproverName = optionalField(formData, 'externalApproverName');
+  const externalApproverName = optionalField(formData, 'approverName') ?? optionalField(formData, 'externalApproverName');
   if (externalApproverName) body.externalApproverName = externalApproverName;
   const externalApproverOrg = optionalField(formData, 'externalApproverOrg');
   if (externalApproverOrg) body.externalApproverOrg = externalApproverOrg;
