@@ -461,7 +461,7 @@ describe('M5 commission readiness and delivery confirmation (T-36)', () => {
     const filling = await createFillingDelivery(readyProjectId, 'READY-F');
     const fillingPo = await setupVerifiedPo(readyProjectId, 'READY-PO');
     const fillingEvidence = await uploadAcceptanceEvidence(readyProjectId, { sevenPurchaseOrderId: fillingPo.id });
-    verifyDocument(fillingEvidence.document.id, '合成納品確認（READY充填）');
+    await verifyDocument(fillingEvidence.document.id, '合成納品確認（READY充填）');
     const confirmedFilling = await confirmDelivery(
       `/api/filling-deliveries/${filling.deliveryId}/confirmation`,
       { evidenceDocumentVersionId: fillingEvidence.version.id }
@@ -487,7 +487,7 @@ describe('M5 commission readiness and delivery confirmation (T-36)', () => {
       sevenPurchaseOrderId: chain.poId,
       filmSupplyOrderId: chain.orderId
     });
-    verifyDocument(filmEvidence.document.id, '合成納品確認（READYフィルム）');
+    await verifyDocument(filmEvidence.document.id, '合成納品確認（READYフィルム）');
     const confirmedFilm = await confirmDelivery(
       `/api/film-deliveries/${(delivery.body as { id: string }).id}/confirmation`,
       { evidenceDocumentVersionId: filmEvidence.version.id }
