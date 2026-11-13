@@ -574,7 +574,7 @@ describe('M5 commission readiness and delivery confirmation (T-36)', () => {
     // None of the refusals persisted a confirmation or escalated anything.
     expect(await db.select().from(deliveryConfirmations)).toHaveLength(0);
 
-    verifyDocument(unverifiedDoc.document.id, '合成納品確認M5');
+    await verifyDocument(unverifiedDoc.document.id, '合成納品確認M5');
     const confirmed = await confirmDelivery(fillUrl, {
       evidenceDocumentVersionId: unverifiedDoc.version.id,
       note: '合成納品確認記録M5'
@@ -623,7 +623,7 @@ describe('M5 commission readiness and delivery confirmation (T-36)', () => {
     const filmUrl = `/api/film-deliveries/${(delivery.body as { id: string }).id}/confirmation`;
 
     const unbound = await uploadAcceptanceEvidence(projectId, { sevenPurchaseOrderId: chain.poId });
-    verifyDocument(unbound.document.id, '合成納品確認（他発注分）');
+    await verifyDocument(unbound.document.id, '合成納品確認（他発注分）');
     const orderMismatch = await confirmDelivery(filmUrl, { evidenceDocumentVersionId: unbound.version.id });
     expect(orderMismatch.status).toBe(422);
     expect((orderMismatch.body as { code: string }).code).toBe('DELIVERY_EVIDENCE_ORDER_MISMATCH');
@@ -632,7 +632,7 @@ describe('M5 commission readiness and delivery confirmation (T-36)', () => {
       sevenPurchaseOrderId: chain.poId,
       filmSupplyOrderId: chain.orderId
     });
-    verifyDocument(bound.document.id, '合成納品確認（本発注分）');
+    await verifyDocument(bound.document.id, '合成納品確認（本発注分）');
     const confirmed = await confirmDelivery(filmUrl, { evidenceDocumentVersionId: bound.version.id });
     expect(confirmed.status).toBe(201);
     const confirmedBody = confirmed.body as { confirmation: { id: string }; delivery: { confirmationState: string } };
