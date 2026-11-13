@@ -142,8 +142,10 @@ call POST "/api/seven-purchase-orders/$PO_ID/verification-checklist" "$CHECKLIST
 step "POST /api/seven-purchase-orders/:id/verification-checklist" 200 "$STATUS"
 
 # ------------------------------------------------------ film supply order
+# The order must carry the seven purchase order from intake: the
+# SEVEN_PO_VERIFIED transition reads it (SEVEN_PO_REQUIRED otherwise).
 call POST "/api/projects/$PROJECT_ID/film-supply-orders" \
-  "$(printf '{"code":"SMOKE-FSO-%s","lines":[]}' "$STAMP")"
+  "$(printf '{"code":"SMOKE-FSO-%s","sevenPurchaseOrderId":"%s","lines":[]}' "$STAMP" "$PO_ID")"
 step "POST /api/projects/:id/film-supply-orders" 201 "$STATUS"
 ORDER_ID="$(extract '"id":"[0-9a-f-]{36}"' 4)"
 require_id "film supply order id" "$ORDER_ID"
@@ -158,7 +160,9 @@ call POST "/api/film-supply-orders/$ORDER_ID/transitions" '{"to":"SEVEN_PO_VERIF
 step "POST /api/film-supply-orders/:id/transitions (SEVEN_PO_VERIFIED)" 200 "$STATUS"
 
 # ------------------------------------------------- proof + artwork revision
-PROOF_PAYLOAD="$(printf '{"documentType":"proof","issuerEntity":"maker","filename":"proof-%s.txt","contentType":"text/plain","designKey":"T-35","filmSupplyOrderId":"%s","contentBase64":"%s"}' "$STAMP" "$ORDER_ID" "$(base64_content "proof T-35 rev1 $STAMP")")"
+# proof / approval_evidence / acceptance_evidence are official artifacts: every
+# upload must cite the officially registered, checklist-verified PO.
+PROOF_PAYLOAD="$(printf '{"documentType":"proof","issuerEntity":"maker","filename":"proof-%s.txt","contentType":"text/plain","designKey":"T-35","filmSupplyOrderId":"%s","sevenPurchaseOrderId":"%s","contentBase64":"%s"}' "$STAMP" "$ORDER_ID" "$PO_ID" "$(base64_content "proof T-35 rev1 $STAMP")")"
 call POST "/api/projects/$PROJECT_ID/documents" "$PROOF_PAYLOAD"
 step "POST /api/projects/:id/documents (proof)" 201 "$STATUS"
 PROOF_DOCUMENT_ID="$(extract '"document":{"id":"[0-9a-f-]{36}"' 6)"
@@ -187,7 +191,7 @@ call GET "/api/film-supply-orders/$ORDER_ID/approval-gate"
 step "GET /api/film-supply-orders/:id/approval-gate" 200 "$STATUS"
 
 # ----------------------------------------------------------- dual approval
-APPROVAL_PAYLOAD="$(printf '{"documentType":"approval_evidence","issuerEntity":"customer_generated","filename":"approval-%s.txt","contentType":"text/plain","designKey":"T-35","filmSupplyOrderId":"%s","contentBase64":"%s"}' "$STAMP" "$ORDER_ID" "$(base64_content "approval evidence T-35 $STAMP")")"
+APPROVAL_PAYLOAD="$(printf '{"documentType":"approval_evidence","issuerEntity":"customer_generated","filename":"approval-%s.txt","contentType":"text/plain","designKey":"T-35","filmSupplyOrderId":"%s","sevenPurchaseOrderId":"%s","contentBase64":"%s"}' "$STAMP" "$ORDER_ID" "$PO_ID" "$(base64_content "approval evidence T-35 $STAMP")")"
 call POST "/api/projects/$PROJECT_ID/documents" "$APPROVAL_PAYLOAD"
 step "POST /api/projects/:id/documents (approval_evidence)" 201 "$STATUS"
 EVIDENCE_VERSION_ID="$(extract '"version":{"id":"[0-9a-f-]{36}"' 6)"
@@ -206,7 +210,7 @@ step "POST /api/artwork-revisions/:id/approvals (seven, same evidence)" 201 "$ST
 boolean_check "second approval closes dual approval"
 
 # -------------------------------------------------- deliveries + readiness
-ACCEPT_PAYLOAD="$(printf '{"documentType":"acceptance_evidence","issuerEntity":"kanei","filename":"acceptance-%s.txt","contentType":"text/plain","filmSupplyOrderId":"%s","contentBase64":"%s"}' "$STAMP" "$ORDER_ID" "$(base64_content "acceptance evidence $STAMP")")"
+ACCEPT_PAYLOAD="$(printf '{"documentType":"acceptance_evidence","issuerEntity":"kanei","filename":"acceptance-%s.txt","contentType":"text/plain","filmSupplyOrderId":"%s","sevenPurchaseOrderId":"%s","contentBase64":"%s"}' "$STAMP" "$ORDER_ID" "$PO_ID" "$(base64_content "acceptance evidence $STAMP")")"
 call POST "/api/projects/$PROJECT_ID/documents" "$ACCEPT_PAYLOAD"
 step "POST /api/projects/:id/documents (acceptance_evidence)" 201 "$STATUS"
 ACCEPT_DOCUMENT_ID="$(extract '"document":{"id":"[0-9a-f-]{36}"' 6)"
