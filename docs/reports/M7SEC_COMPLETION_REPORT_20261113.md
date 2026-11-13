@@ -56,7 +56,7 @@ cd /root/company-auto/kanei-crm-mvp
 export DATABASE_URL="postgresql://kanei:<PW>@127.0.0.1:5434/kanei_crm_mvp_test"
 npx drizzle-kit migrate && npx vitest run   # 146/146 기대
 # 개별 취약점 재현: npx vitest run tests/m7-security/ -t '<테스트명>'
-# 3000 UI: http://localhost:3000 (ceo_test / kanei-ceo-pass-2026)
+# 3000 UI: http://localhost:3000 (ceo_test / <ROTATED — see operator>)
 ```
 
 ## 5. 미해결 위험·남은 과제
