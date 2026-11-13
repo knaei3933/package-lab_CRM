@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_PAYMENT_TERMS,
+  evaluateApprovalEvidenceIdentifier,
+  evaluatePaymentGate,
   evaluateSevenPoPrecedenceGate,
   isFilmOrderMakerChainState,
-  makerChainTransitionRefusal
+  makerChainTransitionRefusal,
+  normalizePaymentTerms,
+  validatePaymentTermsInput
 } from '@kanei/core';
 import { buildAuditViewForRole, type AuditHistoryRow } from '../../apps/api/src/audit-view.js';
 
@@ -90,6 +95,92 @@ describe('M7 seven PO precedence gate composition (S4)', () => {
     });
     expect(gate.ok).toBe(false);
     if (!gate.ok) expect(gate.code).toBe('PO_REVIEW_PENDING');
+  });
+});
+
+// M7-SEC3 FIX 1: the evidence identifier is only accepted when the cited
+// evidence document actually carries it.
+describe('M7-SEC3 evidence identifier derivation rule (FIX 1)', () => {
+  const evidenceText = '件名: 版承認のご連絡\nidentifier: MSG-2026-11-13-CUSTOMER-0001\n以上';
+
+  it('accepts an identifier quoted verbatim inside the evidence content', () => {
+    const check = evaluateApprovalEvidenceIdentifier({
+      identifier: 'MSG-2026-11-13-CUSTOMER-0001',
+      evidenceText
+    });
+    expect(check).toEqual({ ok: true, matchedOn: 'evidence_document_content' });
+  });
+
+  it('rejects an invented identifier that appears nowhere in the evidence', () => {
+    const check = evaluateApprovalEvidenceIdentifier({
+      identifier: 'MSG-MADE-UP-0001',
+      evidenceText
+    });
+    expect(check.ok).toBe(false);
+    if (!check.ok) {
+      expect(check.code).toBe('EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT');
+      expect(check.message).toContain('evidenceIdentifier');
+    }
+  });
+
+  it('matches case sensitively: a re-cased identifier is not derivable', () => {
+    const check = evaluateApprovalEvidenceIdentifier({
+      identifier: 'msg-2026-11-13-customer-0001',
+      evidenceText
+    });
+    expect(check.ok).toBe(false);
+  });
+
+  it('matches a substring, so an identifier quoted mid-sentence is still derivable', () => {
+    const check = evaluateApprovalEvidenceIdentifier({
+      identifier: 'MSG-2026-11-13',
+      evidenceText
+    });
+    expect(check).toEqual({ ok: true, matchedOn: 'evidence_document_content' });
+  });
+});
+
+// M7-SEC3 FIX 3: the G6 payment gate vocabulary and its approval condition.
+describe('M7-SEC3 G6 payment gate (FIX 3)', () => {
+  it('keeps one vocabulary: prepaid, on_delivery, undetermined', () => {
+    expect(validatePaymentTermsInput('prepaid')).toEqual({ ok: true, value: 'prepaid' });
+    expect(validatePaymentTermsInput('on_delivery')).toEqual({ ok: true, value: 'on_delivery' });
+    expect(validatePaymentTermsInput('undetermined')).toEqual({ ok: true, value: 'undetermined' });
+  });
+
+  it('refuses a term outside the vocabulary', () => {
+    for (const value of ['cash_on_delivery', 'PREPAID', '', null, undefined, 42]) {
+      const check = validatePaymentTermsInput(value);
+      expect(check.ok).toBe(false);
+      if (!check.ok) expect(check.code).toBe('UNKNOWN_PAYMENT_TERMS');
+    }
+  });
+
+  it('reads a missing stored term as undetermined, never as a confirmed one', () => {
+    expect(normalizePaymentTerms(null)).toBe('undetermined');
+    expect(normalizePaymentTerms(undefined)).toBe('undetermined');
+    expect(normalizePaymentTerms('nonsense')).toBe('undetermined');
+    expect(normalizePaymentTerms('prepaid')).toBe('prepaid');
+    expect(DEFAULT_PAYMENT_TERMS).toBe('undetermined');
+  });
+
+  it('closes G6 on undetermined terms with the Japanese refusal', () => {
+    for (const paymentTerms of ['undetermined', null, undefined]) {
+      const gate = evaluatePaymentGate({ paymentTerms });
+      expect(gate.ok).toBe(false);
+      if (!gate.ok) {
+        expect(gate.code).toBe('PAYMENT_GATE_UNSATISFIED');
+        expect(gate.paymentTerms).toBe('undetermined');
+        expect(gate.message).toContain('決済条件');
+      }
+    }
+  });
+
+  it('opens G6 on a confirmed term, whichever term it is', () => {
+    for (const paymentTerms of ['prepaid', 'on_delivery']) {
+      const gate = evaluatePaymentGate({ paymentTerms });
+      expect(gate).toEqual({ ok: true, gatedOn: 'payment_terms_recorded', paymentTerms });
+    }
   });
 });
 

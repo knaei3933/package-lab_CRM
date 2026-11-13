@@ -1,12 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, unlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
   accounts,
+  artworkApprovalEvents,
   auditEvents,
   createDatabase,
+  documentVersions,
   filmSupplyOrders,
   makerPoEvents,
   makerPurchaseOrders,
@@ -132,14 +134,18 @@ async function setupVerifiedPo(tag: string) {
   return po;
 }
 
-async function createFilmOrder(poId: string, tag: string) {
+async function createFilmOrder(poId: string, tag: string, paymentTerms: 'prepaid' | 'on_delivery' | 'undetermined' = 'prepaid') {
   const created = await postJson(`/api/projects/${projectId}/film-supply-orders`, {
     code: `FSO-M7-${tag}`,
     sevenPurchaseOrderId: poId,
+    // M7-SEC3 FIX 3: the helpers here walk into the maker PO CEO approval, so
+    // the G6 transaction terms default to a settled term; tests that need the
+    // gate closed pass 'undetermined' explicitly.
+    paymentTerms,
     lines: [{ lineNumber: 1, description: '合成フィルム本体M7', orderedQuantity: 100000, unit: 'sheets' }]
   });
   expect(created.status).toBe(201);
-  return created.body as { id: string; lines: Array<{ id: string }> };
+  return created.body as { id: string; paymentTerms: string; lines: Array<{ id: string }> };
 }
 
 async function transitionOrder(orderId: string, to: string) {
@@ -185,6 +191,29 @@ async function registerRevision(poId: string, orderId: string, designKey: string
   return registered.body as { id: string; revisionNo: number };
 }
 
+/**
+ * M7-SEC3 FIX 1: approval evidence whose content quotes the identifier the
+ * approval is registered with. The server only accepts an identifier that is
+ * derivable from the cited evidence document, so a synthetic evidence file has
+ * to carry the identifier inside its bytes.
+ */
+async function uploadApprovalEvidence(
+  poId: string,
+  orderId: string,
+  designKey: string,
+  organization: 'customer' | 'seven' = 'customer',
+  content: string | null = null
+) {
+  const identifier = `MSG-M7-${organization.toUpperCase()}-0001`;
+  const uploaded = await uploadDocument(poId, orderId, {
+    documentType: 'approval_evidence',
+    issuerEntity: organization === 'seven' ? 'seven' : 'customer_generated',
+    designKey,
+    contentBase64: toBase64(content ?? `composite m7 approval evidence\nidentifier: ${identifier}\n`)
+  });
+  return { ...uploaded, identifier };
+}
+
 async function recordApproval(
   revisionId: string,
   evidenceDocumentVersionId: string,
@@ -207,29 +236,21 @@ async function recordApproval(
  * and whose state sits at MAKER_PO_READY — reached only through the dedicated
  * M4 maker purchase-order endpoints from here on.
  */
-async function reachMakerPoReady(tag: string) {
+async function reachMakerPoReady(tag: string, paymentTerms: 'prepaid' | 'on_delivery' | 'undetermined' = 'prepaid') {
   const po = await setupVerifiedPo(tag);
-  const order = await createFilmOrder(po.id, tag);
+  const order = await createFilmOrder(po.id, tag, paymentTerms);
   for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
     const transition = await transitionOrder(order.id, to);
     expect(transition.status).toBe(200);
   }
   const revision = await registerRevision(po.id, order.id, 'label-front');
-  const customerEvidence = await uploadDocument(po.id, order.id, {
-    documentType: 'approval_evidence',
-    issuerEntity: 'customer_generated',
-    designKey: 'label-front'
-  });
+  const customerEvidence = await uploadApprovalEvidence(po.id, order.id, 'label-front');
   const customerApproval = await recordApproval(revision.id, customerEvidence.version.id);
   expect(customerApproval.status).toBe(201);
-  const sevenEvidence = await uploadDocument(po.id, order.id, {
-    documentType: 'approval_evidence',
-    issuerEntity: 'seven',
-    designKey: 'label-front'
-  });
+  const sevenEvidence = await uploadApprovalEvidence(po.id, order.id, 'label-front', 'seven');
   const sevenApproval = await recordApproval(revision.id, sevenEvidence.version.id, {
     organization: 'seven',
-    evidenceIdentifier: 'MSG-M7-SEVEN-0001'
+    evidenceIdentifier: sevenEvidence.identifier
   });
   expect(sevenApproval.status).toBe(201);
   expect((sevenApproval.body as { dualApproved: boolean }).dualApproved).toBe(true);
@@ -416,11 +437,7 @@ describe('S2: approval evidence is identified per organization', () => {
       expect(transition.status).toBe(200);
     }
     const revision = await registerRevision(po.id, order.id, 'label-front');
-    const evidence = await uploadDocument(po.id, order.id, {
-      documentType: 'approval_evidence',
-      issuerEntity: 'customer_generated',
-      designKey: 'label-front'
-    });
+    const evidence = await uploadApprovalEvidence(po.id, order.id, 'label-front');
 
     const first = await recordApproval(revision.id, evidence.version.id);
     expect(first.status).toBe(201);
@@ -491,19 +508,17 @@ describe('S2: approval evidence is identified per organization', () => {
       expect(transition.status).toBe(200);
     }
     const revision = await registerRevision(po.id, order.id, 'label-front');
-    const customerEvidence = await uploadDocument(po.id, order.id, {
-      documentType: 'approval_evidence',
-      issuerEntity: 'customer_generated',
-      designKey: 'label-front'
-    });
-    const sevenEvidence = await uploadDocument(po.id, order.id, {
-      documentType: 'approval_evidence',
-      issuerEntity: 'seven',
-      designKey: 'label-front'
-    });
+    // M7-SEC3 FIX 1: both files quote the shared identifier, because the point
+    // of this test is the same identifier being registered by both
+    // organizations — not an identifier no evidence file carries.
+    const sharedIdentifier = 'MSG-M7-SHARED-BLOCK-01';
+    const customerEvidence = await uploadApprovalEvidence(po.id, order.id, 'label-front', 'customer',
+      `composite m7 shared evidence\nidentifier: ${sharedIdentifier}\n`);
+    const sevenEvidence = await uploadApprovalEvidence(po.id, order.id, 'label-front', 'seven',
+      `composite m7 shared evidence\nidentifier: ${sharedIdentifier}\nidentifier: MSG-M7-SEVEN-BLOCK-02\n`);
 
     const customer = await recordApproval(revision.id, customerEvidence.version.id, {
-      evidenceIdentifier: 'MSG-M7-SHARED-BLOCK-01'
+      evidenceIdentifier: sharedIdentifier
     });
     expect(customer.status).toBe(201);
 
@@ -711,3 +726,259 @@ async function makerPoRow(poId: string) {
   const [row] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1);
   return row;
 }
+
+/**
+ * An order whose purchase order is verified, sitting at APPROVAL_PENDING with
+ * one registered revision: the shape every M7-SEC3 approval test starts from.
+ */
+async function approvalPendingOrder(tag: string) {
+  const po = await setupVerifiedPo(`${tag}-PO`);
+  const order = await createFilmOrder(po.id, tag);
+  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+    const transition = await transitionOrder(order.id, to);
+    expect(transition.status).toBe(200);
+  }
+  const revision = await registerRevision(po.id, order.id, 'label-front');
+  return { poId: po.id, orderId: order.id, revisionId: revision.id };
+}
+
+describe('M7-SEC3 FIX 1: an evidence identifier must be derivable from the cited evidence', () => {
+  it('rejects an identifier the evidence document does not carry', async () => {
+    const order = await approvalPendingOrder('SEC3-ID1');
+    // Evidence whose content is the ordinary upload text: it names no identifier.
+    const evidence = await uploadDocument(order.poId, order.orderId, {
+      documentType: 'approval_evidence',
+      issuerEntity: 'customer_generated',
+      designKey: 'label-front'
+    });
+
+    const refused = await recordApproval(order.revisionId, evidence.version.id, {
+      evidenceIdentifier: 'MSG-INVENTED-BY-RECORDER'
+    });
+    expect(refused.status).toBe(422);
+    const body = refused.body as { code: string; error: string };
+    expect(body.code).toBe('EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT');
+    expect(body.error).toContain('evidenceIdentifier');
+
+    // The refusal persisted nothing.
+    const events = await db.select().from(artworkApprovalEvents)
+      .where(eq(artworkApprovalEvents.artworkRevisionId, order.revisionId));
+    expect(events).toHaveLength(0);
+    expect(await orderStatus(order.orderId)).toBe('APPROVAL_PENDING');
+  });
+
+  it('accepts an identifier the evidence document quotes', async () => {
+    const order = await approvalPendingOrder('SEC3-ID2');
+    const evidence = await uploadApprovalEvidence(order.poId, order.orderId, 'label-front');
+
+    const approval = await recordApproval(order.revisionId, evidence.version.id, {
+      evidenceIdentifier: evidence.identifier
+    });
+    expect(approval.status).toBe(201);
+    const body = approval.body as { approvalEvent: { evidenceIdentifier: string } };
+    expect(body.approvalEvent.evidenceIdentifier).toBe(evidence.identifier);
+  });
+
+  it('refuses an identifier whose evidence bytes can no longer be read', async () => {
+    const order = await approvalPendingOrder('SEC3-ID3');
+    // Unique bytes: identical uploads share one physical file (T-26), and this
+    // test removes the file it owns so no other test loses its evidence.
+    const evidence = await uploadApprovalEvidence(order.poId, order.orderId, 'label-front', 'customer',
+      'composite m7 approval evidence SEC3-ID3\nidentifier: MSG-M7-CUSTOMER-0001\n');
+    const [version] = await db.select({ storagePath: documentVersions.storagePath })
+      .from(documentVersions).where(eq(documentVersions.id, evidence.version.id)).limit(1);
+    expect(version).toBeDefined();
+    await unlink(version!.storagePath);
+
+    const refused = await recordApproval(order.revisionId, evidence.version.id, {
+      evidenceIdentifier: evidence.identifier
+    });
+    expect(refused.status).toBe(422);
+    expect((refused.body as { code: string }).code).toBe('EVIDENCE_DOCUMENT_UNREADABLE');
+    const events = await db.select().from(artworkApprovalEvents)
+      .where(eq(artworkApprovalEvents.artworkRevisionId, order.revisionId));
+    expect(events).toHaveLength(0);
+  });
+});
+
+describe('M7-SEC3 FIX 2: DUAL_APPROVED is gated on the live dual-approval gate', () => {
+  it('refuses to reach DUAL_APPROVED while no approval has been recorded', async () => {
+    const order = await approvalPendingOrder('SEC3-DA1');
+    const before = await transitionAudits(order.orderId);
+
+    const refused = await transitionOrder(order.orderId, 'DUAL_APPROVED');
+    expect(refused.status).toBe(422);
+    const body = refused.body as {
+      code: string;
+      missingApprovals: Array<{ designKey: string; organization: string }>;
+    };
+    expect(body.code).toBe('DUAL_APPROVAL_REQUIRED');
+    expect(body.missingApprovals).toEqual([
+      { designKey: 'label-front', organization: 'customer' },
+      { designKey: 'label-front', organization: 'seven' }
+    ]);
+
+    // Server-side enforcement, not UI hiding: the state and the audit trail are
+    // exactly what they were before the attempt.
+    expect(await orderStatus(order.orderId)).toBe('APPROVAL_PENDING');
+    const after = await transitionAudits(order.orderId);
+    expect(after).toHaveLength(before.length);
+  });
+
+  it('refuses DUAL_APPROVED while one organization is still missing', async () => {
+    const order = await approvalPendingOrder('SEC3-DA2');
+    const evidence = await uploadApprovalEvidence(order.poId, order.orderId, 'label-front');
+    const customerApproval = await recordApproval(order.revisionId, evidence.version.id);
+    expect(customerApproval.status).toBe(201);
+    expect((customerApproval.body as { orderStatus: string }).orderStatus).toBe('APPROVAL_PENDING');
+
+    const refused = await transitionOrder(order.orderId, 'DUAL_APPROVED');
+    expect(refused.status).toBe(422);
+    const body = refused.body as { code: string; missingApprovals: Array<{ organization: string }> };
+    expect(body.code).toBe('DUAL_APPROVAL_REQUIRED');
+    expect(body.missingApprovals).toEqual([{ designKey: 'label-front', organization: 'seven' }]);
+    expect(await orderStatus(order.orderId)).toBe('APPROVAL_PENDING');
+  });
+
+  it('keeps the recovery path open once the live gate really is closed', async () => {
+    const order = await approvalPendingOrder('SEC3-DA3');
+    const customerEvidence = await uploadApprovalEvidence(order.poId, order.orderId, 'label-front');
+    expect((await recordApproval(order.revisionId, customerEvidence.version.id)).status).toBe(201);
+
+    // The second approval lands while the order sits in a review side-channel,
+    // so the automatic advance never fires and the order stays put.
+    const review = await transitionOrder(order.orderId, 'CHANGE_REVIEW');
+    expect(review.status).toBe(200);
+    const sevenEvidence = await uploadApprovalEvidence(order.poId, order.orderId, 'label-front', 'seven');
+    const sevenApproval = await recordApproval(order.revisionId, sevenEvidence.version.id, {
+      organization: 'seven',
+      evidenceIdentifier: sevenEvidence.identifier
+    });
+    expect(sevenApproval.status).toBe(201);
+    expect((sevenApproval.body as { orderStatus: string }).orderStatus).toBe('CHANGE_REVIEW');
+
+    // Back into the normal chain: naming DUAL_APPROVED is now legitimate,
+    // because the gate is genuinely open.
+    const release = await transitionOrder(order.orderId, 'APPROVAL_PENDING');
+    expect(release.status).toBe(200);
+    const advanced = await transitionOrder(order.orderId, 'DUAL_APPROVED');
+    expect(advanced.status).toBe(200);
+    expect((advanced.body as { status: string }).status).toBe('DUAL_APPROVED');
+    expect(await orderStatus(order.orderId)).toBe('DUAL_APPROVED');
+  });
+});
+
+describe('M7-SEC3 FIX 3: the G6 payment gate', () => {
+  it('records paymentTerms at creation and defaults to undetermined', async () => {
+    const po = await setupVerifiedPo('SEC3-G6-DEFAULT-PO');
+    const defaulted = await postJson(`/api/projects/${projectId}/film-supply-orders`, {
+      code: 'FSO-M7-SEC3-G6-DEFAULT',
+      sevenPurchaseOrderId: po.id
+    });
+    expect(defaulted.status).toBe(201);
+    expect((defaulted.body as { paymentTerms: string }).paymentTerms).toBe('undetermined');
+
+    const stated = await createFilmOrder(po.id, 'SEC3-G6-STATED', 'on_delivery');
+    expect((stated as { paymentTerms: string }).paymentTerms).toBe('on_delivery');
+
+    const invalid = await postJson(`/api/projects/${projectId}/film-supply-orders`, {
+      code: 'FSO-M7-SEC3-G6-BAD',
+      sevenPurchaseOrderId: po.id,
+      paymentTerms: 'cash_on_delivery'
+    });
+    expect(invalid.status).toBe(422);
+    expect((invalid.body as { code: string }).code).toBe('UNKNOWN_PAYMENT_TERMS');
+  });
+
+  it('updates paymentTerms while the order is a draft and locks them afterwards', async () => {
+    const po = await setupVerifiedPo('SEC3-G6-PATCH-PO');
+    const order = await createFilmOrder(po.id, 'SEC3-G6-PATCH', 'undetermined');
+
+    const patch = (paymentTerms: string) => app.request(
+      `/api/film-supply-orders/${order.id}/payment-terms`,
+      { method: 'PATCH', headers: jsonPost(staffToken, { paymentTerms }).headers, body: JSON.stringify({ paymentTerms }) }
+    );
+
+    const updated = await patch('prepaid');
+    expect(updated.status).toBe(200);
+    expect((await updated.json() as { paymentTerms: string }).paymentTerms).toBe('prepaid');
+    const [row] = await db.select({ paymentTerms: filmSupplyOrders.paymentTerms })
+      .from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.id)).limit(1);
+    expect(row?.paymentTerms).toBe('prepaid');
+
+    const audit = await db.select().from(auditEvents).where(and(
+      eq(auditEvents.entityType, 'film_supply_order'),
+      eq(auditEvents.entityId, order.id),
+      eq(auditEvents.action, 'FILM_SUPPLY_ORDER_PAYMENT_TERMS_UPDATED')
+    ));
+    expect(audit).toHaveLength(1);
+    expect(audit[0]?.beforeState).toEqual({ paymentTerms: 'undetermined' });
+    expect(audit[0]?.afterState).toEqual({ paymentTerms: 'prepaid' });
+
+    const invalid = await patch('cash_on_delivery');
+    expect(invalid.status).toBe(422);
+    expect((await invalid.json() as { code: string }).code).toBe('UNKNOWN_PAYMENT_TERMS');
+
+    // Outside DRAFT the terms are the ones the rest of the chain approved.
+    const advanced = await transitionOrder(order.id, 'SEVEN_PO_VERIFIED');
+    expect(advanced.status).toBe(200);
+    const locked = await patch('on_delivery');
+    expect(locked.status).toBe(422);
+    expect(await locked.json() as { code: string }).toMatchObject({ code: 'PAYMENT_TERMS_LOCKED', from: 'SEVEN_PO_VERIFIED' });
+    const [after] = await db.select({ paymentTerms: filmSupplyOrders.paymentTerms })
+      .from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.id)).limit(1);
+    expect(after?.paymentTerms).toBe('prepaid');
+  });
+
+  it('blocks the maker PO CEO approval while the terms are undetermined', async () => {
+    const order = await reachMakerPoReady('SEC3-G6-BLOCK', 'undetermined');
+    const created = await createMakerPo(order.orderId);
+    expect(created.status).toBe(201);
+    const poId = created.body.id;
+
+    const refused = await approveMakerPo(poId);
+    expect(refused.status).toBe(422);
+    const body = refused.body as { code: string; error: string; paymentTerms: string };
+    expect(body.code).toBe('PAYMENT_GATE_UNSATISFIED');
+    expect(body.paymentTerms).toBe('undetermined');
+    expect(body.error).toContain('決済条件');
+
+    // Nothing was written: the purchase order is still an unapproved draft.
+    const row = await makerPoRow(poId);
+    expect(row?.status).toBe('DRAFT');
+    expect(row?.ceoApprovedAt).toBeNull();
+    const events = await db.select().from(makerPoEvents).where(eq(makerPoEvents.makerPurchaseOrderId, poId));
+    expect(events).toHaveLength(0);
+    expect(await orderStatus(order.orderId)).toBe('MAKER_PO_READY');
+  });
+
+  it('approves under an open gate and records the gate result in the audit', async () => {
+    const order = await reachMakerPoReady('SEC3-G6-OPEN', 'on_delivery');
+    const created = await createMakerPo(order.orderId);
+    expect(created.status).toBe(201);
+    const poId = created.body.id;
+
+    const approved = await approveMakerPo(poId);
+    expect(approved.status).toBe(200);
+    expect((approved.body as { purchaseOrder: { status: string } }).purchaseOrder.status)
+      .toBe('APPROVED_FOR_MANUAL_SEND');
+
+    const audits = await db.select().from(auditEvents).where(and(
+      eq(auditEvents.action, 'MAKER_PO_CEO_APPROVED'),
+      eq(auditEvents.entityType, 'maker_po_event')
+    ));
+    const gateAudit = audits.find((row) =>
+      ((row.afterState as { paymentGate?: { paymentTerms?: string } }).paymentGate)?.paymentTerms === 'on_delivery'
+    );
+    expect(gateAudit).toBeDefined();
+    expect(gateAudit?.afterState).toMatchObject({
+      status: 'APPROVED_FOR_MANUAL_SEND',
+      paymentGate: {
+        applicable: true,
+        satisfied: true,
+        paymentTerms: 'on_delivery',
+        gatedOn: 'payment_terms_recorded'
+      }
+    });
+  });
+});

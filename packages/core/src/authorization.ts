@@ -21,6 +21,7 @@ export type Operation =
   | 'maker_po:send_evidence'
   | 'maker_po:accept_evidence'
   | 'film_order:create'
+  | 'film_order:update_payment_terms'
   | 'film_order_line:create'
   | 'film_order:transition'
   | 'film_order:assume_receipt'

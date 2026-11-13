@@ -187,6 +187,9 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
   const po = await setupVerifiedPo(projectIdValue, tag);
   const created = await postJson(`/api/seven-purchase-orders/${po.id}/supply-orders`, {
     code: `FSO-M5-${tag}`,
+    // M7-SEC3 FIX 3: this helper walks the chain through the maker PO CEO
+    // approval, so the G6 transaction terms must be settled up front.
+    paymentTerms: 'prepaid',
     lines: [{ lineNumber: 1, description: '合成フィルム本体M5', orderedQuantity: 5000, unit: 'sheets' }]
   });
   expect(created.status).toBe(201);
@@ -222,12 +225,16 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
   const revisionId = (revision.body as { id: string }).id;
 
   for (const [organization, issuer] of [['customer', 'customer_generated'], ['seven', 'seven']] as const) {
+    // M7-SEC3 FIX 1: the evidence identifier must be derivable from the cited
+    // evidence content, so the synthetic evidence quotes the identifier that
+    // the approval is registered with.
+    const evidenceIdentifier = `MSG-M5-${organization.toUpperCase()}-0001`;
     const evidence = await postJson(`/api/projects/${projectIdValue}/documents`, {
       documentType: 'approval_evidence',
       issuerEntity: issuer,
       filename: `m5-approval-${organization}-${tag}.txt`,
       contentType: 'text/plain',
-      contentBase64: toBase64(`composite m5 approval evidence ${organization} ${tag}\n`),
+      contentBase64: toBase64(`composite m5 approval evidence ${organization} ${tag}\nidentifier: ${evidenceIdentifier}\n`),
       sevenPurchaseOrderId: po.id,
       filmSupplyOrderId: order.id,
       designKey: 'label-front-m5'
@@ -240,7 +247,7 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
       eventTime: '2026-11-10T10:00:00.000Z',
       evidenceDocumentVersionId: (evidence.body as { version: { id: string } }).version.id,
       // M7 security fix S2: each organization carries its own evidence identifier.
-      evidenceIdentifier: `MSG-M5-${organization.toUpperCase()}-0001`,
+      evidenceIdentifier,
       externalApproverName: '合成承認者M5',
       externalApproverOrg: '合成承認組織M5'
     });

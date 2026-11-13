@@ -315,6 +315,48 @@ export function evaluateRevisionRegistrationGate(orderStatus: string): RevisionR
 }
 
 /**
+ * M7-SEC3 FIX 1: the evidence identifier is only accepted when it is actually
+ * derivable from the evidence document the event cites.
+ *
+ * The deterministic rule (one rule, no fallback): the identifier must appear in
+ * the stored evidence version's decoded text content as a literal, case
+ * sensitive substring. Decoding is `Buffer.toString('utf8')`, so an identifier
+ * quoted inside a mail export, a signed PDF's text layer or a CSV log matches,
+ * and an identifier invented by the recorder does not.
+ *
+ * Why substring and not a sha256 prefix: two organizations may legitimately
+ * cite the same evidence file version (M7 fix S2), and a digest prefix is the
+ * same for both of them, so the digest rule would make the per-organization
+ * identifier impossible exactly where S2 needs it. The substring rule keeps the
+ * two organizations distinguishable inside one shared file — each quotes its
+ * own message id or signature block.
+ */
+export interface ApprovalEvidenceIdentifierInput {
+  identifier: string;
+  /** The stored evidence version's bytes, decoded as UTF-8. */
+  evidenceText: string;
+}
+
+export type ApprovalEvidenceIdentifierCheck =
+  | { ok: true; matchedOn: 'evidence_document_content' }
+  | { ok: false; code: 'EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT'; message: string };
+
+export function evaluateApprovalEvidenceIdentifier(
+  input: ApprovalEvidenceIdentifierInput
+): ApprovalEvidenceIdentifierCheck {
+  const { identifier, evidenceText } = input;
+  if (!evidenceText.includes(identifier)) {
+    return {
+      ok: false,
+      code: 'EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT',
+      message:
+        '承認証跡識別子（evidenceIdentifier）は引用した承認証跡ファイルの内容に含まれていなければなりません。メッセージIDや署名ブロックなど、証跡ファイル内に実際に記録されている識別子を指定してください'
+    };
+  }
+  return { ok: true, matchedOn: 'evidence_document_content' };
+}
+
+/**
  * The evidence document an approval event cites must be bound to exactly the
  * order, design and company of the revision it approves (T-35). The binding is
  * recorded when the document is uploaded; this check refuses any evidence whose

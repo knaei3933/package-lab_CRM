@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
 import { randomBytes } from 'node:crypto';
-import { stat } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import {
   buildMakerPoSnapshot,
@@ -9,6 +9,7 @@ import {
   computeMakerPoSnapshotSha256,
   deriveOrderApprovalGate,
   evaluateApprovalEvidenceBinding,
+  evaluateApprovalEvidenceIdentifier,
   evaluateCommissionReadiness,
   evaluateDeliveryEvidence,
   evaluateFilmReceiptAssumption,
@@ -17,10 +18,14 @@ import {
   evaluateMakerPoCreationGate,
   evaluateMakerPoSendEvidence,
   evaluateMakerPoSendTransition,
+  evaluatePaymentGate,
   evaluateRevisionRegistrationGate,
   evaluateSevenPoChecklist,
   evaluateSevenPoPrecedenceGate,
+  DEFAULT_PAYMENT_TERMS,
   makerChainTransitionRefusal,
+  normalizePaymentTerms,
+  validatePaymentTermsInput,
   FILM_SUPPLY_ORDER_EXCEPTION_STATES,
   FILM_SUPPLY_ORDER_STATES,
   fillingDeliveryConfirmationState,
@@ -622,6 +627,15 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       if (!lineCheck.ok) return context.json({ error: lineCheck.message, code: lineCheck.code }, 422);
       lines.push(lineCheck.line);
     }
+    // M7-SEC3 FIX 3: the G6 transaction terms are recorded at creation and are
+    // read again by the maker purchase order approval. An order created without
+    // a stated term starts as 'undetermined', the state that closes G6.
+    const paymentTermsCheck = body?.paymentTerms === undefined
+      ? { ok: true as const, value: DEFAULT_PAYMENT_TERMS }
+      : validatePaymentTermsInput(body.paymentTerms);
+    if (!paymentTermsCheck.ok) {
+      return context.json({ error: paymentTermsCheck.message, code: paymentTermsCheck.code }, 422);
+    }
 
     let sevenPurchaseOrderId: string | null = null;
     if (typeof body?.sevenPurchaseOrderId === 'string') {
@@ -640,6 +654,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       code: body.code,
       status: 'DRAFT' as const,
       sevenPurchaseOrderId,
+      paymentTerms: paymentTermsCheck.value,
       holdReason: null,
       exceptionNote: null,
       createdByUserId: user.id,
@@ -675,6 +690,55 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const createdLines = await db.select().from(filmSupplyOrderLines)
       .where(eq(filmSupplyOrderLines.filmSupplyOrderId, orderId));
     return context.json({ ...order, lines: createdLines }, 201);
+  });
+
+  // M7-SEC3 FIX 3: the G6 payment terms are the only mutable field on a film
+  // supply order, and design keeps them writable while the order is a draft
+  // only ("발주 초안까지만"). Once the chain has left DRAFT the terms are the
+  // ones the rest of the chain was approved against, so this endpoint refuses
+  // to renegotiate them.
+  app.patch('/api/film-supply-orders/:orderId/payment-terms', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const orderId = context.req.param('orderId');
+
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'film_order:update_payment_terms', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const body = await context.req.json().catch(() => null) as any;
+    const paymentTermsCheck = validatePaymentTermsInput(body?.paymentTerms);
+    if (!paymentTermsCheck.ok) {
+      return context.json({ error: paymentTermsCheck.message, code: paymentTermsCheck.code }, 422);
+    }
+
+    if (order.status !== 'DRAFT') {
+      return context.json({
+        error: '決済条件（paymentTerms）は発注ドラフト（DRAFT）の間のみ変更できます。現在の状態では変更できません',
+        code: 'PAYMENT_TERMS_LOCKED',
+        from: order.status
+      }, 422);
+    }
+
+    const now = new Date();
+    const updated = { paymentTerms: paymentTermsCheck.value, updatedAt: now };
+    await db.transaction(async (tx) => {
+      await tx.update(filmSupplyOrders).set(updated).where(eq(filmSupplyOrders.id, orderId));
+      await recordAuditEvent(tx, {
+        projectId: order.projectId,
+        id: uuidv7(now),
+        actorUserId: user.id,
+        action: 'FILM_SUPPLY_ORDER_PAYMENT_TERMS_UPDATED',
+        entityType: 'film_supply_order',
+        entityId: orderId,
+        beforeState: { paymentTerms: normalizePaymentTerms(order.paymentTerms) },
+        afterState: { paymentTerms: paymentTermsCheck.value },
+        occurredAt: now,
+        requestMetadata: { operation: 'film_order:update_payment_terms' }
+      });
+    });
+    return context.json({ ...order, ...updated });
   });
 
   app.post('/api/film-supply-orders/:orderId/lines', async (context) => {
@@ -864,14 +928,28 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     // M3: leaving the approval chain for maker ordering requires the derived
     // dual-approval gate to be open right now, not just a status that was set
     // when both approvals existed (T-13). A revocation closes it again.
-    if (target === 'MAKER_PO_READY') {
+    //
+    // M7-SEC3 FIX 2: DUAL_APPROVED is under the same live gate. The status is
+    // the derived conclusion of the approval log — the dedicated approval
+    // endpoint writes it the moment the gate closes — so naming it here is only
+    // legitimate for the recovery path where the gate closed while the order sat
+    // in an exception state and the automatic advance never fired. Without this
+    // check any staff member could freeze "dual approved" onto an order nobody
+    // approved twice.
+    if (target === 'MAKER_PO_READY' || target === 'DUAL_APPROVED') {
       const approvalContext = await loadApprovalContext(orderId);
       const approvalGate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events);
       if (!approvalGate.dualApproved) {
         return context.json({
           error: '全デザインの両組織承認が必要です',
           code: 'DUAL_APPROVAL_REQUIRED',
-          missingApprovals: approvalGate.missingApprovals
+          missingApprovals: approvalGate.missingApprovals,
+          ...(target === 'DUAL_APPROVED'
+            ? {
+                dualApprovedRecordedOnlyViaApprovalEndpoint:
+                  'POST /api/artwork-revisions/:revisionId/approvals'
+              }
+            : {})
         }, 422);
       }
     }
@@ -2002,6 +2080,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       if (!lineCheck.ok) return context.json({ error: lineCheck.message, code: lineCheck.code }, 422);
       lines.push(lineCheck.line);
     }
+    // M7-SEC3 FIX 3: the G6 transaction terms are recorded at creation; an
+    // unstated term starts as 'undetermined', the state that closes G6.
+    const paymentTermsCheck = body?.paymentTerms === undefined
+      ? { ok: true as const, value: DEFAULT_PAYMENT_TERMS }
+      : validatePaymentTermsInput(body.paymentTerms);
+    if (!paymentTermsCheck.ok) {
+      return context.json({ error: paymentTermsCheck.message, code: paymentTermsCheck.code }, 422);
+    }
 
     const now = new Date();
     const orderId = uuidv7(now);
@@ -2011,6 +2097,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       code: body.code,
       status: 'DRAFT' as const,
       sevenPurchaseOrderId: po.id,
+      paymentTerms: paymentTermsCheck.value,
       holdReason: null,
       exceptionNote: null,
       createdByUserId: user.id,
@@ -2282,7 +2369,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       projectId: documents.projectId,
       documentType: documents.documentType,
       filmSupplyOrderId: documents.filmSupplyOrderId,
-      designKey: documents.designKey
+      designKey: documents.designKey,
+      storagePath: documentVersions.storagePath
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(documentVersions.id, body.evidenceDocumentVersionId)).limit(1);
@@ -2321,6 +2409,26 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         error: '承認証跡識別子（evidenceIdentifier）は8文字以上で指定してください',
         code: 'EVIDENCE_IDENTIFIER_TOO_SHORT'
       }, 422);
+    }
+    // M7-SEC3 FIX 1: the identifier must be derivable from the evidence it
+    // cites. The rule is a literal, case sensitive substring match against the
+    // stored evidence version's decoded content (see
+    // evaluateApprovalEvidenceIdentifier): an identifier the recorder invented,
+    // and that no evidence file actually carries, is refused here.
+    let evidenceText: string;
+    try {
+      evidenceText = (await readFile(evidence.storagePath)).toString('utf8');
+    } catch {
+      // The bytes behind the cited version are gone, so nothing about them is
+      // derivable — the identifier has no evidence to be checked against.
+      return context.json({
+        error: '承認証跡ファイルが読み取れないため、識別子を検証できません',
+        code: 'EVIDENCE_DOCUMENT_UNREADABLE'
+      }, 422);
+    }
+    const identifierCheck = evaluateApprovalEvidenceIdentifier({ identifier: evidenceIdentifier, evidenceText });
+    if (!identifierCheck.ok) {
+      return context.json({ error: identifierCheck.message, code: identifierCheck.code }, 422);
     }
 
     const approvalContext = await loadApprovalContext(order.id);
@@ -2668,6 +2776,20 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       return context.json({ error: approval.message, code: approval.code, from: approval.from }, 422);
     }
 
+    // M7-SEC3 FIX 3: the G6 payment gate (design "G6 결제 조건" and its maker-PO
+    // approval condition applicable_payment_gate_satisfied). The CEO approves
+    // maker paper only for an order whose transaction terms are settled; an
+    // order that never recorded a term (or still reads 'undetermined') is
+    // refused here, before anything is written.
+    const paymentGate = evaluatePaymentGate({ paymentTerms: order.paymentTerms });
+    if (!paymentGate.ok) {
+      return context.json({
+        error: paymentGate.message,
+        code: paymentGate.code,
+        paymentTerms: paymentGate.paymentTerms
+      }, 422);
+    }
+
     const now = new Date();
     try {
       const outcome = await db.transaction(async (tx) => {
@@ -2712,7 +2834,19 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           entityType: 'maker_po_event',
           entityId: approvalEvent.id,
           beforeState: { status: po.status, snapshotSha256: po.snapshotSha256 },
-          afterState: { status: 'APPROVED_FOR_MANUAL_SEND', snapshotSha256, approvedByUserId: user.id },
+          afterState: {
+            status: 'APPROVED_FOR_MANUAL_SEND',
+            snapshotSha256,
+            approvedByUserId: user.id,
+            // M7-SEC3 FIX 3: the approval audit names the G6 result it approved
+            // under, so the paper trail shows the payment gate was open.
+            paymentGate: {
+              applicable: true,
+              satisfied: true,
+              paymentTerms: paymentGate.paymentTerms,
+              gatedOn: paymentGate.gatedOn
+            }
+          },
           occurredAt: now,
           requestMetadata: { operation: 'maker_po:ceo_approve', makerPurchaseOrderId: poId }
         });

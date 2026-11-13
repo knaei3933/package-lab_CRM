@@ -4,6 +4,7 @@ export * from './approvals.js';
 export * from './commission.js';
 export * from './documents.js';
 export * from './maker-po.js';
+export * from './payment-gate.js';
 export * from './receipt-assumption.js';
 export * from './state-machine.js';
 export * from './status-labels.js';

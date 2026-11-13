@@ -196,12 +196,18 @@ async function recordApproval(revisionId: string, overrides: Record<string, unkn
 }
 
 async function uploadApprovalEvidence(order: SupplyOrder, projectId: string, designKey: string, issuer: string) {
+  // M7-SEC3 FIX 1: the evidence identifier must be derivable from the cited
+  // evidence content, so the synthetic evidence quotes the identifier that
+  // approvalBody registers the approval with.
+  const organization = issuer === 'seven' ? 'seven' : 'customer';
+  const identifier = `MSG-M4-${organization.toUpperCase()}-0001`;
   return await uploadBoundDocument(order, projectId, {
     documentType: 'approval_evidence',
     issuerEntity: issuer,
     sevenPurchaseOrderId: order.poId,
     filmSupplyOrderId: order.orderId,
-    designKey
+    designKey,
+    contentBase64: toBase64(`composite m4 approval evidence\nidentifier: ${identifier}\n`)
   });
 }
 
@@ -213,6 +219,9 @@ async function createMakerPoReadyOrder(projectId: string, tag: string): Promise<
   const po = await setupVerifiedPo(projectId, tag);
   const created = await postJson(`/api/seven-purchase-orders/${po.id}/supply-orders`, {
     code: `FSO-M4-${tag}`,
+    // M7-SEC3 FIX 3: this helper walks the chain into the maker PO CEO approval,
+    // so the G6 transaction terms must be settled up front.
+    paymentTerms: 'prepaid',
     lines: [
       { lineNumber: 1, description: '合成フィルム本体', orderedQuantity: 100000, unit: 'sheets' },
       { lineNumber: 2, description: '合成台紙', orderedQuantity: 50, unit: 'rolls' }

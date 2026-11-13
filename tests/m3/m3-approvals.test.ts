@@ -174,13 +174,24 @@ async function registerDesignRevision(order: SupplyOrder, projectId: string, des
   };
 }
 
+/**
+ * M7-SEC3 FIX 1: the per-organization identifier the synthetic evidence file
+ * quotes. The server only accepts an identifier that is derivable from the
+ * cited evidence content, so the upload embeds exactly this string.
+ */
+function evidenceIdentifierFor(organization: string): string {
+  return `MSG-M3-${organization.toUpperCase()}-0001`;
+}
+
 async function uploadApprovalEvidence(order: SupplyOrder, projectId: string, designKey: string, issuer: string) {
+  const organization = issuer === 'seven' ? 'seven' : 'customer';
   return await uploadBoundDocument(projectId, {
     documentType: 'approval_evidence',
     issuerEntity: issuer,
     sevenPurchaseOrderId: order.poId,
     filmSupplyOrderId: order.orderId,
-    designKey
+    designKey,
+    contentBase64: toBase64(`composite m3 approval evidence\nidentifier: ${evidenceIdentifierFor(organization)}\n`)
   });
 }
 
@@ -192,7 +203,7 @@ function approvalBody(overrides: Record<string, unknown> = {}) {
     evidenceSource: 'email',
     eventTime: '2026-11-10T10:00:00.000Z',
     // M7 security fix S2: each organization carries its own evidence identifier.
-    evidenceIdentifier: `MSG-M3-${organization.toUpperCase()}-0001`,
+    evidenceIdentifier: evidenceIdentifierFor(organization),
     externalApproverName: '合成承認者',
     externalApproverOrg: '合成エンドカスタマー',
     ...overrides
@@ -541,10 +552,14 @@ describe('M3 proof revisions and dual approval', () => {
     expect(transition.status).toBe(422);
     expect(transition.body.code).toBe('DUAL_APPROVAL_REQUIRED');
 
+    // M7-SEC3 FIX 1: the seven revocation cites its own evidence file, because
+    // an identifier is only valid when the cited evidence content carries it —
+    // the customer evidence file quotes the customer identifier only.
+    const sevenRevokeEvidence = await uploadApprovalEvidence(order, projectIdA, 'label-front', 'seven');
     const sevenRevoke = await recordApproval(flow.registered.revision.id, {
       organization: 'seven',
       decision: 'REVOKE',
-      evidenceDocumentVersionId: revokeEvidence.version.id,
+      evidenceDocumentVersionId: sevenRevokeEvidence.version.id,
       eventTime: '2026-11-11T09:00:00.000Z'
     });
     expect(sevenRevoke.status).toBe(201);

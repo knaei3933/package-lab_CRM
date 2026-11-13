@@ -296,6 +296,13 @@ export const filmSupplyOrders = pgTable('film_supply_orders', {
   code: text('code').notNull().unique(),
   status: filmSupplyOrderStatus('status').notNull().default('DRAFT'),
   sevenPurchaseOrderId: uuid('seven_purchase_order_id').references(() => sevenPurchaseOrders.id),
+  /**
+   * M7-SEC3 FIX 3: the G6 payment gate (design "G6 결제 조건"). The
+   * transaction terms are recorded while the order is a draft and are read by
+   * the maker purchase order approval: 'undetermined' (and null, the
+   * pre-migration state) closes the gate, 'prepaid' and 'on_delivery' open it.
+   */
+  paymentTerms: text('payment_terms').default('undetermined'),
   holdReason: text('hold_reason'),
   exceptionNote: text('exception_note'),
   /**
@@ -317,7 +324,10 @@ export const filmSupplyOrders = pgTable('film_supply_orders', {
   // The assumption stamp is a pair: who recorded it and when are written together.
   check('film_supply_orders_receipt_assumption_pair', sql`(${table.receiptAssumedAt} is null) = (${table.receiptAssumedByUserId} is null)`),
   // An assumed receipt always says why (required note on the recording action).
-  check('film_supply_orders_receipt_assumption_note', sql`${table.receiptAssumedAt} is null or length(btrim(${table.receiptAssumedNote})) > 0`)
+  check('film_supply_orders_receipt_assumption_note', sql`${table.receiptAssumedAt} is null or length(btrim(${table.receiptAssumedNote})) > 0`),
+  // M7-SEC3 FIX 3: the G6 vocabulary is a database constraint, so nothing
+  // outside the API can write a term the payment gate does not understand.
+  check('film_supply_orders_payment_terms_vocabulary', sql`${table.paymentTerms} is null or ${table.paymentTerms} in ('prepaid', 'on_delivery', 'undetermined')`)
 ]);
 
 /**
