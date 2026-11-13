@@ -1,28 +1,34 @@
-import Link from 'next/link';
+import { redirect } from 'next/navigation';
+import { LoginForm } from '../components/LoginForm.js';
+import { apiBaseUrl, loadSessionUser } from '../lib/api.js';
+import { cardStyle, noteStyle } from '../lib/ui.js';
 
-const capabilities = [
-  { title: 'F1案件登録', status: 'API契約実装済み' },
-  { title: 'セッション認証', status: 'サーバー強制チェック' },
-  { title: '権限チェック', status: '業務 × 案件 × 操作' },
-  { title: 'direct_film / F2', status: '作成禁止（422）' }
-];
+export const dynamic = 'force-dynamic';
 
-export default function HomePage() {
+/**
+ * Criterion 1: the login screen. A logged-in operator is sent straight to the
+ * order screen; everyone else sees the username/password form that posts to
+ * POST /api/auth/login (relayed to the API, which issues the session cookie).
+ */
+export default async function LoginPage() {
+  const user = await loadSessionUser();
+  if (user) redirect('/orders');
+
   return (
-    <section>
-      <h1 style={{ fontSize: 32, marginBottom: 8 }}>KANEI CRM MVP</h1>
-      <p>隔離環境で動作するF1専用M0基盤です。既存CRMには接続しません。</p>
-      <p style={{ marginTop: 16 }}>
-        <Link href="/status" style={{ color: '#1d4ed8' }}>ステータス一覧（日本語表記）を見る</Link>
-      </p>
-      <div style={{ display: 'grid', gap: 16, marginTop: 32 }}>
-        {capabilities.map((item) => (
-          <div key={item.title} style={{ border: '1px solid #d8dfeb', borderRadius: 8, padding: 16 }}>
-            <h2 style={{ margin: 0, fontSize: 20 }}>{item.title}</h2>
-            <p style={{ margin: '8px 0 0', color: '#526173' }}>{item.status}</p>
-          </div>
-        ))}
+    <section style={{ display: 'grid', gap: 24 }}>
+      <div>
+        <h1 style={{ fontSize: 28, margin: '0 0 8px' }}>ログイン</h1>
+        <p style={noteStyle}>
+          KANEI CRM（F1専用）のオペレーター画面です。API（{apiBaseUrl}）のセッションで認証します。
+        </p>
       </div>
+      <div style={cardStyle}>
+        <LoginForm />
+      </div>
+      <p style={noteStyle}>
+        シード済みのユーザーでログインしてください（シードの登録内容は packages/db/src/seed.ts を参照）。
+        代表者権限（admin）でログインすると、承認・納品確認・手数料準備の操作が行えます。
+      </p>
     </section>
   );
 }
