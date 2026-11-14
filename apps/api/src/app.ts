@@ -2210,6 +2210,148 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
   }
 
   /**
+   * M8-OPER3: the real-time dual-approval re-verification at the maker-PO
+   * boundary (CEO final safety gate).
+   *
+   * The approval log is append-only and a REVOKE never rewrites the order
+   * status, so an order that once reached MAKER_PO_READY keeps sitting there
+   * after one organization withdrew its approval — the four maker-PO endpoints
+   * were the doors that never re-read the gate (the generic transitions
+   * endpoint already does, T-13). Every call here derives the gate fresh from
+   * the database, records one append-only audit row naming the decision, its
+   * reason and the gate snapshot, and returns the 422 payload when the boundary
+   * must refuse.
+   *
+   * Two closures are deliberately not a block:
+   * - a gate closed only because a newer revision superseded its approvals
+   *   (the T-11 change-review flow): the snapshot-void machinery (G10, T-23,
+   *   T-24) is the authority there and re-freezing the paper is its designed
+   *   step, so blocking would strand a recovery the approval chain requires;
+   * - a send or acceptance for paper whose send is already proven (a
+   *   SEND_EVIDENCE_REGISTERED event with verificationStatus VERIFIED): what
+   *   has left the company cannot be un-sent, so the re-check is recorded in
+   *   the audit trail instead of enforced. Not-yet-shipped paper stays blocked.
+   */
+  type MakerPoRecheckStage =
+    | 'maker_po:create'
+    | 'maker_po:ceo_approve'
+    | 'maker_po:send_evidence'
+    | 'maker_po:accept_evidence';
+
+  interface MakerPoRecheckInput {
+    order: { id: string; projectId: string };
+    /** The order status as the calling handler read it. */
+    orderStatus: string;
+    /** The maker purchase order the call acts on; null while creating one. */
+    poId: string | null;
+    stage: MakerPoRecheckStage;
+    actorUserId: string;
+    now: Date;
+  }
+
+  interface MakerPoRecheckRefusal {
+    error: string;
+    code: 'DUAL_APPROVAL_NO_LONGER_VALID';
+    missingApprovals: Array<{ designKey: string; organization: ApprovalOrganization }>;
+  }
+
+  const DUAL_APPROVAL_NO_LONGER_VALID_MESSAGE =
+    '二重承認が無効になっているため、この操作は実行できません。取り消された組織の承認を再取得してから実行してください';
+
+  async function dualApprovalRecheck(input: MakerPoRecheckInput): Promise<MakerPoRecheckRefusal | null> {
+    const approvalContext = await loadApprovalContext(input.order.id);
+    const gate = deriveOrderApprovalGate(
+      approvalContext.revisions,
+      approvalContext.events,
+      approvalContext.verifications
+    );
+
+    // The proven-send read: a send registered with a verified evidence document
+    // is the fact that the paper already left the company (G9 VERIFIED).
+    const provenSendRows = input.poId === null
+      ? [] as Array<{ id: string }>
+      : await db.select({ id: makerPoEvents.id }).from(makerPoEvents).where(and(
+        eq(makerPoEvents.makerPurchaseOrderId, input.poId),
+        eq(makerPoEvents.eventType, 'SEND_EVIDENCE_REGISTERED'),
+        eq(makerPoEvents.verificationStatus, 'VERIFIED')
+      )).limit(1);
+    const provenSendExists = provenSendRows.length > 0;
+    const postSendStage = input.stage === 'maker_po:send_evidence'
+      || input.stage === 'maker_po:accept_evidence';
+
+    // A closure counts as a withdrawal when a required organization's latest
+    // effective decision on the current revision is a REVOKE, or when its
+    // latest APPROVE is not counted (identifier awaiting manual confirmation).
+    // Both mean the counted dual approval is gone now. A revision that simply
+    // has no counted approvals yet is the change-review flow, not a withdrawal.
+    const approvalWithdrawn = gate.designs.some((design) =>
+      design.customer.revoked || design.seven.revoked
+      || design.customer.pendingEvidenceIdentifier || design.seven.pendingEvidenceIdentifier
+    );
+    const blocked = !gate.dualApproved && approvalWithdrawn
+      && !(postSendStage && provenSendExists);
+    const reason = gate.dualApproved
+      ? 'gate_open'
+      : !approvalWithdrawn
+        ? 'gate_closed_superseded_revision_snapshot_void_governs'
+        : postSendStage && provenSendExists
+          ? 'gate_closed_after_proven_send_recorded_not_enforced'
+          : 'gate_closed_approval_withdrawn';
+
+    await recordAuditEvent(db, {
+      projectId: input.order.projectId,
+      id: uuidv7(input.now),
+      actorUserId: input.actorUserId,
+      action: 'MAKER_PO_DUAL_APPROVAL_RECHECK',
+      entityType: input.poId === null ? 'film_supply_order' : 'maker_purchase_order',
+      entityId: input.poId ?? input.order.id,
+      afterState: {
+        result: blocked ? 'blocked' : 'passed',
+        stage: input.stage,
+        reason,
+        provenSendExists,
+        orderStatus: input.orderStatus,
+        gate: {
+          dualApproved: gate.dualApproved,
+          requiredDesignKeys: gate.requiredDesignKeys,
+          missingApprovals: gate.missingApprovals,
+          designs: gate.designs.map((design) => ({
+            designKey: design.designKey,
+            revisionNo: design.currentRevisionNo,
+            fileSha256: design.fileSha256,
+            customer: {
+              valid: design.customer.valid,
+              revoked: design.customer.revoked,
+              latestDecision: design.customer.latestDecision,
+              pendingEvidenceIdentifier: design.customer.pendingEvidenceIdentifier
+            },
+            seven: {
+              valid: design.seven.valid,
+              revoked: design.seven.revoked,
+              latestDecision: design.seven.latestDecision,
+              pendingEvidenceIdentifier: design.seven.pendingEvidenceIdentifier
+            }
+          }))
+        }
+      },
+      occurredAt: input.now,
+      requestMetadata: {
+        operation: input.stage,
+        filmSupplyOrderId: input.order.id,
+        ...(input.poId === null ? {} : { makerPurchaseOrderId: input.poId })
+      }
+    });
+
+    return blocked
+      ? {
+        error: DUAL_APPROVAL_NO_LONGER_VALID_MESSAGE,
+        code: 'DUAL_APPROVAL_NO_LONGER_VALID',
+        missingApprovals: gate.missingApprovals
+      }
+      : null;
+  }
+
+  /**
    * M7 security fix S4: the seven purchase order precedence gate (T-04, T-05)
    * applied to the endpoints that advance work on an order rather than to the
    * paperwork intake alone. The date axis still reads official_registered_at
@@ -2979,6 +3121,21 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       return context.json({ error: precedenceRefusal.message, code: precedenceRefusal.code }, 422);
     }
 
+    // M8-OPER3: freezing the paper is the first boundary act, so the dual
+    // approval it rests on is re-derived here, at the moment of freezing. A
+    // REVOKE recorded after the order reached MAKER_PO_READY never moved the
+    // status, so only this live read can refuse the freeze (and every re-check
+    // — pass or block — leaves its own audit row behind).
+    const creationRecheck = await dualApprovalRecheck({
+      order: { id: order.id, projectId: order.projectId },
+      orderStatus: order.status,
+      poId: null,
+      stage: 'maker_po:create',
+      actorUserId: user.id,
+      now: new Date()
+    });
+    if (creationRecheck) return context.json(creationRecheck, 422);
+
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.recipientAddress !== 'string' || body.recipientAddress.trim().length === 0) {
       return context.json({ error: '宛先住所が必要です', code: 'RECIPIENT_ADDRESS_REQUIRED' }, 422);
@@ -3073,6 +3230,20 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         paymentTerms: paymentGate.paymentTerms
       }, 422);
     }
+
+    // M8-OPER3: the representative's approval is the last pre-send act, so the
+    // dual approval it certifies is re-derived here too — a withdrawal recorded
+    // between the order reaching MAKER_PO_READY and this approval must not be
+    // certified over.
+    const approvalRecheck = await dualApprovalRecheck({
+      order: { id: order.id, projectId: order.projectId },
+      orderStatus: order.status,
+      poId,
+      stage: 'maker_po:ceo_approve',
+      actorUserId: user.id,
+      now: new Date()
+    });
+    if (approvalRecheck) return context.json(approvalRecheck, 422);
 
     const now = new Date();
     try {
@@ -3210,6 +3381,20 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const body = await context.req.json().catch(() => null) as any;
     const sentAt = parseOptionalDate(body?.sentAt);
     if (!sentAt.ok) return context.json({ error: '送信日時が不正です', code: 'INVALID_DATE' }, 422);
+
+    // M8-OPER3: the send is the point of no return, so the gate is re-derived
+    // here — but only for paper that has not shipped yet. A send already proven
+    // by a verified evidence document is history: the re-check is recorded in
+    // the audit trail and the registration is answered normally.
+    const sendRecheck = await dualApprovalRecheck({
+      order: { id: order.id, projectId: order.projectId },
+      orderStatus: order.status,
+      poId,
+      stage: 'maker_po:send_evidence',
+      actorUserId: user.id,
+      now: new Date()
+    });
+    if (sendRecheck) return context.json(sendRecheck, 422);
 
     const now = new Date();
     try {
@@ -3470,6 +3655,19 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const body = await context.req.json().catch(() => null) as any;
     const acceptedAt = parseOptionalDate(body?.acceptedAt);
     if (!acceptedAt.ok) return context.json({ error: '受領日時が不正です', code: 'INVALID_DATE' }, 422);
+
+    // M8-OPER3: acceptance follows a proven send only, so the gate re-check
+    // records its decision here — a withdrawal after the paper shipped is
+    // recorded, never a retroactive refusal of work that already happened.
+    const acceptRecheck = await dualApprovalRecheck({
+      order: { id: order.id, projectId: order.projectId },
+      orderStatus: order.status,
+      poId,
+      stage: 'maker_po:accept_evidence',
+      actorUserId: user.id,
+      now: new Date()
+    });
+    if (acceptRecheck) return context.json(acceptRecheck, 422);
 
     const now = new Date();
     try {
