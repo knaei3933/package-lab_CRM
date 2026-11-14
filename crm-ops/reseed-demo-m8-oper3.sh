@@ -168,7 +168,8 @@ require_id "artwork revision id" "$REVISION_ID"
 # identifier: text-like evidence auto-verifies the identifier, so both approvals
 # count immediately and the order closes the dual approval.
 record_text_approval() {
-  local organization="$1" issuer="$2" identifier="DEMO-MSG-${organization^^}-$STAMP"
+  local organization="$1" issuer="$2"
+  local identifier="DEMO-MSG-${organization^^}-$STAMP"
   local payload
   payload="$(printf '{"documentType":"approval_evidence","issuerEntity":"%s","filename":"demo-approval-%s-%s.txt","contentType":"text/plain","designKey":"label-front","filmSupplyOrderId":"%s","sevenPurchaseOrderId":"%s","contentBase64":"%s"}' "$issuer" "$organization" "$STAMP" "$ORDER_ID" "$PO_ID" "$(base64_content "demo approval evidence ($organization)
 identifier: $identifier")")"
