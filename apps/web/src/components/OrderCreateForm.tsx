@@ -16,6 +16,12 @@ interface OrderCreateFormProps {
   unitChoices: Choice[];
   orderKind: 'film' | 'filling';
   sevenPurchaseOrderChoices?: Choice[];
+  /**
+   * M8-OPER2 FIX 1: the G6 transaction terms, chosen while the order is still a
+   * draft. Omitted for the filling order form — the terms belong to the film
+   * supply chain only.
+   */
+  paymentTermsChoices?: Choice[];
 }
 
 /**
@@ -24,7 +30,13 @@ interface OrderCreateFormProps {
  * edited as rows and serialized into one hidden field, which the server action
  * numbers and validates before posting to the API.
  */
-export function OrderCreateForm({ action, unitChoices, orderKind, sevenPurchaseOrderChoices }: OrderCreateFormProps) {
+export function OrderCreateForm({
+  action,
+  unitChoices,
+  orderKind,
+  sevenPurchaseOrderChoices,
+  paymentTermsChoices
+}: OrderCreateFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   const [lines, setLines] = useState<LineRow[]>([{ description: '', quantity: '', unit: unitChoices[0]?.value ?? '' }]);
   const [code, setCode] = useState('');
@@ -71,6 +83,25 @@ export function OrderCreateForm({ action, unitChoices, orderKind, sevenPurchaseO
               </option>
             ))}
           </select>
+        </label>
+      ) : null}
+
+      {paymentTermsChoices && paymentTermsChoices.length > 0 ? (
+        <label style={{ display: 'grid', gap: 4 }}>
+          <span style={{ fontSize: 13 }}>
+            決済条件（G6）<span style={{ color: '#b91c1c' }}>（必須）</span>
+          </span>
+          <select name="paymentTerms" defaultValue="undetermined" style={{ ...inputStyle, width: 340 }}>
+            {paymentTermsChoices.map((choice) => (
+              <option key={choice.value} value={choice.value}>
+                {choice.label}
+              </option>
+            ))}
+          </select>
+          <span style={noteStyle}>
+            ドラフトの間だけ変更できます。ここでの記録は入金確認ではありません —
+            入金の確認は別の手動ステップです。
+          </span>
         </label>
       ) : null}
 

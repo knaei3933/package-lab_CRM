@@ -120,6 +120,13 @@
       "when": 1795379160000,
       "tag": "0016_m8_operator_maker_po_roles",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1795465560000,
+      "tag": "0017_m8_oper2_evidence_manual_verification",
+      "breakpoints": true
     }
   ]
 }

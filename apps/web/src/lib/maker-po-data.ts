@@ -1,4 +1,5 @@
 import { callApi } from './api';
+import { isFilmOrderPastMakerAcceptance } from '@kanei/core';
 import { loadWorkspace } from './project-data';
 import type { FilmSupplyOrderView, Workspace } from './project-data';
 
@@ -55,14 +56,37 @@ export interface PaymentGateView {
   paymentConfirmedAt: string | null;
 }
 
-/** Which orders carry maker-PO work: the freeze gate and the chain below it. */
+/**
+ * M8-OPER2 FIX 3: the production/shipping/delivery states an order reaches
+ * after its maker paper was accepted. These orders keep their place on the
+ * board — the 発注書・代表承認・送信・受入 history stays readable — but the
+ * recording forms are replaced by that read-only history.
+ */
+const PAST_MAKER_ACCEPTANCE_ORDER_STATES: readonly string[] = [
+  'FILM_IN_PRODUCTION',
+  'FILM_SHIPPED',
+  'FILM_DELIVERED',
+  'FILM_RECEIPT_ASSUMED_NO_ISSUE'
+];
+
+/** Which orders carry maker-PO work: the freeze gate, the chain below it, and the completed orders behind it. */
 const MAKER_PO_ORDER_STATES: readonly string[] = [
   'MAKER_PO_READY',
   'APPROVED_FOR_MANUAL_SEND',
   'MAKER_PO_SENT_MANUALLY',
   'MAKER_PO_ACCEPTED',
-  'SNAPSHOT_VOIDED'
+  'SNAPSHOT_VOIDED',
+  ...PAST_MAKER_ACCEPTANCE_ORDER_STATES
 ];
+
+/**
+ * True for an order whose maker paper is closed: it has moved past
+ * MAKER_PO_ACCEPTED into production/shipping/delivery. The screens answer with
+ * read-only history and never render the 승인/발송/수락 forms again.
+ */
+export function isOrderPastMakerAcceptance(orderStatus: string): boolean {
+  return isFilmOrderPastMakerAcceptance(orderStatus);
+}
 
 export interface OrderMakerPoBoard {
   order: FilmSupplyOrderView;
@@ -128,6 +152,18 @@ export function nextActionForStatus(status: string, role: string): string {
     default:
       return `次のアクション：状態 ${status} の取り扱いを確認してください`;
   }
+}
+
+/**
+ * The G6 read for one order: the recorded terms, the gate state and the 入金確認
+ * that never self-fills. The /orders screen uses it to show the current terms
+ * next to the recording form; the API already answers it per role.
+ */
+export async function loadPaymentGate(orderId: string): Promise<PaymentGateView | null> {
+  const result = await callApi<PaymentGateView>(
+    `/api/film-supply-orders/${encodeURIComponent(orderId)}/payment-gate`
+  );
+  return result.ok && result.data ? result.data : null;
 }
 
 /** Loads the maker-PO board for one project, order by order. */

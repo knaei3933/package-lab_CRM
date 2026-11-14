@@ -15,6 +15,7 @@ export type Operation =
   | 'artwork_revision:create'
   | 'artwork_approval:record'
   | 'artwork_approval:read'
+  | 'artwork_approval:verify_evidence'
   | 'supply_order:create'
   | 'maker_po:create'
   | 'maker_po:read'
@@ -77,6 +78,15 @@ export function canPerform(
   if (!actor.isActive) return { allowed: false, reason: 'INACTIVE_ACTOR' };
 
   if (operation === 'ceo_approve') {
+    return actor.role === 'admin'
+      ? { allowed: true }
+      : { allowed: false, reason: 'ROLE_FORBIDDEN' };
+  }
+
+  // M8-OPER2 FIX 2: confirming or rejecting a pending evidence identifier is
+  // the human act that lets an approval complete the dual approval, so it is
+  // never delegated — the representative verifies, staff and viewer wait.
+  if (operation === 'artwork_approval:verify_evidence') {
     return actor.role === 'admin'
       ? { allowed: true }
       : { allowed: false, reason: 'ROLE_FORBIDDEN' };

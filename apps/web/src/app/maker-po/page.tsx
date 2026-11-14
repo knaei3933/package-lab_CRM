@@ -1,7 +1,9 @@
 import { ActionForm } from '../../components/ActionForm';
+import { OrderCreateForm } from '../../components/OrderCreateForm';
 import { SelectField, TextField } from '../../components/fields';
 import { callApi, loadSessionUser, readSelectedProjectId } from '../../lib/api';
 import {
+  isOrderPastMakerAcceptance,
   loadMakerPoBoard,
   loadMakerPoDetail,
   MAKER_PO_EVENT_TYPE_LABELS,
@@ -22,8 +24,9 @@ import {
   tdStyle,
   thStyle
 } from '../../lib/ui';
-import { formatTimestamp, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary';
+import { formatTimestamp, unitChoices, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary';
 import type { Choice } from '../../lib/types';
+import { createFilmSupplyOrderAction } from '../actions';
 import {
   approveMakerPoAction,
   createMakerPoAction,
@@ -66,6 +69,10 @@ export default async function MakerPoPage() {
   const role = user?.role ?? 'viewer';
   const isAdmin = role === 'admin';
   const stateLabel = labelLookup(board.workspace.labels, 'filmSupplyOrderStates');
+  const poChoices = board.workspace.sevenPurchaseOrders.map((po) => ({
+    value: po.id,
+    label: `${po.poNumber}（${po.officialRegisteredAt ? '公式登録済み' : '未登録'}）`
+  }));
 
   const audit = await loadMakerPoAudit(projectId);
 
@@ -101,6 +108,23 @@ export default async function MakerPoPage() {
         stateLabel={stateLabel}
       />
 
+      {/* M8-OPER2 FIX 1: a new order can be created with its G6 terms already set. */}
+      <div style={cardStyle}>
+        <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>決済条件を設定して発注を作成する</h2>
+        <p style={noteStyle}>
+          フィルム発注を作るときに決済条件（G6: prepaid／on_delivery／undetermined）を設定できます。
+          決済条件は発注ドラフト（DRAFT）の間だけ変更でき、ここでの記録は入金確認ではありません
+          — 入金の確認は別の手動ステップです。未確定（undetermined）のままでは代表承認（G6）は拒否されます。
+        </p>
+        <OrderCreateForm
+          action={createFilmSupplyOrderAction}
+          orderKind="film"
+          unitChoices={unitChoices('film')}
+          sevenPurchaseOrderChoices={poChoices}
+          paymentTermsChoices={PAYMENT_TERMS_CHOICES}
+        />
+      </div>
+
       {board.boards.map((entry) => (
         <MakerPoOrderSection
           key={entry.order.id}
@@ -117,7 +141,9 @@ export default async function MakerPoPage() {
         <div style={cardStyle}>
           <p style={noteStyle}>
             メーカー発注の作業対象の発注はまだありません。フィルム発注が MAKER_PO_READY（校正のダブル承認が完了）に
-            なると、この画面に表示されます。次のアクション: 「案件（発注）一覧／作成」画面で承認を進めてください。
+            なると、この画面に表示されます。製造中・出荷済み・納品済みに進んだ発注も、発注書と承認・送信・受入の
+            履歴が読めるままこの画面に表示されます。次のアクション:
+            「案件（発注）一覧／作成」画面で承認を進めてください。
           </p>
         </div>
       ) : null}
@@ -206,11 +232,16 @@ function MakerPoOrderSection({
 }) {
   const gate = entry.paymentGate;
   const list = entry.makerPurchaseOrders;
+  // M8-OPER2 FIX 3: an order in the production/shipping/delivery chain has a
+  // closed paper. The section answers with the read-only history and never
+  // renders the approval / send / acceptance forms again.
+  const pastAcceptance = isOrderPastMakerAcceptance(entry.order.status);
 
   return (
     <div style={cardStyle}>
       <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>
         フィルム発注 {entry.order.code}（{stateLabel(entry.order.status)}）
+        {pastAcceptance ? <span style={noteStyle}> ／ メーカー発注の紙は受入済み（履歴は下に表示）</span> : null}
       </h2>
 
       {/* G6 payment gate: 決済条件の状態 and the block reason, always visible. */}
@@ -233,7 +264,7 @@ function MakerPoOrderSection({
         )}
       </div>
 
-      {isAdmin && entry.order.status === 'DRAFT' && gate && !gate.gate.satisfied ? (
+      {!pastAcceptance && isAdmin && entry.order.status === 'DRAFT' && gate && !gate.gate.satisfied ? (
         <details style={{ marginTop: 12 }}>
           <summary style={{ fontSize: 13, cursor: 'pointer' }}>決済条件を記録する（ドラフトの間のみ）</summary>
           <ActionForm
@@ -303,20 +334,114 @@ function MakerPoOrderSection({
 
       {entry.makerPoError ? <div style={infoBoxStyle}>{entry.makerPoError}</div> : null}
 
-      {/* Screen 2: 大代表承認 */}
-      <MakerPoApprovalBlock entry={entry} isAdmin={isAdmin} role={role} />
+      {pastAcceptance ? (
+        // M8-OPER2 FIX 3: read-only history instead of the recording forms.
+        <MakerPoHistoryBlock list={list} />
+      ) : (
+        <>
+          {/* Screen 2: 大代表承認 */}
+          <MakerPoApprovalBlock entry={entry} isAdmin={isAdmin} role={role} />
 
-      {/* Screens 3 and 4 */}
-      {list.map((po) => (
-        <MakerPoWorkBlocks
-          key={po.id}
-          po={po}
-          isAdmin={isAdmin}
-          role={role}
-          sendEvidenceChoices={sendEvidenceChoices}
-          acceptanceEvidenceChoices={acceptanceEvidenceChoices}
-        />
-      ))}
+          {/* Screens 3 and 4 */}
+          {list.map((po) => (
+            <MakerPoWorkBlocks
+              key={po.id}
+              po={po}
+              isAdmin={isAdmin}
+              role={role}
+              sendEvidenceChoices={sendEvidenceChoices}
+              acceptanceEvidenceChoices={acceptanceEvidenceChoices}
+            />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * M8-OPER2 FIX 3: the 発注書・代表承認・送信・受入 history of a closed paper,
+ * read from the role-shaped API answer. No form is rendered here: past
+ * MAKER_PO_ACCEPTED the paper is done and the screen only reports what happened.
+ */
+async function MakerPoHistoryBlock({ list }: { list: MakerPoViewRow[] }) {
+  if (list.length === 0) {
+    return (
+      <p style={noteStyle}>
+        この発注は受入後の状態（製造中・出荷済み・納品済み）ですが、この画面に表示できるメーカー発注書はまだありません。
+      </p>
+    );
+  }
+  const details = await Promise.all(list.map((po) => loadMakerPoDetail(po.id)));
+
+  return (
+    <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
+      <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>メーカー発注の履歴（発注書・代表承認・送信・受入）</h3>
+      <p style={noteStyle}>
+        受入済みのため、これ以上の承認・送信・受入の記録操作は表示しません。以下は記録の履歴です。
+      </p>
+      {list.map((po, index) => {
+        const detail = details[index] ?? { purchaseOrder: null, events: [], error: '取得できませんでした。' };
+        const sentEvent = detail.events.find((event) => event.eventType === 'SEND_EVIDENCE_REGISTERED');
+        const acceptedEvent = detail.events.find((event) => event.eventType === 'ACCEPT_EVIDENCE_REGISTERED');
+        const provisionalEvents = detail.events.filter((event) => event.provisional === true);
+        return (
+          <div key={po.id} style={{ marginBottom: 12 }}>
+            <table style={tableStyle}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>発注書</th>
+                  <th style={thStyle}>状態</th>
+                  <th style={thStyle}>発注書の作成</th>
+                  <th style={thStyle}>代表承認</th>
+                  <th style={thStyle}>送信記録</th>
+                  <th style={thStyle}>受入確認（最終）</th>
+                  <th style={thStyle}>受入記録（仮）</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td style={tdStyle}><span style={monoStyle}>{po.id}</span></td>
+                  <td style={tdStyle}>{MAKER_PO_STATUS_LABELS[po.status] ?? po.status}</td>
+                  <td style={tdStyle}>{po.createdAt ? formatTimestamp(po.createdAt) : '—'}</td>
+                  <td style={tdStyle}>{po.ceoApprovedAt ? formatTimestamp(po.ceoApprovedAt) : '未承認'}</td>
+                  <td style={tdStyle}>
+                    {sentEvent?.sentAt ? formatTimestamp(sentEvent.sentAt) : '記録なし'}
+                  </td>
+                  <td style={tdStyle}>
+                    {acceptedEvent ? formatTimestamp(acceptedEvent.recordedAt) : '記録なし'}
+                  </td>
+                  <td style={tdStyle}>
+                    {provisionalEvents.length > 0
+                      ? `${provisionalEvents.length}件（${provisionalEvents
+                          .map((event) => formatTimestamp(event.recordedAt))
+                          .join('、')}）`
+                      : 'なし'}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            {detail.events.length > 0 ? (
+              <details>
+                <summary style={{ fontSize: 13, cursor: 'pointer' }}>
+                  この発注書の記録イベント（{detail.events.length}件）
+                </summary>
+                <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13 }}>
+                  {detail.events.map((event) => (
+                    <li key={event.id}>
+                      {MAKER_PO_EVENT_TYPE_LABELS[event.eventType] ?? event.eventType} ／{' '}
+                      {formatTimestamp(event.recordedAt)}
+                      {event.provisional === true ? '（仮の受入記録）' : ''}
+                      {event.verificationStatus ? ` ／ 確認状態: ${event.verificationStatus}` : ''}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ) : null}
+            {detail.error ? <div style={infoBoxStyle}>{detail.error}</div> : null}
+          </div>
+        );
+      })}
     </div>
   );
 }

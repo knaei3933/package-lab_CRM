@@ -510,6 +510,49 @@ export const artworkApprovalEvents = pgTable('artwork_approval_events', {
   index('artwork_approval_events_supersedes_idx').on(table.supersedesEventId)
 ]);
 
+/**
+ * M8-OPER2 FIX 2: the manual verification of a PDF/image approval's evidence
+ * identifier. Binary evidence can never prove a quoted identifier by substring
+ * (M8-OPERATOR FIX 4), so its approval event is recorded with
+ * evidence_identifier_status='pending_manual_verification' and stays out of the
+ * dual-approval gate until a human — the representative only — records here what
+ * they saw in the original evidence.
+ *
+ * This table is deliberately separate from artwork_approval_events: an approval
+ * event is an external decision (organization, decision, revision hash), while
+ * a verification is an internal human check OF that decision — reusing the
+ * approval table would need sentinel organizations and decisions that mean
+ * nothing. The record is append-only (migration 0017): a verification is never
+ * edited or removed, a correction is a new row, and the latest one for the
+ * approval event is the one the gate reads.
+ */
+export const evidenceManualVerifications = pgTable('evidence_manual_verifications', {
+  id: uuid('id').primaryKey(),
+  /** The pending approval event this verification is about (never rewritten). */
+  approvalEventId: uuid('approval_event_id').notNull().references(() => artworkApprovalEvents.id),
+  artworkRevisionId: uuid('artwork_revision_id').notNull().references(() => artworkRevisions.id),
+  /** The evidence version the human looked at; must be the approval's own. */
+  evidenceDocumentVersionId: uuid('evidence_document_version_id').notNull().references(() => documentVersions.id),
+  /** The revision hash the verification is bound to; must equal the approval's. */
+  approvedFileSha256: text('approved_file_sha256').notNull(),
+  result: text('result').notNull(),
+  /** Who performed the verification, as an explicit recorded fact. */
+  verifierName: text('verifier_name').notNull(),
+  /** When the human actually checked; recorded_at is when we wrote it down. */
+  verifiedAt: timestamp('verified_at', { withTimezone: true }).notNull(),
+  /** The basis of the decision: what in the evidence matched (or did not). */
+  reasonNote: text('reason_note').notNull(),
+  recordedByUserId: uuid('recorded_by_user_id').notNull().references(() => users.id),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  check('evidence_manual_verifications_result_vocabulary', sql`${table.result} in ('confirmed', 'rejected')`),
+  check('evidence_manual_verifications_sha256_format', sql`${table.approvedFileSha256} ~ '^[0-9a-f]{64}$'`),
+  check('evidence_manual_verifications_verifier_name_not_blank', sql`length(btrim(${table.verifierName})) > 0`),
+  check('evidence_manual_verifications_reason_not_blank', sql`length(btrim(${table.reasonNote})) > 0`),
+  index('evidence_manual_verifications_approval_event_idx').on(table.approvalEventId),
+  index('evidence_manual_verifications_revision_idx').on(table.artworkRevisionId)
+]);
+
 export const filmSupplyOrderLines = pgTable('film_supply_order_lines', {
   id: uuid('id').primaryKey(),
   filmSupplyOrderId: uuid('film_supply_order_id').notNull().references(() => filmSupplyOrders.id, { onDelete: 'cascade' }),
@@ -788,6 +831,13 @@ export const artworkApprovalEventsRelations = relations(artworkApprovalEvents, (
   revision: one(artworkRevisions, { fields: [artworkApprovalEvents.artworkRevisionId], references: [artworkRevisions.id] }),
   evidenceDocumentVersion: one(documentVersions, { fields: [artworkApprovalEvents.evidenceDocumentVersionId], references: [documentVersions.id] }),
   recordedBy: one(users, { fields: [artworkApprovalEvents.recordedByUserId], references: [users.id] })
+}));
+
+export const evidenceManualVerificationsRelations = relations(evidenceManualVerifications, ({ one }) => ({
+  approvalEvent: one(artworkApprovalEvents, { fields: [evidenceManualVerifications.approvalEventId], references: [artworkApprovalEvents.id] }),
+  revision: one(artworkRevisions, { fields: [evidenceManualVerifications.artworkRevisionId], references: [artworkRevisions.id] }),
+  evidenceDocumentVersion: one(documentVersions, { fields: [evidenceManualVerifications.evidenceDocumentVersionId], references: [documentVersions.id] }),
+  recordedBy: one(users, { fields: [evidenceManualVerifications.recordedByUserId], references: [users.id] })
 }));
 
 export const fillingOrdersRelations = relations(fillingOrders, ({ many, one }) => ({

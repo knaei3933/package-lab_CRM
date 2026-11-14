@@ -1,11 +1,19 @@
 import { ActionForm } from '../../components/ActionForm';
 import { ApprovalDecisionForm } from '../../components/ApprovalDecisionForm';
 import { SelectField, TextField } from '../../components/fields';
-import { recordArtworkApprovalAction, registerArtworkRevisionAction } from '../actions';
-import { readSelectedProjectId } from '../../lib/api';
+import {
+  recordArtworkApprovalAction,
+  registerArtworkRevisionAction,
+  verifyEvidenceManualAction
+} from '../actions';
+import { loadSessionUser, readSelectedProjectId } from '../../lib/api';
 import { labelLookup, loadApprovalGate, loadWorkspace } from '../../lib/project-data';
-import type { ApprovalGateView, DesignApprovalGateView } from '../../lib/project-data';
-import { cardStyle, infoBoxStyle, monoStyle, noteStyle, tableStyle, tdStyle, thStyle } from '../../lib/ui';
+import type {
+  ApprovalGateView,
+  DesignApprovalGateView,
+  PendingManualVerificationView
+} from '../../lib/project-data';
+import { badgeStyle, cardStyle, infoBoxStyle, monoStyle, noteStyle, tableStyle, tdStyle, thStyle } from '../../lib/ui';
 import {
   APPROVAL_DECISION_LABELS,
   EVIDENCE_SOURCE_LABELS,
@@ -24,6 +32,12 @@ export const dynamic = 'force-dynamic';
  * two approval buttons. Both buttons submit the same evidence version select,
  * so whichever organization goes second cites the same evidence document
  * version; the screen re-renders after each click and shows the moved state.
+ *
+ * M8-OPER2 FIX 2: an approval recorded on binary evidence (PDF/image) is
+ * flagged 手動確認待ち — it never completes the dual approval on its own. The
+ * representative sees the pending verifications of every order here with the
+ * original evidence and the proof it is checked against, and records a NEW
+ * append-only verification (確認／却下); the API refuses every other role.
  */
 export default async function ApprovalsPage() {
   const projectId = await readSelectedProjectId();
@@ -31,7 +45,8 @@ export default async function ApprovalsPage() {
     return <div style={infoBoxStyle}>案件が選択されていません。上部の「案件の選択」で案件IDを入力してください。</div>;
   }
 
-  const workspace = await loadWorkspace(projectId);
+  const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
+  const isAdmin = (user?.role ?? 'viewer') === 'admin';
   const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
   const organizationLabel = labelLookup(workspace.labels, 'approvalOrganizations');
 
@@ -44,6 +59,20 @@ export default async function ApprovalsPage() {
 
   const orderCode = (orderId: string) =>
     workspace.filmOrders.find((order) => order.id === orderId)?.code ?? orderId;
+
+  /** 원본 증빙: the stored document a pending verification points at. */
+  const evidenceLabel = (versionId: string | null): string => {
+    if (!versionId) return '（証跡バージョン未記録）';
+    for (const document of workspace.documents) {
+      const version = document.versions.find((candidate) => candidate.id === versionId);
+      if (version) {
+        return `${document.filename}（版${version.versionNumber}／${
+          VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus
+        }）`;
+      }
+    }
+    return `書類バージョン ${versionId.slice(0, 8)}…`;
+  };
 
   const approvalEvidenceChoices = (orderId: string, designKey: string): Choice[] =>
     workspace.documents
@@ -140,6 +169,15 @@ export default async function ApprovalsPage() {
                   ))}
                 </ul>
               </details>
+
+              {gate && gate.pendingManualVerifications.length > 0 ? (
+                <PendingVerificationSection
+                  pending={gate.pendingManualVerifications}
+                  isAdmin={isAdmin}
+                  evidenceLabel={evidenceLabel}
+                  organizationText={organizationLabel}
+                />
+              ) : null}
 
               {gate
                 ? gate.designs
@@ -248,11 +286,108 @@ export default async function ApprovalsPage() {
 }
 
 function organizationStateText(state: DesignApprovalGateView['customer']): string {
+  if (state.valid && state.manualVerification?.result === 'confirmed') return '承認済み（手動確認済み）';
   if (state.valid) return '承認済み';
+  // M8-OPER2 FIX 2: the approval is recorded but its identifier is unverified,
+  // so it never completes the dual approval while this is true.
+  if (state.pendingEvidenceIdentifier) {
+    return state.manualVerification?.result === 'rejected'
+      ? '手動確認で却下（二重承認に算入されません）'
+      : '手動確認待ち（証跡識別子未確認）';
+  }
   if (state.revoked) return '取消済み（REVOKE）';
   if (state.invalidatedByNewerRevision) return '新しい版で無効化';
   if (state.latestDecision === 'REVOKE') return '取消済み';
   return '未承認';
+}
+
+/** The result select of the verification form. */
+const VERIFICATION_RESULT_CHOICES: Choice[] = [
+  { value: 'confirmed', label: '確認（識別子を原本証跡で確認した）' },
+  { value: 'rejected', label: '却下（確認できなかった）' }
+];
+
+/**
+ * M8-OPER2 FIX 2: the pending evidence verifications of one order. Admin sees
+ * the original evidence (원본 증빙) next to the proof revision it is checked
+ * against (교정본) and records the append-only verification; every other role
+ * reads why the approval is not counting yet and waits for the representative.
+ */
+function PendingVerificationSection({
+  pending,
+  isAdmin,
+  evidenceLabel,
+  organizationText
+}: {
+  pending: PendingManualVerificationView[];
+  isAdmin: boolean;
+  evidenceLabel: (versionId: string | null) => string;
+  organizationText: (key: string) => string;
+}) {
+  return (
+    <div style={{ marginTop: 16, borderTop: '1px solid #eef1f6', paddingTop: 12 }}>
+      <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>
+        承認証跡の手動確認（PDF・画像の識別子確認）— {pending.length}件
+      </h3>
+      <p style={noteStyle}>
+        バイナリ証跡（PDF・画像）の承認は、識別子を自動検証できないため手動確認待ちとして記録されます。
+        確認が記録されるまで二重承認には算入されません。確認の記録は代表者だけです。
+      </p>
+      {pending.map((entry) => (
+        <div key={entry.approvalEventId} style={{ marginBottom: 16 }}>
+          <div style={{ ...infoBoxStyle, borderColor: '#e4d3b9', color: '#8a6a3b' }}>
+            <span style={badgeStyle}>手動確認待ち</span>{' '}
+            <strong>{organizationText(entry.organization)}</strong> の承認（デザイン {entry.designKey}／版
+            {entry.revisionNo}）は手動確認待ちです。
+            <div style={noteStyle}>
+              原本証跡（원본 증빙）: {evidenceLabel(entry.evidenceDocumentVersionId)}
+              <div style={monoStyle}>証跡バージョンID: {entry.evidenceDocumentVersionId ?? '—'}</div>
+              <div style={monoStyle}>承認証跡識別子: {entry.evidenceIdentifier ?? '—'}</div>
+              <div style={monoStyle}>版ハッシュ（approved_file_sha256）: {entry.approvedFileSha256}</div>
+              교정본（確認対象の校正）: デザイン {entry.designKey} ／ 版{entry.revisionNo} ／{' '}
+              {formatTimestamp(entry.eventTime)} 承認（記録 {formatTimestamp(entry.recordedAt)}）
+              {entry.manualVerification ? (
+                <div>
+                  前回の確認: {entry.manualVerification.result === 'confirmed' ? '確認' : '却下'} ／ 検証者{' '}
+                  {entry.manualVerification.verifierName} ／ {formatTimestamp(entry.manualVerification.verifiedAt)}
+                </div>
+              ) : null}
+            </div>
+          </div>
+          {isAdmin ? (
+            <ActionForm
+              action={verifyEvidenceManualAction}
+              submitLabel="手動確認を記録する"
+              hint="確認の記録は新しい追記型イベントです。元の承認イベントとその監査記録は書き換えられません。"
+            >
+              <input type="hidden" readOnly name="approvalEventId" value={entry.approvalEventId} />
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                <TextField name="verifierName" label="検証者" required width={200} />
+                <TextField name="verifiedAt" label="検証日時" type="datetime-local" required width={240} />
+                <SelectField
+                  name="result"
+                  label="結果"
+                  required
+                  width={320}
+                  choices={VERIFICATION_RESULT_CHOICES}
+                />
+                <TextField
+                  name="reasonNote"
+                  label="根拠（原本証跡のどこで識別子を確認したか）"
+                  required
+                  width={420}
+                />
+              </div>
+            </ActionForm>
+          ) : (
+            <p style={noteStyle}>
+              次のアクション: 代表者による原本証跡の確認を待ちます（担当者・閲覧者は確認を記録できません）。
+            </p>
+          )}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 /** Current wall-clock time as a datetime-local value (server local time). */

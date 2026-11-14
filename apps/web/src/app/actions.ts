@@ -181,7 +181,64 @@ export async function createFilmSupplyOrderAction(_prev: ActionState | null, for
   const body: Record<string, unknown> = { code, lines: lines.lines };
   const sevenPurchaseOrderId = optionalField(formData, 'sevenPurchaseOrderId');
   if (sevenPurchaseOrderId) body.sevenPurchaseOrderId = sevenPurchaseOrderId;
+  // M8-OPER2 FIX 1: the G6 transaction terms are chosen at creation. Omitted
+  // means the API's default (undetermined — the term that keeps G6 closed).
+  const paymentTerms = field(formData, 'paymentTerms');
+  if (paymentTerms.length > 0) body.paymentTerms = paymentTerms;
   return post(`/api/projects/${encodeURIComponent(projectId)}/film-supply-orders`, body);
+}
+
+/**
+ * M8-OPER2 FIX 1: the G6 transaction terms recorded from the /orders screen.
+ * The API allows the write only while the order is a DRAFT and reports its own
+ * refusal otherwise. Recording a term is never an 入金確認: the payment
+ * confirmation is a separate manual step with no writer today.
+ */
+export async function updateFilmPaymentTermsAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const orderId = field(formData, 'orderId');
+  const paymentTerms = field(formData, 'paymentTerms');
+  if (orderId.length === 0) return { ok: false, message: 'フィルム発注が選択されていません。' };
+  if (!['prepaid', 'on_delivery', 'undetermined'].includes(paymentTerms)) {
+    return { ok: false, message: '決済条件（prepaid／on_delivery／undetermined）を選択してください。' };
+  }
+  const result = await callApi(`/api/film-supply-orders/${encodeURIComponent(orderId)}/payment-terms`, {
+    method: 'PATCH',
+    body: { paymentTerms }
+  });
+  refresh();
+  if (result.ok) {
+    return { ok: true, message: `決済条件を記録しました（${paymentTerms}）。記録は入金確認ではありません。` };
+  }
+  return { ok: false, message: result.error ?? `APIがステータス ${result.status} を返しました。` };
+}
+
+/**
+ * M8-OPER2 FIX 2: the representative's manual verification of a pending
+ * evidence identifier (binary PDF/image approval evidence). Posts the NEW
+ * append-only verification event; the API refuses every role but admin and
+ * refuses any approval that is not actually waiting for this check.
+ */
+export async function verifyEvidenceManualAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const approvalEventId = field(formData, 'approvalEventId');
+  const result = field(formData, 'result');
+  const verifierName = field(formData, 'verifierName');
+  const verifiedAt = field(formData, 'verifiedAt');
+  const reasonNote = field(formData, 'reasonNote');
+  if (approvalEventId.length === 0) return { ok: false, message: '確認対象の承認イベントが見つかりません。' };
+  if (result !== 'confirmed' && result !== 'rejected') {
+    return { ok: false, message: '検証結果（確認／却下）を選択してください。' };
+  }
+  if (verifierName.length === 0) return { ok: false, message: '検証者名を入力してください。' };
+  if (verifiedAt.length === 0) return { ok: false, message: '検証日時を入力してください。' };
+  if (reasonNote.length === 0) {
+    return { ok: false, message: '根拠を入力してください（原本証跡のどこで識別子を確認したか）。' };
+  }
+  return post(`/api/artwork-approval-events/${encodeURIComponent(approvalEventId)}/verification`, {
+    result,
+    verifierName,
+    verifiedAt,
+    reasonNote
+  });
 }
 
 export async function createFillingOrderAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {

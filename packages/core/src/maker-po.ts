@@ -80,6 +80,29 @@ export function isFilmOrderMakerChainState(state: string): state is FilmOrderMak
   return (FILM_ORDER_MAKER_CHAIN_STATES as readonly string[]).includes(state);
 }
 
+/**
+ * M8-OPER2 FIX 3: the production/shipping/delivery states an order reaches
+ * AFTER its maker purchase order was accepted (製造中／出荷済み／納品済み). The
+ * maker-PO screens keep listing these orders — their paper history (発注書・
+ * 代表承認・送信・受入) must stay readable after the chain moved on — but the
+ * screens stop offering the recording forms, because the paper is closed:
+ * re-approving, re-sending or re-accepting it is no longer an action anyone
+ * should reach for.
+ */
+export const FILM_ORDER_PAST_MAKER_ACCEPTANCE_STATES = [
+  'FILM_IN_PRODUCTION',
+  'FILM_SHIPPED',
+  'FILM_DELIVERED',
+  'FILM_RECEIPT_ASSUMED_NO_ISSUE'
+] as const;
+
+export type FilmOrderPastMakerAcceptanceState =
+  (typeof FILM_ORDER_PAST_MAKER_ACCEPTANCE_STATES)[number];
+
+export function isFilmOrderPastMakerAcceptance(state: string): boolean {
+  return (FILM_ORDER_PAST_MAKER_ACCEPTANCE_STATES as readonly string[]).includes(state);
+}
+
 export type MakerChainTransitionCheck =
   | { ok: true }
   | { ok: false; code: 'MAKER_CHAIN_TRANSITION_FORBIDDEN'; message: string };

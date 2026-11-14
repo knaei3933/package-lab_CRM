@@ -46,6 +46,43 @@ export const EVIDENCE_IDENTIFIER_STATUSES = [
 
 export type EvidenceIdentifierStatus = (typeof EVIDENCE_IDENTIFIER_STATUSES)[number];
 
+/**
+ * M8-OPER2 FIX 2: what a human decided when they checked a PDF/image approval's
+ * identifier against the original evidence. The verification is its own
+ * append-only event — never an edit of the approval it is about — so a
+ * correction is a new row and the latest one wins.
+ */
+export const EVIDENCE_VERIFICATION_RESULTS = ['confirmed', 'rejected'] as const;
+
+export type EvidenceVerificationResult = (typeof EVIDENCE_VERIFICATION_RESULTS)[number];
+
+export function validateEvidenceVerificationResult(
+  value: unknown
+): OrganizationValidation<EvidenceVerificationResult> {
+  if (typeof value !== 'string' || !(EVIDENCE_VERIFICATION_RESULTS as readonly string[]).includes(value)) {
+    return {
+      ok: false,
+      code: 'UNKNOWN_EVIDENCE_VERIFICATION_RESULT',
+      message: `result must be one of ${EVIDENCE_VERIFICATION_RESULTS.join(', ')}; received ${String(value)}`
+    };
+  }
+  return { ok: true, value: value as EvidenceVerificationResult };
+}
+
+/** The read model of one append-only manual verification event (M8-OPER2 FIX 2). */
+export interface EvidenceVerificationView {
+  id: string;
+  /** The approval event this verification is about; the approval is never edited. */
+  approvalEventId: string;
+  artworkRevisionId: string;
+  /** The revision hash the human confirmed: must equal the approval's own hash. */
+  approvedFileSha256: string;
+  result: EvidenceVerificationResult;
+  verifierName: string;
+  verifiedAt: Date | string;
+  recordedAt: Date | string;
+}
+
 /** Content types whose bytes are (mostly) text and can be searched as text. */
 const TEXT_LIKE_EVIDENCE_PREFIXES = ['text/'] as const;
 
@@ -139,7 +176,7 @@ function toTime(value: Date | string): number {
  * Events are replayed in recording order; the id is the tiebreaker so a stable
  * derivation is guaranteed even when two events share a recorded_at instant.
  */
-function compareByRecording(a: ApprovalEventView, b: ApprovalEventView): number {
+function compareByRecording<T extends { recordedAt: Date | string; id: string }>(a: T, b: T): number {
   const byTime = toTime(a.recordedAt) - toTime(b.recordedAt);
   return byTime !== 0 ? byTime : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
@@ -162,6 +199,41 @@ export interface OrganizationApprovalState {
    * never completes the dual approval while this is true.
    */
   pendingEvidenceIdentifier: boolean;
+  /**
+   * M8-OPER2 FIX 2: the latest manual verification recorded for the pending
+   * APPROVE (null while none exists). Only a 'confirmed' verification lets the
+   * approval count toward the dual approval; 'rejected' — or no verification at
+   * all — keeps the gate closed. A verification is bound to the approval event
+   * id, the revision and the exact revision hash, so it can never confirm a
+   * decision about other bytes.
+   */
+  manualVerification: {
+    result: EvidenceVerificationResult;
+    verifierName: string;
+    verifiedAt: Date | string;
+    recordedAt: Date | string;
+  } | null;
+}
+
+/**
+ * The latest verification naming this approval event, this revision and this
+ * exact revision hash. Verifications are append-only: a later one supersedes an
+ * earlier one by replay order, never by editing it.
+ */
+function latestVerificationFor(
+  approvalEventId: string,
+  revisionId: string,
+  currentSha256: string,
+  verifications: readonly EvidenceVerificationView[]
+): EvidenceVerificationView | null {
+  const matches = verifications
+    .filter((verification) =>
+      verification.approvalEventId === approvalEventId
+      && verification.artworkRevisionId === revisionId
+      && verification.approvedFileSha256 === currentSha256
+    )
+    .sort(compareByRecording);
+  return matches.length > 0 ? matches[matches.length - 1]! : null;
 }
 
 /**
@@ -174,7 +246,8 @@ export function resolveOrganizationApproval(
   events: readonly ApprovalEventView[],
   organization: ApprovalOrganization,
   revisionId: string,
-  currentSha256: string
+  currentSha256: string,
+  verifications: readonly EvidenceVerificationView[] = []
 ): OrganizationApprovalState {
   const scoped = events
     .filter((event) => event.organization === organization && event.artworkRevisionId === revisionId)
@@ -197,8 +270,24 @@ export function resolveOrganizationApproval(
   // M8-OPERATOR FIX 4: an APPROVE whose identifier is still awaiting manual
   // verification is a recorded fact but not a counted approval — it can never
   // complete the dual approval on its own (and nothing auto-approves it later).
+  // M8-OPER2 FIX 2: the only thing that lifts that hold is a human's 'confirmed'
+  // verification of exactly this approval event. A 'rejected' verification, or
+  // no verification at all, keeps the approval out of the gate.
+  const manualVerificationRow = approval === null
+    ? null
+    : latestVerificationFor(approval.id, revisionId, currentSha256, verifications);
+  const manualVerification = manualVerificationRow === null
+    ? null
+    : {
+        result: manualVerificationRow.result,
+        verifierName: manualVerificationRow.verifierName,
+        verifiedAt: manualVerificationRow.verifiedAt,
+        recordedAt: manualVerificationRow.recordedAt
+      };
   const pendingEvidenceIdentifier =
-    approval !== null && approval.evidenceIdentifierStatus === 'pending_manual_verification';
+    approval !== null
+    && approval.evidenceIdentifierStatus === 'pending_manual_verification'
+    && manualVerification?.result !== 'confirmed';
   const valid =
     approval !== null && approval.approvedFileSha256 === currentSha256 && !pendingEvidenceIdentifier;
   return {
@@ -208,9 +297,11 @@ export function resolveOrganizationApproval(
     latestDecision: last?.decision ?? null,
     approvedFileSha256: approval?.approvedFileSha256 ?? null,
     lastEventTime: last?.eventTime ?? null,
-    invalidatedByNewerRevision: approval !== null && !valid,
+    invalidatedByNewerRevision:
+      approval !== null && approval.approvedFileSha256 !== currentSha256,
     revoked: revoked && approval === null,
-    pendingEvidenceIdentifier
+    pendingEvidenceIdentifier,
+    manualVerification
   };
 }
 
@@ -229,17 +320,21 @@ export interface DesignApprovalGate {
  * Derives the approval gate of one design from its current revision (the
  * highest revision_no) and that revision's events. Events belonging to earlier
  * revisions stay readable as audit history and are deliberately never read
- * here: approval never transfers across revisions.
+ * here: approval never transfers across revisions. The manual verifications
+ * (M8-OPER2 FIX 2) decide which pending approvals count; they are optional so
+ * the pure derivation keeps working without them — an absent verification list
+ * simply leaves every pending approval out of the gate.
  */
 export function deriveDesignApprovalGate(
   revisions: readonly ArtworkRevisionView[],
-  events: readonly ApprovalEventView[]
+  events: readonly ApprovalEventView[],
+  verifications: readonly EvidenceVerificationView[] = []
 ): DesignApprovalGate | null {
   if (revisions.length === 0) return null;
   const sorted = [...revisions].sort((a, b) => a.revisionNo - b.revisionNo);
   const current = sorted[sorted.length - 1]!;
-  const customer = resolveOrganizationApproval(events, 'customer', current.id, current.fileSha256);
-  const seven = resolveOrganizationApproval(events, 'seven', current.id, current.fileSha256);
+  const customer = resolveOrganizationApproval(events, 'customer', current.id, current.fileSha256, verifications);
+  const seven = resolveOrganizationApproval(events, 'seven', current.id, current.fileSha256, verifications);
   return {
     designKey: current.designKey,
     currentRevisionId: current.id,
@@ -267,7 +362,8 @@ export interface OrderApprovalGate {
  */
 export function deriveOrderApprovalGate(
   revisions: readonly ArtworkRevisionView[],
-  events: readonly ApprovalEventView[]
+  events: readonly ApprovalEventView[],
+  verifications: readonly EvidenceVerificationView[] = []
 ): OrderApprovalGate {
   const byDesign = new Map<string, ArtworkRevisionView[]>();
   for (const revision of revisions) {
@@ -280,7 +376,7 @@ export function deriveOrderApprovalGate(
   const missing: Array<{ designKey: string; organization: ApprovalOrganization }> = [];
   for (const designKey of [...byDesign.keys()].sort()) {
     const designRevisions = byDesign.get(designKey)!;
-    const gate = deriveDesignApprovalGate(designRevisions, events);
+    const gate = deriveDesignApprovalGate(designRevisions, events, verifications);
     if (!gate) continue;
     designs.push(gate);
     for (const organization of REQUIRED_APPROVAL_ORGANIZATIONS) {

@@ -44,6 +44,7 @@ import {
   validateApprovalEvidenceSource,
   validateApprovalOrganization,
   validateDocumentType,
+  validateEvidenceVerificationResult,
   validateIssuerEntity,
   validateMakerPoStatus,
   validateProjectRoute,
@@ -52,6 +53,7 @@ import {
   type ApprovalEventView,
   type ApprovalOrganization,
   type ArtworkRevisionView,
+  type EvidenceVerificationView,
   type DocumentType,
   type FilmSupplyOrderState,
   type IssuerEntity,
@@ -71,6 +73,7 @@ import {
   deliveryConfirmations,
   documentVersions,
   documents,
+  evidenceManualVerifications,
   filmDeliveries,
   filmSupplyOrderLines,
   filmSupplyOrders,
@@ -945,7 +948,11 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     // approved twice.
     if (target === 'MAKER_PO_READY' || target === 'DUAL_APPROVED') {
       const approvalContext = await loadApprovalContext(orderId);
-      const approvalGate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events);
+      const approvalGate = deriveOrderApprovalGate(
+        approvalContext.revisions,
+        approvalContext.events,
+        approvalContext.verifications
+      );
       if (!approvalGate.dualApproved) {
         return context.json({
           error: '全デザインの両組織承認が必要です',
@@ -2149,6 +2156,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
   async function loadApprovalContext(orderId: string): Promise<{
     revisions: ArtworkRevisionView[];
     events: ApprovalEventView[];
+    verifications: EvidenceVerificationView[];
   }> {
     const revisionRows = await db.select({
       id: artworkRevisions.id,
@@ -2181,7 +2189,24 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       }).from(artworkApprovalEvents)
         .where(inArray(artworkApprovalEvents.artworkRevisionId, revisionIds));
 
-    return { revisions: revisionRows, events: eventRows };
+    // M8-OPER2 FIX 2: the manual verifications that decide which pending
+    // approvals count. Append-only rows read in recording order; the latest one
+    // per approval event wins inside the gate derivation.
+    const verificationRows = revisionIds.length === 0
+      ? [] as EvidenceVerificationView[]
+      : await db.select({
+        id: evidenceManualVerifications.id,
+        approvalEventId: evidenceManualVerifications.approvalEventId,
+        artworkRevisionId: evidenceManualVerifications.artworkRevisionId,
+        approvedFileSha256: evidenceManualVerifications.approvedFileSha256,
+        result: evidenceManualVerifications.result,
+        verifierName: evidenceManualVerifications.verifierName,
+        verifiedAt: evidenceManualVerifications.verifiedAt,
+        recordedAt: evidenceManualVerifications.recordedAt
+      }).from(evidenceManualVerifications)
+        .where(inArray(evidenceManualVerifications.artworkRevisionId, revisionIds));
+
+    return { revisions: revisionRows, events: eventRows, verifications: verificationRows };
   }
 
   /**
@@ -2505,8 +2530,11 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     } else {
       // Default linkage: a new event supersedes the organization's latest event
       // on this revision, if one exists.
-      const revisionGate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events).designs
-        .find((design) => design.currentRevisionId === revision.id);
+      const revisionGate = deriveOrderApprovalGate(
+        approvalContext.revisions,
+        approvalContext.events,
+        approvalContext.verifications
+      ).designs.find((design) => design.currentRevisionId === revision.id);
       supersedesEventId = revisionGate?.[organization].latestEventId ?? null;
     }
 
@@ -2535,7 +2563,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     };
     const gateAfter = deriveOrderApprovalGate(
       approvalContext.revisions,
-      [...approvalContext.events, approvalEvent]
+      [...approvalContext.events, approvalEvent],
+      approvalContext.verifications
     );
     const advancesToDualApproved = decisionCheck.value === 'APPROVE'
       && shouldAdvanceToDualApproved(gateAfter, order.status);
@@ -2585,6 +2614,194 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     }, 201);
   });
 
+  // M8-OPER2 FIX 2: the representative's manual verification of a pending
+  // evidence identifier. Binary evidence (PDF/image) can never prove a quoted
+  // identifier by substring, so its APPROVE is recorded with
+  // pending_manual_verification and stays out of the dual-approval gate until a
+  // human — admin only — records what they saw in the original evidence. The
+  // verification is a NEW append-only record of type evidence manual
+  // verification; the approval event and its audit row are never edited, so the
+  // original decision keeps reading exactly as it was recorded.
+  app.post('/api/artwork-approval-events/:eventId/verification', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const eventId = context.req.param('eventId');
+
+    const [target] = await db.select().from(artworkApprovalEvents)
+      .where(eq(artworkApprovalEvents.id, eventId)).limit(1);
+    if (!target) return context.json({ error: '承認イベントが見つかりません' }, 404);
+
+    const [revision] = await db.select({
+      id: artworkRevisions.id,
+      filmSupplyOrderId: artworkRevisions.filmSupplyOrderId,
+      designKey: artworkRevisions.designKey,
+      revisionNo: artworkRevisions.revisionNo
+    }).from(artworkRevisions).where(eq(artworkRevisions.id, target.artworkRevisionId)).limit(1);
+    if (!revision) return context.json({ error: '版が見つかりません' }, 404);
+    const [order] = await db.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, revision.filmSupplyOrderId)).limit(1);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+
+    // Representative only: this decision is what lets an approval complete the
+    // dual approval, so it is never delegated to staff or a viewer.
+    const decision = canPerform(toActor(user), 'artwork_approval:verify_evidence', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const body = await context.req.json().catch(() => null) as any;
+    const resultCheck = validateEvidenceVerificationResult(body?.result);
+    if (!resultCheck.ok) {
+      return context.json({ error: resultCheck.message, code: resultCheck.code }, 422);
+    }
+    if (typeof body?.verifierName !== 'string' || body.verifierName.trim().length === 0) {
+      return context.json({
+        error: '検証者名（verifierName）は必須です。原本証跡を確認した人を記録してください',
+        code: 'VERIFIER_NAME_REQUIRED'
+      }, 422);
+    }
+    const verifiedAt = parseRequiredDate(body?.verifiedAt);
+    if (!verifiedAt.ok) {
+      return context.json({
+        error: '検証日時（verifiedAt）が必要です',
+        code: 'VERIFIED_AT_REQUIRED'
+      }, 422);
+    }
+    if (typeof body?.reasonNote !== 'string' || body.reasonNote.trim().length === 0) {
+      return context.json({
+        error: '根拠（reasonNote）は必須です。原本証跡のどこで識別子を確認したかを記録してください',
+        code: 'VERIFICATION_REASON_REQUIRED'
+      }, 422);
+    }
+
+    // Only an approval that is actually waiting for this check can receive it:
+    // a REVOKE never contributes to an approval, an already-verified (or
+    // pre-M8) APPROVE has nothing pending, and an approval without a recorded
+    // identifier has nothing to confirm — insufficient evidence never completes
+    // an approval here.
+    if (target.decision !== 'APPROVE') {
+      return context.json({
+        error: 'REVOKE（承認取消）イベントは手動確認の対象ではありません',
+        code: 'EVIDENCE_VERIFICATION_TARGET_INVALID'
+      }, 422);
+    }
+    if (target.evidenceIdentifierStatus !== 'pending_manual_verification') {
+      return context.json({
+        error: 'この承認イベントの識別子は手動確認待ちではありません。確認済みまたは自動検証済みのイベントは確認できません',
+        code: 'EVIDENCE_NOT_PENDING_MANUAL_VERIFICATION'
+      }, 422);
+    }
+    if (!target.evidenceIdentifier) {
+      return context.json({
+        error: 'この承認イベントには承認証跡識別子が記録されていないため、確認できません',
+        code: 'EVIDENCE_IDENTIFIER_MISSING'
+      }, 422);
+    }
+
+    // A 'confirmed' verification is final: the only append-only way to
+    // invalidate an approved decision afterwards is the organization's own
+    // REVOKE — the same rule the approval log itself follows (migration 0007).
+    // Letting a later verification flip a confirmed decision could re-open a
+    // dual approval the order already moved on.
+    const existingVerifications = await db.select({ result: evidenceManualVerifications.result })
+      .from(evidenceManualVerifications)
+      .where(eq(evidenceManualVerifications.approvalEventId, target.id));
+    if (existingVerifications.some((verification) => verification.result === 'confirmed')) {
+      return context.json({
+        error: 'この承認イベントはすでに確認済みです。確認後の訂正は、組織の承認取消（REVOKE）として記録してください',
+        code: 'EVIDENCE_ALREADY_CONFIRMED'
+      }, 422);
+    }
+
+    const approvalContext = await loadApprovalContext(order.id);
+    const now = new Date();
+    const verificationId = uuidv7(now);
+    const verification = {
+      id: verificationId,
+      approvalEventId: target.id,
+      artworkRevisionId: target.artworkRevisionId,
+      evidenceDocumentVersionId: target.evidenceDocumentVersionId,
+      approvedFileSha256: target.approvedFileSha256,
+      result: resultCheck.value,
+      verifierName: body.verifierName.trim(),
+      verifiedAt: verifiedAt.date,
+      reasonNote: body.reasonNote.trim(),
+      recordedByUserId: user.id,
+      recordedAt: now
+    };
+
+    // The gate is recomputed with the new verification appended, exactly like
+    // the approval endpoint recomputes it with the new event appended: a
+    // 'confirmed' verification closes the dual approval only if it really is
+    // the last word on that approval event.
+    const gateAfter = deriveOrderApprovalGate(
+      approvalContext.revisions,
+      approvalContext.events,
+      [...approvalContext.verifications, verification]
+    );
+    const advancesToDualApproved = resultCheck.value === 'confirmed'
+      && shouldAdvanceToDualApproved(gateAfter, order.status);
+
+    await db.transaction(async (tx) => {
+      await tx.insert(evidenceManualVerifications).values(verification);
+      await recordAuditEvent(tx, {
+        projectId: order.projectId,
+        id: uuidv7(now),
+        actorUserId: user.id,
+        action: 'EVIDENCE_MANUAL_VERIFICATION_RECORDED',
+        entityType: 'artwork_approval_event',
+        entityId: target.id,
+        afterState: {
+          ...verification,
+          designKey: revision.designKey,
+          revisionNo: revision.revisionNo,
+          organization: target.organization,
+          evidenceIdentifier: target.evidenceIdentifier,
+          verificationType: 'evidence_manual_verification'
+        },
+        occurredAt: now,
+        requestMetadata: {
+          operation: 'artwork_approval:verify_evidence',
+          filmSupplyOrderId: order.id
+        }
+      });
+      if (advancesToDualApproved) {
+        await tx.update(filmSupplyOrders)
+          .set({ status: 'DUAL_APPROVED', updatedAt: now })
+          .where(eq(filmSupplyOrders.id, order.id));
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+          entityType: 'film_supply_order',
+          entityId: order.id,
+          beforeState: { status: order.status },
+          afterState: { status: 'DUAL_APPROVED' },
+          occurredAt: now,
+          requestMetadata: {
+            operation: 'artwork_approval:verify_evidence',
+            reason: 'dual_approval_reached_after_manual_verification'
+          }
+        });
+      }
+    });
+
+    const targetDesign = gateAfter.designs.find((design) =>
+      design.currentRevisionId === target.artworkRevisionId);
+    const targetState = targetDesign ? targetDesign[target.organization] : null;
+
+    return context.json({
+      verification,
+      // The answer says plainly what the verification did to the gate, mirroring
+      // the approval endpoint's countsTowardDualApproval answer: only a
+      // 'confirmed' verification whose approval now counts opens anything.
+      approvalEventId: target.id,
+      countsTowardDualApproval: resultCheck.value === 'confirmed' && (targetState?.valid ?? false),
+      dualApproved: gateAfter.dualApproved,
+      missingApprovals: gateAfter.missingApprovals,
+      orderStatus: advancesToDualApproved ? 'DUAL_APPROVED' : order.status
+    }, 201);
+  });
+
   app.get('/api/film-supply-orders/:orderId/approval-gate', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
@@ -2596,14 +2813,47 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
     const approvalContext = await loadApprovalContext(orderId);
-    const gate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events);
+    const gate = deriveOrderApprovalGate(
+      approvalContext.revisions,
+      approvalContext.events,
+      approvalContext.verifications
+    );
+
+    // M8-OPER2 FIX 2: the pending verifications the representative can act on.
+    // The identifiers and evidence versions stay out of every other role's
+    // answer — staff and viewer see only the derived states.
+    const pendingManualVerifications = user.role !== 'admin'
+      ? []
+      : gate.designs.flatMap((design) => (
+          (['customer', 'seven'] as const).flatMap((organization) => {
+            const state = design[organization];
+            if (!state.pendingEvidenceIdentifier || !state.latestEventId) return [];
+            const event = approvalContext.events.find((candidate) => candidate.id === state.latestEventId);
+            if (!event) return [];
+            return [{
+              approvalEventId: event.id,
+              revisionId: design.currentRevisionId,
+              designKey: design.designKey,
+              revisionNo: design.currentRevisionNo,
+              organization,
+              evidenceDocumentVersionId: event.evidenceDocumentVersionId ?? null,
+              evidenceIdentifier: event.evidenceIdentifier ?? null,
+              approvedFileSha256: event.approvedFileSha256,
+              eventTime: event.eventTime,
+              recordedAt: event.recordedAt,
+              manualVerification: state.manualVerification
+            }];
+          })
+        ));
+
     return context.json({
       orderId,
       orderStatus: order.status,
       dualApproved: gate.dualApproved,
       requiredDesignKeys: gate.requiredDesignKeys,
       missingApprovals: gate.missingApprovals,
-      designs: gate.designs
+      designs: gate.designs,
+      pendingManualVerifications
     });
   });
 

@@ -157,6 +157,30 @@ export interface OrganizationApprovalStateView {
   latestDecision: string | null;
   revoked: boolean;
   invalidatedByNewerRevision: boolean;
+  /** M8-OPER2 FIX 2: the approval is recorded but its identifier is unverified. */
+  pendingEvidenceIdentifier: boolean;
+  /** The latest manual verification of that approval, when one exists. */
+  manualVerification: {
+    result: string;
+    verifierName: string;
+    verifiedAt: string;
+    recordedAt: string;
+  } | null;
+}
+
+/** M8-OPER2 FIX 2: one pending evidence verification the representative can act on. */
+export interface PendingManualVerificationView {
+  approvalEventId: string;
+  revisionId: string;
+  designKey: string;
+  revisionNo: number;
+  organization: string;
+  evidenceDocumentVersionId: string | null;
+  evidenceIdentifier: string | null;
+  approvedFileSha256: string;
+  eventTime: string;
+  recordedAt: string;
+  manualVerification: OrganizationApprovalStateView['manualVerification'];
 }
 
 export interface DesignApprovalGateView {
@@ -175,6 +199,8 @@ export interface ApprovalGateView {
   dualApproved: boolean;
   missingApprovals: Array<{ designKey: string; organization: string }>;
   designs: DesignApprovalGateView[];
+  /** Admin only: the pending evidence verifications awaiting a decision. */
+  pendingManualVerifications: PendingManualVerificationView[];
 }
 
 export interface Workspace {
@@ -469,6 +495,11 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
 
   const approvalRecords: ApprovalEventRecord[] = [];
   for (const event of approvalEvents.events) {
+    // M8-OPER2 FIX 2: a manual verification is recorded as its own audit row of
+    // type evidence manual verification, naming the approval event it is about.
+    // It is not an approval decision, so it stays out of this decision history —
+    // for every role (the action survives the role filter, the payload does not).
+    if (event.action === 'EVIDENCE_MANUAL_VERIFICATION_RECORDED') continue;
     const after = state(event.afterState);
     approvalRecords.push({
       id: event.entityId,
@@ -600,6 +631,7 @@ export async function loadApprovalGate(orderId: string): Promise<ApprovalGateVie
     dualApproved: unknown;
     missingApprovals: unknown;
     designs: unknown;
+    pendingManualVerifications: unknown;
   }>(`/api/film-supply-orders/${encodeURIComponent(orderId)}/approval-gate`);
   if (!result.ok || !result.data) return null;
   const gate = result.data;
@@ -622,7 +654,39 @@ export async function loadApprovalGate(orderId: string): Promise<ApprovalGateVie
       customer: toOrganizationState(design.customer, 'customer'),
       seven: toOrganizationState(design.seven, 'seven'),
       dualApproved: design.dualApproved === true
-    }))
+    })),
+    // The API answers this list to admin only; every other role receives an
+    // empty array and the screen never renders a verification form.
+    pendingManualVerifications: Array.isArray(gate.pendingManualVerifications)
+      ? (gate.pendingManualVerifications as unknown[])
+          .filter(isRecord)
+          .filter((entry) => typeof entry.approvalEventId === 'string')
+          .map((entry) => ({
+            approvalEventId: entry.approvalEventId as string,
+            revisionId: typeof entry.revisionId === 'string' ? entry.revisionId : '—',
+            designKey: typeof entry.designKey === 'string' ? entry.designKey : '—',
+            revisionNo: typeof entry.revisionNo === 'number' ? entry.revisionNo : 0,
+            organization: typeof entry.organization === 'string' ? entry.organization : '—',
+            evidenceDocumentVersionId: text(entry, 'evidenceDocumentVersionId'),
+            evidenceIdentifier: text(entry, 'evidenceIdentifier'),
+            approvedFileSha256: typeof entry.approvedFileSha256 === 'string' ? entry.approvedFileSha256 : '—',
+            eventTime: typeof entry.eventTime === 'string' ? entry.eventTime : '—',
+            recordedAt: typeof entry.recordedAt === 'string' ? entry.recordedAt : '—',
+            manualVerification: toManualVerification(entry.manualVerification)
+          }))
+      : []
+  };
+}
+
+function toManualVerification(value: unknown): OrganizationApprovalStateView['manualVerification'] {
+  const record = state(isRecord(value) ? value : null);
+  const result = text(record, 'result');
+  if (!result) return null;
+  return {
+    result,
+    verifierName: requiredText(record, 'verifierName', '—'),
+    verifiedAt: requiredText(record, 'verifiedAt', '—'),
+    recordedAt: requiredText(record, 'recordedAt', '—')
   };
 }
 
@@ -633,6 +697,8 @@ function toOrganizationState(value: unknown, organization: string): Organization
     valid: bool(record, 'valid'),
     latestDecision: text(record, 'latestDecision'),
     revoked: bool(record, 'revoked'),
-    invalidatedByNewerRevision: bool(record, 'invalidatedByNewerRevision')
+    invalidatedByNewerRevision: bool(record, 'invalidatedByNewerRevision'),
+    pendingEvidenceIdentifier: bool(record, 'pendingEvidenceIdentifier'),
+    manualVerification: toManualVerification(record.manualVerification)
   };
 }

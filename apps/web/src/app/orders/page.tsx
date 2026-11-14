@@ -8,9 +8,11 @@ import {
   createSevenPurchaseOrderAction,
   registerSevenPurchaseOrderAction,
   transitionFilmSupplyOrderAction,
+  updateFilmPaymentTermsAction,
   verifySevenPurchaseOrderAction
 } from '../actions';
 import { readSelectedProjectId } from '../../lib/api';
+import { loadPaymentGate, PAYMENT_TERMS_LABELS } from '../../lib/maker-po-data';
 import { labelLookup, loadWorkspace } from '../../lib/project-data';
 import type { FilmSupplyOrderView } from '../../lib/project-data';
 import {
@@ -40,6 +42,13 @@ const QUOTE_MATCH_CHOICES = [
   { value: 'false', label: '見積と一致していない' }
 ];
 
+/** M8-OPER2 FIX 1: the G6 terms an operator can record while the order is a draft. */
+const PAYMENT_TERMS_CHOICES = [
+  { value: 'prepaid', label: PAYMENT_TERMS_LABELS.prepaid! },
+  { value: 'on_delivery', label: PAYMENT_TERMS_LABELS.on_delivery! },
+  { value: 'undetermined', label: PAYMENT_TERMS_LABELS.undetermined! }
+];
+
 interface TransitionChoice {
   value: string;
   label: string;
@@ -63,6 +72,16 @@ export default async function OrdersPage() {
     value: po.id,
     label: `${po.poNumber}（${po.officialRegisteredAt ? '公式登録済み' : '未登録'}）`
   }));
+
+  // M8-OPER2 FIX 1: the current G6 terms of the draft orders, read from the
+  // API's payment-gate answer (the same read the maker-PO screen uses), so the
+  // form always shows the recorded value instead of guessing from history.
+  const draftOrders = workspace.filmOrders.filter((order) => order.status === 'DRAFT');
+  const paymentGates = await Promise.all(draftOrders.map((order) => loadPaymentGate(order.id)));
+  const paymentGateByOrderId = new Map<string, Awaited<ReturnType<typeof loadPaymentGate>>>();
+  for (const [index, order] of draftOrders.entries()) {
+    paymentGateByOrderId.set(order.id, paymentGates[index] ?? null);
+  }
 
   return (
     <section style={{ display: 'grid', gap: 24 }}>
@@ -130,6 +149,9 @@ export default async function OrdersPage() {
                       <input type="hidden" readOnly name="orderId" value={order.id} />
                       <SelectField name="to" label="遷移先の状態" required width={280} choices={transitionChoices} />
                     </ActionForm>
+                    {order.status === 'DRAFT' ? (
+                      <PaymentTermsCell order={order} gate={paymentGateByOrderId.get(order.id) ?? null} />
+                    ) : null}
                     {order.status === 'FILM_DELIVERED' ? (
                       <details style={{ marginTop: 8 }}>
                         <summary style={{ fontSize: 13, cursor: 'pointer' }}>受領確認（問題なしとみなす）</summary>
@@ -160,6 +182,7 @@ export default async function OrdersPage() {
           orderKind="film"
           unitChoices={unitChoices('film')}
           sevenPurchaseOrderChoices={poChoices}
+          paymentTermsChoices={PAYMENT_TERMS_CHOICES}
         />
       </div>
 
@@ -221,6 +244,39 @@ function OrderLinesCell({ order }: { order: FilmSupplyOrderView }) {
         </div>
       ))}
     </div>
+  );
+}
+
+/**
+ * M8-OPER2 FIX 1: the G6 terms of one DRAFT order — the current value from the
+ * payment-gate read, the 入金確認 that never self-fills, and the recording form.
+ * The API keeps the write open for drafts only and answers its own refusal once
+ * the order has moved on.
+ */
+function PaymentTermsCell({
+  order,
+  gate
+}: {
+  order: FilmSupplyOrderView;
+  gate: Awaited<ReturnType<typeof loadPaymentGate>>;
+}) {
+  const currentTerms = gate
+    ? PAYMENT_TERMS_LABELS[gate.paymentTerms] ?? gate.paymentTerms
+    : '（決済条件の状態を取得できませんでした）';
+  return (
+    <details style={{ marginTop: 8 }}>
+      <summary style={{ fontSize: 13, cursor: 'pointer' }}>
+        決済条件（G6）: {currentTerms} ／ 入金確認: {gate?.paymentConfirmedAt ? '確認済み' : '未確認'}
+      </summary>
+      <ActionForm
+        action={updateFilmPaymentTermsAction}
+        submitLabel="決済条件を記録する"
+        hint="決済条件は発注ドラフト（DRAFT）の間だけ記録できます。ここでの記録は入金確認（検証）ではありません。入金の確認は別の手動ステップです。"
+      >
+        <input type="hidden" readOnly name="orderId" value={order.id} />
+        <SelectField name="paymentTerms" label="決済条件" required width={280} choices={PAYMENT_TERMS_CHOICES} />
+      </ActionForm>
+    </details>
   );
 }
 
