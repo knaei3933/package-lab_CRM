@@ -313,6 +313,13 @@ export interface DesignApprovalGate {
   lotMarking: string | null;
   customer: OrganizationApprovalState;
   seven: OrganizationApprovalState;
+  /**
+   * M8-OPER2 FIX 2: true while either organization holds an APPROVE whose
+   * evidence identifier still awaits a human verification. A 'rejected'
+   * verification keeps this raised exactly like no verification at all; only a
+   * 'confirmed' one lowers it.
+   */
+  pendingEvidenceIdentifier: boolean;
   dualApproved: boolean;
 }
 
@@ -343,6 +350,8 @@ export function deriveDesignApprovalGate(
     lotMarking: current.lotMarking ?? null,
     customer,
     seven,
+    pendingEvidenceIdentifier:
+      customer.pendingEvidenceIdentifier || seven.pendingEvidenceIdentifier,
     dualApproved: customer.valid && seven.valid
   };
 }
