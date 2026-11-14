@@ -79,7 +79,7 @@ function cookieHeader(token: string) {
   return { cookie: `${SESSION_COOKIE}=${token}` };
 }
 
-async function requestAs(token: string, method: 'GET' | 'POST', url: string, body?: unknown) {
+async function requestAs(token: string, method: 'GET' | 'POST' | 'PATCH', url: string, body?: unknown) {
   const response = await app.request(url, {
     method,
     headers: { 'content-type': 'application/json', ...cookieHeader(token) },
@@ -94,6 +94,10 @@ async function getAs(token: string, url: string) {
 
 async function postAs(token: string, url: string, body: unknown = {}) {
   return await requestAs(token, 'POST', url, body);
+}
+
+async function patchAs(token: string, url: string, body: unknown = {}) {
+  return await requestAs(token, 'PATCH', url, body);
 }
 
 interface MakerPoSnapshotFixture {
@@ -827,7 +831,8 @@ describe('M8 FIX 3: the G6 payment gate as a read', () => {
 
   it('keeps the terms editable in DRAFT and never confirms a payment by recording them', async () => {
     const orderId = await insertOrder({ projectId, code: `FSO-M8-G6D-${nextTag()}`, status: 'DRAFT' });
-    const updated = await postAs(staffToken, `/api/film-supply-orders/${orderId}/payment-terms`, {
+    // The terms endpoint is a PATCH on a draft (発注ドラフト까지만), not a POST.
+    const updated = await patchAs(staffToken, `/api/film-supply-orders/${orderId}/payment-terms`, {
       paymentTerms: 'on_delivery'
     });
     expect(updated.status).toBe(200);
@@ -873,6 +878,7 @@ describe('M8 FIX 4: evidence identifiers over text and binary evidence', () => {
     const [storedRow] = await db.select().from(artworkApprovalEvents)
       .where(eq(artworkApprovalEvents.id, approvalBody.approvalEvent.id)).limit(1);
     expect(storedRow?.evidenceIdentifierStatus).toBe('verified_in_document');
+  });
 
   it('flags binary evidence as pending manual verification and never completes the dual approval', async () => {
     const chain = await reachApprovalPending({ projectId, tag: `EVIDPDF-${nextTag()}` });
