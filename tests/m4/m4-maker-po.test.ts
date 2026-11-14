@@ -825,8 +825,18 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
       eq(auditEvents.entityType, 'maker_purchase_order'),
       eq(auditEvents.entityId, po.id)
     ));
+    // M8-OPER3 re-derives the dual-approval gate at the boundary and appends one
+    // MAKER_PO_DUAL_APPROVAL_RECHECK audit row per re-check (here: CEO approval
+    // and send). The create-time re-check is recorded against the film supply
+    // order, so it does not appear in this list.
     expect(poAudits.map((audit) => audit.action).sort())
-      .toEqual(['MAKER_PO_CREATED', 'MAKER_PO_STATUS_CHANGED', 'MAKER_PO_STATUS_CHANGED']);
+      .toEqual([
+        'MAKER_PO_CREATED',
+        'MAKER_PO_DUAL_APPROVAL_RECHECK',
+        'MAKER_PO_DUAL_APPROVAL_RECHECK',
+        'MAKER_PO_STATUS_CHANGED',
+        'MAKER_PO_STATUS_CHANGED'
+      ]);
 
     // The version the evidence cites resolves to the order-bound send evidence
     // document (a document's first version shares the document's identity).
