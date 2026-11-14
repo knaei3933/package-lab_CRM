@@ -261,7 +261,8 @@ async function reachMakerPoReady(tag: string, paymentTerms: 'prepaid' | 'on_deli
 }
 
 async function createMakerPo(orderId: string) {
-  const created = await postJson(`/api/film-supply-orders/${orderId}/maker-purchase-orders`, {
+  // M8-OPERATOR FIX 2: freezing the maker paper is the representative's act.
+  const created = await postAs(adminToken, `/api/film-supply-orders/${orderId}/maker-purchase-orders`, {
     recipientAddress: 'maker-po@example.com',
     amounts: { currency: 'JPY', totalAmount: '480000' }
   });
@@ -282,7 +283,8 @@ async function sendMakerPoEvidence(poId: string, evidenceDocumentVersionId: stri
 }
 
 async function acceptMakerPoEvidence(poId: string, evidenceDocumentVersionId: string) {
-  return await postJson(`/api/maker-purchase-orders/${poId}/accept-evidence`, {
+  // M8-OPERATOR FIX 2: the final acceptance is the representative's act.
+  return await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {
     evidenceDocumentVersionId,
     acceptedAt: '2026-11-13T11:00:00.000Z'
   });

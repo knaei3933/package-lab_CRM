@@ -264,7 +264,9 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
   // MAKER_PO_SENT_MANUALLY, MAKER_PO_ACCEPTED) is only reachable through the
   // dedicated M4 maker purchase-order endpoints, so this helper records the
   // chain there instead of naming the states on the generic transition endpoint.
-  const makerPoCreated = await postJson(`/api/film-supply-orders/${order.id}/maker-purchase-orders`, {
+  // M8-OPERATOR FIX 2: freezing the paper and confirming the acceptance are the
+  // representative's acts; the send evidence stays staff work.
+  const makerPoCreated = await postAs(adminToken, `/api/film-supply-orders/${order.id}/maker-purchase-orders`, {
     recipientAddress: 'maker-po@example.com',
     amounts: { currency: 'JPY', totalAmount: '480000' }
   });
@@ -304,7 +306,7 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
   });
   expect(acceptEvidence.status).toBe(201);
   await verifyDocument((acceptEvidence.body as { document: { id: string } }).document.id, '合成受領証跡確認M5');
-  const accepted = await postJson(`/api/maker-purchase-orders/${makerPoId}/accept-evidence`, {
+  const accepted = await postAs(adminToken, `/api/maker-purchase-orders/${makerPoId}/accept-evidence`, {
     evidenceDocumentVersionId: (acceptEvidence.body as { version: { id: string } }).version.id,
     acceptedAt: '2026-11-12T11:00:00.000Z'
   });

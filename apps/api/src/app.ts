@@ -9,7 +9,7 @@ import {
   computeMakerPoSnapshotSha256,
   deriveOrderApprovalGate,
   evaluateApprovalEvidenceBinding,
-  evaluateApprovalEvidenceIdentifier,
+  evaluateApprovalEvidenceIdentifierForBytes,
   evaluateCommissionReadiness,
   evaluateDeliveryEvidence,
   evaluateFilmReceiptAssumption,
@@ -59,7 +59,8 @@ import {
   type MakerPoSnapshot,
   type MakerPoSnapshotArtworkFile,
   type MeasureUnit,
-  type UnitDomain
+  type UnitDomain,
+  type EvidenceIdentifierStatus
 } from '@kanei/core';
 import {
   accounts,
@@ -94,6 +95,12 @@ import {
 } from './document-storage.js';
 import { hashPassword, verifyPassword } from './password.js';
 import { buildAuditViewForRole, type AuditHistoryRow } from './audit-view.js';
+import {
+  buildMakerPoEventViewForRole,
+  buildMakerPoViewForRole,
+  type MakerPoEventRecord,
+  type MakerPoRecord
+} from './maker-po-view.js';
 
 export interface AppOptions {
   db: AppDatabase;
@@ -2167,7 +2174,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         eventTime: artworkApprovalEvents.eventTime,
         supersedesEventId: artworkApprovalEvents.supersedesEventId,
         evidenceDocumentVersionId: artworkApprovalEvents.evidenceDocumentVersionId,
-        evidenceIdentifier: artworkApprovalEvents.evidenceIdentifier
+        evidenceIdentifier: artworkApprovalEvents.evidenceIdentifier,
+        // M8-OPERATOR FIX 4: the gate must know which approvals are still only
+        // recorded-but-pending manual identifier verification.
+        evidenceIdentifierStatus: artworkApprovalEvents.evidenceIdentifierStatus
       }).from(artworkApprovalEvents)
         .where(inArray(artworkApprovalEvents.artworkRevisionId, revisionIds));
 
@@ -2370,7 +2380,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       documentType: documents.documentType,
       filmSupplyOrderId: documents.filmSupplyOrderId,
       designKey: documents.designKey,
-      storagePath: documentVersions.storagePath
+      storagePath: documentVersions.storagePath,
+      declaredMimeType: documentVersions.declaredMimeType
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(documentVersions.id, body.evidenceDocumentVersionId)).limit(1);
@@ -2411,13 +2422,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       }, 422);
     }
     // M7-SEC3 FIX 1: the identifier must be derivable from the evidence it
-    // cites. The rule is a literal, case sensitive substring match against the
-    // stored evidence version's decoded content (see
-    // evaluateApprovalEvidenceIdentifier): an identifier the recorder invented,
-    // and that no evidence file actually carries, is refused here.
-    let evidenceText: string;
+    // cites. M8-OPERATOR FIX 4 makes the rule content-type aware: text-like
+    // evidence (text/plain, text/csv) is still a literal, case sensitive
+    // substring match against the stored bytes — an invented identifier is
+    // refused — while binary evidence (PDF, images) is never auto-verified: its
+    // event is recorded with pending_manual_verification and stays out of the
+    // dual-approval gate until a human confirms the identifier. Nothing here
+    // approves anything on its own.
+    let evidenceBytes: Buffer;
     try {
-      evidenceText = (await readFile(evidence.storagePath)).toString('utf8');
+      evidenceBytes = await readFile(evidence.storagePath);
     } catch {
       // The bytes behind the cited version are gone, so nothing about them is
       // derivable — the identifier has no evidence to be checked against.
@@ -2426,10 +2440,21 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         code: 'EVIDENCE_DOCUMENT_UNREADABLE'
       }, 422);
     }
-    const identifierCheck = evaluateApprovalEvidenceIdentifier({ identifier: evidenceIdentifier, evidenceText });
+    const identifierCheck = evaluateApprovalEvidenceIdentifierForBytes({
+      identifier: evidenceIdentifier,
+      bytes: evidenceBytes,
+      contentType: evidence.declaredMimeType
+    });
     if (!identifierCheck.ok) {
       return context.json({ error: identifierCheck.message, code: identifierCheck.code }, 422);
     }
+    // A revocation never contributes to an approval, so its status reads
+    // not_applicable regardless of the evidence kind — the identifier itself is
+    // still checked above and an invented one is refused.
+    const evidenceIdentifierStatus: EvidenceIdentifierStatus =
+      decisionCheck.value === 'APPROVE' ? identifierCheck.status : 'not_applicable';
+    const countsTowardDualApproval =
+      decisionCheck.value === 'APPROVE' && evidenceIdentifierStatus !== 'pending_manual_verification';
 
     const approvalContext = await loadApprovalContext(order.id);
     const revisionEvents = approvalContext.events.filter((event) => event.artworkRevisionId === revision.id);
@@ -2501,6 +2526,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       recordedByUserId: user.id,
       evidenceDocumentVersionId: evidence.versionId,
       evidenceIdentifier,
+      evidenceIdentifierStatus,
       evidenceSource: sourceCheck.value,
       approvedFileSha256: revision.fileSha256,
       eventTime: eventTime.date,
@@ -2548,6 +2574,11 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     return context.json({
       approvalEvent,
+      // M8-OPERATOR FIX 4: the answer says plainly whether this event counts.
+      // A pending_manual_verification APPROVE is recorded but never completes
+      // the dual approval — the order stays where it was.
+      evidenceIdentifierStatus,
+      countsTowardDualApproval,
       orderStatus: advancesToDualApproved ? 'DUAL_APPROVED' : order.status,
       dualApproved: gateAfter.dualApproved,
       missingApprovals: gateAfter.missingApprovals
@@ -2749,7 +2780,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         requestMetadata: { operation: 'maker_po:create', filmSupplyOrderId: orderId }
       });
     });
-    return context.json(purchaseOrder, 201);
+    // M8-OPERATOR FIX 1: the answer is shaped by the caller's role. Freezing the
+    // paper is admin-only (FIX 2), so today this is always the full view; the
+    // shaping stays explicit so the read and write answers can never drift.
+    return context.json(buildMakerPoViewForRole(user.role, purchaseOrder), 201);
   });
 
   app.post('/api/maker-purchase-orders/:poId/ceo-approval', async (context) => {
@@ -2885,18 +2919,18 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         }
 
         return {
-          purchaseOrder: {
+          purchaseOrder: buildMakerPoViewForRole(user.role, {
             id: poId,
             filmSupplyOrderId: po.filmSupplyOrderId,
             snapshot,
             snapshotSha256,
-            status: 'APPROVED_FOR_MANUAL_SEND' as const,
+            status: 'APPROVED_FOR_MANUAL_SEND',
             ceoApprovedByUserId: user.id,
             ceoApprovedAt: now,
             createdByUserId: po.createdByUserId,
             createdAt: po.createdAt,
             updatedAt: now
-          },
+          }),
           approvalEvent
         };
       });
@@ -3119,7 +3153,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           status: targetStatus,
           verificationStatus: evaluation.verificationStatus,
           event: sendEvent,
-          purchaseOrder: {
+          // M8-OPERATOR FIX 1: staff register the send, so their answer carries
+          // the work view; an admin caller still gets the whole frozen paper.
+          purchaseOrder: buildMakerPoViewForRole(user.role, {
             id: poId,
             filmSupplyOrderId: po.filmSupplyOrderId,
             snapshot: storedSnapshot,
@@ -3130,7 +3166,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
             createdByUserId: po.createdByUserId,
             createdAt: po.createdAt,
             updatedAt: now
-          }
+          })
         };
       });
 
@@ -3230,6 +3266,19 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           return { kind: 'refused' as const, evaluation };
         }
 
+        // M8-OPERATOR FIX 2: the confirmation names the provisional records it
+        // closes, so the paper trail shows the acceptance was first written down
+        // by staff and only later confirmed by the representative.
+        const provisionalEvents = await tx.select({ id: makerPoEvents.id })
+          .from(makerPoEvents)
+          .where(and(
+            eq(makerPoEvents.makerPurchaseOrderId, poId),
+            eq(makerPoEvents.provisional, true)
+          ))
+          .orderBy(makerPoEvents.recordedAt, makerPoEvents.id);
+        const precededByProvisional = provisionalEvents.length > 0;
+        const provisionalEventId = precededByProvisional ? provisionalEvents.at(-1)!.id : null;
+
         const updated = await tx.update(makerPurchaseOrders).set({ status: 'MAKER_PO_ACCEPTED', updatedAt: now })
           .where(and(eq(makerPurchaseOrders.id, poId), eq(makerPurchaseOrders.status, poStatus.value)))
           .returning({ id: makerPurchaseOrders.id });
@@ -3260,7 +3309,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           entityType: 'maker_po_event',
           entityId: acceptEvent.id,
           beforeState: { status: poStatus.value },
-          afterState: { status: 'MAKER_PO_ACCEPTED', event: acceptEvent },
+          afterState: {
+            status: 'MAKER_PO_ACCEPTED',
+            event: acceptEvent,
+            precededByProvisional,
+            provisionalEventId
+          },
           occurredAt: now,
           requestMetadata: { operation: 'maker_po:accept_evidence', makerPurchaseOrderId: poId }
         });
@@ -3300,18 +3354,20 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           kind: 'applied' as const,
           status: 'MAKER_PO_ACCEPTED' as const,
           event: acceptEvent,
-          purchaseOrder: {
+          precededByProvisional,
+          provisionalEventId,
+          purchaseOrder: buildMakerPoViewForRole(user.role, {
             id: poId,
             filmSupplyOrderId: po.filmSupplyOrderId,
             snapshot: po.snapshot as MakerPoSnapshot,
             snapshotSha256: po.snapshotSha256,
-            status: 'MAKER_PO_ACCEPTED' as const,
+            status: 'MAKER_PO_ACCEPTED',
             ceoApprovedByUserId: po.ceoApprovedByUserId,
             ceoApprovedAt: po.ceoApprovedAt,
             createdByUserId: po.createdByUserId,
             createdAt: po.createdAt,
             updatedAt: now
-          }
+          })
         };
       });
 
@@ -3323,7 +3379,13 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       if (outcome.kind === 'refused') {
         return context.json({ error: outcome.evaluation.message, code: outcome.evaluation.code }, 422);
       }
-      return context.json({ status: outcome.status, event: outcome.event, purchaseOrder: outcome.purchaseOrder }, 200);
+      return context.json({
+        status: outcome.status,
+        event: outcome.event,
+        precededByProvisional: outcome.precededByProvisional,
+        provisionalEventId: outcome.provisionalEventId,
+        purchaseOrder: outcome.purchaseOrder
+      }, 200);
     } catch (error) {
       if (error instanceof MakerPoStateConflict) {
         return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
@@ -3332,6 +3394,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     }
   });
 
+  // M8-OPERATOR FIX 1: both maker PO reads answer by role (see maker-po-view.ts).
+  // The rows are selected once and never rewritten; only the answer is narrowed,
+  // so an admin still reads the frozen paper while staff and viewer cannot.
   app.get('/api/maker-purchase-orders/:poId', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
@@ -3348,7 +3413,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const events = await db.select().from(makerPoEvents)
       .where(eq(makerPoEvents.makerPurchaseOrderId, poId))
       .orderBy(makerPoEvents.recordedAt, makerPoEvents.id);
-    return context.json({ purchaseOrder: po, events });
+    return context.json({
+      purchaseOrder: buildMakerPoViewForRole(user.role, po as MakerPoRecord),
+      events: events.map((event) => buildMakerPoEventViewForRole(user.role, event as MakerPoEventRecord))
+    });
   });
 
   app.get('/api/film-supply-orders/:orderId/maker-purchase-orders', async (context) => {
@@ -3365,7 +3433,145 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const rows = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.filmSupplyOrderId, orderId))
       .orderBy(desc(makerPurchaseOrders.createdAt));
-    return context.json({ makerPurchaseOrders: rows });
+    return context.json({
+      makerPurchaseOrders: rows.map((row) => buildMakerPoViewForRole(user.role, row as MakerPoRecord))
+    });
+  });
+
+  // M8-OPERATOR FIX 2: the provisional acceptance. A staff member writes down
+  // that the maker reported receipt; the event is flagged provisional, the PO
+  // status never moves, and the representative's final acceptance later names
+  // the provisional record it confirms. Nothing here can close the paper.
+  app.post('/api/maker-purchase-orders/:poId/provisional-acceptance', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const poId = context.req.param('poId');
+
+    const [existing] = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.id, poId)).limit(1);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    const [order] = await db.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'maker_po:accept_provisional', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const body = await context.req.json().catch(() => null) as any;
+    const acceptedAt = parseOptionalDate(body?.acceptedAt);
+    if (!acceptedAt.ok) return context.json({ error: '受領日時が不正です', code: 'INVALID_DATE' }, 422);
+
+    const now = new Date();
+    try {
+      const outcome = await db.transaction(async (tx) => {
+        const [po] = await tx.select().from(makerPurchaseOrders)
+          .where(eq(makerPurchaseOrders.id, poId)).limit(1).for('update');
+        if (!po) throw new MakerPoStateConflict();
+        const poStatus = validateMakerPoStatus(po.status);
+        if (!poStatus.ok) return { kind: 'error' as const, code: poStatus.code, message: poStatus.message };
+
+        // A provisional acceptance only makes sense once the send is proven:
+        // the same reachability the final acceptance requires, without the
+        // status change.
+        const reachable = transitionMakerPurchaseOrder(poStatus.value, 'MAKER_PO_ACCEPTED');
+        if (!reachable.ok) {
+          return {
+            kind: 'blocked' as const,
+            code: 'MAKER_PO_TRANSITION_BLOCKED' as const,
+            from: poStatus.value,
+            message: `a maker purchase order in ${poStatus.value} cannot record a provisional acceptance; a proven send comes first`
+          };
+        }
+
+        const provisionalEvent = {
+          id: uuidv7(now),
+          makerPurchaseOrderId: poId,
+          eventType: 'MAKER_PO_ACCEPT_RECORDED_PROVISIONAL' as const,
+          sentAt: acceptedAt.date,
+          verificationStatus: 'UNVERIFIED' as const,
+          provisional: true,
+          recordedByUserId: user.id,
+          recordedAt: now
+        };
+        await tx.insert(makerPoEvents).values(provisionalEvent);
+
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_PO_ACCEPT_RECORDED_PROVISIONAL',
+          entityType: 'maker_po_event',
+          entityId: provisionalEvent.id,
+          beforeState: { status: poStatus.value },
+          afterState: {
+            status: poStatus.value,
+            eventType: provisionalEvent.eventType,
+            provisional: true,
+            recordedByUserId: user.id
+          },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:accept_provisional', makerPurchaseOrderId: poId }
+        });
+
+        return {
+          kind: 'applied' as const,
+          event: provisionalEvent,
+          purchaseOrder: buildMakerPoViewForRole(user.role, po as MakerPoRecord)
+        };
+      });
+
+      if (outcome.kind === 'error') return context.json({ error: outcome.message, code: outcome.code }, 422);
+      if (outcome.kind === 'blocked') {
+        return context.json({ error: outcome.message, code: outcome.code, from: outcome.from }, 422);
+      }
+      return context.json({
+        status: outcome.purchaseOrder.status,
+        provisional: true,
+        event: outcome.event,
+        purchaseOrder: outcome.purchaseOrder
+      }, 201);
+    } catch (error) {
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
+      }
+      throw error;
+    }
+  });
+
+  // M8-OPERATOR FIX 3: the G6 payment gate as a read, so the 大代表承認 screen
+  // can show 決済条件の状態 and the block reason before anyone tries to approve.
+  // The gate answers only whether the recorded terms open the approval; it is
+  // never a statement that money arrived.
+  app.get('/api/film-supply-orders/:orderId/payment-gate', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const orderId = context.req.param('orderId');
+
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'maker_po:read', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const paymentGate = evaluatePaymentGate({ paymentTerms: order.paymentTerms });
+    return context.json({
+      orderId,
+      orderStatus: order.status,
+      paymentTerms: paymentGate.paymentTerms,
+      gate: paymentGate.ok
+        ? { satisfied: true, gatedOn: paymentGate.gatedOn, code: null, reason: null }
+        : {
+            satisfied: false,
+            gatedOn: null,
+            code: paymentGate.code,
+            reason: paymentGate.message
+          },
+      /**
+       * 入金確認（檢証）is a separate manual step that no code path records
+       * today. Recording paymentTerms='prepaid' is a *term*, never a
+       * confirmation; this field stays null until a future explicit
+       * confirmation action writes it.
+       */
+      paymentConfirmedAt: order.paymentConfirmedAt ?? null
+    });
   });
 
   return app;

@@ -30,6 +30,30 @@ export type ApprovalDecision = (typeof APPROVAL_DECISIONS)[number];
 export const APPROVAL_EVIDENCE_SOURCES = ['email', 'signed_document', 'other_verified'] as const;
 export type ApprovalEvidenceSource = (typeof APPROVAL_EVIDENCE_SOURCES)[number];
 
+/**
+ * M8-OPERATOR FIX 4: what the identifier check did with the cited evidence.
+ * `verified_in_document` means the identifier was found in the stored text,
+ * `pending_manual_verification` means the evidence is binary (PDF/image) and a
+ * human must confirm the identifier before the approval counts, and
+ * `not_applicable` marks events whose decision never contributes to an approval
+ * (a REVOKE) — the identifier was still checked where the evidence is text.
+ */
+export const EVIDENCE_IDENTIFIER_STATUSES = [
+  'verified_in_document',
+  'pending_manual_verification',
+  'not_applicable'
+] as const;
+
+export type EvidenceIdentifierStatus = (typeof EVIDENCE_IDENTIFIER_STATUSES)[number];
+
+/** Content types whose bytes are (mostly) text and can be searched as text. */
+const TEXT_LIKE_EVIDENCE_PREFIXES = ['text/'] as const;
+
+export function isTextLikeEvidence(contentType: string | null | undefined): boolean {
+  if (typeof contentType !== 'string') return false;
+  return TEXT_LIKE_EVIDENCE_PREFIXES.some((prefix) => contentType.toLowerCase().startsWith(prefix));
+}
+
 /** The two organizations whose approvals the artwork gate requires. */
 export const REQUIRED_APPROVAL_ORGANIZATIONS: readonly ApprovalOrganization[] = APPROVAL_ORGANIZATIONS;
 
@@ -87,6 +111,14 @@ export interface ApprovalEventView {
    */
   evidenceDocumentVersionId?: string;
   evidenceIdentifier?: string | null;
+  /**
+   * M8-OPERATOR FIX 4: how the identifier was checked against the cited
+   * evidence. Optional so the pure gate derivation keeps working with minimal
+   * fixtures and so rows written before this check existed (status null) keep
+   * counting — only an explicit pending_manual_verification flag holds an
+   * approval out of the gate.
+   */
+  evidenceIdentifierStatus?: EvidenceIdentifierStatus | string | null;
 }
 
 /** The read model of one artwork revision; fileSha256 is the revision hash. */
@@ -124,6 +156,12 @@ export interface OrganizationApprovalState {
   invalidatedByNewerRevision: boolean;
   /** Set when a REVOKE is the latest effective event. */
   revoked: boolean;
+  /**
+   * M8-OPERATOR FIX 4: the latest APPROVE cites binary evidence whose
+   * identifier a human still has to confirm. The event is recorded, but it
+   * never completes the dual approval while this is true.
+   */
+  pendingEvidenceIdentifier: boolean;
 }
 
 /**
@@ -156,7 +194,13 @@ export function resolveOrganizationApproval(
     }
   }
 
-  const valid = approval !== null && approval.approvedFileSha256 === currentSha256;
+  // M8-OPERATOR FIX 4: an APPROVE whose identifier is still awaiting manual
+  // verification is a recorded fact but not a counted approval — it can never
+  // complete the dual approval on its own (and nothing auto-approves it later).
+  const pendingEvidenceIdentifier =
+    approval !== null && approval.evidenceIdentifierStatus === 'pending_manual_verification';
+  const valid =
+    approval !== null && approval.approvedFileSha256 === currentSha256 && !pendingEvidenceIdentifier;
   return {
     organization,
     valid,
@@ -165,7 +209,8 @@ export function resolveOrganizationApproval(
     approvedFileSha256: approval?.approvedFileSha256 ?? null,
     lastEventTime: last?.eventTime ?? null,
     invalidatedByNewerRevision: approval !== null && !valid,
-    revoked: revoked && approval === null
+    revoked: revoked && approval === null,
+    pendingEvidenceIdentifier
   };
 }
 
@@ -354,6 +399,68 @@ export function evaluateApprovalEvidenceIdentifier(
     };
   }
   return { ok: true, matchedOn: 'evidence_document_content' };
+}
+
+/**
+ * M8-OPERATOR FIX 4: the same identifier rule, aware of what the evidence
+ * actually is.
+ *
+ * The UTF-8 substring rule above silently lies for binary evidence: a PDF or an
+ * image does not carry its text as raw UTF-8, so a genuine signed PDF fails the
+ * check (the operator then uploads a fake "text" file instead), and a crafted
+ * byte string can pass it. Both directions are wrong, so the check now splits on
+ * the evidence kind:
+ * - text-like evidence (text/plain, text/csv): unchanged substring match, and a
+ *   miss is still a refusal;
+ * - binary evidence (PDF, images): the identifier is never auto-verified. The
+ *   event is recorded with `pending_manual_verification` and — through the gate
+ *   derivation — never completes the dual approval until a human confirms the
+ *   identifier. Nothing here approves anything by itself.
+ */
+export interface ApprovalEvidenceIdentifierBytesInput {
+  identifier: string;
+  /** The stored evidence version's bytes. */
+  bytes: Buffer;
+  /** The declared content type of the evidence version. */
+  contentType: string | null | undefined;
+}
+
+export type ApprovalEvidenceIdentifierBytesCheck =
+  | {
+      ok: true;
+      status: 'verified_in_document';
+      matchedOn: 'evidence_document_content';
+    }
+  | {
+      ok: true;
+      status: 'pending_manual_verification';
+      matchedOn: 'manual_verification';
+      message: string;
+    }
+  | { ok: false; code: 'EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT'; message: string };
+
+export function evaluateApprovalEvidenceIdentifierForBytes(
+  input: ApprovalEvidenceIdentifierBytesInput
+): ApprovalEvidenceIdentifierBytesCheck {
+  if (isTextLikeEvidence(input.contentType)) {
+    const check = evaluateApprovalEvidenceIdentifier({
+      identifier: input.identifier,
+      // Binary-looking bytes uploaded as text simply do not match, which is the
+      // existing refusal — no new status is invented for them.
+      evidenceText: input.bytes.toString('utf8')
+    });
+    return check.ok
+      ? { ok: true, status: 'verified_in_document', matchedOn: check.matchedOn }
+      : check;
+  }
+
+  return {
+    ok: true,
+    status: 'pending_manual_verification',
+    matchedOn: 'manual_verification',
+    message:
+      '承認証跡がバイナリ（PDF・画像）のため、識別子（evidenceIdentifier）は自動検証できません。承認イベントは記録しましたが、手動確認が完了するまで二重承認には算入されません'
+  };
 }
 
 /**

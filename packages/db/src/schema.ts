@@ -73,6 +73,7 @@ export const makerPoEventType = pgEnum('maker_po_event_type', [
   'SNAPSHOT_VOIDED',
   'SEND_EVIDENCE_REGISTERED',
   'ACCEPT_EVIDENCE_REGISTERED',
+  'MAKER_PO_ACCEPT_RECORDED_PROVISIONAL',
   'SEND_REJECTED'
 ]);
 
@@ -303,6 +304,15 @@ export const filmSupplyOrders = pgTable('film_supply_orders', {
    * pre-migration state) closes the gate, 'prepaid' and 'on_delivery' open it.
    */
   paymentTerms: text('payment_terms').default('undetermined'),
+  /**
+   * M8-OPERATOR FIX 3: the moment a human confirmed the money actually arrived
+   * (入金確認・檢証). Nullable and written by no code path today on purpose:
+   * recording paymentTerms='prepaid' is a *term*, not a confirmation, so the
+   * only writer is the explicit confirmation action that does not exist yet.
+   * Every reader must treat null as "not confirmed" and never derive it from
+   * the term or from the maker PO chain.
+   */
+  paymentConfirmedAt: timestamp('payment_confirmed_at', { withTimezone: true }),
   holdReason: text('hold_reason'),
   exceptionNote: text('exception_note'),
   /**
@@ -474,6 +484,16 @@ export const artworkApprovalEvents = pgTable('artwork_approval_events', {
    * no identifier.
    */
   evidenceIdentifier: text('evidence_identifier'),
+  /**
+   * M8-OPERATOR FIX 4: what the identifier check did with the cited evidence.
+   * 'verified_in_document' — found in the stored text; 'pending_manual_verification'
+   * — binary evidence (PDF/image) whose identifier a human must confirm, which
+   * never completes the dual approval on its own; 'not_applicable' — a decision
+   * (REVOKE) that never contributes to an approval. Null for the rows written
+   * before this column existed; null reads as checked-and-counted, the pre-M8
+   * behaviour, so history is not retroactively invalidated.
+   */
+  evidenceIdentifierStatus: text('evidence_identifier_status'),
   evidenceSource: approvalEvidenceSource('evidence_source').notNull(),
   approvedFileSha256: text('approved_file_sha256').notNull(),
   /** When the external organization actually decided; recorded_at is when we wrote it down. */
@@ -482,6 +502,9 @@ export const artworkApprovalEvents = pgTable('artwork_approval_events', {
   supersedesEventId: uuid('supersedes_event_id').references((): AnyPgColumn => artworkApprovalEvents.id)
 }, (table) => [
   check('artwork_approval_events_sha256_format', sql`${table.approvedFileSha256} ~ '^[0-9a-f]{64}$'`),
+  // M8-OPERATOR FIX 4: the identifier status is a closed vocabulary, so nothing
+  // outside the API can mark an approval as verified by hand.
+  check('artwork_approval_events_evidence_identifier_status_vocabulary', sql`${table.evidenceIdentifierStatus} is null or ${table.evidenceIdentifierStatus} in ('verified_in_document', 'pending_manual_verification', 'not_applicable')`),
   index('artwork_approval_events_revision_idx').on(table.artworkRevisionId),
   index('artwork_approval_events_organization_idx').on(table.organization),
   index('artwork_approval_events_supersedes_idx').on(table.supersedesEventId)
@@ -705,9 +728,19 @@ export const makerPoEvents = pgTable('maker_po_events', {
   /** Array of sha256 hashes of the sent attachments, including the evidence itself. */
   attachmentHashes: jsonb('attachment_hashes'),
   verificationStatus: makerPoEventVerificationStatus('verification_status').notNull().default('UNVERIFIED'),
+  /**
+   * M8-OPERATOR FIX 2: true only for a MAKER_PO_ACCEPT_RECORDED_PROVISIONAL
+   * event — an acceptance a staff member wrote down that the representative has
+   * not confirmed yet. A provisional event never moves the maker PO out of its
+   * status and never satisfies the acceptance; only the admin acceptance
+   * evidence does, and it names the provisional record that preceded it.
+   */
+  provisional: boolean('provisional').notNull().default(false),
   recordedByUserId: uuid('recorded_by_user_id').notNull().references(() => users.id),
   recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow()
 }, (table) => [
+  // A provisional event is exactly a provisional acceptance, nothing else.
+  check('maker_po_events_provisional_pair', sql`${table.provisional} = false or ${table.eventType} = 'MAKER_PO_ACCEPT_RECORDED_PROVISIONAL'`),
   index('maker_po_events_po_idx').on(table.makerPurchaseOrderId),
   index('maker_po_events_type_idx').on(table.eventType),
   index('maker_po_events_evidence_idx').on(table.evidenceDocumentVersionId)

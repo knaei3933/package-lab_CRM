@@ -272,7 +272,9 @@ interface MakerPoResponse {
 }
 
 async function createMakerPo(orderId: string) {
-  const created = await postJson(`/api/film-supply-orders/${orderId}/maker-purchase-orders`, {
+  // M8-OPERATOR FIX 2: freezing the maker paper is the representative's act, so
+  // the chain walks use the admin token from here on.
+  const created = await postAs(adminToken, `/api/film-supply-orders/${orderId}/maker-purchase-orders`, {
     recipientAddress: 'maker-po@example.com',
     amounts: { currency: 'JPY', totalAmount: '480000' }
   });
@@ -301,6 +303,14 @@ async function sendEvidence(
   body: Record<string, unknown>
 ) {
   return await postJson(`/api/maker-purchase-orders/${poId}/send-evidence`, body);
+}
+
+/** M8-OPERATOR FIX 2: the final acceptance is recorded by the representative. */
+async function acceptEvidence(
+  poId: string,
+  body: Record<string, unknown>
+) {
+  return await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, body);
 }
 
 async function listEvents(poId: string) {
@@ -453,7 +463,8 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
       eq(auditEvents.entityId, po.id),
       eq(auditEvents.action, 'MAKER_PO_CREATED')
     )).limit(1);
-    expect(createdAudit?.actorUserId).toBe(staffId);
+    // M8-OPERATOR FIX 2: the paper is frozen by the representative.
+    expect(createdAudit?.actorUserId).toBe(adminId);
     const [approvalAudit] = await db.select().from(auditEvents).where(and(
       eq(auditEvents.entityType, 'maker_po_event'),
       eq(auditEvents.entityId, approvedBody.approvalEvent.id)
@@ -487,7 +498,16 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
       verificationNote: '合成受領確認'
     });
     expect(verified.status).toBe(200);
-    const accepted = await postJson(`/api/maker-purchase-orders/${po.id}/accept-evidence`, {
+    // M8-OPERATOR FIX 2: staff cannot finalize the acceptance; the paper stays
+    // where it is until the representative confirms it.
+    const staffAcceptAttempt = await postJson(`/api/maker-purchase-orders/${po.id}/accept-evidence`, {
+      evidenceDocumentVersionId: acceptDoc.version.id,
+      acceptedAt: '2026-11-12T11:00:00.000Z'
+    });
+    expect(staffAcceptAttempt.status).toBe(403);
+    expect((await makerPoRow(po.id))?.status).toBe('MAKER_PO_SENT_MANUALLY');
+
+    const accepted = await acceptEvidence(po.id, {
       evidenceDocumentVersionId: acceptDoc.version.id,
       acceptedAt: '2026-11-12T11:00:00.000Z'
     });
@@ -540,7 +560,7 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     const reApproval = await approveMakerPo(po.id);
     expect(reApproval.status).toBe(422);
     expect((reApproval.body as { code: string }).code).toBe('MAKER_PO_TRANSITION_BLOCKED');
-    const acceptAttempt = await postJson(`/api/maker-purchase-orders/${po.id}/accept-evidence`, {
+    const acceptAttempt = await acceptEvidence(po.id, {
       evidenceDocumentVersionId: laterEvidence.version.id
     });
     expect(acceptAttempt.status).toBe(422);
@@ -554,25 +574,25 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
   it('T-22 acceptance is only reachable behind a verified acceptance document', async () => {
     const { order, po } = await reachSentMakerPo(projectId, 'T22');
 
-    const missing = await postJson(`/api/maker-purchase-orders/${po.id}/accept-evidence`, {});
+    const missing = await acceptEvidence(po.id, {});
     expect(missing.status).toBe(422);
     expect((missing.body as { code: string }).code).toBe('ACCEPT_EVIDENCE_REQUIRED');
 
-    const unknown = await postJson(`/api/maker-purchase-orders/${po.id}/accept-evidence`, {
+    const unknown = await acceptEvidence(po.id, {
       evidenceDocumentVersionId: '00000000-0000-7000-8000-000000000000'
     });
     expect(unknown.status).toBe(422);
     expect((unknown.body as { code: string }).code).toBe('ACCEPT_EVIDENCE_DOCUMENT_VERSION_NOT_FOUND');
 
     const wrongType = await uploadOrderEvidence(order, projectId, 'send_evidence', 'T22-WRONG');
-    const mistyped = await postJson(`/api/maker-purchase-orders/${po.id}/accept-evidence`, {
+    const mistyped = await acceptEvidence(po.id, {
       evidenceDocumentVersionId: wrongType.version.id
     });
     expect(mistyped.status).toBe(422);
     expect((mistyped.body as { code: string }).code).toBe('ACCEPT_EVIDENCE_DOCUMENT_TYPE_INVALID');
 
     const acceptDoc = await uploadOrderEvidence(order, projectId, 'acceptance_evidence', 'T22');
-    const unverified = await postJson(`/api/maker-purchase-orders/${po.id}/accept-evidence`, {
+    const unverified = await acceptEvidence(po.id, {
       evidenceDocumentVersionId: acceptDoc.version.id
     });
     expect(unverified.status).toBe(422);
@@ -588,7 +608,7 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
       verificationNote: '合成受領確認T22'
     });
     expect(verified.status).toBe(200);
-    const accepted = await postJson(`/api/maker-purchase-orders/${po.id}/accept-evidence`, {
+    const accepted = await acceptEvidence(po.id, {
       evidenceDocumentVersionId: acceptDoc.version.id,
       acceptedAt: '2026-11-12T12:00:00.000Z'
     });

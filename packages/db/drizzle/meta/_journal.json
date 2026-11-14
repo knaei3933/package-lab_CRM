@@ -113,6 +113,13 @@
       "when": 1795292760000,
       "tag": "0015_m7_sec3_payment_terms",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1795379160000,
+      "tag": "0016_m8_operator_maker_po_roles",
+      "breakpoints": true
     }
   ]
 }

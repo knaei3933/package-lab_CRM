@@ -17,6 +17,7 @@ const navItems = [
   { href: '/orders', label: '案件（発注）一覧／作成' },
   { href: '/documents', label: '文書' },
   { href: '/approvals', label: '承認' },
+  { href: '/maker-po', label: 'メーカー発注' },
   { href: '/deliveries', label: '納品確認・手数料準備' },
   { href: '/status', label: '状態表示' }
 ];
