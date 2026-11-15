@@ -21,6 +21,7 @@ import {
 import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
+import { plausibleTestSentAt, sendMakerPoEmlEvidence } from '../helpers/maker-po-evidence.js';
 
 /**
  * M8-OPER2 regression tests over the real endpoints:
@@ -126,6 +127,7 @@ async function uploadDocument(input: {
   poId?: string;
   contentType?: string;
   content?: string;
+  makerPoId?: string;
 }) {
   const tag = nextTag();
   const contentType = input.contentType ?? 'text/plain';
@@ -140,6 +142,8 @@ async function uploadDocument(input: {
       : toBase64(content),
     ...(input.poId ? { sevenPurchaseOrderId: input.poId } : {}),
     ...(input.orderId ? { filmSupplyOrderId: input.orderId } : {}),
+    // M8-HARDEN FIX B2 (d): the maker PO an acceptance evidence is for.
+    ...(input.makerPoId ? { makerPurchaseOrderId: input.makerPoId } : {}),
     ...(input.designKey ? { designKey: input.designKey } : {})
   });
   expect(response.status).toBe(201);
@@ -272,26 +276,21 @@ async function reachProduction(tag: string) {
 
   expect((await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {})).status).toBe(200);
 
-  const sendEvidence = await uploadDocument({
-    documentType: 'send_evidence',
-    issuerEntity: 'kanei',
-    orderId: chain.orderId,
-    poId: chain.poId,
-    content: 'composite m8-oper2 send evidence\n'
-  });
-  expect((await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
-    evidenceDocumentVersionId: sendEvidence.version.id,
-    senderAddress: 'staff@kanei.example',
-    recipients: ['maker-po@example.com'],
-    sentAt: '2026-11-14T09:00:00.000Z'
-  })).status).toBe(200);
+  // M8-HARDEN FIX C1: the send evidence is the original .eml of the mail.
+  expect((await sendMakerPoEmlEvidence(
+    (url, body) => postAs(staffToken, url, body),
+    poId,
+    { orderCode: `FSO-OPER2-${tag}`, sentAtIso: plausibleTestSentAt() }
+  )).status).toBe(200);
 
   const acceptEvidence = await uploadDocument({
     documentType: 'acceptance_evidence',
     issuerEntity: 'kanei',
     orderId: chain.orderId,
     poId: chain.poId,
-    content: 'composite m8-oper2 acceptance evidence\n'
+    content: 'composite m8-oper2 acceptance evidence\n',
+    // M8-HARDEN FIX B2 (d): acceptance evidence names the paper it closes.
+    makerPoId: poId
   });
   expect((await postAs(staffToken, `/api/documents/${acceptEvidence.document.id}/verify`, {
     verificationStatus: 'verified'

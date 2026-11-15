@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
 import { randomBytes } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
-import { and, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import {
   buildMakerPoSnapshot,
   canPerform,
@@ -15,9 +15,11 @@ import {
   evaluateFilmReceiptAssumption,
   evaluateMakerPoAcceptEvidence,
   evaluateMakerPoApproval,
+  evaluateMakerPoCancellation,
   evaluateMakerPoCreationGate,
   evaluateMakerPoSendEvidence,
   evaluateMakerPoSendTransition,
+  evaluateMakerPoSentAtCurrency,
   evaluatePaymentGate,
   evaluateRevisionRegistrationGate,
   evaluateSevenPoChecklist,
@@ -81,6 +83,7 @@ import {
   fillingOrderLines,
   fillingOrders,
   makerPoEvents,
+  makerPoSendManualVerifications,
   makerPurchaseOrders,
   preOrderReferences,
   projects,
@@ -91,6 +94,8 @@ import {
 import { uuidv7 } from '@kanei/db';
 import { getSessionUser, issueToken, readSessionToken, toActor, type AppDatabase } from './auth.js';
 import {
+  computeSha256,
+  documentMaxBytes,
   documentStorageRoot,
   evaluateDocumentContent,
   writeStoredFile,
@@ -138,6 +143,9 @@ type MakerPoQueryExecutor = Pick<AppDatabase, 'select'>;
 /** Database executor that can write audit rows: the pool or one open transaction. */
 type AuditEventWriter = Pick<AppDatabase, 'insert'>;
 
+/** One open transaction of the maker-PO write paths (reads, writes, audit rows). */
+type MakerPoTxExecutor = Parameters<Parameters<AppDatabase['transaction']>[0]>[0];
+
 /**
  * One audit_events row: what happened, to which entity, and in which project.
  * The project is not derivable from the entity at read time without one EXISTS
@@ -184,6 +192,24 @@ async function recordAuditEvent(writer: AuditEventWriter, input: AuditEventInput
  * one of two simultaneous transition requests is ever effective.
  */
 class MakerPoStateConflict extends Error {}
+
+/**
+ * M8-HARDEN FIX B2: the create lost the one-active-maker-PO unique index
+ * (maker_purchase_orders_active_order_unique). The driver reports SQLSTATE
+ * 23505 and names the constraint, and drizzle wraps the driver error, so both
+ * the code and the constraint name are read through the cause chain.
+ */
+function makerPoActiveUniqueViolation(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current !== null && typeof current === 'object'; depth += 1) {
+    const candidate = current as { code?: unknown; constraint?: unknown; cause?: unknown };
+    if (candidate.constraint === 'maker_purchase_orders_active_order_unique') return true;
+    if (candidate.code === '23505'
+      && (candidate.constraint === undefined || typeof candidate.constraint !== 'string')) return true;
+    current = candidate.cause;
+  }
+  return false;
+}
 
 /**
  * A receipt assumption lost its row-level race: the order moved away from
@@ -1611,6 +1637,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     preOrderReferenceId: string | null;
     sevenPurchaseOrderId: string | null;
     filmSupplyOrderId: string | null;
+    makerPurchaseOrderId: string | null;
     designKey: string | null;
     originalReceivedAt: Date | null;
   }
@@ -1673,6 +1700,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           ? raw.filmSupplyOrderId
           : null,
         designKey: optionalText(raw.designKey),
+        // M8-HARDEN FIX B2 (d): the maker PO an acceptance evidence is for.
+        makerPurchaseOrderId: typeof raw.makerPurchaseOrderId === 'string' && raw.makerPurchaseOrderId.length > 0
+          ? raw.makerPurchaseOrderId
+          : null,
         originalReceivedAt: receivedAt.date
       }
     };
@@ -1718,6 +1749,26 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       artworkBindingOrderId = boundOrder.id;
     }
 
+    // M8-HARDEN FIX B2 (d): the acceptance evidence of one maker PO names that
+    // maker PO. The binding is validated once at intake and read everywhere
+    // else, so an acceptance document can never close a paper it was not
+    // uploaded for — one order can hold a cancelled and a live maker PO.
+    let makerPoBindingId: string | null = null;
+    if (input.makerPurchaseOrderId) {
+      const [boundPo] = await db.select({
+        id: makerPurchaseOrders.id,
+        filmSupplyOrderId: makerPurchaseOrders.filmSupplyOrderId
+      }).from(makerPurchaseOrders)
+        .where(eq(makerPurchaseOrders.id, input.makerPurchaseOrderId)).limit(1);
+      if (!boundPo || boundPo.filmSupplyOrderId !== artworkBindingOrderId) {
+        return context.json({
+          error: '紐付け対象のメーカー発注書が、この書類の発注に見つかりません',
+          code: 'MAKER_PO_BINDING_MISMATCH'
+        }, 422);
+      }
+      makerPoBindingId = boundPo.id;
+    }
+
     // A logical document is (project, type, issuer, filename). Re-uploading the
     // same bytes to it resolves to the existing version and writes nothing (T-27).
     const [existingDocument] = await db.select().from(documents).where(and(
@@ -1728,7 +1779,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     )).limit(1);
     if (existingDocument) {
       const bindingConflict = (existingDocument.filmSupplyOrderId ?? null) !== artworkBindingOrderId
-        || (existingDocument.designKey ?? null) !== input.designKey;
+        || (existingDocument.designKey ?? null) !== input.designKey
+        || (existingDocument.makerPurchaseOrderId ?? null) !== makerPoBindingId;
       if (bindingConflict) {
         return context.json({ error: '既存の書類は別のアートワーク紐付けを持っています', code: 'DOCUMENT_BINDING_CONFLICT' }, 422);
       }
@@ -1825,6 +1877,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       preOrderReferenceId,
       sevenPurchaseOrderId: linkedPo?.id ?? null,
       filmSupplyOrderId: artworkBindingOrderId,
+      makerPurchaseOrderId: makerPoBindingId,
       designKey: artworkBindingOrderId ? input.designKey : null,
       verificationStatus: 'unverified',
       verifiedByUserId: null,
@@ -2222,15 +2275,20 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
    * reason and the gate snapshot, and returns the 422 payload when the boundary
    * must refuse.
    *
-   * Two closures are deliberately not a block:
-   * - a gate closed only because a newer revision superseded its approvals
-   *   (the T-11 change-review flow): the snapshot-void machinery (G10, T-23,
-   *   T-24) is the authority there and re-freezing the paper is its designed
-   *   step, so blocking would strand a recovery the approval chain requires;
-   * - a send or acceptance for paper whose send is already proven (a
+   * M8-HARDEN FIX A3: one closure remains a non-block, and one was added.
+   * - (kept) a send or acceptance for paper whose send is already proven (a
    *   SEND_EVIDENCE_REGISTERED event with verificationStatus VERIFIED): what
    *   has left the company cannot be un-sent, so the re-check is recorded in
    *   the audit trail instead of enforced. Not-yet-shipped paper stays blocked.
+   *   The G10 snapshot-void machinery itself is untouched — a drifted snapshot
+   *   is still refused by its own check in the send path.
+   * - (FIX A3) every other closed gate blocks, including the case that used to
+   *   pass: the current artwork revision holds no valid approval from BOTH
+   *   organizations because a newer revision superseded the old approvals (the
+   *   T-11 change-review flow). Certifying or sending paper whose artwork no
+   *   organization approved is exactly the leak the CEO closed: the acts now
+   *   answer 422 DUAL_APPROVAL_NO_LONGER_VALID with the missing approvals, and
+   *   recovery is both organizations approving the new revision.
    */
   type MakerPoRecheckStage =
     | 'maker_po:create'
@@ -2282,21 +2340,25 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     // A closure counts as a withdrawal when a required organization's latest
     // effective decision on the current revision is a REVOKE, or when its
     // latest APPROVE is not counted (identifier awaiting manual confirmation).
-    // Both mean the counted dual approval is gone now. A revision that simply
-    // has no counted approvals yet is the change-review flow, not a withdrawal.
+    // A revision that has no counted approvals at all is the superseded case:
+    // the approvals that once opened this gate belong to an older revision and
+    // were never re-recorded for the current one (FIX A3).
     const approvalWithdrawn = gate.designs.some((design) =>
       design.customer.revoked || design.seven.revoked
       || design.customer.pendingEvidenceIdentifier || design.seven.pendingEvidenceIdentifier
     );
-    const blocked = !gate.dualApproved && approvalWithdrawn
+    // FIX A3: the gate being closed is enough. Pre-send boundary acts need the
+    // current revision to hold both approvals right now; only paper whose send
+    // is already proven escapes, because that send already happened.
+    const blocked = !gate.dualApproved
       && !(postSendStage && provenSendExists);
     const reason = gate.dualApproved
       ? 'gate_open'
-      : !approvalWithdrawn
-        ? 'gate_closed_superseded_revision_snapshot_void_governs'
-        : postSendStage && provenSendExists
-          ? 'gate_closed_after_proven_send_recorded_not_enforced'
-          : 'gate_closed_approval_withdrawn';
+      : postSendStage && provenSendExists
+        ? 'gate_closed_after_proven_send_recorded_not_enforced'
+        : approvalWithdrawn
+          ? 'gate_closed_approval_withdrawn'
+          : 'gate_closed_current_revision_missing_dual_approval';
 
     await recordAuditEvent(db, {
       projectId: input.order.projectId,
@@ -3091,11 +3153,142 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       projectId: documents.projectId,
       filmSupplyOrderId: documents.filmSupplyOrderId,
       designKey: documents.designKey,
-      verificationStatus: documents.verificationStatus
+      verificationStatus: documents.verificationStatus,
+      // M8-HARDEN FIX B2: which paper the document was uploaded for.
+      makerPurchaseOrderId: documents.makerPurchaseOrderId,
+      // M8-HARDEN FIX C1: the stored bytes, so cited evidence is verified as
+      // the email it claims to be.
+      declaredMimeType: documentVersions.declaredMimeType,
+      storagePath: documentVersions.storagePath
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(documentVersions.id, versionId)).limit(1);
     return row ?? null;
+  }
+
+  /**
+   * M8-HARDEN FIX C1: stores the send evidence the request brought inline —
+   * the original .eml of the production-order mail — as the send_evidence
+   * document of this paper, so the send event cites stored, hashed bytes
+   * exactly like the document-cited path does. One logical document per maker
+   * PO (per filename), append-only versions: identical bytes resolve to the
+   * version already stored (T-27), a new attempt becomes the next version.
+   *
+   * The size/type check here is the send-evidence intake's own: the payload is
+   * not a generic upload, so a PDF declared as an EML is accepted for storage
+   * and then fails the email verification (PENDING_MANUAL_VERIFICATION) instead
+   * of being refused before it could be looked at.
+   */
+  const MAKER_PO_SEND_EVIDENCE_MIME_TYPE = 'message/rfc822';
+
+  async function storeMakerPoSendEvidenceDocument(
+    tx: MakerPoTxExecutor,
+    input: {
+      projectId: string;
+      makerPurchaseOrderId: string;
+      filmSupplyOrderId: string;
+      sevenPurchaseOrderId: string | null;
+      actorUserId: string;
+      bytes: Buffer;
+      filename: string;
+    }
+  ): Promise<{ documentId: string; versionId: string; sha256: string }> {
+    const sha256 = computeSha256(input.bytes);
+    const [existingDocument] = await tx.select().from(documents).where(and(
+      eq(documents.projectId, input.projectId),
+      eq(documents.documentType, 'send_evidence'),
+      eq(documents.issuerEntity, 'kanei'),
+      eq(documents.originalFilename, input.filename)
+    )).limit(1);
+
+    let documentId = existingDocument?.id ?? '';
+    let versionNumber = 1;
+    if (existingDocument) {
+      const [maxRow] = await tx.select({ maxVersion: sql<number>`coalesce(max(${documentVersions.versionNumber}), 0)` })
+        .from(documentVersions)
+        .where(eq(documentVersions.documentId, existingDocument.id));
+      versionNumber = (maxRow?.maxVersion ?? 0) + 1;
+    } else {
+      documentId = uuidv7();
+    }
+    const versionId = versionNumber === 1 ? documentId : uuidv7();
+
+    // Identical bytes always keep referencing the same physical file (T-26).
+    const storageRoot = documentStorageRoot();
+    const [sharedVersion] = await tx.select({ storagePath: documentVersions.storagePath })
+      .from(documentVersions)
+      .where(eq(documentVersions.sha256, sha256))
+      .orderBy(desc(documentVersions.createdAt))
+      .limit(1);
+    const storagePath = await resolveStoragePath(storageRoot, sha256, input.bytes, sharedVersion?.storagePath);
+
+    const now = new Date();
+    if (!existingDocument) {
+      const newDocument = {
+        id: documentId,
+        projectId: input.projectId,
+        documentType: 'send_evidence' as const,
+        issuerEntity: 'kanei' as const,
+        originalFilename: input.filename,
+        note: `メーカー発注書 ${input.makerPurchaseOrderId} の送信証跡（.eml原本）`,
+        preOrderReferenceId: null,
+        // documents_official_artifact_requires_po: a document of any type the
+        // intake does not name as an input carries the seven PO linkage.
+        sevenPurchaseOrderId: input.sevenPurchaseOrderId,
+        filmSupplyOrderId: input.filmSupplyOrderId,
+        makerPurchaseOrderId: input.makerPurchaseOrderId,
+        designKey: null,
+        verificationStatus: 'unverified' as const,
+        verifiedByUserId: null,
+        verifiedAt: null,
+        verificationNote: null,
+        createdByUserId: input.actorUserId,
+        createdAt: now,
+        updatedAt: now
+      };
+      await tx.insert(documents).values(newDocument);
+      await recordAuditEvent(tx, {
+        projectId: input.projectId,
+        id: uuidv7(now),
+        actorUserId: input.actorUserId,
+        action: 'DOCUMENT_CREATED',
+        entityType: 'document',
+        entityId: documentId,
+        afterState: newDocument,
+        occurredAt: now,
+        requestMetadata: { operation: 'maker_po:send_evidence', documentType: 'send_evidence' }
+      });
+    }
+
+    const versionRow = {
+      id: versionId,
+      documentId,
+      versionNumber,
+      sha256,
+      byteSize: input.bytes.length,
+      storagePath,
+      originalFilename: input.filename,
+      declaredMimeType: MAKER_PO_SEND_EVIDENCE_MIME_TYPE,
+      detectedMimeType: null,
+      sizeCheckPassed: true,
+      typeCheckPassed: true,
+      createdByUserId: input.actorUserId,
+      createdAt: now
+    };
+    await tx.insert(documentVersions).values(versionRow);
+    await recordAuditEvent(tx, {
+      projectId: input.projectId,
+      id: uuidv7(now),
+      actorUserId: input.actorUserId,
+      action: 'DOCUMENT_VERSION_UPLOADED',
+      entityType: 'document_version',
+      entityId: versionRow.id,
+      afterState: { ...versionRow, makerPurchaseOrderId: input.makerPurchaseOrderId },
+      occurredAt: now,
+      requestMetadata: { operation: 'maker_po:send_evidence', documentId }
+    });
+
+    return { documentId, versionId, sha256 };
   }
 
   app.post('/api/film-supply-orders/:orderId/maker-purchase-orders', async (context) => {
@@ -3149,6 +3342,28 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       amounts = { currency: body.amounts.currency, totalAmount: body.amounts.totalAmount };
     }
 
+    // M8-HARDEN FIX B2: one active maker PO per order. The friendly check names
+    // the paper that already holds the slot; the partial unique index
+    // (maker_purchase_orders_active_order_unique) is the backstop for two
+    // requests that pass this check together. Replacement is explicit: cancel
+    // the existing paper first (history preserved), then create the new one.
+    const [activeMakerPo] = await db.select({
+      id: makerPurchaseOrders.id,
+      status: makerPurchaseOrders.status
+    }).from(makerPurchaseOrders).where(and(
+      eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
+      isNull(makerPurchaseOrders.deletedAt),
+      ne(makerPurchaseOrders.status, 'CANCELLED')
+    )).limit(1);
+    if (activeMakerPo) {
+      return context.json({
+        error: `この発注には既に有効なメーカー発注書があります（${activeMakerPo.id}）。発注内容を訂正する場合は、既存の発注書を取り消してから新しい発注書を作成してください。`,
+        code: 'MAKER_PO_ALREADY_EXISTS',
+        existingMakerPurchaseOrderId: activeMakerPo.id,
+        existingStatus: activeMakerPo.status
+      }, 422);
+    }
+
     const parts = await loadMakerPoSnapshotParts(db, orderId);
     const snapshot = buildMakerPoSnapshot({
       order: { id: parts.order.id, code: parts.order.code, sevenPoNumber: parts.sevenPoNumber },
@@ -3173,20 +3388,32 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       createdAt: now,
       updatedAt: now
     };
-    await db.transaction(async (tx) => {
-      await tx.insert(makerPurchaseOrders).values(purchaseOrder);
-      await recordAuditEvent(tx, {
-        projectId: order.projectId,
-        id: uuidv7(now),
-        actorUserId: user.id,
-        action: 'MAKER_PO_CREATED',
-        entityType: 'maker_purchase_order',
-        entityId: poId,
-        afterState: { ...purchaseOrder, orderCode: parts.order.code },
-        occurredAt: now,
-        requestMetadata: { operation: 'maker_po:create', filmSupplyOrderId: orderId }
+    try {
+      await db.transaction(async (tx) => {
+        await tx.insert(makerPurchaseOrders).values(purchaseOrder);
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_PO_CREATED',
+          entityType: 'maker_purchase_order',
+          entityId: poId,
+          afterState: { ...purchaseOrder, orderCode: parts.order.code },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:create', filmSupplyOrderId: orderId }
+        });
       });
-    });
+    } catch (error) {
+      // FIX B2: the concurrent create lost the unique index — exactly one of the
+      // two requests ever freezes paper, and the loser names the winner.
+      if (makerPoActiveUniqueViolation(error)) {
+        return context.json({
+          error: `この発注には既に有効なメーカー発注書があります。発注内容を訂正する場合は、既存の発注書を取り消してから新しい発注書を作成してください。`,
+          code: 'MAKER_PO_ALREADY_EXISTS'
+        }, 422);
+      }
+      throw error;
+    }
     // M8-OPERATOR FIX 1: the answer is shaped by the caller's role. Freezing the
     // paper is admin-only (FIX 2), so today this is always the full view; the
     // shaping stays explicit so the read and write answers can never drift.
@@ -3382,6 +3609,50 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const sentAt = parseOptionalDate(body?.sentAt);
     if (!sentAt.ok) return context.json({ error: '送信日時が不正です', code: 'INVALID_DATE' }, 422);
 
+    // M8-HARDEN FIX C2: a send claimed more than ten minutes ahead of the server
+    // clock is impossible, not early. The comparison is UTC (Date.getTime), so a
+    // timezone-shifted client value cannot slip past it. Malformed request
+    // fields are refused here, before the boundary re-check writes its audit row
+    // — the same place INVALID_DATE is refused.
+    const serverNow = new Date();
+    if (sentAt.date !== null) {
+      const currency = evaluateMakerPoSentAtCurrency({ sentAt: sentAt.date, now: serverNow });
+      if (!currency.ok) {
+        return context.json({
+          error: currency.message,
+          code: currency.code,
+          serverNow: currency.serverNow,
+          sentAt: currency.sentAt
+        }, 422);
+      }
+    }
+    // FIX C1: the evidence itself arrives inline — the original .eml exported
+    // from Thunderbird's Sent folder. Its bytes are stored as the send_evidence
+    // document of this paper and then verified as an email; a cited document
+    // version keeps working the same way, through its stored bytes.
+    let inlineEmlBytes: Buffer | null = null;
+    if (body?.contentBase64 !== undefined && body?.contentBase64 !== null) {
+      if (typeof body.contentBase64 !== 'string' || body.contentBase64.length === 0) {
+        return context.json({
+          error: 'contentBase64 には送信証跡（.eml原本）のBase64データを指定してください',
+          code: 'SEND_EVIDENCE_CONTENT_REQUIRED'
+        }, 422);
+      }
+      inlineEmlBytes = Buffer.from(body.contentBase64, 'base64');
+      if (inlineEmlBytes.length === 0) {
+        return context.json({
+          error: 'contentBase64 を送信証跡のバイト列として解釈できませんでした',
+          code: 'SEND_EVIDENCE_CONTENT_INVALID'
+        }, 422);
+      }
+      if (inlineEmlBytes.length > documentMaxBytes()) {
+        return context.json({
+          error: `送信証跡が ${documentMaxBytes()} バイトの上限を超えています`,
+          code: 'DOCUMENT_TOO_LARGE'
+        }, 422);
+      }
+    }
+
     // M8-OPER3: the send is the point of no return, so the gate is re-derived
     // here — but only for paper that has not shipped yet. A send already proven
     // by a verified evidence document is history: the re-check is recorded in
@@ -3420,22 +3691,59 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           && body.evidenceDocumentVersionId.length > 0
           ? body.evidenceDocumentVersionId as string
           : null;
-        const evidenceDocument = requestedEvidenceId
-          ? await loadMakerPoEvidenceDocument(tx, requestedEvidenceId)
-          : null;
+
+        // M8-HARDEN FIX C1: resolve the evidence bytes. The inline .eml payload
+        // is stored first (one logical send_evidence document per paper,
+        // append-only versions), and a cited document version is read back from
+        // its stored bytes — either way the verification runs on the evidence
+        // itself, never on the facts the request merely declares.
+        let emlBytes: Buffer | null = inlineEmlBytes;
+        let evidenceDocument: MakerPoEvidenceDocument | null = null;
+        let evidenceDocumentVersionId: string | null = requestedEvidenceId;
+        if (inlineEmlBytes !== null) {
+          const stored = await storeMakerPoSendEvidenceDocument(tx, {
+            projectId: order.projectId,
+            makerPurchaseOrderId: poId,
+            filmSupplyOrderId: order.id,
+            sevenPurchaseOrderId: order.sevenPurchaseOrderId,
+            actorUserId: user.id,
+            bytes: inlineEmlBytes,
+            filename: `maker-po-${poId}-send-evidence.eml`
+          });
+          evidenceDocument = await loadMakerPoEvidenceDocument(tx, stored.versionId);
+          evidenceDocumentVersionId = stored.versionId;
+        } else if (requestedEvidenceId !== null) {
+          evidenceDocument = await loadMakerPoEvidenceDocument(tx, requestedEvidenceId);
+          if (evidenceDocument !== null) {
+            try {
+              emlBytes = await readFile(evidenceDocument.storagePath ?? '');
+            } catch {
+              // The bytes behind the cited version are gone, so nothing about
+              // them can be verified — the same refusal the approval path gives.
+              return {
+                kind: 'invalid' as const,
+                code: 'SEND_EVIDENCE_DOCUMENT_UNREADABLE',
+                message: '引用された送信証跡ファイルが読み取れないため、内容を検証できません'
+              };
+            }
+          }
+        }
 
         const evaluation = evaluateMakerPoSendEvidence({
-          evidenceDocumentVersionId: requestedEvidenceId,
+          evidenceDocumentVersionId,
           senderAddress: body?.senderAddress,
           recipients: body?.recipients,
           sentAt: sentAt.date,
-          attachmentHashes: body?.attachmentHashes
+          attachmentHashes: body?.attachmentHashes,
+          emlBytes
         }, {
           order: { id: order.id, projectId: order.projectId },
           approvedSnapshotSha256: po.snapshotSha256,
           currentSnapshotSha256,
           snapshot: currentSnapshot,
-          evidenceDocument
+          evidenceDocument,
+          ceoApprovedAt: po.ceoApprovedAt,
+          now
         });
 
         if (!evaluation.ok) {
@@ -3509,27 +3817,64 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           };
         }
 
+        // M8-HARDEN FIX C1: only a VERIFIED send moves the paper. A pending one
+        // leaves the paper where it is — the send is recorded with its failed
+        // checks and a corrected .eml can be registered afterwards; an
+        // UNVERIFIED (timestamp-only) registration still parks it in the T-21
+        // dead end.
         const targetStatus = evaluation.verificationStatus === 'VERIFIED'
           ? 'MAKER_PO_SENT_MANUALLY' as const
-          : 'SEND_UNVERIFIED' as const;
+          : evaluation.verificationStatus === 'UNVERIFIED'
+            ? 'SEND_UNVERIFIED' as const
+            : poStatus.value;
         const updated = await tx.update(makerPurchaseOrders).set({ status: targetStatus, updatedAt: now })
           .where(and(eq(makerPurchaseOrders.id, poId), eq(makerPurchaseOrders.status, poStatus.value)))
           .returning({ id: makerPurchaseOrders.id });
         if (updated.length === 0) throw new MakerPoStateConflict();
 
         const sentAtValue = typeof evaluation.sentAt === 'string' ? new Date(evaluation.sentAt) : evaluation.sentAt;
+        // Narrowed once: the timestamp-only shape carries no evidence facts, the
+        // other two carry the verification result and the facts it proved.
+        const evidenceFacts = evaluation.verificationStatus === 'UNVERIFIED'
+          ? {
+            evidenceDocumentVersionId: null as string | null,
+            senderAddress: null as string | null,
+            recipients: null as Array<string> | null,
+            attachmentHashes: null as Array<string> | null,
+            verificationMethod: null as string | null,
+            verificationChecks: null as unknown,
+            verificationNote: null as string | null,
+            pendingCode: null as string | null
+          }
+          : {
+            evidenceDocumentVersionId: evaluation.evidenceDocumentVersionId,
+            senderAddress: evaluation.senderAddress,
+            recipients: evaluation.recipients,
+            attachmentHashes: evaluation.attachmentHashes,
+            verificationMethod: evaluation.verification.verificationMethod,
+            verificationChecks: evaluation.verification.verificationChecks,
+            verificationNote: evaluation.verificationStatus === 'PENDING_MANUAL_VERIFICATION'
+              ? evaluation.reasonNote
+              : null,
+            pendingCode: evaluation.verificationStatus === 'PENDING_MANUAL_VERIFICATION'
+              ? evaluation.pendingCode
+              : null
+          };
         const sendEvent = {
           id: uuidv7(now),
           makerPurchaseOrderId: poId,
           eventType: 'SEND_EVIDENCE_REGISTERED' as const,
-          evidenceDocumentVersionId: evaluation.verificationStatus === 'VERIFIED'
-            ? evaluation.evidenceDocumentVersionId
-            : null,
-          senderAddress: evaluation.verificationStatus === 'VERIFIED' ? evaluation.senderAddress : null,
-          recipients: evaluation.verificationStatus === 'VERIFIED' ? evaluation.recipients : null,
+          evidenceDocumentVersionId: evidenceFacts.evidenceDocumentVersionId,
+          senderAddress: evidenceFacts.senderAddress,
+          recipients: evidenceFacts.recipients,
           sentAt: sentAtValue,
-          attachmentHashes: evaluation.verificationStatus === 'VERIFIED' ? evaluation.attachmentHashes : null,
+          attachmentHashes: evidenceFacts.attachmentHashes,
           verificationStatus: evaluation.verificationStatus,
+          // M8-HARDEN FIX C1: how the evidence was verified, the machine-readable
+          // check list, and — when pending — why a human has to look at it.
+          verificationMethod: evidenceFacts.verificationMethod,
+          verificationChecks: evidenceFacts.verificationChecks,
+          verificationNote: evidenceFacts.verificationNote,
           recordedByUserId: user.id,
           recordedAt: now
         };
@@ -3541,11 +3886,22 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           actorUserId: user.id,
           action: evaluation.verificationStatus === 'VERIFIED'
             ? 'MAKER_PO_SEND_EVIDENCE_REGISTERED'
-            : 'MAKER_PO_SEND_RECORDED_UNVERIFIED',
+            : evaluation.verificationStatus === 'PENDING_MANUAL_VERIFICATION'
+              ? 'MAKER_PO_SEND_PENDING_MANUAL_VERIFICATION'
+              : 'MAKER_PO_SEND_RECORDED_UNVERIFIED',
           entityType: 'maker_po_event',
           entityId: sendEvent.id,
           beforeState: { status: poStatus.value },
-          afterState: { status: targetStatus, event: sendEvent },
+          afterState: {
+            status: targetStatus,
+            event: sendEvent,
+            // FIX C1: an EML being stored is not proof of delivery. VERIFIED
+            // means the email content and its recipient were verified; delivery
+            // is asserted only by the representative's manual verification.
+            deliveryAsserted: evaluation.verificationStatus === 'VERIFIED'
+              ? 'not_asserted_by_this_event'
+              : null
+          },
           occurredAt: now,
           requestMetadata: { operation: 'maker_po:send_evidence', makerPurchaseOrderId: poId }
         });
@@ -3587,6 +3943,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           kind: 'applied' as const,
           status: targetStatus,
           verificationStatus: evaluation.verificationStatus,
+          verificationMethod: evidenceFacts.verificationMethod,
+          verificationChecks: evidenceFacts.verificationChecks,
+          verificationNote: evidenceFacts.verificationNote,
+          pendingCode: evidenceFacts.pendingCode,
           event: sendEvent,
           // M8-OPERATOR FIX 1: staff register the send, so their answer carries
           // the work view; an admin caller still gets the whole frozen paper.
@@ -3627,9 +3987,269 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       return context.json({
         status: outcome.status,
         verificationStatus: outcome.verificationStatus,
+        // FIX C1: what the evidence was verified as, the check list a reviewer
+        // reads, and the reason a pending registration waits for a human.
+        verificationMethod: outcome.verificationMethod,
+        verificationChecks: outcome.verificationChecks,
+        verificationNote: outcome.verificationNote,
+        pendingCode: outcome.pendingCode,
+        // Storing the EML is not proof of delivery: VERIFIED means the email
+        // content and its recipient were verified against the frozen paper.
+        // Delivery is asserted only by the representative's manual verification.
+        deliveryAssertedByManualVerification: false,
         event: outcome.event,
         purchaseOrder: outcome.purchaseOrder
       }, 200);
+    } catch (error) {
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
+      }
+      throw error;
+    }
+  });
+
+  // M8-HARDEN FIX C1: the manual verification of a send event whose evidence
+  // could not be auto-verified. Mirrors the approval-evidence manual
+  // verification (M8-OPER2): an append-only record naming the verifier, the
+  // time they checked and the reason. This is the only place a delivery is
+  // asserted — storing or even verifying the EML is not proof of delivery.
+  app.post('/api/maker-po-events/:eventId/send-manual-verification', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const eventId = context.req.param('eventId');
+
+    const [target] = await db.select().from(makerPoEvents)
+      .where(eq(makerPoEvents.id, eventId)).limit(1);
+    if (!target) return context.json({ error: 'メーカー発注イベントが見つかりません' }, 404);
+    const [po] = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.id, target.makerPurchaseOrderId)).limit(1);
+    if (!po) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    const [order] = await db.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+
+    // Representative only: this record asserts a delivery, so it is never
+    // delegated (the same rule as the approval evidence verification).
+    const decision = canPerform(toActor(user), 'maker_po:verify_send', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const body = await context.req.json().catch(() => null) as any;
+    const resultCheck = validateEvidenceVerificationResult(body?.result);
+    if (!resultCheck.ok) return context.json({ error: resultCheck.message, code: resultCheck.code }, 422);
+    if (typeof body?.verifierName !== 'string' || body.verifierName.trim().length === 0) {
+      return context.json({
+        error: '検証者名（verifierName）は必須です。原本を確認した人を記録してください',
+        code: 'VERIFIER_NAME_REQUIRED'
+      }, 422);
+    }
+    const verifiedAt = parseRequiredDate(body?.verifiedAt);
+    if (!verifiedAt.ok) {
+      return context.json({ error: '検証日時（verifiedAt）が必要です', code: 'VERIFIED_AT_REQUIRED' }, 422);
+    }
+    if (typeof body?.reasonNote !== 'string' || body.reasonNote.trim().length === 0) {
+      return context.json({
+        error: '根拠（reasonNote）は必須です。何を確認して納品を断定したかを記録してください',
+        code: 'VERIFICATION_REASON_REQUIRED'
+      }, 422);
+    }
+    if (target.eventType !== 'SEND_EVIDENCE_REGISTERED') {
+      return context.json({
+        error: '送信イベントのみ手動確認の対象です',
+        code: 'MAKER_PO_SEND_VERIFICATION_TARGET_INVALID'
+      }, 422);
+    }
+    if (target.verificationStatus !== 'PENDING_MANUAL_VERIFICATION') {
+      return context.json({
+        error: 'この送信イベントは手動確認待ちではありません。確認済み・自動検証済み・未検証のイベントは確認できません',
+        code: 'MAKER_PO_SEND_NOT_PENDING_MANUAL_VERIFICATION'
+      }, 422);
+    }
+    // A 'confirmed' verification is final, exactly like the approval evidence
+    // one: the only append-only way to retract it is a new event, never an edit.
+    const existingVerifications = await db.select({ result: makerPoSendManualVerifications.result })
+      .from(makerPoSendManualVerifications)
+      .where(eq(makerPoSendManualVerifications.makerPoEventId, target.id));
+    if (existingVerifications.some((verification) => verification.result === 'confirmed')) {
+      return context.json({
+        error: 'この送信イベントはすでに確認済みです。納品の断定を取り消す場合は、新しい記録として残してください',
+        code: 'MAKER_PO_SEND_ALREADY_CONFIRMED'
+      }, 422);
+    }
+
+    const now = new Date();
+    const verification = {
+      id: uuidv7(now),
+      makerPoEventId: target.id,
+      makerPurchaseOrderId: po.id,
+      result: resultCheck.value,
+      verifierName: body.verifierName.trim(),
+      verifiedAt: verifiedAt.date,
+      reasonNote: body.reasonNote.trim(),
+      recordedByUserId: user.id,
+      recordedAt: now
+    };
+    await db.transaction(async (tx) => {
+      await tx.insert(makerPoSendManualVerifications).values(verification);
+      await recordAuditEvent(tx, {
+        projectId: order.projectId,
+        id: uuidv7(now),
+        actorUserId: user.id,
+        action: 'MAKER_PO_SEND_MANUAL_VERIFICATION_RECORDED',
+        entityType: 'maker_po_event',
+        entityId: target.id,
+        afterState: {
+          ...verification,
+          verificationType: 'maker_po_send_manual_verification',
+          // The delivery assertion lives here and only here.
+          deliveryAsserted: resultCheck.value === 'confirmed'
+        },
+        occurredAt: now,
+        requestMetadata: {
+          operation: 'maker_po:verify_send',
+          filmSupplyOrderId: order.id,
+          makerPurchaseOrderId: po.id
+        }
+      });
+    });
+
+    return context.json({
+      verification,
+      makerPoEventId: target.id,
+      deliveryAsserted: resultCheck.value === 'confirmed',
+      purchaseOrder: buildMakerPoViewForRole(user.role, po as MakerPoRecord)
+    }, 201);
+  });
+
+  // M8-HARDEN FIX B2 (c): the explicit replacement step (정정·재발주). The old
+  // paper is cancelled — an append-only MAKER_PO_CANCELLED event, an audit row,
+  // status CANCELLED, no row deleted — and only then can a new maker PO freeze
+  // for the same order. Admin only: freeing live paper is the representative's
+  // decision, exactly like freezing it was.
+  app.post('/api/maker-purchase-orders/:poId/cancel', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const poId = context.req.param('poId');
+
+    const [existing] = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.id, poId)).limit(1);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    const [order] = await db.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'maker_po:cancel', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '代表者のみ取り消せます' }, 403);
+
+    const body = await context.req.json().catch(() => null) as any;
+    if (typeof body?.note !== 'string' || body.note.trim().length === 0) {
+      return context.json({
+        error: '取消理由（note）は必須です。訂正・再発注の理由を記録してください',
+        code: 'MAKER_PO_CANCEL_REASON_REQUIRED'
+      }, 422);
+    }
+
+    const poStatus = validateMakerPoStatus(existing.status);
+    if (!poStatus.ok) return context.json({ error: poStatus.message, code: poStatus.code }, 422);
+    const cancellation = evaluateMakerPoCancellation(poStatus.value);
+    if (!cancellation.ok) {
+      return context.json({ error: cancellation.message, code: cancellation.code, from: cancellation.from }, 422);
+    }
+
+    const now = new Date();
+    try {
+      const outcome = await db.transaction(async (tx) => {
+        const updated = await tx.update(makerPurchaseOrders)
+          .set({ status: 'CANCELLED' as const, updatedAt: now })
+          .where(and(eq(makerPurchaseOrders.id, poId), eq(makerPurchaseOrders.status, poStatus.value)))
+          .returning({ id: makerPurchaseOrders.id });
+        if (updated.length === 0) throw new MakerPoStateConflict();
+
+        const cancelEvent = {
+          id: uuidv7(now),
+          makerPurchaseOrderId: poId,
+          eventType: 'MAKER_PO_CANCELLED' as const,
+          verificationStatus: 'UNVERIFIED' as const,
+          recordedByUserId: user.id,
+          recordedAt: now
+        };
+        await tx.insert(makerPoEvents).values(cancelEvent);
+
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_PO_CANCELLED',
+          entityType: 'maker_po_event',
+          entityId: cancelEvent.id,
+          beforeState: { status: poStatus.value },
+          afterState: {
+            status: 'CANCELLED',
+            note: body.note.trim(),
+            // History is preserved: the rows stay, a new maker PO replaces them.
+            rowsDeleted: false,
+            replacementStep: 'cancel_then_create_new_maker_po'
+          },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:cancel', makerPurchaseOrderId: poId }
+        });
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_PO_STATUS_CHANGED',
+          entityType: 'maker_purchase_order',
+          entityId: poId,
+          beforeState: { status: poStatus.value },
+          afterState: { status: 'CANCELLED' },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:cancel' }
+        });
+
+        // FIX B2 (c): freeing the slot re-opens the ordering step. The retired
+        // paper is what moved the order along the maker chain, so the order goes
+        // back to MAKER_PO_READY and a new maker PO can freeze for it. An order
+        // parked in an exception state (change review, hold) is left alone — its
+        // own flow decides where it resumes.
+        const [currentOrder] = await tx.select().from(filmSupplyOrders)
+          .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
+        if (currentOrder && currentOrder.status !== 'MAKER_PO_READY'
+          && !isExceptionFilmSupplyOrderState(currentOrder.status)) {
+          await tx.update(filmSupplyOrders)
+            .set({ status: 'MAKER_PO_READY', updatedAt: now })
+            .where(eq(filmSupplyOrders.id, currentOrder.id));
+          await recordAuditEvent(tx, {
+            projectId: order.projectId,
+            id: uuidv7(now),
+            actorUserId: user.id,
+            action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+            entityType: 'film_supply_order',
+            entityId: currentOrder.id,
+            beforeState: { status: currentOrder.status },
+            afterState: { status: 'MAKER_PO_READY' },
+            occurredAt: now,
+            requestMetadata: {
+              operation: 'maker_po:cancel',
+              reason: 'maker_po_cancelled_reopens_the_ordering_step'
+            }
+          });
+        }
+
+        return {
+          event: cancelEvent,
+          purchaseOrder: buildMakerPoViewForRole(user.role, {
+            id: poId,
+            filmSupplyOrderId: existing.filmSupplyOrderId,
+            snapshot: existing.snapshot as MakerPoSnapshot,
+            snapshotSha256: existing.snapshotSha256,
+            status: 'CANCELLED',
+            ceoApprovedByUserId: existing.ceoApprovedByUserId,
+            ceoApprovedAt: existing.ceoApprovedAt,
+            createdByUserId: existing.createdByUserId,
+            createdAt: existing.createdAt,
+            updatedAt: now
+          })
+        };
+      });
+      return context.json({ status: 'CANCELLED', event: outcome.event, purchaseOrder: outcome.purchaseOrder }, 200);
     } catch (error) {
       if (error instanceof MakerPoStateConflict) {
         return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
@@ -3700,6 +4320,11 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           acceptedAt: acceptedAt.date
         }, {
           order: { id: order.id, projectId: order.projectId },
+          // M8-HARDEN FIX B2 (d): the acceptance evidence must be bound to THIS
+          // maker PO — one order can hold a cancelled and a live paper, and the
+          // two must never be closed by the same document.
+          makerPurchaseOrderId: poId,
+          snapshotOrder: { id: (po.snapshot as MakerPoSnapshot).order.id },
           evidenceDocument: requestedEvidenceId
             ? await loadMakerPoEvidenceDocument(tx, requestedEvidenceId)
             : null

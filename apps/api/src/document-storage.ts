@@ -19,7 +19,10 @@ export const ALLOWED_DOCUMENT_MIME_TYPES = [
   'image/png',
   'image/jpeg',
   'text/plain',
-  'text/csv'
+  'text/csv',
+  // M8-HARDEN FIX C1: the send evidence of a maker purchase order is the
+  // original .eml of the production-order mail, exported from the Sent folder.
+  'message/rfc822'
 ] as const;
 
 export type AllowedDocumentMimeType = (typeof ALLOWED_DOCUMENT_MIME_TYPES)[number];

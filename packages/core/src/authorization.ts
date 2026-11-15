@@ -19,9 +19,11 @@ export type Operation =
   | 'supply_order:create'
   | 'maker_po:create'
   | 'maker_po:read'
+  | 'maker_po:cancel'
   | 'maker_po:send_evidence'
   | 'maker_po:accept_evidence'
   | 'maker_po:accept_provisional'
+  | 'maker_po:verify_send'
   | 'film_order:create'
   | 'film_order:update_payment_terms'
   | 'film_order_line:create'
@@ -55,7 +57,13 @@ export type AuthorizationDecision =
  */
 const MAKER_PO_ADMIN_ONLY_OPERATIONS: readonly Operation[] = [
   'maker_po:create',
-  'maker_po:accept_evidence'
+  'maker_po:accept_evidence',
+  // M8-HARDEN FIX B2: cancelling live paper frees the order for replacement
+  // paper, so it is the representative's decision exactly like freezing it.
+  'maker_po:cancel',
+  // M8-HARDEN FIX C1: the manual verification that asserts a send's delivery is
+  // never delegated — it is the human act that lifts a pending verification.
+  'maker_po:verify_send'
 ];
 
 /** Maker PO operations an assigned staff user may run (admin may always). */

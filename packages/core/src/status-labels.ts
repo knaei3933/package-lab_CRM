@@ -49,7 +49,8 @@ export const MAKER_PO_STATUS_LABELS: Readonly<
   SEND_UNVERIFIED: '送信未確認（要対応）',
   MAKER_PO_SENT_MANUALLY: '製造先送信済み',
   MAKER_PO_ACCEPTED: '製造先受領確認済み',
-  SNAPSHOT_VOIDED: '発注書無効（再承認待ち）'
+  SNAPSHOT_VOIDED: '発注書無効（再承認待ち）',
+  CANCELLED: '製造先発注取消（再発注待ち）'
 };
 
 export const COMMISSION_READINESS_STATE_LABELS: Readonly<

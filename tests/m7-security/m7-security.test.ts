@@ -21,6 +21,8 @@ import {
 import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
+import { sendMakerPoEmlEvidence } from '../helpers/maker-po-evidence.js';
+
 
 const databaseUrl = process.env.DATABASE_URL!;
 const { db, pool } = createDatabase(databaseUrl);
@@ -304,12 +306,19 @@ async function reachMakerPoAccepted(tag: string) {
   const approved = await approveMakerPo(poId);
   expect(approved.status).toBe(200);
 
-  const sendEvidence = await uploadDocument(order.poId, order.orderId, { documentType: 'send_evidence' });
-  await verifyDocument(sendEvidence.document.id, '合成送信証跡確認M7');
-  const sent = await sendMakerPoEvidence(poId, sendEvidence.version.id);
+  // M8-HARDEN FIX C1: the send evidence is the original .eml of the mail.
+  const sent = await sendMakerPoEmlEvidence(
+    (url, body) => postJson(url, body),
+    poId,
+    { orderCode: `FSO-M7-${tag}` }
+  );
   expect(sent.status).toBe(200);
 
-  const acceptEvidence = await uploadDocument(order.poId, order.orderId, { documentType: 'acceptance_evidence' });
+  const acceptEvidence = await uploadDocument(order.poId, order.orderId, {
+    documentType: 'acceptance_evidence',
+    // M8-HARDEN FIX B2 (d): acceptance evidence names the paper it closes.
+    makerPurchaseOrderId: poId
+  });
   await verifyDocument(acceptEvidence.document.id, '合成受領証跡確認M7');
   const accepted = await acceptMakerPoEvidence(poId, acceptEvidence.version.id);
   expect(accepted.status).toBe(200);
@@ -416,13 +425,18 @@ describe('S1: the generic transitions endpoint never reaches the maker chain', (
       .toBe('APPROVED_FOR_MANUAL_SEND');
     expect(await orderStatus(order.orderId)).toBe('APPROVED_FOR_MANUAL_SEND');
 
-    const sendEvidence = await uploadDocument(order.poId, order.orderId, { documentType: 'send_evidence' });
-    await verifyDocument(sendEvidence.document.id, '合成送信証跡確認M7');
-    const sent = await sendMakerPoEvidence(poId, sendEvidence.version.id);
+    const sent = await sendMakerPoEmlEvidence(
+      (url, body) => postJson(url, body),
+      poId,
+      { orderCode: 'FSO-M7-S1-DEDICATED' }
+    );
     expect(sent.status).toBe(200);
     expect(await orderStatus(order.orderId)).toBe('MAKER_PO_SENT_MANUALLY');
 
-    const acceptEvidence = await uploadDocument(order.poId, order.orderId, { documentType: 'acceptance_evidence' });
+    const acceptEvidence = await uploadDocument(order.poId, order.orderId, {
+      documentType: 'acceptance_evidence',
+      makerPurchaseOrderId: poId
+    });
     await verifyDocument(acceptEvidence.document.id, '合成受領証跡確認M7');
     const accepted = await acceptMakerPoEvidence(poId, acceptEvidence.version.id);
     expect(accepted.status).toBe(200);

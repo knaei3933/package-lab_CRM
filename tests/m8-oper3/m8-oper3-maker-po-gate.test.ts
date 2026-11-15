@@ -19,6 +19,7 @@ import {
 import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
+import { plausibleTestSentAt, sendMakerPoEmlEvidence } from '../helpers/maker-po-evidence.js';
 
 /**
  * M8-OPER3 regression tests: the real-time dual-approval re-verification at the
@@ -118,6 +119,7 @@ async function uploadDocument(input: {
   orderId?: string;
   poId?: string;
   content?: string;
+  makerPoId?: string;
 }) {
   const tag = nextTag();
   const content = input.content ?? `composite m8-oper3 document bytes ${tag}\n`;
@@ -129,6 +131,8 @@ async function uploadDocument(input: {
     contentBase64: toBase64(content),
     ...(input.poId ? { sevenPurchaseOrderId: input.poId } : {}),
     ...(input.orderId ? { filmSupplyOrderId: input.orderId } : {}),
+    // M8-HARDEN FIX B2 (d): the maker PO an acceptance evidence is for.
+    ...(input.makerPoId ? { makerPurchaseOrderId: input.makerPoId } : {}),
     ...(input.designKey ? { designKey: input.designKey } : {})
   });
   expect(response.status).toBe(201);
@@ -484,20 +488,13 @@ describe('M8-OPER3: a valid dual approval still carries the full maker chain', (
     expect((approved.body as { purchaseOrder: { status: string } }).purchaseOrder.status)
       .toBe('APPROVED_FOR_MANUAL_SEND');
 
-    // The proven send: a send_evidence document version is cited, so the send
-    // is registered VERIFIED and the PO leaves the company for real.
-    const sendEvidence = await uploadDocument({
-      documentType: 'send_evidence',
-      issuerEntity: 'kanei',
-      orderId: chain.orderId,
-      poId: chain.poId
-    });
-    const sent = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
-      evidenceDocumentVersionId: sendEvidence.version.id,
-      senderAddress: 'staff@kanei.example',
-      recipients: ['maker-po@example.com'],
-      sentAt: '2026-11-15T10:00:00.000Z'
-    });
+    // The proven send: the original .eml of the production-order mail is
+    // registered, verified as an email, and the PO leaves the company for real.
+    const sent = await sendMakerPoEmlEvidence(
+      (url, body) => postAs(staffToken, url, body),
+      poId,
+      { orderCode: `FSO-OPER3-E2E-${nextTag()}`, sentAtIso: plausibleTestSentAt() }
+    );
     expect(sent.status).toBe(200);
     expect((sent.body as { status: string; verificationStatus: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
     expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
@@ -506,7 +503,8 @@ describe('M8-OPER3: a valid dual approval still carries the full maker chain', (
       documentType: 'acceptance_evidence',
       issuerEntity: 'kanei',
       orderId: chain.orderId,
-      poId: chain.poId
+      poId: chain.poId,
+      makerPoId: poId
     });
     expect((await postAs(staffToken, `/api/documents/${acceptanceEvidence.document.id}/verify`, {
       verificationStatus: 'verified'
@@ -563,18 +561,11 @@ describe('M8-OPER3: paper whose send is already proven is never retroactively bl
     const poId = (created.body as { id: string }).id;
     expect((await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {})).status).toBe(200);
 
-    const sendEvidence = await uploadDocument({
-      documentType: 'send_evidence',
-      issuerEntity: 'kanei',
-      orderId: chain.orderId,
-      poId: chain.poId
-    });
-    const sent = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
-      evidenceDocumentVersionId: sendEvidence.version.id,
-      senderAddress: 'staff@kanei.example',
-      recipients: ['maker-po@example.com'],
-      sentAt: '2026-11-15T13:00:00.000Z'
-    });
+    const sent = await sendMakerPoEmlEvidence(
+      (url, body) => postAs(staffToken, url, body),
+      poId,
+      { orderCode: `FSO-OPER3-REVOKE-${nextTag()}`, sentAtIso: plausibleTestSentAt() }
+    );
     expect(sent.status).toBe(200);
     expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
 
@@ -587,7 +578,8 @@ describe('M8-OPER3: paper whose send is already proven is never retroactively bl
       documentType: 'acceptance_evidence',
       issuerEntity: 'kanei',
       orderId: chain.orderId,
-      poId: chain.poId
+      poId: chain.poId,
+      makerPoId: poId
     });
     expect((await postAs(staffToken, `/api/documents/${acceptanceEvidence.document.id}/verify`, {
       verificationStatus: 'verified'

@@ -109,7 +109,9 @@ export const MAKER_PO_STATUS_LABELS: Readonly<Record<string, string>> = {
   SEND_UNVERIFIED: '送信未確認（要対応）',
   MAKER_PO_SENT_MANUALLY: '手動送信ずみ（受入確認待ち）',
   MAKER_PO_ACCEPTED: '受入確認済み（最終）',
-  SNAPSHOT_VOIDED: 'スナップショット失効（再承認が必要）'
+  SNAPSHOT_VOIDED: 'スナップショット失効（再承認が必要）',
+  // M8-HARDEN FIX B2: the replacement exit — history stays, a new maker PO follows.
+  CANCELLED: '取消（再発注待ち）'
 };
 
 export const MAKER_PO_EVENT_TYPE_LABELS: Readonly<Record<string, string>> = {
@@ -118,7 +120,8 @@ export const MAKER_PO_EVENT_TYPE_LABELS: Readonly<Record<string, string>> = {
   SEND_EVIDENCE_REGISTERED: '送信証跡の記録',
   ACCEPT_EVIDENCE_REGISTERED: '受入証跡の記録（最終）',
   MAKER_PO_ACCEPT_RECORDED_PROVISIONAL: '受入記録（仮）',
-  SEND_REJECTED: '送信却下'
+  SEND_REJECTED: '送信却下',
+  MAKER_PO_CANCELLED: '発注取消（履歴保持・再発注へ）'
 };
 
 export const PAYMENT_TERMS_LABELS: Readonly<Record<string, string>> = {
@@ -149,6 +152,8 @@ export function nextActionForStatus(status: string, role: string): string {
         : '次のアクション：受入記録（仮）を記録し、代表者の最終受入確認を待ちます';
     case 'MAKER_PO_ACCEPTED':
       return '次のアクション：なし（受入確認済み。この発注の紙は完了です）';
+    case 'CANCELLED':
+      return '次のアクション：訂正後の発注書を新しく作成してください（取り消された発注書は履歴として残ります）';
     default:
       return `次のアクション：状態 ${status} の取り扱いを確認してください`;
   }

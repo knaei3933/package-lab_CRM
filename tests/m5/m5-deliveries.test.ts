@@ -19,6 +19,8 @@ import {
 import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
+import { sendMakerPoEmlEvidence } from '../helpers/maker-po-evidence.js';
+
 
 const databaseUrl = process.env.DATABASE_URL!;
 const { db, pool } = createDatabase(databaseUrl);
@@ -275,24 +277,11 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
   const approved = await postAs(adminToken, `/api/maker-purchase-orders/${makerPoId}/ceo-approval`, {});
   expect(approved.status).toBe(200);
 
-  const sendEvidence = await postJson(`/api/projects/${projectIdValue}/documents`, {
-    documentType: 'send_evidence',
-    issuerEntity: 'kanei',
-    filename: `m5-send-${tag}.txt`,
-    contentType: 'text/plain',
-    contentBase64: toBase64(`composite m5 send evidence ${tag}\n`),
-    sevenPurchaseOrderId: po.id,
-    filmSupplyOrderId: order.id
-  });
-  expect(sendEvidence.status).toBe(201);
-  const sendEvidenceVersionId = (sendEvidence.body as { version: { id: string } }).version.id;
-  await verifyDocument((sendEvidence.body as { document: { id: string } }).document.id, '合成送信証跡確認M5');
-  const sent = await postJson(`/api/maker-purchase-orders/${makerPoId}/send-evidence`, {
-    evidenceDocumentVersionId: sendEvidenceVersionId,
-    senderAddress: 'staff@kanei.example',
-    recipients: ['maker-po@example.com'],
-    sentAt: '2026-11-12T09:00:00.000Z'
-  });
+  const sent = await sendMakerPoEmlEvidence(
+    (url, body) => postJson(url, body),
+    makerPoId,
+    { orderCode: `FSO-M5-${tag}` }
+  );
   expect(sent.status).toBe(200);
 
   const acceptEvidence = await postJson(`/api/projects/${projectIdValue}/documents`, {
@@ -302,7 +291,9 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
     contentType: 'text/plain',
     contentBase64: toBase64(`composite m5 maker acceptance evidence ${tag}\n`),
     sevenPurchaseOrderId: po.id,
-    filmSupplyOrderId: order.id
+    filmSupplyOrderId: order.id,
+    // M8-HARDEN FIX B2 (d): acceptance evidence names the paper it closes.
+    makerPurchaseOrderId: makerPoId
   });
   expect(acceptEvidence.status).toBe(201);
   await verifyDocument((acceptEvidence.body as { document: { id: string } }).document.id, '合成受領証跡確認M5');

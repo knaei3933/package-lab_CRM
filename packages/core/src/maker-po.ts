@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
 import type { DocumentType } from './documents.js';
+import {
+  evaluateMakerPoEmlEvidence,
+  MAKER_PO_SEND_VERIFICATION_METHOD_EML_HEADER_CHECK,
+  type MakerPoEmlCheck,
+  type MakerPoEmlPendingCode
+} from './eml.js';
 
 /**
  * M4 maker purchase orders with manual-send evidence (design section 5.8 and
@@ -25,7 +31,11 @@ import type { DocumentType } from './documents.js';
  *   behind a verified acceptance evidence document (T-22);
  * - allowed transitions (G8): the CEO approval is the only exit from DRAFT,
  *   SEND_UNVERIFIED has no exits, and SNAPSHOT_VOIDED only re-opens through a
- *   fresh CEO approval.
+ *   fresh CEO approval;
+ * - one active maker PO per film order (M8-HARDEN FIX B2): replacement is the
+ *   explicit CANCELLED status — the old paper is cancelled with an append-only
+ *   event, its rows are never deleted, and only then can a new maker PO freeze
+ *   for the same order.
  */
 
 export const MAKER_PURCHASE_ORDER_STATUSES = [
@@ -34,22 +44,31 @@ export const MAKER_PURCHASE_ORDER_STATUSES = [
   'SEND_UNVERIFIED',
   'MAKER_PO_SENT_MANUALLY',
   'MAKER_PO_ACCEPTED',
-  'SNAPSHOT_VOIDED'
+  'SNAPSHOT_VOIDED',
+  'CANCELLED'
 ] as const;
 
 export type MakerPurchaseOrderStatus = (typeof MAKER_PURCHASE_ORDER_STATUSES)[number];
+
+/** M8-HARDEN FIX B2: the one status that frees an order for replacement paper. */
+export const MAKER_PO_CANCELLED_STATUS = 'CANCELLED';
 
 export const MAKER_PO_EVENT_TYPES = [
   'CEO_APPROVED',
   'SNAPSHOT_VOIDED',
   'SEND_EVIDENCE_REGISTERED',
   'ACCEPT_EVIDENCE_REGISTERED',
-  'SEND_REJECTED'
+  'SEND_REJECTED',
+  'MAKER_PO_CANCELLED'
 ] as const;
 
 export type MakerPoEventType = (typeof MAKER_PO_EVENT_TYPES)[number];
 
-export const MAKER_PO_EVENT_VERIFICATION_STATUSES = ['VERIFIED', 'UNVERIFIED'] as const;
+export const MAKER_PO_EVENT_VERIFICATION_STATUSES = [
+  'VERIFIED',
+  'UNVERIFIED',
+  'PENDING_MANUAL_VERIFICATION'
+] as const;
 
 export type MakerPoEventVerificationStatus = (typeof MAKER_PO_EVENT_VERIFICATION_STATUSES)[number];
 
@@ -276,14 +295,21 @@ export function approvedSnapshotMatchesCurrent(approvedSnapshotSha256: string, c
  * nobody can prove blocks the paper until a human resolves it outside this
  * machine (T-21). SNAPSHOT_VOIDED only re-opens through a fresh CEO approval
  * that re-freezes the drifted order data (T-23, T-24).
+ *
+ * M8-HARDEN FIX B2: CANCELLED is the replacement exit (정정·재발주). It is
+ * reachable from every status an operator can still act on except the two
+ * closed ones — SEND_UNVERIFIED keeps its T-21 dead end and MAKER_PO_ACCEPTED
+ * is finished paper — and it has no exits itself: cancelling never deletes or
+ * re-opens a row, the history stays and a new maker PO is frozen instead.
  */
 const MAKER_PO_TRANSITIONS: Record<MakerPurchaseOrderStatus, readonly MakerPurchaseOrderStatus[]> = {
-  DRAFT: ['APPROVED_FOR_MANUAL_SEND'],
-  APPROVED_FOR_MANUAL_SEND: ['MAKER_PO_SENT_MANUALLY', 'SEND_UNVERIFIED', 'SNAPSHOT_VOIDED'],
+  DRAFT: ['APPROVED_FOR_MANUAL_SEND', 'CANCELLED'],
+  APPROVED_FOR_MANUAL_SEND: ['MAKER_PO_SENT_MANUALLY', 'SEND_UNVERIFIED', 'SNAPSHOT_VOIDED', 'CANCELLED'],
   SEND_UNVERIFIED: [],
-  MAKER_PO_SENT_MANUALLY: ['MAKER_PO_ACCEPTED'],
+  MAKER_PO_SENT_MANUALLY: ['MAKER_PO_ACCEPTED', 'CANCELLED'],
   MAKER_PO_ACCEPTED: [],
-  SNAPSHOT_VOIDED: ['APPROVED_FOR_MANUAL_SEND']
+  SNAPSHOT_VOIDED: ['APPROVED_FOR_MANUAL_SEND', 'CANCELLED'],
+  CANCELLED: []
 };
 
 export type MakerPoTransitionResult<TFrom extends MakerPurchaseOrderStatus, TTo extends MakerPurchaseOrderStatus> =
@@ -375,6 +401,74 @@ export function evaluateMakerPoSendTransition(currentStatus: MakerPurchaseOrderS
 }
 
 // ---------------------------------------------------------------------------
+// One active maker PO per film order (M8-HARDEN FIX B2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a maker PO row counts as the order's active paper: everything except
+ * the replacement exit. A cancelled PO stays on the trail as history but holds
+ * no order slot, so a new maker PO can freeze for the same order.
+ */
+export function isActiveMakerPurchaseOrderStatus(status: string): boolean {
+  return status !== MAKER_PO_CANCELLED_STATUS;
+}
+
+export type MakerPoCancellationGate =
+  | { ok: true; from: MakerPurchaseOrderStatus; to: 'CANCELLED' }
+  | { ok: false; code: 'MAKER_PO_TRANSITION_BLOCKED'; from: MakerPurchaseOrderStatus; message: string };
+
+/**
+ * Cancelling is the explicit, history-preserving replacement step (FIX B2): the
+ * old paper is marked CANCELLED with an append-only event and a new maker PO is
+ * frozen afterwards. SEND_UNVERIFIED keeps its dead end (T-21) — a send nobody
+ * can prove is a human decision, not a reordering — and accepted paper is
+ * finished, so neither can be cancelled.
+ */
+export function evaluateMakerPoCancellation(currentStatus: MakerPurchaseOrderStatus): MakerPoCancellationGate {
+  const transition = transitionMakerPurchaseOrder(currentStatus, MAKER_PO_CANCELLED_STATUS);
+  if (!transition.ok) {
+    return {
+      ok: false,
+      code: 'MAKER_PO_TRANSITION_BLOCKED',
+      from: currentStatus,
+      message: currentStatus === 'SEND_UNVERIFIED'
+        ? 'a maker purchase order in SEND_UNVERIFIED cannot be cancelled; the unproven send blocks the paper until a human resolves it'
+        : `a maker purchase order in ${currentStatus} cannot be cancelled`
+    };
+  }
+  return { ok: true, from: currentStatus, to: 'CANCELLED' };
+}
+
+// ---------------------------------------------------------------------------
+// Time guards (M8-HARDEN FIX C2)
+// ---------------------------------------------------------------------------
+
+export type MakerPoSentAtCurrencyGate =
+  | { ok: true; gatedOn: 'sent_at_not_in_future' }
+  | { ok: false; code: 'SENT_AT_IN_FUTURE'; message: string; serverNow: string; sentAt: string };
+
+/**
+ * A send claimed for an instant more than MAKER_PO_SENT_AT_MAX_FUTURE_SKEW_MS
+ * ahead of the server clock is impossible, not early: the clock is compared in
+ * UTC (Date.getTime), so a timezone-shifted client value cannot slip past it.
+ * The tolerance exists for clock skew between the machine that sent the mail
+ * and this server, not for future dating.
+ */
+export function evaluateMakerPoSentAtCurrency(input: { sentAt: Date; now: Date }): MakerPoSentAtCurrencyGate {
+  const skew = input.sentAt.getTime() - input.now.getTime();
+  if (skew > MAKER_PO_SENT_AT_MAX_FUTURE_SKEW_MS) {
+    return {
+      ok: false,
+      code: 'SENT_AT_IN_FUTURE',
+      message: '送信日時が現在時刻より10分以上先です。メールの送信日時を確認してください',
+      serverNow: input.now.toISOString(),
+      sentAt: input.sentAt.toISOString()
+    };
+  }
+  return { ok: true, gatedOn: 'sent_at_not_in_future' };
+}
+
+// ---------------------------------------------------------------------------
 // Send evidence verification (G9)
 // ---------------------------------------------------------------------------
 
@@ -389,6 +483,16 @@ export interface MakerPoEvidenceDocument {
   designKey: string | null;
   /** Human verification recorded on the documents row; separate from the hash. */
   verificationStatus: string;
+  /**
+   * M8-HARDEN FIX B2: the maker PO the document was uploaded for. Acceptance
+   * evidence closes one exact paper, so its binding names that paper; null for
+   * documents uploaded before the binding existed (and for every other type).
+   */
+  makerPurchaseOrderId: string | null;
+  /** The stored bytes' declared content type, so an EML can be re-read. */
+  declaredMimeType?: string | null;
+  /** Where the bytes live, so the cited evidence can be read back. */
+  storagePath?: string | null;
 }
 
 export interface MakerPoSendEvidenceRequest {
@@ -397,6 +501,14 @@ export interface MakerPoSendEvidenceRequest {
   recipients: unknown;
   sentAt: Date | string | null;
   attachmentHashes: unknown;
+  /**
+   * M8-HARDEN FIX C1: the bytes of the cited evidence, when it is the original
+   * .eml of the production-order mail. The API always supplies them (the stored
+   * bytes behind the cited version, or the contentBase64 payload), so the header
+   * verification always runs where a send is registered; a caller that omits
+   * them gets the pre-C1 document-binding verdict, which no API path reaches.
+   */
+  emlBytes?: Buffer | null;
 }
 
 export interface MakerPoSendEvidenceContext {
@@ -408,6 +520,27 @@ export interface MakerPoSendEvidenceContext {
   snapshot: MakerPoSnapshot;
   /** The evidence document version, or null when the id does not resolve. */
   evidenceDocument: MakerPoEvidenceDocument | null;
+  /** The PO's approval stamp: a send recorded before it cannot be plausible (FIX C2). */
+  ceoApprovedAt?: Date | null;
+  /** The server clock at registration (FIX C2). Defaults to the current time. */
+  now?: Date;
+}
+
+/** The verification status a send event can carry (M8-HARDEN FIX C1). */
+export const MAKER_PO_SEND_VERIFICATION_STATUSES = [
+  'VERIFIED',
+  'PENDING_MANUAL_VERIFICATION'
+] as const;
+
+export type MakerPoSendVerificationStatus = (typeof MAKER_PO_SEND_VERIFICATION_STATUSES)[number];
+
+/** The machine-readable verification of the EML a VERIFIED / pending send rests on. */
+export interface MakerPoSendVerification {
+  verificationMethod: typeof MAKER_PO_SEND_VERIFICATION_METHOD_EML_HEADER_CHECK | null;
+  verificationChecks: MakerPoEmlCheck[] | null;
+  emlMessageId: string | null;
+  emlDate: Date | null;
+  matchedAttachmentHashes: string[];
 }
 
 export type MakerPoSendEvidenceEvaluation =
@@ -419,6 +552,19 @@ export type MakerPoSendEvidenceEvaluation =
       sentAt: Date | string;
       attachmentHashes: string[];
       evidenceDocumentVersionId: string;
+      verification: MakerPoSendVerification;
+    }
+  | {
+      ok: true;
+      verificationStatus: 'PENDING_MANUAL_VERIFICATION';
+      senderAddress: string | null;
+      recipients: string[];
+      sentAt: Date | string;
+      attachmentHashes: string[];
+      evidenceDocumentVersionId: string | null;
+      pendingCode: MakerPoEmlPendingCode;
+      reasonNote: string;
+      verification: MakerPoSendVerification;
     }
   | {
       ok: true;
@@ -458,6 +604,15 @@ function normalizeRecipient(value: string): string {
  * Outcomes:
  * - UNVERIFIED: only a sent_at timestamp was recorded. The PO moves to
  *   SEND_UNVERIFIED and blocks further transitions (T-21);
+ * - PENDING_MANUAL_VERIFICATION: the evidence bytes are an email that fails at
+ *   least one header check (no Message-ID, wrong recipient, a subject that
+ *   names another order, a Date that contradicts sentAt, a send dated before
+ *   the approval…). The event is recorded with the machine-readable check list
+ *   and can never read as VERIFIED (M8-HARDEN FIX C1);
+ * - VERIFIED: the evidence passes every check — since FIX C1 that means the
+ *   original .eml of the production-order mail, read as an email (method
+ *   eml_header_check). Storing it is NOT proof of delivery; delivery is
+ *   asserted by the representative's manual confirmation only;
  * - snapshot_voided: the recomputed order digest differs from the approved
  *   one. The paper no longer describes the real order: the send is refused and
  *   the PO is voided pending a fresh approval (T-23, T-24);
@@ -585,17 +740,90 @@ export function evaluateMakerPoSendEvidence(
   const attachmentHashes = [evidence.sha256, ...providedAttachmentHashes]
     .filter((hash, index, all) => all.indexOf(hash) === index);
 
+  const senderAddress = request.senderAddress.trim();
+  // Echo the cited reference exactly as the request gave it: the caller
+  // resolved it against document_versions before asking for this evaluation,
+  // so the request value is the id the event row must carry.
+  const evidenceDocumentVersionId = request.evidenceDocumentVersionId as string;
+  const sentAtValue = request.sentAt;
+
+  // M8-HARDEN FIX C1: the evidence bytes decide. With them, the file is read as
+  // an email and its headers are checked against the frozen paper; only a
+  // message that names the maker, this order and a plausible time is VERIFIED.
+  // A caller that cannot supply bytes is not verifying content at all, so the
+  // document-binding verdict above stays (no API path reaches this branch — the
+  // endpoints always pass the stored bytes or the contentBase64 payload).
+  if (request.emlBytes === undefined || request.emlBytes === null || request.emlBytes.length === 0) {
+    return {
+      ok: true,
+      verificationStatus: 'VERIFIED',
+      senderAddress,
+      recipients,
+      sentAt: sentAtValue,
+      attachmentHashes,
+      evidenceDocumentVersionId,
+      verification: {
+        verificationMethod: null,
+        verificationChecks: null,
+        emlMessageId: null,
+        emlDate: null,
+        matchedAttachmentHashes: []
+      }
+    };
+  }
+
+  const emlEvaluation = evaluateMakerPoEmlEvidence({
+    bytes: request.emlBytes,
+    sentAt: typeof sentAtValue === 'string' ? new Date(sentAtValue) : sentAtValue,
+    ceoApprovedAt: context.ceoApprovedAt ?? null,
+    now: context.now ?? new Date(),
+    expectedRecipientAddress: context.snapshot.recipient.address,
+    recordedSenderAddress: senderAddress,
+    subjectIdentifiers: [context.snapshot.order.code, context.snapshot.order.sevenPoNumber ?? ''],
+    artworkFileSha256s: context.snapshot.specs.artworkFiles.map((file) => file.fileSha256)
+  });
+
+  const verification: MakerPoSendVerification = {
+    verificationMethod: emlEvaluation.verificationMethod,
+    verificationChecks: emlEvaluation.checks,
+    emlMessageId: emlEvaluation.messageId,
+    emlDate: emlEvaluation.emlDate,
+    matchedAttachmentHashes: emlEvaluation.matchedAttachmentHashes
+  };
+
+  // The message's own headers are the stronger record of who sent what to whom,
+  // so they replace the request-declared facts whenever the message carries them.
+  const provenSenderAddress = emlEvaluation.senderAddress ?? senderAddress;
+  const messageRecipients = emlEvaluation.recipients.length > 0 ? emlEvaluation.recipients : recipients;
+  // The attachments whose bytes match an approved artwork file are the strong
+  // signal FIX C1 records, so they belong on the event with the evidence bytes.
+  const provenAttachmentHashes = [...attachmentHashes, ...emlEvaluation.matchedAttachmentHashes]
+    .filter((hash, index, all) => all.indexOf(hash) === index);
+
+  if (emlEvaluation.verificationStatus === 'PENDING_MANUAL_VERIFICATION') {
+    return {
+      ok: true,
+      verificationStatus: 'PENDING_MANUAL_VERIFICATION',
+      senderAddress: provenSenderAddress,
+      recipients: messageRecipients,
+      sentAt: sentAtValue,
+      attachmentHashes: provenAttachmentHashes,
+      evidenceDocumentVersionId,
+      pendingCode: emlEvaluation.pendingCode,
+      reasonNote: emlEvaluation.reasonNote,
+      verification
+    };
+  }
+
   return {
     ok: true,
     verificationStatus: 'VERIFIED',
-    senderAddress: request.senderAddress.trim(),
-    recipients,
-    sentAt: request.sentAt,
-    attachmentHashes,
-    // Echo the cited reference exactly as the request gave it: the caller
-    // resolved it against document_versions before asking for this evaluation,
-    // so the request value is the id the event row must carry.
-    evidenceDocumentVersionId: request.evidenceDocumentVersionId as string
+    senderAddress: provenSenderAddress,
+    recipients: messageRecipients,
+    sentAt: sentAtValue,
+    attachmentHashes: provenAttachmentHashes,
+    evidenceDocumentVersionId,
+    verification
   };
 }
 
@@ -611,6 +839,10 @@ export interface MakerPoAcceptEvidenceRequest {
 
 export interface MakerPoAcceptEvidenceContext {
   order: { id: string; projectId: string };
+  /** The maker PO being accepted: the evidence must be bound to exactly it (FIX B2). */
+  makerPurchaseOrderId: string;
+  /** The order identity the frozen paper carries, for the snapshot linkage. */
+  snapshotOrder: { id: string };
   evidenceDocument: MakerPoEvidenceDocument | null;
 }
 
@@ -631,15 +863,17 @@ export type MakerPoAcceptEvidenceEvaluation =
         | 'ACCEPT_EVIDENCE_DOCUMENT_TYPE_INVALID'
         | 'ACCEPT_EVIDENCE_PROJECT_MISMATCH'
         | 'ACCEPT_EVIDENCE_ORDER_MISMATCH'
+        | 'ACCEPT_EVIDENCE_PO_MISMATCH'
         | 'ACCEPT_EVIDENCE_NOT_VERIFIED';
       message: string;
     };
 
 /**
  * Evaluates an acceptance evidence registration (T-22). MAKER_PO_ACCEPTED is
- * only reachable behind an acceptance evidence document of this order and
- * company that a human has verified; an unverified or foreign acceptance
- * document is refused and recorded as a rejected acceptance attempt.
+ * only reachable behind an acceptance evidence document that a human verified
+ * and that is bound to exactly this maker PO, this order and this company
+ * (M8-HARDEN FIX B2: one order can hold a cancelled and a live paper, so an
+ * order-level binding alone would let one document close both).
  */
 export function evaluateMakerPoAcceptEvidence(
   request: MakerPoAcceptEvidenceRequest,
@@ -699,6 +933,27 @@ export function evaluateMakerPoAcceptEvidence(
       outcome: 'rejected',
       code: 'ACCEPT_EVIDENCE_ORDER_MISMATCH',
       message: 'acceptance evidence is bound to a different film supply order'
+    };
+  }
+  // M8-HARDEN FIX B2: the binding names the paper, not just the order. An
+  // acceptance document of another maker PO — or of no maker PO at all — never
+  // closes this one, even though both papers may belong to the same order.
+  if (evidence.makerPurchaseOrderId !== context.makerPurchaseOrderId) {
+    return {
+      ok: false,
+      outcome: 'rejected',
+      code: 'ACCEPT_EVIDENCE_PO_MISMATCH',
+      message: 'acceptance evidence is bound to a different maker purchase order'
+    };
+  }
+  // The frozen paper must describe the order the evidence is bound to: a
+  // snapshot of another order can never be closed by this paperwork.
+  if (context.snapshotOrder.id !== context.order.id) {
+    return {
+      ok: false,
+      outcome: 'rejected',
+      code: 'ACCEPT_EVIDENCE_PO_MISMATCH',
+      message: 'the maker purchase order snapshot describes a different film supply order'
     };
   }
   if (evidence.verificationStatus !== 'verified') {

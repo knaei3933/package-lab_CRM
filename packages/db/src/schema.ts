@@ -1,4 +1,4 @@
-import { boolean, check, foreignKey, index, integer, jsonb, numeric, pgEnum, pgTable, text, timestamp, unique, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { boolean, check, foreignKey, index, integer, jsonb, numeric, pgEnum, pgTable, text, timestamp, unique, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
 export const userRole = pgEnum('user_role', ['admin', 'staff', 'viewer']);
@@ -64,7 +64,10 @@ export const makerPurchaseOrderStatus = pgEnum('maker_purchase_order_status', [
   'SEND_UNVERIFIED',
   'MAKER_PO_SENT_MANUALLY',
   'MAKER_PO_ACCEPTED',
-  'SNAPSHOT_VOIDED'
+  'SNAPSHOT_VOIDED',
+  // M8-HARDEN FIX B2: the replacement exit. Cancelling keeps the paper as
+  // history (rows are never deleted) and frees the order for a new maker PO.
+  'CANCELLED'
 ]);
 
 /** Maker PO lifecycle events (design section 5.8). Append-only. */
@@ -74,17 +77,23 @@ export const makerPoEventType = pgEnum('maker_po_event_type', [
   'SEND_EVIDENCE_REGISTERED',
   'ACCEPT_EVIDENCE_REGISTERED',
   'MAKER_PO_ACCEPT_RECORDED_PROVISIONAL',
-  'SEND_REJECTED'
+  'SEND_REJECTED',
+  // M8-HARDEN FIX B2: the append-only record of an explicit cancellation.
+  'MAKER_PO_CANCELLED'
 ]);
 
 /**
  * Whether a maker PO event's external evidence passed server verification.
  * Events that carry no external evidence (a CEO approval, a snapshot void, a
- * refused send) stay UNVERIFIED by construction.
+ * refused send) stay UNVERIFIED by construction. M8-HARDEN FIX C1 adds
+ * PENDING_MANUAL_VERIFICATION: the send evidence was read as an email and at
+ * least one header check failed, so the event can never read VERIFIED until a
+ * human records a manual verification of it.
  */
 export const makerPoEventVerificationStatus = pgEnum('maker_po_event_verification_status', [
   'VERIFIED',
-  'UNVERIFIED'
+  'UNVERIFIED',
+  'PENDING_MANUAL_VERIFICATION'
 ]);
 
 export const filmSupplyOrderStatus = pgEnum('film_supply_order_status', [
@@ -362,6 +371,13 @@ export const documents = pgTable('documents', {
    * (T-35). Null for documents uploaded outside the artwork flow.
    */
   filmSupplyOrderId: uuid('film_supply_order_id').references(() => filmSupplyOrders.id),
+  /**
+   * M8-HARDEN FIX B2: the maker PO this document was uploaded for. Acceptance
+   * evidence closes one exact paper, so its binding names that paper — an order
+   * can hold a cancelled and a live maker PO, and the two must never be closed
+   * by the same document. Null for every other document type.
+   */
+  makerPurchaseOrderId: uuid('maker_purchase_order_id').references(() => makerPurchaseOrders.id),
   designKey: text('design_key'),
   // Human verification of the document itself, deliberately separate from the
   // content hash recorded on document_versions.
@@ -394,7 +410,8 @@ export const documents = pgTable('documents', {
   index('documents_type_idx').on(table.documentType),
   index('documents_seven_purchase_order_idx').on(table.sevenPurchaseOrderId),
   index('documents_pre_order_reference_idx').on(table.preOrderReferenceId),
-  index('documents_film_supply_order_idx').on(table.filmSupplyOrderId)
+  index('documents_film_supply_order_idx').on(table.filmSupplyOrderId),
+  index('documents_maker_purchase_order_idx').on(table.makerPurchaseOrderId)
 ]);
 
 /**
@@ -732,6 +749,13 @@ export const makerPurchaseOrders = pgTable('maker_purchase_orders', {
   status: makerPurchaseOrderStatus('status').notNull().default('DRAFT'),
   ceoApprovedByUserId: uuid('ceo_approved_by_user_id').references(() => users.id),
   ceoApprovedAt: timestamp('ceo_approved_at', { withTimezone: true }),
+  /**
+   * M8-HARDEN FIX B2: soft-delete support for the one-active-paper rule. It is
+   * null for every row the application writes — replacement is the explicit
+   * CANCELLED status, never a deletion — and the partial unique index below
+   * carries it so a future soft-delete path cannot revive the uniqueness hole.
+   */
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
   createdByUserId: uuid('created_by_user_id').notNull().references(() => users.id),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
@@ -739,8 +763,16 @@ export const makerPurchaseOrders = pgTable('maker_purchase_orders', {
   check('maker_purchase_orders_sha256_format', sql`${table.snapshotSha256} ~ '^[0-9a-f]{64}$'`),
   // The approval stamp is a pair: who approved and when are recorded together.
   check('maker_purchase_orders_ceo_approval_pair', sql`(${table.ceoApprovedAt} is null) = (${table.ceoApprovedByUserId} is null)`),
-  // Every status except DRAFT is only reachable through a CEO approval.
-  check('maker_purchase_orders_status_requires_ceo_approval', sql`${table.status} = 'DRAFT' or ${table.ceoApprovedAt} is not null`),
+  // Every status except DRAFT and the replacement exit is only reachable
+  // through a CEO approval; CANCELLED can be recorded on unapproved paper.
+  check('maker_purchase_orders_status_requires_ceo_approval', sql`${table.status} in ('DRAFT', 'CANCELLED') or ${table.ceoApprovedAt} is not null`),
+  // M8-HARDEN FIX B2: exactly one live maker PO per film order, enforced by the
+  // database so two concurrent creates cannot both win (the API pre-check is
+  // only the friendly path). Replacement paper is possible because the index
+  // ignores rows that left the active set.
+  uniqueIndex('maker_purchase_orders_active_order_unique')
+    .on(table.filmSupplyOrderId)
+    .where(sql`${table.deletedAt} is null and ${table.status} <> 'CANCELLED'`),
   index('maker_purchase_orders_order_idx').on(table.filmSupplyOrderId),
   index('maker_purchase_orders_status_idx').on(table.status)
 ]);
@@ -772,6 +804,18 @@ export const makerPoEvents = pgTable('maker_po_events', {
   attachmentHashes: jsonb('attachment_hashes'),
   verificationStatus: makerPoEventVerificationStatus('verification_status').notNull().default('UNVERIFIED'),
   /**
+   * M8-HARDEN FIX C1: how the send evidence was verified. `eml_header_check`
+   * names the original .eml of the production-order mail whose headers were
+   * checked against the frozen paper; null on events written before the
+   * evidence was content-verified (the legacy rows the audit lists) and on
+   * events that carry no external evidence at all.
+   */
+  verificationMethod: text('verification_method'),
+  /** Machine-readable check list of the EML verification (FIX C1). */
+  verificationChecks: jsonb('verification_checks'),
+  /** Why a PENDING_MANUAL_VERIFICATION event is waiting for a human (FIX C1/C2). */
+  verificationNote: text('verification_note'),
+  /**
    * M8-OPERATOR FIX 2: true only for a MAKER_PO_ACCEPT_RECORDED_PROVISIONAL
    * event — an acceptance a staff member wrote down that the representative has
    * not confirmed yet. A provisional event never moves the maker PO out of its
@@ -789,6 +833,43 @@ export const makerPoEvents = pgTable('maker_po_events', {
   index('maker_po_events_evidence_idx').on(table.evidenceDocumentVersionId)
 ]);
 
+/**
+ * M8-HARDEN FIX C1: the representative's manual verification of a send event
+ * whose evidence could not be auto-verified (verificationStatus
+ * PENDING_MANUAL_VERIFICATION).
+ *
+ * Same shape and same rules as evidence_manual_verifications (migration 0017):
+ * a separate append-only table rather than a new row in maker_po_events — a
+ * maker PO event is an external fact about the paper (approval, send, void,
+ * refusal), while this is an internal human check OF one send event, and the
+ * event table's own vocabulary has no honest way to say "a human looked at
+ * this". Storing the EML is not proof of delivery; this record is the only
+ * place a delivery is asserted, always with the verifier's name, the time they
+ * checked and the reason.
+ */
+export const makerPoSendManualVerifications = pgTable('maker_po_send_manual_verifications', {
+  id: uuid('id').primaryKey(),
+  /** The pending send event this verification is about (never rewritten). */
+  makerPoEventId: uuid('maker_po_event_id').notNull().references(() => makerPoEvents.id),
+  /** The paper the send event belongs to; must be the event's own. */
+  makerPurchaseOrderId: uuid('maker_purchase_order_id').notNull().references(() => makerPurchaseOrders.id),
+  result: text('result').notNull(),
+  /** Who performed the verification, as an explicit recorded fact. */
+  verifierName: text('verifier_name').notNull(),
+  /** When the human actually checked; recorded_at is when we wrote it down. */
+  verifiedAt: timestamp('verified_at', { withTimezone: true }).notNull(),
+  /** The basis of the decision: what the human checked and concluded. */
+  reasonNote: text('reason_note').notNull(),
+  recordedByUserId: uuid('recorded_by_user_id').notNull().references(() => users.id),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  check('maker_po_send_manual_verifications_result_vocabulary', sql`${table.result} in ('confirmed', 'rejected')`),
+  check('maker_po_send_manual_verifications_verifier_name_not_blank', sql`length(btrim(${table.verifierName})) > 0`),
+  check('maker_po_send_manual_verifications_reason_not_blank', sql`length(btrim(${table.reasonNote})) > 0`),
+  index('maker_po_send_manual_verifications_event_idx').on(table.makerPoEventId),
+  index('maker_po_send_manual_verifications_po_idx').on(table.makerPurchaseOrderId)
+]);
+
 export const filmSupplyOrdersRelations = relations(filmSupplyOrders, ({ many, one }) => ({
   lines: many(filmSupplyOrderLines),
   deliveries: many(filmDeliveries),
@@ -801,7 +882,8 @@ export const makerPurchaseOrdersRelations = relations(makerPurchaseOrders, ({ ma
   events: many(makerPoEvents),
   filmSupplyOrder: one(filmSupplyOrders, { fields: [makerPurchaseOrders.filmSupplyOrderId], references: [filmSupplyOrders.id] }),
   ceoApprovedBy: one(users, { fields: [makerPurchaseOrders.ceoApprovedByUserId], references: [users.id] }),
-  createdBy: one(users, { fields: [makerPurchaseOrders.createdByUserId], references: [users.id] })
+  createdBy: one(users, { fields: [makerPurchaseOrders.createdByUserId], references: [users.id] }),
+  sendManualVerifications: many(makerPoSendManualVerifications)
 }));
 
 export const makerPoEventsRelations = relations(makerPoEvents, ({ one }) => ({
@@ -838,6 +920,12 @@ export const evidenceManualVerificationsRelations = relations(evidenceManualVeri
   revision: one(artworkRevisions, { fields: [evidenceManualVerifications.artworkRevisionId], references: [artworkRevisions.id] }),
   evidenceDocumentVersion: one(documentVersions, { fields: [evidenceManualVerifications.evidenceDocumentVersionId], references: [documentVersions.id] }),
   recordedBy: one(users, { fields: [evidenceManualVerifications.recordedByUserId], references: [users.id] })
+}));
+
+export const makerPoSendManualVerificationsRelations = relations(makerPoSendManualVerifications, ({ one }) => ({
+  makerPoEvent: one(makerPoEvents, { fields: [makerPoSendManualVerifications.makerPoEventId], references: [makerPoEvents.id] }),
+  makerPurchaseOrder: one(makerPurchaseOrders, { fields: [makerPoSendManualVerifications.makerPurchaseOrderId], references: [makerPurchaseOrders.id] }),
+  recordedBy: one(users, { fields: [makerPoSendManualVerifications.recordedByUserId], references: [users.id] })
 }));
 
 export const fillingOrdersRelations = relations(fillingOrders, ({ many, one }) => ({

@@ -8,6 +8,7 @@ import {
   auditEvents,
   createDatabase,
   documents,
+  documentVersions,
   filmSupplyOrderLines,
   filmSupplyOrders,
   makerPoEvents,
@@ -21,6 +22,7 @@ import {
 import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
+import { plausibleTestSentAt, sendMakerPoEmlEvidence } from '../helpers/maker-po-evidence.js';
 
 const databaseUrl = process.env.DATABASE_URL!;
 const { db, pool } = createDatabase(databaseUrl);
@@ -145,13 +147,16 @@ async function uploadOrderEvidence(
   order: SupplyOrder,
   projectId: string,
   documentType: 'send_evidence' | 'acceptance_evidence',
-  tag: string
+  tag: string,
+  makerPoId?: string
 ) {
   return await uploadBoundDocument(order, projectId, {
     documentType,
     issuerEntity: 'kanei',
     sevenPurchaseOrderId: order.poId,
-    filmSupplyOrderId: order.orderId
+    filmSupplyOrderId: order.orderId,
+    // M8-HARDEN FIX B2 (d): acceptance evidence names the paper it closes.
+    ...(makerPoId ? { makerPurchaseOrderId: makerPoId } : {})
   });
 }
 
@@ -341,15 +346,15 @@ async function reachApprovedMakerPo(projectId: string, tag: string) {
 
 async function reachSentMakerPo(projectId: string, tag: string) {
   const context = await reachApprovedMakerPo(projectId, tag);
-  const evidence = await uploadOrderEvidence(context.order, projectId, 'send_evidence', tag);
-  const sent = await sendEvidence(context.po.id, {
-    evidenceDocumentVersionId: evidence.version.id,
-    senderAddress: 'staff@kanei.example',
-    recipients: ['maker-po@example.com'],
-    sentAt: '2026-11-12T09:00:00.000Z'
-  });
+  // M8-HARDEN FIX C1: the send evidence is the original .eml of the
+  // production-order mail, verified as an email.
+  const sent = await sendMakerPoEmlEvidence(
+    (url, body) => postAs(staffToken, url, body),
+    context.po.id,
+    { orderCode: `FSO-M4-${tag}` }
+  );
   expect(sent.status).toBe(200);
-  return { ...context, evidence };
+  return context;
 }
 
 beforeAll(async () => {
@@ -472,27 +477,33 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect(approvalAudit?.action).toBe('MAKER_PO_CEO_APPROVED');
     expect(approvalAudit?.actorUserId).toBe(adminId);
 
-    const evidence = await uploadOrderEvidence(order, projectId, 'send_evidence', 'T20');
-    const sent = await sendEvidence(po.id, {
-      evidenceDocumentVersionId: evidence.version.id,
-      senderAddress: 'staff@kanei.example',
-      recipients: ['maker-po@example.com'],
-      sentAt: '2026-11-12T09:00:00.000Z'
-    });
+    const sent = await sendMakerPoEmlEvidence(
+      (url, body) => postAs(staffToken, url, body),
+      po.id,
+      { orderCode: 'FSO-M4-T20' }
+    );
     expect(sent.status).toBe(200);
-    const sentBody = sent.body as { status: string; verificationStatus: string; event: EventRow };
+    const sentBody = sent.body as {
+      status: string;
+      verificationStatus: string;
+      verificationMethod: string | null;
+      event: EventRow;
+    };
     expect(sentBody.status).toBe('MAKER_PO_SENT_MANUALLY');
     expect(sentBody.verificationStatus).toBe('VERIFIED');
     expect(sentBody.event.eventType).toBe('SEND_EVIDENCE_REGISTERED');
-    expect(sentBody.event.evidenceDocumentVersionId).toBe(evidence.version.id);
+    // M8-HARDEN FIX C1: the evidence is the stored .eml and the event names how
+    // it was verified.
+    expect(typeof sentBody.event.evidenceDocumentVersionId).toBe('string');
+    expect(sentBody.verificationMethod).toBe('eml_header_check');
     expect(sentBody.event.senderAddress).toBe('staff@kanei.example');
     expect(sentBody.event.recipients).toEqual(['maker-po@example.com']);
     expect(sentBody.event.verificationStatus).toBe('VERIFIED');
     // The evidence document's own bytes are always part of the recorded set.
-    expect(sentBody.event.attachmentHashes).toEqual([evidence.version.sha256]);
+    expect(sentBody.event.attachmentHashes).toEqual([sent.built.sha256]);
     expect((await orderRow(order.orderId))?.status).toBe('MAKER_PO_SENT_MANUALLY');
 
-    const acceptDoc = await uploadOrderEvidence(order, projectId, 'acceptance_evidence', 'T20');
+    const acceptDoc = await uploadOrderEvidence(order, projectId, 'acceptance_evidence', 'T20', po.id);
     const verified = await postJson(`/api/documents/${acceptDoc.document.id}/verify`, {
       verificationStatus: 'verified',
       verificationNote: '合成受領確認'
@@ -591,7 +602,7 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect(mistyped.status).toBe(422);
     expect((mistyped.body as { code: string }).code).toBe('ACCEPT_EVIDENCE_DOCUMENT_TYPE_INVALID');
 
-    const acceptDoc = await uploadOrderEvidence(order, projectId, 'acceptance_evidence', 'T22');
+    const acceptDoc = await uploadOrderEvidence(order, projectId, 'acceptance_evidence', 'T22', po.id);
     const unverified = await acceptEvidence(po.id, {
       evidenceDocumentVersionId: acceptDoc.version.id
     });
@@ -714,8 +725,31 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect((refused.body as { currentSnapshotSha256: string }).currentSnapshotSha256).not.toBe(approvedHash);
     expect((await makerPoRow(po.id))?.status).toBe('SNAPSHOT_VOIDED');
 
-    // Re-approval picks up the new artwork hash even though the order itself
-    // sits in CHANGE_REVIEW after the new revision (M3 rule).
+    // M8-HARDEN FIX A3: the re-approval is no longer the leak it used to be.
+    // Revision 2 holds no approval from either organization, so certifying the
+    // paper over it is refused, and the recovery is both organizations approving
+    // the new revision first.
+    const refusedReapproval = await approveMakerPo(po.id);
+    expect(refusedReapproval.status).toBe(422);
+    expect((refusedReapproval.body as { code: string }).code).toBe('DUAL_APPROVAL_NO_LONGER_VALID');
+    expect((refusedReapproval.body as { missingApprovals: Array<{ designKey: string; organization: string }> })
+      .missingApprovals).toEqual([
+        { designKey: 'label-front', organization: 'customer' },
+        { designKey: 'label-front', organization: 'seven' }
+      ]);
+    expect((await makerPoRow(po.id))?.status).toBe('SNAPSHOT_VOIDED');
+
+    // The recovery: both organizations approve the NEW revision, then the paper
+    // is certifiable over it again.
+    const secondRevision = (second.body as { id: string }).id;
+    for (const organization of ['customer', 'seven'] as const) {
+      const approvalEvidence = await uploadApprovalEvidence(order, projectId, 'label-front', organization);
+      const approval = await recordApproval(secondRevision, {
+        organization,
+        evidenceDocumentVersionId: approvalEvidence.version.id
+      });
+      expect(approval.status).toBe(201);
+    }
     const reapproved = await approveMakerPo(po.id);
     expect(reapproved.status).toBe(200);
     const reapprovedBody = reapproved.body as { purchaseOrder: MakerPoResponse };
@@ -725,13 +759,11 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     ]);
     expect((await orderRow(order.orderId))?.status).toBe('CHANGE_REVIEW');
 
-    const freshEvidence = await uploadOrderEvidence(order, projectId, 'send_evidence', 'T24-B');
-    const sent = await sendEvidence(po.id, {
-      evidenceDocumentVersionId: freshEvidence.version.id,
-      senderAddress: 'staff@kanei.example',
-      recipients: ['maker-po@example.com'],
-      sentAt: '2026-11-12T09:55:00.000Z'
-    });
+    const sent = await sendMakerPoEmlEvidence(
+      (url, body) => postAs(staffToken, url, body),
+      po.id,
+      { orderCode: 'FSO-M4-T24', sentAtIso: plausibleTestSentAt() }
+    );
     expect(sent.status).toBe(200);
     expect((sent.body as { status: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
     expect((await makerPoRow(po.id))?.status).toBe('MAKER_PO_SENT_MANUALLY');
@@ -743,21 +775,17 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
   it('T-25 two simultaneous transitions produce exactly one effective transition and a consistent trail', async () => {
     // Two concurrent sends of the same approved maker PO.
     const sendContext = await reachApprovedMakerPo(projectId, 'T25A');
-    const evidenceA = await uploadOrderEvidence(sendContext.order, projectId, 'send_evidence', 'T25A-A');
-    const evidenceB = await uploadOrderEvidence(sendContext.order, projectId, 'send_evidence', 'T25A-B');
     const [sendOne, sendTwo] = await Promise.all([
-      sendEvidence(sendContext.po.id, {
-        evidenceDocumentVersionId: evidenceA.version.id,
-        senderAddress: 'staff@kanei.example',
-        recipients: ['maker-po@example.com'],
-        sentAt: '2026-11-12T10:00:00.000Z'
-      }),
-      sendEvidence(sendContext.po.id, {
-        evidenceDocumentVersionId: evidenceB.version.id,
-        senderAddress: 'staff@kanei.example',
-        recipients: ['maker-po@example.com'],
-        sentAt: '2026-11-12T10:05:00.000Z'
-      })
+      sendMakerPoEmlEvidence(
+        (url, body) => postAs(staffToken, url, body),
+        sendContext.po.id,
+        { orderCode: 'FSO-M4-T25A', sentAtIso: plausibleTestSentAt(), messageId: '<m4-t25a-one@mail.kanei.example>' }
+      ),
+      sendMakerPoEmlEvidence(
+        (url, body) => postAs(staffToken, url, body),
+        sendContext.po.id,
+        { orderCode: 'FSO-M4-T25A', sentAtIso: plausibleTestSentAt(), messageId: '<m4-t25a-two@mail.kanei.example>' }
+      )
     ]);
     expect([sendOne.status, sendTwo.status].sort()).toEqual([200, 422]);
     const sendWinner = sendOne.status === 200 ? sendOne : sendTwo;
@@ -791,13 +819,11 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
 
   it('maker_po_events are append-only and every M4 write carries its audit row in the same transaction', async () => {
     const { order, po } = await reachApprovedMakerPo(projectId, 'APP');
-    const evidence = await uploadOrderEvidence(order, projectId, 'send_evidence', 'APP');
-    const sent = await sendEvidence(po.id, {
-      evidenceDocumentVersionId: evidence.version.id,
-      senderAddress: 'staff@kanei.example',
-      recipients: ['maker-po@example.com'],
-      sentAt: '2026-11-12T10:10:00.000Z'
-    });
+    const sent = await sendMakerPoEmlEvidence(
+      (url, body) => postAs(staffToken, url, body),
+      po.id,
+      { orderCode: 'FSO-M4-APP', sentAtIso: plausibleTestSentAt() }
+    );
     expect(sent.status).toBe(200);
 
     const events = await listEvents(po.id);
@@ -840,12 +866,18 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
 
     // The version the evidence cites resolves to the order-bound send evidence
     // document (a document's first version shares the document's identity).
+    // M8-HARDEN FIX C1: the cited version is now the stored .eml the endpoint
+    // filed for this paper.
+    const sendEvent = events[1]!;
     const [evidenceRow] = await db.select({
       filmSupplyOrderId: documents.filmSupplyOrderId,
-      documentType: documents.documentType
-    }).from(documents)
-      .where(eq(documents.id, evidence.version.id)).limit(1);
+      documentType: documents.documentType,
+      declaredMimeType: documentVersions.declaredMimeType
+    }).from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(eq(documentVersions.id, sendEvent.evidenceDocumentVersionId!)).limit(1);
     expect(evidenceRow?.filmSupplyOrderId).toBe(order.orderId);
     expect(evidenceRow?.documentType).toBe('send_evidence');
+    expect(evidenceRow?.declaredMimeType).toBe('message/rfc822');
   });
 });

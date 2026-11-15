@@ -46,6 +46,15 @@ export interface MakerPoEventRecord {
   sentAt: Date | null;
   attachmentHashes: unknown;
   verificationStatus: string;
+  /**
+   * M8-HARDEN FIX C1: how the send evidence was verified
+   * (`eml_header_check`) and the machine-readable check list it produced;
+   * null on events that carry no content-verified evidence.
+   */
+  verificationMethod: string | null;
+  verificationChecks: unknown;
+  /** Why a PENDING_MANUAL_VERIFICATION send waits for a human (FIX C1/C2). */
+  verificationNote: string | null;
   provisional: boolean;
   recordedByUserId: string;
   recordedAt: Date;
@@ -103,6 +112,8 @@ export interface MakerPoEventStaffView {
   id: string;
   eventType: string;
   verificationStatus: string;
+  /** Why a pending send verification waits for a human (FIX C1/C2). */
+  verificationNote: string | null;
   /** True only for a provisional acceptance a staff member recorded. */
   provisional: boolean;
   sentAt: Date | null;
@@ -162,6 +173,7 @@ export function buildMakerPoEventViewForRole(
       id: event.id,
       eventType: event.eventType,
       verificationStatus: event.verificationStatus,
+      verificationNote: event.verificationNote,
       provisional: event.provisional,
       sentAt: event.sentAt,
       recordedAt: event.recordedAt

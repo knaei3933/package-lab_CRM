@@ -19,36 +19,33 @@ import {
 import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
+import { buildMakerPoEml, plausibleTestSentAt, sendMakerPoEmlEvidence } from '../helpers/maker-po-evidence.js';
 
 /**
- * M8-FAIL regression tests: the four CEO-directed failure scenarios, verified
- * against the behavior that actually ships. No new feature is introduced here —
- * each test pins what the endpoints really do when the flow is abused, and the
- * findings that need a product decision are marked FINDING in the comments.
+ * M8-HARDEN regression tests: the four CEO-directed failure scenarios, pinned
+ * against the hardened behavior. M8-FAIL first characterized what the endpoints
+ * really did when the flow was abused (FINDING A3, B2, C1, C2); this file now
+ * asserts the fixes the CEO approved for those findings.
  *
- * A — approval reuse across revisions: a new artwork revision after a valid
- *     dual approval must stop the old approvals from counting, and the
- *     maker-PO boundary must refuse. Coverage that already existed:
- *     tests/m3/core-rules.test.ts 'T-11 never transfers an approval to a new
- *     revision…' (pure), tests/m8-oper2/m8-oper2-core-rules.test.ts 'reads the
- *     hash mismatch…' (pure invalidatedByNewerRevision), tests/m4/
- *     m4-maker-po.test.ts 'T-24 an artwork change voids the approved snapshot…'
- *     (send refused on drifted paper). Missing and pinned here: the boundary
- *     answer after a new revision, and what the re-check records for it.
- * B — duplicate send / re-send of proven paper: no test sent the same maker PO
- *     twice after a VERIFIED send, and none asked whether a second maker PO can
- *     exist for one order. Pinned here.
- * C — invalid send evidence: content that proves nothing, a future sentAt, and
- *     a missing/empty evidence id. tests/m4/core-rules.test.ts covers the
- *     UNVERIFIED and malformed-request shapes purely; the API-level content and
- *     time cases were missing. Pinned here with the exact outcome per case.
- * D — acceptance without proven send: already covered by tests/m4/
- *     m4-maker-po.test.ts 'T-21 … blocks every further transition' (acceptance
- *     from SEND_UNVERIFIED) and tests/m4/core-rules.test.ts 'rejects foreign,
- *     mistyped or humanly-unverified acceptance documents' (pure order
- *     mismatch). Missing and pinned here: the API-level acceptance from an
- *     order whose paper never recorded any send, and acceptance evidence bound
- *     to another order of the same project.
+ * A — approval reuse across revisions (FIX A3): the current revision holding no
+ *     valid approval from BOTH organizations blocks every pre-send maker-PO
+ *     boundary act with 422 DUAL_APPROVAL_NO_LONGER_VALID — including the
+ *     superseded-revision case that used to pass — and recovery is both
+ *     organizations approving the new revision. A send that is already proven
+ *     stays history (the carve-out), and the G10 snapshot-void machinery is
+ *     unchanged (tests/m4/m4-maker-po.test.ts 'T-23/T-24').
+ * B — one active maker PO per film order (FIX B2): the second create is refused
+ *     with the existing PO named, two parallel creates freeze exactly one paper,
+ *     and replacement is the explicit cancel (history preserved) then create.
+ *     Acceptance evidence is bound to one maker PO, so one document can no
+ *     longer close two papers of the same order.
+ * C — send evidence is the production-order EMAIL (FIX C1) and the recorded
+ *     times must be possible (FIX C2): a plain text file, a PDF, an EML without
+ *     a Message-ID and an EML headed elsewhere are PENDING_MANUAL_VERIFICATION,
+ *     never VERIFIED; a sentAt in the future is refused; a send recorded before
+ *     its own approval — or contradicting the EML Date — is pending too.
+ * D — acceptance gates: no send, no acceptance; foreign paperwork and paperwork
+ *     bound to another maker PO are both refused.
  */
 
 const databaseUrl = process.env.DATABASE_URL!;
@@ -126,6 +123,7 @@ async function uploadDocument(input: {
   orderId?: string;
   poId?: string;
   content?: string;
+  makerPoId?: string;
 }) {
   const tag = nextTag();
   const content = input.content ?? `composite m8-fail document bytes ${tag}\n`;
@@ -137,6 +135,8 @@ async function uploadDocument(input: {
     contentBase64: toBase64(content),
     ...(input.poId ? { sevenPurchaseOrderId: input.poId } : {}),
     ...(input.orderId ? { filmSupplyOrderId: input.orderId } : {}),
+    // M8-HARDEN FIX B2 (d): the maker PO an acceptance evidence is for.
+    ...(input.makerPoId ? { makerPurchaseOrderId: input.makerPoId } : {}),
     ...(input.designKey ? { designKey: input.designKey } : {})
   });
   expect(response.status).toBe(201);
@@ -171,12 +171,17 @@ async function reachApprovalPending(tag: string) {
     expect(transition.status).toBe(200);
   }
 
+  // The proof bytes are the approved artwork the maker PO snapshot freezes by
+  // hash, so a send evidence attachment carrying exactly them is the strong
+  // match FIX C1 records.
+  const artworkBytes = `composite m8-fail artwork bytes ${tag}\n`;
   const proof = await uploadDocument({
     documentType: 'proof',
     issuerEntity: 'kanei',
     designKey: 'label-front',
     orderId: order.id,
-    poId: po.id
+    poId: po.id,
+    content: artworkBytes
   });
   const revision = await postAs(staffToken, `/api/film-supply-orders/${order.id}/artwork-revisions`, {
     designKey: 'label-front',
@@ -184,13 +189,23 @@ async function reachApprovalPending(tag: string) {
   });
   expect(revision.status).toBe(201);
 
-  return { poId: po.id, orderId: order.id, revisionId: (revision.body as { id: string }).id };
+  return {
+    poId: po.id,
+    orderId: order.id,
+    // The order code is the identifier the send evidence's subject must carry.
+    orderCode: `FSO-FAIL-${tag}`,
+    /** The exact bytes the approved artwork revision freezes (its sha256). */
+    artworkBytes,
+    revisionId: (revision.body as { id: string }).id
+  };
 }
 
 /** Records one counted TEXT approval whose evidence quotes its identifier. */
 async function recordTextApproval(input: {
   chain: Awaited<ReturnType<typeof reachApprovalPending>>;
   organization: 'customer' | 'seven';
+  /** Overrides the revision the approval is recorded on (the FIX A3 recovery). */
+  revisionId?: string;
 }) {
   const identifier = `MSG-FAIL-${input.organization.toUpperCase()}-${nextTag()}`;
   const evidence = await uploadDocument({
@@ -201,7 +216,7 @@ async function recordTextApproval(input: {
     poId: input.chain.poId,
     content: `composite m8-fail approval evidence\nidentifier: ${identifier}\n`
   });
-  const approval = await postAs(staffToken, `/api/artwork-revisions/${input.chain.revisionId}/approvals`, {
+  const approval = await postAs(staffToken, `/api/artwork-revisions/${input.revisionId ?? input.chain.revisionId}/approvals`, {
     organization: input.organization,
     decision: 'APPROVE',
     evidenceSource: 'email',
@@ -233,6 +248,19 @@ async function approveMakerPo(poId: string) {
   return await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {});
 }
 
+/** Cancels a maker PO as the representative: the explicit replacement step. */
+async function cancelMakerPo(poId: string, note = '発注内容の訂正のため再発注します') {
+  return await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancel`, { note });
+}
+
+/** Registers the send as the original .eml of the production-order mail. */
+async function sendMakerPoEml(poId: string, orderCode: string, overrides: Parameters<typeof buildMakerPoEml>[0] = {}) {
+  return await sendMakerPoEmlEvidence((url, body) => postAs(staffToken, url, body), poId, {
+    orderCode,
+    ...overrides
+  });
+}
+
 interface MakerPoBody {
   id: string;
   status: string;
@@ -251,6 +279,10 @@ interface SendEventRow {
   sentAt: string | null;
   attachmentHashes: Array<string> | null;
   verificationStatus: string;
+  /** M8-HARDEN FIX C1: how the evidence was verified and what it checked. */
+  verificationMethod: string | null;
+  verificationChecks: Array<{ key: string; status: string; detail: string | null }> | null;
+  verificationNote: string | null;
 }
 
 async function poEvents(poId: string) {
@@ -417,7 +449,7 @@ describe('M8-FAIL A: approval reuse across revisions', () => {
     expect(await recheckRows([chain.orderId])).toHaveLength(0);
   });
 
-  it('FINDING A3: certifies a still-draft maker PO over the superseded revision without fresh approvals', async () => {
+  it('M8-HARDEN FIX A3: a still-draft maker PO is no longer certifiable over a superseded revision', async () => {
     const chain = await reachMakerPoReady(`A3-${nextTag()}`);
     const created = await createMakerPo(chain.orderId);
     expect(created.status).toBe(201);
@@ -428,11 +460,78 @@ describe('M8-FAIL A: approval reuse across revisions', () => {
     const next = await registerNextRevision(chain);
     expect(next.body.status).toBe('CHANGE_REVIEW');
 
-    // FINDING A3 (characterized, no fix): the CEO approval is answered 200 —
-    // the re-check classifies a superseding revision as the change-review flow
-    // ('gate_closed_superseded_revision_snapshot_void_governs') and declines to
-    // block, and the approval re-freezes the snapshot over the NEW revision.
-    // The paper is certified although no organization approved its artwork.
+    // FIX A3 (was FINDING A3): the CEO approval is refused — the current
+    // revision holds no valid approval from either organization, and certifying
+    // the paper over artwork nobody approved is exactly the leak that was
+    // closed. The refusal names both missing approvals.
+    const approval = await approveMakerPo(poId);
+    expect(approval.status).toBe(422);
+    const refusal = approval.body as {
+      code: string;
+      error: string;
+      missingApprovals: Array<{ designKey: string; organization: string }>;
+    };
+    expect(refusal.code).toBe('DUAL_APPROVAL_NO_LONGER_VALID');
+    expect(refusal.error).toContain('二重承認');
+    expect(refusal.missingApprovals).toEqual([
+      { designKey: 'label-front', organization: 'customer' },
+      { designKey: 'label-front', organization: 'seven' }
+    ]);
+
+    // Nothing was certified: the paper stays a draft with an empty event log,
+    // and the snapshot digest it froze is still the one nobody has approved
+    // over.
+    const [poRow] = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.id, poId)).limit(1);
+    expect(poRow?.status).toBe('DRAFT');
+    expect(poRow?.ceoApprovedAt).toBeNull();
+    expect(poRow?.snapshotSha256).toBe(approvedSha);
+    expect((await poEvents(poId))).toHaveLength(0);
+    // Sending unapproved paper is refused by the same re-check.
+    const sendAttempt = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
+      sentAt: '2026-11-15T09:00:00.000Z'
+    });
+    expect(sendAttempt.status).toBe(422);
+    expect((sendAttempt.body as { code: string }).code).toBe('DUAL_APPROVAL_NO_LONGER_VALID');
+
+    // The audit trail names exactly what happened: the re-check blocked on the
+    // superseded revision — the case that used to pass with the
+    // snapshot-void-governs reason.
+    const rows = await recheckRows([chain.orderId, poId]);
+    const approveRecheck = rows.map(recheckState).find((state) => state.stage === 'maker_po:ceo_approve');
+    expect(approveRecheck?.result).toBe('blocked');
+    expect(approveRecheck?.reason).toBe('gate_closed_current_revision_missing_dual_approval');
+    expect(approveRecheck?.gate.dualApproved).toBe(false);
+  });
+
+  it('M8-HARDEN FIX A3 recovery: both organizations approving the new revision reopens the boundary', async () => {
+    const chain = await reachMakerPoReady(`A3REC-${nextTag()}`);
+    const created = await createMakerPo(chain.orderId);
+    expect(created.status).toBe(201);
+    const poId = (created.body as MakerPoBody).id;
+
+    const next = await registerNextRevision(chain);
+    expect(next.body.status).toBe('CHANGE_REVIEW');
+    expect((await approveMakerPo(poId)).status).toBe(422);
+
+    // The recovery: both organizations approve the NEW revision.
+    expect((await recordTextApproval({ chain, organization: 'customer', revisionId: next.body.id })).dualApproved)
+      .toBe(false);
+    expect((await recordTextApproval({ chain, organization: 'seven', revisionId: next.body.id })).dualApproved)
+      .toBe(true);
+
+    // The change review resolves back into the maker chain: the gate is open
+    // again, so the paper is certifiable and the approval re-freezes revision 2.
+    expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
+      to: 'APPROVAL_PENDING'
+    })).status).toBe(200);
+    expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
+      to: 'DUAL_APPROVED'
+    })).status).toBe(200);
+    expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
+      to: 'MAKER_PO_READY'
+    })).status).toBe(200);
+
     const approval = await approveMakerPo(poId);
     expect(approval.status).toBe(200);
     const approved = approval.body as { purchaseOrder: MakerPoBody };
@@ -442,19 +541,19 @@ describe('M8-FAIL A: approval reuse across revisions', () => {
       revisionNo: 2,
       fileSha256: next.proofSha256
     });
-    expect(approved.purchaseOrder.snapshotSha256).not.toBe(approvedSha);
 
-    // The PO advanced while the order itself stayed in change review: the two
-    // chains are no longer describing the same artwork.
-    expect((await orderRow(chain.orderId))?.status).toBe('CHANGE_REVIEW');
-
-    // The audit trail names exactly what happened: the re-check passed on a
-    // closed gate, with the superseded-revision reason, not a withdrawal.
+    // The re-check that allowed it read the reopened gate.
     const rows = await recheckRows([chain.orderId, poId]);
-    const approveRecheck = rows.map(recheckState).find((state) => state.stage === 'maker_po:ceo_approve');
-    expect(approveRecheck?.result).toBe('passed');
-    expect(approveRecheck?.reason).toBe('gate_closed_superseded_revision_snapshot_void_governs');
-    expect(approveRecheck?.gate.dualApproved).toBe(false);
+    const approveRechecks = rows.map(recheckState).filter((state) => state.stage === 'maker_po:ceo_approve');
+    expect(approveRechecks).toHaveLength(2);
+    expect(approveRechecks[0]?.result).toBe('blocked');
+    expect(approveRechecks[1]?.result).toBe('passed');
+    expect(approveRechecks[1]?.reason).toBe('gate_open');
+
+    // And the send that follows is provable again.
+    const sent = await sendMakerPoEml(poId, chain.orderCode);
+    expect(sent.status).toBe(200);
+    expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
   });
 });
 
@@ -472,12 +571,8 @@ describe('M8-FAIL B: duplicate send and duplicate paper', () => {
       orderId: chain.orderId,
       poId: chain.poId
     });
-    const sent = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
-      evidenceDocumentVersionId: evidence.version.id,
-      senderAddress: 'staff@kanei.example',
-      recipients: ['maker-po@example.com'],
-      sentAt: '2026-11-15T09:00:00.000Z'
-    });
+    const sentAt = plausibleTestSentAt();
+    const sent = await sendMakerPoEml(poId, chain.orderCode, { sentAtIso: sentAt });
     expect(sent.status).toBe(200);
     expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
     expect(await poEvents(poId)).toHaveLength(2); // CEO_APPROVED + SEND_EVIDENCE_REGISTERED
@@ -516,98 +611,100 @@ describe('M8-FAIL B: duplicate send and duplicate paper', () => {
     expect(events).toHaveLength(2);
     expect(events.filter((event) => event.eventType === 'SEND_EVIDENCE_REGISTERED')).toHaveLength(1);
     expect(events.find((event) => event.eventType === 'SEND_EVIDENCE_REGISTERED')?.sentAt)
-      .toEqual(new Date('2026-11-15T09:00:00.000Z'));
+      .toEqual(new Date(sentAt));
     expect((await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1))[0]?.status)
       .toBe('MAKER_PO_SENT_MANUALLY');
     expect((await orderRow(chain.orderId))?.status).toBe('MAKER_PO_SENT_MANUALLY');
   });
 
-  it('FINDING B2: a second maker PO is freezable while the first is a draft, and can travel the whole chain beside it', async () => {
+  it('M8-HARDEN FIX B2: a second maker PO is refused with the existing one named, and replacement is cancel-then-create', async () => {
     const chain = await reachMakerPoReady(`B2-${nextTag()}`);
     const first = await createMakerPo(chain.orderId);
     expect(first.status).toBe(201);
     const po1 = (first.body as MakerPoBody).id;
 
-    // FINDING B2 (characterized, no fix): the creation gate reads the ORDER
-    // status only, and the order stays MAKER_PO_READY until the first paper is
-    // CEO-approved — so a second maker PO freezes for the same order while the
-    // first is still a draft (no unique constraint guards this either).
+    // FIX B2 (was FINDING B2): the second paper is refused while the first one
+    // holds the order, and the refusal names it so the operator can act.
     const second = await createMakerPo(chain.orderId);
-    expect(second.status).toBe(201);
-    const po2 = (second.body as MakerPoBody).id;
+    expect(second.status).toBe(422);
+    const refused = second.body as {
+      code: string;
+      error: string;
+      existingMakerPurchaseOrderId: string;
+      existingStatus: string;
+    };
+    expect(refused.code).toBe('MAKER_PO_ALREADY_EXISTS');
+    expect(refused.error).toContain('既に有効なメーカー発注書');
+    expect(refused.existingMakerPurchaseOrderId).toBe(po1);
+
+    // Cancelling is the representative's decision; staff cannot free the order.
+    const staffCancel = await postAs(staffToken, `/api/maker-purchase-orders/${po1}/cancel`, { note: '訂正' });
+    expect(staffCancel.status).toBe(403);
+    const noReason = await postAs(adminToken, `/api/maker-purchase-orders/${po1}/cancel`, {});
+    expect(noReason.status).toBe(422);
+    expect((noReason.body as { code: string }).code).toBe('MAKER_PO_CANCEL_REASON_REQUIRED');
+
+    // The replacement step itself: cancel (history preserved, nothing deleted),
+    // then create the new paper.
+    const cancelled = await cancelMakerPo(po1, '宛先と金額の訂正のため再発注します');
+    expect(cancelled.status).toBe(200);
+    expect((cancelled.body as { status: string }).status).toBe('CANCELLED');
+    const events = await poEvents(po1);
+    expect(events.map((event) => event.eventType)).toEqual(['MAKER_PO_CANCELLED']);
+    const [cancelledRow] = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.id, po1)).limit(1);
+    expect(cancelledRow?.status).toBe('CANCELLED');
+
+    // The cancelled paper does not hold the order any more.
+    const replacement = await createMakerPo(chain.orderId);
+    expect(replacement.status).toBe(201);
+    const po2 = (replacement.body as MakerPoBody).id;
     expect(po2).not.toBe(po1);
 
-    // Once the first paper is certified the door closes for new paper.
-    expect((await approveMakerPo(po1)).status).toBe(200);
-    const third = await createMakerPo(chain.orderId);
-    expect(third.status).toBe(422);
-    expect((third.body as { code: string }).code).toBe('MAKER_PO_NOT_READY');
-
-    // The duplicate draft certifies too, and both papers then register a
-    // VERIFIED send for the same order.
-    expect((await approveMakerPo(po2)).status).toBe(200);
-    for (const poId of [po1, po2]) {
-      const evidence = await uploadDocument({
-        documentType: 'send_evidence',
-        issuerEntity: 'kanei',
-        orderId: chain.orderId,
-        poId: chain.poId
-      });
-      const sent = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
-        evidenceDocumentVersionId: evidence.version.id,
-        senderAddress: 'staff@kanei.example',
-        recipients: ['maker-po@example.com'],
-        sentAt: '2026-11-15T12:00:00.000Z'
-      });
-      expect(sent.status).toBe(200);
-      expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
-    }
-
-    // FINDING B2/D-linkage: acceptance evidence is bound to the ORDER only, so
-    // one acceptance document of this order closes BOTH papers.
-    const acceptanceEvidence = await uploadDocument({
-      documentType: 'acceptance_evidence',
-      issuerEntity: 'kanei',
-      orderId: chain.orderId,
-      poId: chain.poId
-    });
-    expect((await postAs(staffToken, `/api/documents/${acceptanceEvidence.document.id}/verify`, {
-      verificationStatus: 'verified'
-    })).status).toBe(200);
-    for (const poId of [po1, po2]) {
-      const accepted = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {
-        evidenceDocumentVersionId: acceptanceEvidence.version.id,
-        acceptedAt: '2026-11-15T13:00:00.000Z'
-      });
-      expect(accepted.status).toBe(200);
-      expect((accepted.body as { purchaseOrder: { status: string } }).purchaseOrder.status).toBe('MAKER_PO_ACCEPTED');
-    }
-
+    // The trail keeps both papers: the cancelled one is history, never a row
+    // that disappeared.
     const rows = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.filmSupplyOrderId, chain.orderId));
     expect(rows).toHaveLength(2);
-    expect(rows.map((row) => row.status)).toEqual(['MAKER_PO_ACCEPTED', 'MAKER_PO_ACCEPTED']);
-    const acceptEvents = await db.select().from(makerPoEvents).where(and(
-      eq(makerPoEvents.eventType, 'ACCEPT_EVIDENCE_REGISTERED'),
-      inArray(makerPoEvents.makerPurchaseOrderId, [po1, po2])
-    ));
-    expect(acceptEvents).toHaveLength(2);
-    expect(new Set(acceptEvents.map((event) => event.evidenceDocumentVersionId)))
-      .toEqual(new Set([acceptanceEvidence.version.id]));
+    expect(rows.map((row) => row.status).sort()).toEqual(['CANCELLED', 'DRAFT']);
+    expect(await db.select().from(makerPoEvents).where(inArray(makerPoEvents.makerPurchaseOrderId, [po1, po2])))
+      .toHaveLength(1);
+  });
+
+  it('M8-HARDEN FIX B2: two parallel creates freeze exactly one maker PO for the order', async () => {
+    const chain = await reachMakerPoReady(`B2RACE-${nextTag()}`);
+    const [one, two] = await Promise.all([
+      createMakerPo(chain.orderId),
+      createMakerPo(chain.orderId)
+    ]);
+
+    const statuses = [one.status, two.status].sort();
+    expect(statuses).toEqual([201, 422]);
+    const loser = one.status === 201 ? two : one;
+    const winner = one.status === 201 ? one : two;
+    expect((loser.body as { code: string }).code).toBe('MAKER_PO_ALREADY_EXISTS');
+    expect((winner.body as { status: string }).status).toBe('DRAFT');
+
+    // Exactly one row, and it is the one the winner answered with.
+    const rows = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.filmSupplyOrderId, chain.orderId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.id).toBe((winner.body as MakerPoBody).id);
+    expect(await db.select().from(makerPoEvents).where(inArray(makerPoEvents.makerPurchaseOrderId, [rows[0]!.id])))
+      .toHaveLength(1);
   });
 });
 
 describe('M8-FAIL C: invalid send evidence', () => {
-  it('FINDING C1: evidence whose content proves nothing of the send is still registered VERIFIED', async () => {
+  it('M8-HARDEN FIX C1 (was FINDING C1): content that proves nothing of the send is pending, never VERIFIED', async () => {
     const chain = await reachMakerPoReady(`C1-${nextTag()}`);
     const created = await createMakerPo(chain.orderId);
     expect(created.status).toBe(201);
     const poId = (created.body as MakerPoBody).id;
     expect((await approveMakerPo(poId)).status).toBe(200);
 
-    // The evidence file carries none of the send facts: no tracking/reference
-    // number, no recipient address, no timestamp — the linkage the API actually
-    // uses is metadata only (document type, order binding, proven recipients).
+    // The evidence file carries none of the send facts: no Message-ID, no
+    // recipient, no date — and it is not an email at all.
     const evidence = await uploadDocument({
       documentType: 'send_evidence',
       issuerEntity: 'kanei',
@@ -619,31 +716,142 @@ describe('M8-FAIL C: invalid send evidence', () => {
       evidenceDocumentVersionId: evidence.version.id,
       senderAddress: 'staff@kanei.example',
       recipients: ['maker-po@example.com'],
-      sentAt: '2026-11-15T09:00:00.000Z'
+      sentAt: plausibleTestSentAt()
     });
 
-    // FINDING C1 (characterized, no fix): the send is VERIFIED and the paper
-    // leaves the company, although the cited file proves nothing it claims.
-    // Contrast: approval evidence IS content-checked (the per-organization
-    // evidenceIdentifier must be quoted in the file). Expected per the brief
-    // was SEND_UNVERIFIED at best.
+    // M8-HARDEN FIX C1 (was FINDING C1): the send is never VERIFIED. The cited
+    // bytes are read as an email, fail every header check, and the event is
+    // recorded PENDING_MANUAL_VERIFICATION with its check list — while the paper
+    // stays where it is, so a corrected .eml can still be registered.
     expect(sent.status).toBe(200);
-    expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
-    expect((sent.body as { status: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
+    expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('PENDING_MANUAL_VERIFICATION');
+    expect((sent.body as { verificationMethod: string | null }).verificationMethod).toBe('eml_header_check');
+    expect((sent.body as { pendingCode: string }).pendingCode).toBe('EML_UNPARSABLE');
+    expect((sent.body as { status: string }).status).toBe('APPROVED_FOR_MANUAL_SEND');
     const event = (await poEvents(poId)).find((row) => row.eventType === 'SEND_EVIDENCE_REGISTERED');
+    expect(event?.verificationStatus).toBe('PENDING_MANUAL_VERIFICATION');
     expect(event?.evidenceDocumentVersionId).toBe(evidence.version.id);
-    expect(event?.attachmentHashes).toContain(evidence.version.sha256);
+    expect(event?.verificationNote).toContain('.eml');
+    expect(event?.verificationChecks?.map((check) => check.key)).toContain('eml_parse');
+    expect(event?.verificationChecks?.find((check) => check.key === 'eml_parse')?.status).toBe('failed');
+
+    // The human half of FIX C1: only the representative asserts a delivery, on
+    // the pending event, with name, time, result and reason.
+    const staffVerification = await postAs(staffToken, `/api/maker-po-events/${event?.id}/send-manual-verification`, {
+      result: 'confirmed',
+      verifierName: '合成担当者',
+      verifiedAt: new Date().toISOString(),
+      reasonNote: '担当者は確認できません'
+    });
+    expect(staffVerification.status).toBe(403);
+    const adminVerification = await postAs(adminToken, `/api/maker-po-events/${event?.id}/send-manual-verification`, {
+      result: 'confirmed',
+      verifierName: '合成代表者',
+      verifiedAt: new Date().toISOString(),
+      reasonNote: 'メーカー宛の送信を原本で確認した'
+    });
+    expect(adminVerification.status).toBe(201);
+    expect((adminVerification.body as { deliveryAsserted: boolean }).deliveryAsserted).toBe(true);
+    // An already-confirmed event is final: a retraction is a new record, never
+    // an edit of the human decision.
+    const notPending = await postAs(adminToken, `/api/maker-po-events/${event?.id}/send-manual-verification`, {
+      result: 'confirmed',
+      verifierName: '合成代表者',
+      verifiedAt: new Date().toISOString(),
+      reasonNote: '二度目の確認'
+    });
+    expect(notPending.status).toBe(422);
+    expect((notPending.body as { code: string }).code).toBe('MAKER_PO_SEND_ALREADY_CONFIRMED');
   });
 
-  it('FINDING C2: a sentAt in the future is registered VERIFIED, and a recipient mismatch is the only send-fact refusal', async () => {
+  it('M8-HARDEN FIX C1: only the original EML of the production-order mail reaches VERIFIED', async () => {
+    const chain = await reachMakerPoReady(`C1EML-${nextTag()}`);
+    const created = await createMakerPo(chain.orderId);
+    expect(created.status).toBe(201);
+    const poId = (created.body as MakerPoBody).id;
+    expect((await approveMakerPo(poId)).status).toBe(200);
+
+    // (a) a PDF instead of an EML: stored, but never an email.
+    const pdf = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
+      contentBase64: Buffer.from('%PDF-1.7\n% not an email at all\n', 'utf8').toString('base64'),
+      senderAddress: 'staff@kanei.example',
+      recipients: ['maker-po@example.com'],
+      sentAt: plausibleTestSentAt()
+    });
+    expect(pdf.status).toBe(200);
+    expect((pdf.body as { verificationStatus: string }).verificationStatus).toBe('PENDING_MANUAL_VERIFICATION');
+    expect((pdf.body as { pendingCode: string }).pendingCode).toBe('EML_UNPARSABLE');
+
+    // (b) an EML without a Message-ID: not an export of a sent mail.
+    const noMessageId = await sendMakerPoEml(poId, chain.orderCode, {
+      headers: { 'Message-ID': null }
+    });
+    expect(noMessageId.status).toBe(200);
+    expect((noMessageId.body as { pendingCode: string }).pendingCode).toBe('EML_MESSAGE_ID_MISSING');
+
+    // (c) an EML whose To: names someone else: the content contradicts the
+    // frozen recipient, whatever the request declares.
+    const wrongRecipient = await sendMakerPoEml(poId, chain.orderCode, {
+      recipientAddress: 'someone-else@example.com',
+      requestRecipients: ['maker-po@example.com']
+    });
+    expect(wrongRecipient.status).toBe(200);
+    expect((wrongRecipient.body as { pendingCode: string }).pendingCode).toBe('EML_RECIPIENT_MISMATCH');
+
+    // (d) an EML whose subject names another order.
+    const wrongSubject = await sendMakerPoEml(poId, chain.orderCode, {
+      subject: '製造先発注書 FSO-OTHER-9999'
+    });
+    expect(wrongSubject.status).toBe(200);
+    expect((wrongSubject.body as { pendingCode: string }).pendingCode).toBe('EML_SUBJECT_IDENTIFIER_MISSING');
+
+    // None of the four attempts moved the paper, and every one is on the trail.
+    expect((await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1))[0]?.status)
+      .toBe('APPROVED_FOR_MANUAL_SEND');
+    expect((await poEvents(poId)).filter((row) => row.eventType === 'SEND_EVIDENCE_REGISTERED')).toHaveLength(4);
+
+    // (e) the genuine export: matching headers, the frozen recipient, the order
+    // code in the subject, and the approved artwork attached by hash.
+    const sent = await sendMakerPoEml(poId, chain.orderCode, { attachmentBytes: chain.artworkBytes });
+    expect(sent.status).toBe(200);
+    const sentBody = sent.body as {
+      status: string;
+      verificationStatus: string;
+      verificationMethod: string | null;
+      verificationChecks: Array<{ key: string; status: string; detail: string | null }>;
+      event: SendEventRow;
+    };
+    expect(sentBody.verificationStatus).toBe('VERIFIED');
+    expect(sentBody.verificationMethod).toBe('eml_header_check');
+    expect(sentBody.status).toBe('MAKER_PO_SENT_MANUALLY');
+    const byKey = new Map(sentBody.verificationChecks.map((check) => [check.key, check]));
+    expect(byKey.get('message_id')?.status).toBe('passed');
+    expect(byKey.get('from_header')?.status).toBe('passed');
+    expect(byKey.get('recipient_address')?.status).toBe('passed');
+    expect(byKey.get('date_header')?.status).toBe('passed');
+    expect(byKey.get('date_sent_at_consistency')?.status).toBe('passed');
+    expect(byKey.get('subject_identifier')?.status).toBe('passed');
+    expect(byKey.get('sent_at_plausibility')?.status).toBe('passed');
+    // The strong signal: the attached bytes are the approved artwork.
+    expect(byKey.get('attachment_hash')?.status).toBe('passed');
+    expect(sentBody.event.attachmentHashes).toContain(sent.built.attachmentSha256);
+    expect((await orderRow(chain.orderId))?.status).toBe('MAKER_PO_SENT_MANUALLY');
+
+    // Storing and verifying the EML is still not proof of delivery: the answer
+    // says the representative's manual confirmation is what asserts delivery.
+    expect((sent.body as { deliveryAssertedByManualVerification: boolean }).deliveryAssertedByManualVerification)
+      .toBe(false);
+  });
+
+  it('M8-HARDEN FIX C2: a sentAt in the future is refused, and an impossible send time stays unverified', async () => {
     const chain = await reachMakerPoReady(`C2-${nextTag()}`);
     const created = await createMakerPo(chain.orderId);
     expect(created.status).toBe(201);
     const poId = (created.body as MakerPoBody).id;
     expect((await approveMakerPo(poId)).status).toBe(200);
 
-    // The one send-fact check that exists: proven recipients must include the
-    // frozen recipient address, otherwise the send is recorded SEND_REJECTED.
+    // The one send-fact refusal that was already there: proven recipients must
+    // include the frozen recipient address, otherwise SEND_REJECTED.
     const mismatchEvidence = await uploadDocument({
       documentType: 'send_evidence',
       issuerEntity: 'kanei',
@@ -654,32 +862,66 @@ describe('M8-FAIL C: invalid send evidence', () => {
       evidenceDocumentVersionId: mismatchEvidence.version.id,
       senderAddress: 'staff@kanei.example',
       recipients: ['someone-else@example.com'],
-      sentAt: '2026-11-15T09:00:00.000Z'
+      sentAt: plausibleTestSentAt()
     });
     expect(mismatch.status).toBe(422);
     expect((mismatch.body as { code: string }).code).toBe('SEND_RECIPIENT_MISMATCH');
     expect((mismatch.body as { status: string }).status).toBe('APPROVED_FOR_MANUAL_SEND');
     expect((await poEvents(poId)).map((event) => event.eventType)).toContain('SEND_REJECTED');
 
-    // FINDING C2 (characterized, no fix): a send claimed for a future instant
-    // passes every check and is registered VERIFIED — no guard asks whether the
-    // timestamp is even possible yet.
-    const futureEvidence = await uploadDocument({
-      documentType: 'send_evidence',
-      issuerEntity: 'kanei',
-      orderId: chain.orderId,
-      poId: chain.poId
-    });
+    // FIX C2 (was FINDING C2): a send claimed more than ten minutes ahead of the
+    // server clock is impossible and is refused before anything is written.
     const future = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
-      evidenceDocumentVersionId: futureEvidence.version.id,
+      contentBase64: buildMakerPoEml({ orderCode: chain.orderCode }).contentBase64,
       senderAddress: 'staff@kanei.example',
       recipients: ['maker-po@example.com'],
-      sentAt: '2027-01-01T00:00:00.000Z'
+      sentAt: new Date(Date.now() + 60 * 60 * 1000).toISOString()
     });
-    expect(future.status).toBe(200);
-    expect((future.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
-    const event = (await poEvents(poId)).find((row) => row.eventType === 'SEND_EVIDENCE_REGISTERED');
-    expect(event?.sentAt).toEqual(new Date('2027-01-01T00:00:00.000Z'));
+    expect(future.status).toBe(422);
+    expect((future.body as { code: string }).code).toBe('SENT_AT_IN_FUTURE');
+    expect(typeof (future.body as { serverNow: string }).serverNow).toBe('string');
+    expect((await poEvents(poId)).filter((row) => row.eventType === 'SEND_EVIDENCE_REGISTERED')).toHaveLength(0);
+    expect((await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1))[0]?.status)
+      .toBe('APPROVED_FOR_MANUAL_SEND');
+
+    // Inside the tolerance the send is registrable again.
+    const withinTolerance = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
+      contentBase64: buildMakerPoEml({ orderCode: chain.orderCode, messageId: '<within-tolerance@mail.kanei.example>' })
+        .contentBase64,
+      senderAddress: 'staff@kanei.example',
+      recipients: ['maker-po@example.com'],
+      sentAt: new Date(Date.now() + 5 * 60 * 1000).toISOString()
+    });
+    expect(withinTolerance.status).toBe(200);
+    expect((withinTolerance.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
+
+    // A send recorded before the CEO approved it is not hard-failed: it is
+    // downgraded to PENDING_MANUAL_VERIFICATION with the reason on the event.
+    const beforeApproval = await reachMakerPoReady(`C2PRE-${nextTag()}`);
+    const secondPo = await createMakerPo(beforeApproval.orderId);
+    expect(secondPo.status).toBe(201);
+    const secondPoId = (secondPo.body as MakerPoBody).id;
+    expect((await approveMakerPo(secondPoId)).status).toBe(200);
+    const preApproval = await sendMakerPoEml(secondPoId, beforeApproval.orderCode, {
+      sentAtIso: '2026-11-01T09:00:00.000Z'
+    });
+    expect(preApproval.status).toBe(200);
+    expect((preApproval.body as { verificationStatus: string }).verificationStatus).toBe('PENDING_MANUAL_VERIFICATION');
+    expect((preApproval.body as { pendingCode: string }).pendingCode).toBe('SENT_AT_PRECEDES_CEO_APPROVAL');
+    expect((preApproval.body as { verificationNote: string | null }).verificationNote).toContain('代表者承認');
+    expect((await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, secondPoId)).limit(1))[0]?.status)
+      .toBe('APPROVED_FOR_MANUAL_SEND');
+
+    // And the EML Date contradicting the recorded sentAt downgrades too.
+    const conflict = await sendMakerPoEml(secondPoId, beforeApproval.orderCode, {
+      messageId: '<date-conflict@mail.kanei.example>',
+      dateHeaderIso: new Date(Date.now() - 60 * 60 * 1000).toISOString()
+    });
+    // The registration above left the paper where it was, so this one runs.
+    expect(conflict.status).toBe(200);
+    const conflictBody = conflict.body as { pendingCode: string; verificationStatus: string };
+    expect(conflictBody.pendingCode).toBe('EML_DATE_SENT_AT_CONFLICT');
+    expect(conflictBody.verificationStatus).toBe('PENDING_MANUAL_VERIFICATION');
   });
 
   it('registers a missing or empty evidence id as UNVERIFIED at best, and requires sentAt with it', async () => {
@@ -722,8 +964,8 @@ describe('M8-FAIL C: invalid send evidence', () => {
   });
 });
 
-describe('M8-FAIL D: acceptance gates', () => {
-  it('refuses acceptance with no send recorded at all, and acceptance evidence bound to another order', async () => {
+describe('M8-HARDEN D: acceptance gates', () => {
+  it('refuses acceptance with no send, acceptance evidence of another order, and evidence of another maker PO', async () => {
     // Acceptance without proven send on the SEND_UNVERIFIED path is already
     // pinned by tests/m4/m4-maker-po.test.ts 'T-21 … blocks every further
     // transition'. Pinned here: the paper that recorded NO send whatsoever.
@@ -737,31 +979,20 @@ describe('M8-FAIL D: acceptance gates', () => {
       documentType: 'acceptance_evidence',
       issuerEntity: 'kanei',
       orderId: chain.orderId,
-      poId: chain.poId
+      poId: chain.poId,
+      makerPoId: poId
     });
     const neverSent = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {
       evidenceDocumentVersionId: correctEvidence.version.id,
-      acceptedAt: '2026-11-15T09:00:00.000Z'
+      acceptedAt: plausibleTestSentAt()
     });
     expect(neverSent.status).toBe(422);
     expect(neverSent.body).toMatchObject({ code: 'MAKER_PO_TRANSITION_BLOCKED', from: 'APPROVED_FOR_MANUAL_SEND' });
     expect((await poEvents(poId)).filter((event) => event.eventType === 'ACCEPT_EVIDENCE_REGISTERED')).toHaveLength(0);
 
-    // The proven send opens the acceptance gate: a send_evidence document
-    // version is cited, so the send is registered VERIFIED and the PO leaves
-    // the company for real.
-    const sendEvidence = await uploadDocument({
-      documentType: 'send_evidence',
-      issuerEntity: 'maker',
-      orderId: chain.orderId,
-      poId: chain.poId
-    });
-    const sent = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
-      evidenceDocumentVersionId: sendEvidence.version.id,
-      senderAddress: 'staff@kanei.example',
-      recipients: ['maker-po@example.com'],
-      sentAt: '2026-11-15T09:00:00.000Z'
-    });
+    // The proven send opens the acceptance gate: the original .eml is
+    // registered, verified as an email, and the PO leaves the company for real.
+    const sent = await sendMakerPoEml(poId, chain.orderCode);
     expect(sent.status).toBe(200);
     expect((sent.body as { status: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
     expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
@@ -771,15 +1002,17 @@ describe('M8-FAIL D: acceptance gates', () => {
     // (API level; the pure rule is pinned in tests/m4/core-rules.test.ts
     // 'rejects foreign, mistyped or humanly-unverified acceptance documents').
     const foreignChain = await reachMakerPoReady(`D2-${nextTag()}`);
+    const foreignPoId = ((await createMakerPo(foreignChain.orderId)).body as MakerPoBody).id;
     const foreignEvidence = await uploadDocument({
       documentType: 'acceptance_evidence',
       issuerEntity: 'kanei',
       orderId: foreignChain.orderId,
-      poId: foreignChain.poId
+      poId: foreignChain.poId,
+      makerPoId: foreignPoId
     });
     const foreign = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {
       evidenceDocumentVersionId: foreignEvidence.version.id,
-      acceptedAt: '2026-11-15T10:00:00.000Z'
+      acceptedAt: plausibleTestSentAt()
     });
     expect(foreign.status).toBe(422);
     expect((foreign.body as { code: string }).code).toBe('ACCEPT_EVIDENCE_ORDER_MISMATCH');
@@ -787,15 +1020,57 @@ describe('M8-FAIL D: acceptance gates', () => {
     expect((await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1))[0]?.status)
       .toBe('MAKER_PO_SENT_MANUALLY');
 
-    // The genuine paperwork of this order still closes the paper normally.
-    expect((await postAs(staffToken, `/api/documents/${correctEvidence.document.id}/verify`, {
+    // M8-HARDEN FIX B2 (d): the order linkage alone is no longer enough. One
+    // order can hold a cancelled and a live maker PO, so the acceptance evidence
+    // names the paper it closes and never closes the other one. The replacement
+    // chain below is the realistic shape: cancel the old paper (which re-opens
+    // the ordering step), freeze a new one, and watch the old document be
+    // refused on the new paper.
+    const cancelForReplacement = await cancelMakerPo(poId, '数量訂正のため再発注');
+    expect(cancelForReplacement.status).toBe(200);
+    expect((await orderRow(chain.orderId))?.status).toBe('MAKER_PO_READY');
+    const replaced = await createMakerPo(chain.orderId);
+    expect(replaced.status).toBe(201);
+    const poId2 = (replaced.body as MakerPoBody).id;
+    expect((await approveMakerPo(poId2)).status).toBe(200);
+    expect((await sendMakerPoEml(poId2, chain.orderCode)).status).toBe(200);
+
+    const staleEvidence = await uploadDocument({
+      documentType: 'acceptance_evidence',
+      issuerEntity: 'kanei',
+      orderId: chain.orderId,
+      poId: chain.poId,
+      makerPoId: poId
+    });
+    expect((await postAs(staffToken, `/api/documents/${staleEvidence.document.id}/verify`, {
       verificationStatus: 'verified'
     })).status).toBe(200);
-    const accepted = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {
-      evidenceDocumentVersionId: correctEvidence.version.id,
-      acceptedAt: '2026-11-15T11:00:00.000Z'
+    const crossPo = await postAs(adminToken, `/api/maker-purchase-orders/${poId2}/accept-evidence`, {
+      evidenceDocumentVersionId: staleEvidence.version.id,
+      acceptedAt: plausibleTestSentAt()
+    });
+    expect(crossPo.status).toBe(422);
+    expect((crossPo.body as { code: string }).code).toBe('ACCEPT_EVIDENCE_PO_MISMATCH');
+    expect((await poEvents(poId2)).filter((event) => event.eventType === 'ACCEPT_EVIDENCE_REGISTERED')).toHaveLength(0);
+
+    // The genuine paperwork of THIS paper still closes it normally.
+    const ownEvidence = await uploadDocument({
+      documentType: 'acceptance_evidence',
+      issuerEntity: 'kanei',
+      orderId: chain.orderId,
+      poId: chain.poId,
+      makerPoId: poId2
+    });
+    expect((await postAs(staffToken, `/api/documents/${ownEvidence.document.id}/verify`, {
+      verificationStatus: 'verified'
+    })).status).toBe(200);
+    const accepted = await postAs(adminToken, `/api/maker-purchase-orders/${poId2}/accept-evidence`, {
+      evidenceDocumentVersionId: ownEvidence.version.id,
+      acceptedAt: plausibleTestSentAt()
     });
     expect(accepted.status).toBe(200);
     expect((accepted.body as { purchaseOrder: { status: string } }).purchaseOrder.status).toBe('MAKER_PO_ACCEPTED');
+    expect((await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1))[0]?.status)
+      .toBe('CANCELLED');
   });
 });

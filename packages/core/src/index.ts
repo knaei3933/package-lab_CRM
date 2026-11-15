@@ -3,6 +3,7 @@ export * from './authorization.js';
 export * from './approvals.js';
 export * from './commission.js';
 export * from './documents.js';
+export * from './eml.js';
 export * from './maker-po.js';
 export * from './payment-gate.js';
 export * from './receipt-assumption.js';

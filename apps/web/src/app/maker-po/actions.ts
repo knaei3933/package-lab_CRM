@@ -80,7 +80,10 @@ export async function recordMakerPoSendEvidenceAction(
   const sentAt = field(formData, 'sentAt');
   if (poId.length === 0) return { ok: false, message: 'メーカー発注書が選択されていません。' };
   if (evidenceDocumentVersionId.length === 0) {
-    return { ok: false, message: '送信証跡（send_evidence）の書類バージョンを選択してください。' };
+    return {
+      ok: false,
+      message: '送信証跡（send_evidence）の書類バージョンを選択してください。Thunderbirdの送信済みフォルダから書き出した原本のEML（.eml）をアップロードしてください。PDFやスクリーンショット、メモでは送信は「確認済み」になりません。'
+    };
   }
   if (senderAddress.length === 0) return { ok: false, message: '送信元アドレスを入力してください。' };
   const recipients = recipientsRaw.split(/[,;、\s]+/).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
