@@ -747,11 +747,29 @@ describe('M8-FAIL D: acceptance gates', () => {
     expect(neverSent.body).toMatchObject({ code: 'MAKER_PO_TRANSITION_BLOCKED', from: 'APPROVED_FOR_MANUAL_SEND' });
     expect((await poEvents(poId)).filter((event) => event.eventType === 'ACCEPT_EVIDENCE_REGISTERED')).toHaveLength(0);
 
-    // The proven send opens the acceptance — but only for paperwork of THIS
-    // order: acceptance evidence bound to another order of the same project is
-    // refused as a foreign document (API level; the pure rule is pinned in
-    // tests/m4/core-rules.test.ts 'rejects foreign, mistyped or
-    // humanly-unverified acceptance documents').
+    // The proven send opens the acceptance gate: a send_evidence document
+    // version is cited, so the send is registered VERIFIED and the PO leaves
+    // the company for real.
+    const sendEvidence = await uploadDocument({
+      documentType: 'send_evidence',
+      issuerEntity: 'maker',
+      orderId: chain.orderId,
+      poId: chain.poId
+    });
+    const sent = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
+      evidenceDocumentVersionId: sendEvidence.version.id,
+      senderAddress: 'staff@kanei.example',
+      recipients: ['maker-po@example.com'],
+      sentAt: '2026-11-15T09:00:00.000Z'
+    });
+    expect(sent.status).toBe(200);
+    expect((sent.body as { status: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
+    expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
+
+    // …but only for paperwork of THIS order: acceptance evidence bound to
+    // another order of the same project is refused as a foreign document
+    // (API level; the pure rule is pinned in tests/m4/core-rules.test.ts
+    // 'rejects foreign, mistyped or humanly-unverified acceptance documents').
     const foreignChain = await reachMakerPoReady(`D2-${nextTag()}`);
     const foreignEvidence = await uploadDocument({
       documentType: 'acceptance_evidence',
