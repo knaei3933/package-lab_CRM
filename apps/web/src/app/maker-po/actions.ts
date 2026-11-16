@@ -68,33 +68,114 @@ export async function updatePaymentTermsAction(_prev: ActionState | null, formDa
   return patch(`/api/film-supply-orders/${encodeURIComponent(orderId)}/payment-terms`, { paymentTerms });
 }
 
-/** Screen 3: register the manual send evidence (staff work). */
+/**
+ * Screen 3: register the manual send evidence (staff work). M8-UI2: the
+ * evidence itself is the original .eml — either posted inline from the screen
+ * (contentBase64, the API files it as the paper's send_evidence document) or
+ * cited as a document version already registered on the 文書 screen. Both
+ * shapes are the API's own contract; a timestamp without evidence stays out of
+ * this form on purpose, because the API parks such a send in SEND_UNVERIFIED.
+ */
 export async function recordMakerPoSendEvidenceAction(
   _prev: ActionState | null,
   formData: FormData
 ): Promise<ActionState> {
   const poId = field(formData, 'poId');
   const evidenceDocumentVersionId = field(formData, 'evidenceDocumentVersionId');
+  const contentBase64 = field(formData, 'contentBase64');
   const senderAddress = field(formData, 'senderAddress');
   const recipientsRaw = field(formData, 'recipients');
   const sentAt = field(formData, 'sentAt');
   if (poId.length === 0) return { ok: false, message: 'メーカー発注書が選択されていません。' };
-  if (evidenceDocumentVersionId.length === 0) {
+  if (contentBase64.length === 0 && evidenceDocumentVersionId.length === 0) {
     return {
       ok: false,
-      message: '送信証跡（send_evidence）の書類バージョンを選択してください。Thunderbirdの送信済みフォルダから書き出した原本のEML（.eml）をアップロードしてください。PDFやスクリーンショット、メモでは送信は「確認済み」になりません。'
+      message: '送信証跡がありません。Thunderbirdの送信済みフォルダから書き出した原本のEML（.eml）をこのフォームで選ぶか、文書画面に登録済みの送信証跡（send_evidence）の書類バージョンを選択してください。PDFやスクリーンショット、メモでは送信は「確認済み」になりません。'
     };
   }
   if (senderAddress.length === 0) return { ok: false, message: '送信元アドレスを入力してください。' };
   const recipients = recipientsRaw.split(/[,;、\s]+/).map((entry) => entry.trim()).filter((entry) => entry.length > 0);
   if (recipients.length === 0) return { ok: false, message: '宛先アドレスを1件以上入力してください。' };
   if (sentAt.length === 0) return { ok: false, message: '送信日時を入力してください。' };
-  return post(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/send-evidence`, {
-    evidenceDocumentVersionId,
-    senderAddress,
-    recipients,
-    sentAt
+  const body: Record<string, unknown> = { senderAddress, recipients, sentAt };
+  if (contentBase64.length > 0) {
+    body.contentBase64 = contentBase64;
+  } else {
+    body.evidenceDocumentVersionId = evidenceDocumentVersionId;
+  }
+  return post(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/send-evidence`, body);
+}
+
+/**
+ * M8-UI2: the representative's manual confirmation of a send event the EML
+ * check could not settle on its own (PENDING_MANUAL_VERIFICATION). The API
+ * requires the verifier's name, the moment of the check, the result and the
+ * grounds, and refuses anything but a pending send event — the screen forwards
+ * those fields unchanged and shows the API's own refusal when the target is
+ * not pending anymore.
+ */
+export async function verifyMakerPoSendAction(
+  _prev: ActionState | null,
+  formData: FormData
+): Promise<ActionState> {
+  const eventId = field(formData, 'eventId');
+  const result = field(formData, 'result');
+  const verifierName = field(formData, 'verifierName');
+  const verifiedAt = field(formData, 'verifiedAt');
+  const reasonNote = field(formData, 'reasonNote');
+  if (eventId.length === 0) return { ok: false, message: '確認対象の送信イベントが選択されていません。' };
+  if (!['confirmed', 'rejected'].includes(result)) {
+    return { ok: false, message: '確認結果（confirmed／rejected）を選択してください。' };
+  }
+  if (verifierName.length === 0) return { ok: false, message: '検証者名（verifierName）を入力してください。' };
+  if (verifiedAt.length === 0) return { ok: false, message: '検証日時（verifiedAt）を入力してください。' };
+  if (reasonNote.length === 0) {
+    return { ok: false, message: '根拠（reasonNote）を入力してください。何を確認して納品を断定したかを記録してください。' };
+  }
+  return post(`/api/maker-po-events/${encodeURIComponent(eventId)}/send-manual-verification`, {
+    result,
+    verifierName,
+    verifiedAt,
+    reasonNote
   });
+}
+
+/**
+ * M8-UI2: cancel live paper (admin only). The API needs the reason and refuses
+ * the states a cancellation cannot leave (already accepted, unproven send).
+ */
+export async function cancelMakerPoAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const poId = field(formData, 'poId');
+  const note = field(formData, 'note');
+  if (poId.length === 0) return { ok: false, message: 'メーカー発注書が選択されていません。' };
+  if (note.length === 0) {
+    return { ok: false, message: '取消理由（note）は必須です。訂正・再発注の理由を記録してください。' };
+  }
+  return post(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/cancel`, { note });
+}
+
+/**
+ * M8-UI2: the representative's acknowledgement of a cancelled paper whose send
+ * was proven (取消承認). It is the record that re-opens the ordering step, so
+ * the reason is mandatory; the maker-side proof and the moment are optional,
+ * exactly as the endpoint accepts them.
+ */
+export async function acknowledgeMakerPoCancellationAction(
+  _prev: ActionState | null,
+  formData: FormData
+): Promise<ActionState> {
+  const poId = field(formData, 'poId');
+  const note = field(formData, 'note');
+  const acknowledgedAt = field(formData, 'acknowledgedAt');
+  const evidenceDocumentVersionId = field(formData, 'evidenceDocumentVersionId');
+  if (poId.length === 0) return { ok: false, message: 'メーカー発注書が選択されていません。' };
+  if (note.length === 0) {
+    return { ok: false, message: '承認理由（note）は必須です。取り消しを確認した根拠を記録してください。' };
+  }
+  const body: Record<string, unknown> = { note };
+  if (acknowledgedAt.length > 0) body.acknowledgedAt = acknowledgedAt;
+  if (evidenceDocumentVersionId.length > 0) body.evidenceDocumentVersionId = evidenceDocumentVersionId;
+  return post(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/cancellation-acknowledgement`, body);
 }
 
 /**

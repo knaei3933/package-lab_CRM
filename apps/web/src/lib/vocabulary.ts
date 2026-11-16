@@ -66,7 +66,11 @@ export const ALLOWED_CONTENT_TYPES = [
   'image/png',
   'image/jpeg',
   'text/plain',
-  'text/csv'
+  'text/csv',
+  // M8-HARDEN FIX C1 の受け入れ形式（apps/api document-storage）と同じ並び。
+  // 送信証跡（send_evidence）は送信済みメールの原本 .eml である必要があるため、
+  // 文書画面もこの形式を受け付ける。
+  'message/rfc822'
 ] as const;
 
 export const CONTENT_TYPE_LABELS: Readonly<Record<string, string>> = {
@@ -74,7 +78,8 @@ export const CONTENT_TYPE_LABELS: Readonly<Record<string, string>> = {
   'image/png': 'PNG画像',
   'image/jpeg': 'JPEG画像',
   'text/plain': 'テキスト（TXT）',
-  'text/csv': 'CSVファイル'
+  'text/csv': 'CSVファイル',
+  'message/rfc822': 'メール原文（EML）'
 };
 
 export function contentTypeChoices(): Array<{ value: string; label: string }> {
@@ -88,6 +93,25 @@ export const VERIFICATION_STATUS_LABELS: Readonly<Record<string, string>> = {
   unverified: '未検証',
   verified: '確認済み',
   mismatch: '相違あり'
+};
+
+/**
+ * maker_po_events.verificationStatus の日本語（大文字キーは API の列挙値そのまま）。
+ * PENDING_MANUAL_VERIFICATION は代表者の「手動確認」を待っている送信イベントで、
+ * この画面から POST /api/maker-po-events/:id/send-manual-verification で確定させる。
+ */
+export const MAKER_PO_EVENT_VERIFICATION_LABELS: Readonly<Record<string, string>> = {
+  VERIFIED: '自動検証済み（内容確認ずみ）',
+  PENDING_MANUAL_VERIFICATION: '手動確認待ち（代表者の確認が必要）',
+  UNVERIFIED: '未検証'
+};
+
+/** POST …/send-manual-verification の result 値（@kanei/core と同じ値）。 */
+export const MAKER_PO_MANUAL_VERIFICATION_RESULTS = ['confirmed', 'rejected'] as const;
+
+export const MAKER_PO_MANUAL_VERIFICATION_RESULT_LABELS: Readonly<Record<string, string>> = {
+  confirmed: '確認（納品を断定する）',
+  rejected: '却下（納品を断定しない）'
 };
 
 export const APPROVAL_DECISION_LABELS: Readonly<Record<string, string>> = {

@@ -98,3 +98,22 @@ export function CheckboxField({ name, label, hint }: FieldProps) {
     </label>
   );
 }
+
+/** Multi-line free text: 取消理由・確認の根拠（reasonNote）など、長い日本語の記録欄。 */
+export function TextareaField({
+  name,
+  label,
+  required,
+  hint,
+  rows = 3,
+  width = 480
+}: FieldProps & {
+  rows?: number | undefined;
+  width?: number | undefined;
+}) {
+  return (
+    <LabelWrapper name={name} label={label} required={required} hint={hint}>
+      <textarea name={name} rows={rows} required={required} style={{ ...inputStyle, width }} />
+    </LabelWrapper>
+  );
+}

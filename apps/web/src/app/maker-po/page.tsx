@@ -1,15 +1,20 @@
 import { ActionForm } from '../../components/ActionForm';
+import { MakerPoSendEvidenceForm } from '../../components/MakerPoSendEvidenceForm';
 import { OrderCreateForm } from '../../components/OrderCreateForm';
-import { SelectField, TextField } from '../../components/fields';
+import { SelectField, TextareaField, TextField } from '../../components/fields';
 import { callApi, loadSessionUser, readSelectedProjectId } from '../../lib/api';
 import {
+  hasCancellationAcknowledgement,
+  hasVerifiedSendEvent,
+  isCancellableMakerPoStatus,
   isOrderPastMakerAcceptance,
   loadMakerPoBoard,
   loadMakerPoDetail,
   MAKER_PO_EVENT_TYPE_LABELS,
   MAKER_PO_STATUS_LABELS,
   nextActionForStatus,
-  PAYMENT_TERMS_LABELS
+  PAYMENT_TERMS_LABELS,
+  pendingManualVerificationEvents
 } from '../../lib/maker-po-data';
 import type { MakerPoEventRow, MakerPoViewRow, OrderMakerPoBoard } from '../../lib/maker-po-data';
 import type { AuditEventView } from '../../lib/project-data';
@@ -24,16 +29,27 @@ import {
   tdStyle,
   thStyle
 } from '../../lib/ui';
-import { formatTimestamp, unitChoices, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary';
+import {
+  DOCUMENT_TYPE_LABELS,
+  formatTimestamp,
+  MAKER_PO_EVENT_VERIFICATION_LABELS,
+  MAKER_PO_MANUAL_VERIFICATION_RESULT_LABELS,
+  MAKER_PO_MANUAL_VERIFICATION_RESULTS,
+  unitChoices,
+  VERIFICATION_STATUS_LABELS
+} from '../../lib/vocabulary';
 import type { Choice } from '../../lib/types';
 import { createFilmSupplyOrderAction } from '../actions';
 import {
+  acknowledgeMakerPoCancellationAction,
   approveMakerPoAction,
+  cancelMakerPoAction,
   createMakerPoAction,
   recordFinalAcceptanceAction,
   recordMakerPoSendEvidenceAction,
   recordProvisionalAcceptanceAction,
-  updatePaymentTermsAction
+  updatePaymentTermsAction,
+  verifyMakerPoSendAction
 } from './actions';
 
 export const dynamic = 'force-dynamic';
@@ -41,12 +57,16 @@ export const dynamic = 'force-dynamic';
 /**
  * M8-OPERATOR S5: メーカー発注オペレーション画面.
  *
- * Five screens over the real API: (1) 発注書の作成と一覧, (2) 大代表承認 with the
- * G6 payment-gate state, (3) 手動送信記録, (4) メーカー受入記録 split into the
- * provisional staff record and the admin final confirmation, and (5) the
- * role-aware audit dashboard behind the S3 filter. Every block shows the NEXT
- * action and the reason the paper is blocked (G6未満・二重承認不足・送信証跡なし),
- * and the amounts are rendered only for the representative — the API already
+ * Screens over the real API: (1) 発注書の作成と一覧, (2) 大代表承認 with the
+ * G6 payment-gate state, (3) 手動送信記録（原本のEMLをその場で登録できる）, (3′)
+ * 送信の手動確認（PENDING_MANUAL_VERIFICATION の代表者確認）, (4) メーカー受入記録
+ * split into the provisional staff record and the admin final confirmation, and
+ * (5) the role-aware audit dashboard behind the S3 filter. M8-UI2 adds the
+ * cancellation work: 発注書の取り消し for live paper — with the sent／unsent
+ * distinction the API itself re-derives — and 取り消し承認 for a cancelled paper
+ * whose send was proven. Every block shows the NEXT action and the reason the
+ * paper is blocked (G6未満・二重承認不足・送信証跡なし・取り消し承認待ち), and
+ * the amounts are rendered only for the representative — the API already
  * answers staff and viewer with the filtered view, so a role that cannot see an
  * amount never receives one to render.
  */
@@ -84,6 +104,18 @@ export default async function MakerPoPage() {
         label: `${document.filename}（版${version.versionNumber}／確認状態 ${
           VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus
         }／ID ${version.id.slice(0, 8)}…）`
+      })));
+
+  // 取り消し承認が引用できる証跡（メーカー側の取消承諾メールなど）は種別を決め
+  // つけない。この発注に紐付いた書類バージョンをすべて候補にする（任意入力）。
+  const orderDocumentVersionChoices = (orderId: string): Choice[] =>
+    board.workspace.documents
+      .filter((document) => document.filmSupplyOrderId === orderId)
+      .flatMap((document) => document.versions.map((version) => ({
+        value: version.id,
+        label: `${
+          DOCUMENT_TYPE_LABELS[document.documentType as keyof typeof DOCUMENT_TYPE_LABELS] ?? document.documentType
+        } ${document.filename}（版${version.versionNumber}／ID ${version.id.slice(0, 8)}…）`
       })));
 
   const readyOrders = board.boards.filter((entry) => entry.order.status === MAKER_PO_READY);
@@ -134,6 +166,7 @@ export default async function MakerPoPage() {
           stateLabel={stateLabel}
           sendEvidenceChoices={documentVersionChoices(entry.order.id, 'send_evidence')}
           acceptanceEvidenceChoices={documentVersionChoices(entry.order.id, 'acceptance_evidence')}
+          orderEvidenceChoices={orderDocumentVersionChoices(entry.order.id)}
         />
       ))}
 
@@ -221,7 +254,8 @@ function MakerPoOrderSection({
   role,
   stateLabel,
   sendEvidenceChoices,
-  acceptanceEvidenceChoices
+  acceptanceEvidenceChoices,
+  orderEvidenceChoices
 }: {
   entry: OrderMakerPoBoard;
   isAdmin: boolean;
@@ -229,6 +263,7 @@ function MakerPoOrderSection({
   stateLabel: (key: string) => string;
   sendEvidenceChoices: Choice[];
   acceptanceEvidenceChoices: Choice[];
+  orderEvidenceChoices: Choice[];
 }) {
   const gate = entry.paymentGate;
   const list = entry.makerPurchaseOrders;
@@ -342,7 +377,7 @@ function MakerPoOrderSection({
           {/* Screen 2: 大代表承認 */}
           <MakerPoApprovalBlock entry={entry} isAdmin={isAdmin} role={role} />
 
-          {/* Screens 3 and 4 */}
+          {/* Screens 3 and 4, plus the admin cancellation work (M8-UI2) */}
           {list.map((po) => (
             <MakerPoWorkBlocks
               key={po.id}
@@ -351,6 +386,7 @@ function MakerPoOrderSection({
               role={role}
               sendEvidenceChoices={sendEvidenceChoices}
               acceptanceEvidenceChoices={acceptanceEvidenceChoices}
+              orderEvidenceChoices={orderEvidenceChoices}
             />
           ))}
         </>
@@ -484,58 +520,64 @@ function MakerPoApprovalBlock({ entry, isAdmin, role }: { entry: OrderMakerPoBoa
   );
 }
 
-function MakerPoWorkBlocks({
+/**
+ * M8-UI2: the per-paper work area. One read of the event trail feeds every
+ * block — the send registration, the representative's manual confirmation of a
+ * pending send, the two-step acceptance, and the cancellation work (取消とその
+ * 承認). The blocks appear from the paper's own state and events, so a form
+ * the API would refuse is never offered, and every refusal the API does return
+ * is what the operator reads next to the button.
+ */
+async function MakerPoWorkBlocks({
   po,
   isAdmin,
   role,
   sendEvidenceChoices,
-  acceptanceEvidenceChoices
+  acceptanceEvidenceChoices,
+  orderEvidenceChoices
 }: {
   po: MakerPoViewRow;
   isAdmin: boolean;
   role: string;
   sendEvidenceChoices: Choice[];
   acceptanceEvidenceChoices: Choice[];
+  orderEvidenceChoices: Choice[];
 }) {
+  const detail = await loadMakerPoDetail(po.id);
+  const events = detail.events;
+  const pendingVerifications = pendingManualVerificationEvents(events);
+  const verifiedSend = hasVerifiedSendEvent(events);
+  const acknowledgementRecorded = hasCancellationAcknowledgement(events);
+
   return (
     <>
+      {detail.error ? <div style={infoBoxStyle}>{detail.error}</div> : null}
+
       {po.status === 'APPROVED_FOR_MANUAL_SEND' ? (
         <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
           <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>③ 手動送信記録（担当者・代表者が記録）</h3>
           <p style={noteStyle}>
             送信はシステムの外（メール）で行うので、ここでは証跡を記録します。宛先は発注書の宛先住所と一致が必要です。
-            ブロック理由: {sendEvidenceChoices.length === 0 ? '送信証跡（send_evidence）の書類バージョンがまだありません' : 'なし'}
+            送信証跡は Thunderbirdの送信済みフォルダから書き出した原本のEML（.eml）です。PDFやスクリーンショット、
+            メモでは送信は「確認済み」になりません。
           </p>
+          <MakerPoSendEvidenceForm
+            action={recordMakerPoSendEvidenceAction}
+            poId={po.id}
+            sendEvidenceChoices={sendEvidenceChoices}
+            recipientAddress={po.recipientAddress ?? null}
+          />
           {sendEvidenceChoices.length === 0 ? (
-            <p style={noteStyle}>次のアクション: 「文書」画面で送信証跡（send_evidence）をアップロードしてください。</p>
-          ) : (
-            <ActionForm
-              action={recordMakerPoSendEvidenceAction}
-              submitLabel="手動送信を記録する"
-              hint="証跡の書類バージョン、送信元、宛先、送信日時を記録します。証跡なしの記録は送信未確認になり、以降の操作が停止します。"
-            >
-              <input type="hidden" readOnly name="poId" value={po.id} />
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-                <SelectField
-                  name="evidenceDocumentVersionId"
-                  label="送信証跡の書類バージョン"
-                  required
-                  choices={sendEvidenceChoices}
-                  width={420}
-                />
-                <TextField name="senderAddress" label="送信元アドレス" required width={260} />
-                <TextField
-                  name="recipients"
-                  label="宛先アドレス（カンマ区切り）"
-                  required
-                  defaultValue={po.recipientAddress ?? undefined}
-                  width={260}
-                />
-                <TextField name="sentAt" label="送信日時" type="datetime-local" required width={240} />
-              </div>
-            </ActionForm>
-          )}
+            <p style={noteStyle}>
+              参考: 「文書」画面に登録済みの送信証跡（send_evidence）書類はまだありません。原本を上のフォームで直接
+              選ぶ場合は事前の登録は不要です。文書画面から登録するときは形式に「メール原文（EML）」を選んでください。
+            </p>
+          ) : null}
         </div>
+      ) : null}
+
+      {isAdmin && pendingVerifications.length > 0 ? (
+        <MakerPoManualVerificationBlock poId={po.id} events={pendingVerifications} />
       ) : null}
 
       {po.status === 'MAKER_PO_SENT_MANUALLY' ? (
@@ -543,29 +585,212 @@ function MakerPoWorkBlocks({
           po={po}
           isAdmin={isAdmin}
           role={role}
+          events={events}
           acceptanceEvidenceChoices={acceptanceEvidenceChoices}
         />
+      ) : null}
+
+      {isAdmin && isCancellableMakerPoStatus(po.status) ? (
+        <MakerPoCancelBlock po={po} verifiedSend={verifiedSend} />
+      ) : null}
+
+      {isAdmin && po.status === 'CANCELLED' && verifiedSend && !acknowledgementRecorded ? (
+        <MakerPoCancellationAcknowledgementBlock
+          po={po}
+          orderEvidenceChoices={orderEvidenceChoices}
+        />
+      ) : null}
+
+      {isAdmin && po.status === 'CANCELLED' && verifiedSend && acknowledgementRecorded ? (
+        <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
+          <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>取り消し承認（メーカー取消確認）: 記録済み</h3>
+          <p style={noteStyle}>
+            送信ずみの発注書の取消に対する取り消し承認は記録済みです。次のアクション:
+            訂正後の発注書を新しく作成してください（①の作成フォームから）。
+          </p>
+        </div>
       ) : null}
     </>
   );
 }
 
-async function MakerPoAcceptanceBlock({
+/**
+ * M8-UI2: the representative's confirmation of a send the EML check could not
+ * settle (PENDING_MANUAL_VERIFICATION). The block shows why the check waited
+ * (verificationNote と機械読み取りのチェック一覧) so the human confirms against
+ * the original, and posts the four fields the endpoint records: result,
+ * verifierName, verifiedAt, reasonNote.
+ */
+function MakerPoManualVerificationBlock({ poId, events }: { poId: string; events: MakerPoEventRow[] }) {
+  const resultChoices = MAKER_PO_MANUAL_VERIFICATION_RESULTS.map((value) => ({
+    value,
+    label: MAKER_PO_MANUAL_VERIFICATION_RESULT_LABELS[value] ?? value
+  }));
+
+  return (
+    <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
+      <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>③′ 送信の手動確認（代表者のみ）</h3>
+      <p style={noteStyle}>
+        自動検証（eml_header_check）が断定できなかった送信記録です。原本のEMLと発注内容を見比べて、
+        納品の断定（confirmed）か断定しないこと（rejected）かを代表者が記録します。確認済み（confirmed）の
+        記録は取り消せません（訂正は新しい記録として残します）。確認は発注書を受入確認待ちまで進めます。
+      </p>
+      {events.map((event) => (
+        <div key={event.id} style={{ marginBottom: 16 }}>
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <th style={thStyle}>送信イベント</th>
+                <th style={thStyle}>確認状態</th>
+                <th style={thStyle}>送信日時</th>
+                <th style={thStyle}>送信元</th>
+                <th style={thStyle}>宛先</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td style={tdStyle}><span style={monoStyle}>{event.id}</span></td>
+                <td style={tdStyle}>
+                  {MAKER_PO_EVENT_VERIFICATION_LABELS[event.verificationStatus ?? ''] ?? event.verificationStatus}
+                </td>
+                <td style={tdStyle}>{event.sentAt ? formatTimestamp(event.sentAt) : '—'}</td>
+                <td style={tdStyle}>{event.senderAddress ?? '—'}</td>
+                <td style={tdStyle}>{(event.recipients ?? []).join('、') || '—'}</td>
+              </tr>
+            </tbody>
+          </table>
+          {event.verificationNote ? (
+            <p style={noteStyle}>待っている理由: {event.verificationNote}</p>
+          ) : null}
+          {Array.isArray(event.verificationChecks) && event.verificationChecks.length > 0 ? (
+            <p style={noteStyle}>
+              自動チェックの結果: {event.verificationChecks.length}件
+              <span style={monoStyle}>
+                {' '}（{event.verificationChecks
+                  .map((check) => String(check?.check ?? check?.code ?? check?.id ?? ''))
+                  .filter((entry) => entry.length > 0)
+                  .join('、')}）
+              </span>
+            </p>
+          ) : null}
+          <ActionForm
+            action={verifyMakerPoSendAction}
+            submitLabel="手動確認を記録する"
+            hint="検証者名・検証日時・結果・根拠はAPIの必須項目です。根拠には何を確認したか（原本の何を見たか）を書いてください。"
+          >
+            <input type="hidden" readOnly name="eventId" value={event.id} />
+            <input type="hidden" readOnly name="poId" value={poId} />
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+              <SelectField name="result" label="確認結果" required choices={resultChoices} width={300} />
+              <TextField name="verifierName" label="検証者名" required width={220} />
+              <TextField name="verifiedAt" label="検証日時" type="datetime-local" required width={240} />
+              <TextareaField
+                name="reasonNote"
+                label="根拠（何を確認して納品を断定したか）"
+                required
+                rows={3}
+                width={520}
+              />
+            </div>
+          </ActionForm>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * M8-UI2: the cancel control for live paper. The hint states which
+ * cancellation this is before the button is pressed: unsent paper is an
+ * internal correction (the ordering step re-opens at once), paper whose send
+ * was proven has already left the company, so cancelling it keeps the step
+ * closed until the 取り消し承認 is recorded. SEND_UNVERIFIED and accepted
+ * paper offer no button at all — the API refuses them.
+ */
+function MakerPoCancelBlock({ po, verifiedSend }: { po: MakerPoViewRow; verifiedSend: boolean }) {
+  return (
+    <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
+      <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>発注書の取り消し（代表者のみ）</h3>
+      <div style={{ ...infoBoxStyle, borderColor: verifiedSend ? '#e4b9b9' : '#b9d8bc', color: verifiedSend ? '#8a3b3b' : '#166534' }}>
+        <strong>この発注書の送信状態: </strong>
+        {verifiedSend
+          ? '送信ずみ（送信証跡が確認されています）。取り消すと生産手順の再開には「取り消し承認（メーカー取消確認）」が必要です。'
+          : '未送信（送信証跡の確認はありません）。取り消すとすぐに発注の作成ステップが再度開きます。'}
+      </div>
+      <p style={noteStyle}>
+        取り消しは記録を消しません（取消イベントと履歴が残ります）。訂正後の発注書は新しい発注書として作成します。
+        送信未確認（SEND_UNVERIFIED）の発注書は取り消せません。受入確認済みの発注書も取り消せません。
+      </p>
+      <ActionForm
+        action={cancelMakerPoAction}
+        submitLabel="発注書を取り消す"
+        hint="取消理由（note）はAPIの必須項目です。訂正・再発注の理由を記録してください。"
+      >
+        <input type="hidden" readOnly name="poId" value={po.id} />
+        <TextareaField name="note" label="取消理由（訂正・再発注の理由）" required rows={3} width={520} />
+      </ActionForm>
+    </div>
+  );
+}
+
+/**
+ * M8-UI2: the representative's acknowledgement of a cancelled paper whose send
+ * was proven (取消承認／メーカー取消確認). It is the record that re-opens the
+ * ordering step: until it exists the create form refuses a replacement paper,
+ * so sent paper and its replacement are never in production at the same time.
+ */
+function MakerPoCancellationAcknowledgementBlock({
+  po,
+  orderEvidenceChoices
+}: {
+  po: MakerPoViewRow;
+  orderEvidenceChoices: Choice[];
+}) {
+  return (
+    <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
+      <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>取り消し承認を記録する（メーカー取消確認・代表者のみ）</h3>
+      <p style={noteStyle}>
+        この発注書は送信ずみのまま取り消されています。発注先（メーカー）が取り消しを受け入れたことを代表者が確認して
+        「取り消し承認」を記録してください。承認の記録まで、この発注の新しい発注書は作成できません
+        （作成フォームは API が「まず取り消し承認を記録してください」と返します）。
+      </p>
+      <ActionForm
+        action={acknowledgeMakerPoCancellationAction}
+        submitLabel="取り消し承認を記録する"
+        hint="承認理由（note）はAPIの必須項目です。メーカー側の承諾メールの原本を文書画面に登録してある場合は、その書類バージョンを引用できます（任意）。"
+      >
+        <input type="hidden" readOnly name="poId" value={po.id} />
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+          <TextareaField name="note" label="承認理由（取り消しを確認した根拠）" required rows={3} width={520} />
+          <TextField name="acknowledgedAt" label="承認日時（任意）" type="datetime-local" width={240} />
+          <SelectField
+            name="evidenceDocumentVersionId"
+            label="メーカー側の承諾を示す書類バージョン（任意）"
+            includeBlank
+            choices={orderEvidenceChoices}
+            width={420}
+          />
+        </div>
+      </ActionForm>
+    </div>
+  );
+}
+
+function MakerPoAcceptanceBlock({
   po,
   isAdmin,
   role,
+  events,
   acceptanceEvidenceChoices
 }: {
   po: MakerPoViewRow;
   isAdmin: boolean;
   role: string;
+  events: MakerPoEventRow[];
   acceptanceEvidenceChoices: Choice[];
 }) {
-  // The provisional record is what the final confirmation later names, so the
-  // screen reads the event trail of this paper before offering the buttons.
-  const detail = await loadMakerPoDetail(po.id);
-  const provisionalCount = detail.events.filter((event) => event.provisional === true).length;
-  const provisionalRecords: MakerPoEventRow[] = detail.events.filter((event) => event.provisional === true);
+  const provisionalCount = events.filter((event) => event.provisional === true).length;
+  const provisionalRecords: MakerPoEventRow[] = events.filter((event) => event.provisional === true);
 
   return (
     <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>

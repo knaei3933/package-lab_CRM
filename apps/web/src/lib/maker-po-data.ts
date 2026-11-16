@@ -40,6 +40,11 @@ export interface MakerPoEventRow {
   id: string;
   eventType: string;
   verificationStatus?: string;
+  /** Why the evidence needs a human (PENDING_MANUAL_VERIFICATION の理由). */
+  verificationNote?: string | null;
+  /** How the evidence was checked (`eml_header_check` など)。 */
+  verificationMethod?: string | null;
+  verificationChecks?: Array<Record<string, unknown>> | null;
   provisional?: boolean;
   sentAt?: string | null;
   recordedAt?: string;
@@ -121,7 +126,8 @@ export const MAKER_PO_EVENT_TYPE_LABELS: Readonly<Record<string, string>> = {
   ACCEPT_EVIDENCE_REGISTERED: '受入証跡の記録（最終）',
   MAKER_PO_ACCEPT_RECORDED_PROVISIONAL: '受入記録（仮）',
   SEND_REJECTED: '送信却下',
-  MAKER_PO_CANCELLED: '発注取消（履歴保持・再発注へ）'
+  MAKER_PO_CANCELLED: '発注取消（履歴保持・再発注へ）',
+  MAKER_CANCELLATION_ACKNOWLEDGED: '取り消し承認（メーカー取消確認）'
 };
 
 export const PAYMENT_TERMS_LABELS: Readonly<Record<string, string>> = {
@@ -143,7 +149,7 @@ export function nextActionForStatus(status: string, role: string): string {
         ? '次のアクション：大代表承認（G6の決済条件が確定している場合のみ記録できます）'
         : '次のアクション：代表者による大代表承認を待ちます（担当者は承認できません）';
     case 'APPROVED_FOR_MANUAL_SEND':
-      return '次のアクション：送信証跡（send_evidence）の書類バージョンを引用して手動送信を記録する';
+      return '次のアクション：送信済みメールの原本（.eml）を送信証跡として手動送信を記録する';
     case 'SEND_UNVERIFIED':
       return '次のアクション：なし（送信未確認のまま停止中。証跡を揃えたうえで代表者へ相談してください）';
     case 'MAKER_PO_SENT_MANUALLY':
@@ -153,7 +159,9 @@ export function nextActionForStatus(status: string, role: string): string {
     case 'MAKER_PO_ACCEPTED':
       return '次のアクション：なし（受入確認済み。この発注の紙は完了です）';
     case 'CANCELLED':
-      return '次のアクション：訂正後の発注書を新しく作成してください（取り消された発注書は履歴として残ります）';
+      return admin
+        ? '次のアクション：送信ずみの取り消しの場合は「取り消し承認（メーカー取消確認）」を記録し、訂正後の発注書を新しく作成する'
+        : '次のアクション：訂正後の発注書の作成は代表者により行われます（取り消された発注書は履歴として残ります）';
     default:
       return `次のアクション：状態 ${status} の取り扱いを確認してください`;
   }
@@ -206,4 +214,50 @@ export async function loadMakerPoDetail(
     return { purchaseOrder: null, events: [], error: result.error ?? 'メーカー発注書が取得できませんでした。' };
   }
   return { purchaseOrder: result.data.purchaseOrder, events: result.data.events, error: null };
+}
+
+/**
+ * M8-UI2: the send events a human still has to settle. The EML check records
+ * what it could not prove (PENDING_MANUAL_VERIFICATION) and the paper stays
+ * where it is; the representative's confirmation is the only record that
+ * carries it forward, so these are exactly the rows the confirm form targets.
+ */
+export function pendingManualVerificationEvents(events: MakerPoEventRow[]): MakerPoEventRow[] {
+  return events.filter((event) =>
+    event.eventType === 'SEND_EVIDENCE_REGISTERED'
+    && event.verificationStatus === 'PENDING_MANUAL_VERIFICATION');
+}
+
+/**
+ * True when this paper's send is proven by a verified send event — the
+ * classification the API's own cancel and acknowledgement gates re-derive. A
+ * paper whose send was already proven cannot be quietly replaced: cancelling
+ * it keeps the ordering step closed until the 取り消し承認 is recorded.
+ */
+export function hasVerifiedSendEvent(events: MakerPoEventRow[]): boolean {
+  return events.some((event) =>
+    event.eventType === 'SEND_EVIDENCE_REGISTERED'
+    && event.verificationStatus === 'VERIFIED');
+}
+
+/** True when the 取り消し承認 (MAKER_CANCELLATION_ACKNOWLEDGED) is already recorded. */
+export function hasCancellationAcknowledgement(events: MakerPoEventRow[]): boolean {
+  return events.some((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED');
+}
+
+/**
+ * The statuses a cancellation may leave (transitionMakerPurchaseOrder →
+ * CANCELLED in @kanei/core): live paper only. SEND_UNVERIFIED refuses on
+ * purpose — the unproven send blocks the paper until a human resolves it —
+ * and accepted or already-cancelled paper has no exit to offer.
+ */
+const CANCELLABLE_MAKER_PO_STATUSES: readonly string[] = [
+  'DRAFT',
+  'APPROVED_FOR_MANUAL_SEND',
+  'MAKER_PO_SENT_MANUALLY',
+  'SNAPSHOT_VOIDED'
+];
+
+export function isCancellableMakerPoStatus(status: string): boolean {
+  return CANCELLABLE_MAKER_PO_STATUSES.includes(status);
 }

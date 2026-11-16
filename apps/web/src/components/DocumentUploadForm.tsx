@@ -22,8 +22,16 @@ const EXTENSION_CONTENT_TYPES: Record<string, string> = {
   jpg: 'image/jpeg',
   jpeg: 'image/jpeg',
   txt: 'text/plain',
-  csv: 'text/csv'
+  csv: 'text/csv',
+  // 送信証跡（send_evidence）は Thunderbird の送信済みフォルダから書き出した
+  // メール原本（.eml）。API が受け付ける message/rfc822 として宣言する。
+  eml: 'message/rfc822'
 };
+
+/** The file input's accept list: the suffixes the API's allow-list can hold. */
+const ACCEPT_ATTRIBUTE = Object.keys(EXTENSION_CONTENT_TYPES)
+  .map((suffix) => `.${suffix}`)
+  .join(',');
 
 /**
  * Criterion 4: the document upload form. The file is read with FileReader and
@@ -126,7 +134,7 @@ export function DocumentUploadForm({
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>ファイル<span style={{ color: '#b91c1c' }}>（必須）</span></span>
-          <input ref={fileInput} type="file" onChange={onFileChange} style={inputStyle} />
+          <input ref={fileInput} type="file" accept={ACCEPT_ATTRIBUTE} onChange={onFileChange} style={inputStyle} />
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>ファイル名（書類の表示名）<span style={{ color: '#b91c1c' }}>（必須）</span></span>
@@ -146,6 +154,8 @@ export function DocumentUploadForm({
       </div>
       <p style={noteStyle}>
         選んだファイルはブラウザ内でBase64に変換してAPIへ送ります（contentBase64）。同じ内容の再送は同じ版として扱われます。
+        書類種別が「送信証跡（send_evidence）」のときは、送信済みメールの原本（.eml／メール原文 EML）を選んでください。
+        PDFやスクリーンショット、メモでは送信は「確認済み」になりません。
       </p>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
