@@ -326,7 +326,15 @@ describe('M8-HARDEN C2: the recorded send time must be possible', () => {
     if (result.verificationStatus !== 'PENDING_MANUAL_VERIFICATION') {
       throw new Error(`a pre-approval send must stay pending, not ${result.verificationStatus}`);
     }
-    expect(result.pendingCode).toBe('SENT_AT_PRECEDES_CEO_APPROVAL');
+    // Both time problems are real in this export: the Date header sits a day
+    // after the recorded sentAt AND sentAt precedes the approval. The surfaced
+    // pendingCode is the first failing check in evaluation order — the
+    // date/consistency conflict — while the plausibility failure stays recorded
+    // on the check list beside it.
+    expect(result.pendingCode).toBe('EML_DATE_SENT_AT_CONFLICT');
+    const byKey = new Map(result.checks.map((check) => [check.key, check.status]));
+    expect(byKey.get('date_sent_at_consistency')).toBe('failed');
+    expect(byKey.get('sent_at_plausibility')).toBe('failed');
   });
 });
 
