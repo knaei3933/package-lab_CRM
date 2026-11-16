@@ -79,7 +79,10 @@ export function SelectField({
     <LabelWrapper name={name} label={label} required={required} hint={hint}>
       <select name={name} defaultValue={defaultValue} required={required} style={{ ...inputStyle, width: width ?? 280 }}>
         {includeBlank ? <option value="">{blankLabel}</option> : null}
-        {choices.map((choice) => (
+        {/* M8-UI3 FIX 1: a choice list is always server-assembled, so a read
+            that came back empty-handed must render an empty selector rather
+            than throw `choices.map is not a function` inside the client form. */}
+        {(Array.isArray(choices) ? choices : []).map((choice) => (
           <option key={choice.value} value={choice.value}>
             {choice.label}
           </option>

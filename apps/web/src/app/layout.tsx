@@ -3,8 +3,10 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { ActionForm } from '../components/ActionForm';
 import { LogoutButton } from '../components/LogoutButton';
-import { TextField } from '../components/fields';
+import { SelectField, TextField } from '../components/fields';
 import { loadSessionUser, readSelectedProjectId } from '../lib/api';
+import { loadSelectableProjects } from '../lib/project-data';
+import type { ProjectSummary } from '../lib/project-data';
 import { monoStyle, navStyle } from '../lib/ui';
 import { selectProjectAction } from './actions';
 
@@ -25,6 +27,13 @@ const navItems = [
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const user = await loadSessionUser();
   const projectId = await readSelectedProjectId();
+  // M8-UI3: the selector lists the projects this operator may open, so the id
+  // no longer has to be pasted by hand. The API narrows the list by role.
+  const selectableProjects: ProjectSummary[] = user ? await loadSelectableProjects() : [];
+  const projectChoices = selectableProjects.map((project) => ({
+    value: project.id,
+    label: `${project.code}（${project.name}）`
+  }));
 
   return (
     <html lang="ja">
@@ -67,10 +76,24 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
                 <ActionForm
                   action={selectProjectAction}
                   submitLabel="案件を切り替える"
-                  hint="案件ID（UUID）を指定すると、その案件の発注・文書・承認・納品を表示します。"
+                  hint="一覧から案件を選ぶと、その案件の発注・文書・承認・納品を表示します。一覧にない案件は下の直接入力を使ってください（案件IDはUUID）。"
                 >
                   <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: 12 }}>
-                    <TextField name="projectId" label="案件の選択（案件ID）" required defaultValue={projectId ?? ''} width={420} />
+                    <SelectField
+                      name="projectId"
+                      label="案件の選択（案件ID）"
+                      includeBlank
+                      blankLabel="（選択なし — 下の直接入力を使う）"
+                      defaultValue={projectId ?? ''}
+                      choices={projectChoices}
+                      width={420}
+                    />
+                    <TextField
+                      name="directProjectId"
+                      label="案件IDを直接入力（一覧にない案件）"
+                      placeholder="UUIDを貼り付け"
+                      width={340}
+                    />
                     {projectId ? <span style={monoStyle}>現在の案件ID: {projectId}</span> : null}
                   </div>
                 </ActionForm>

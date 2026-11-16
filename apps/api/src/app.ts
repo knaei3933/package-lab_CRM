@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
 import { randomBytes } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
-import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import {
   buildMakerPoSnapshot,
   canPerform,
@@ -88,6 +88,7 @@ import {
   makerPoSendManualVerifications,
   makerPurchaseOrders,
   preOrderReferences,
+  projectAssignments,
   projects,
   sevenPurchaseOrders,
   sessions,
@@ -392,6 +393,34 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     });
 
     return context.json(project, 201);
+  });
+
+  // M8-UI3: the list the operator-UI project selector reads. It answers exactly
+  // the projects the caller may already open by id (admin: every non-deleted
+  // project; staff / viewer: only the project_assignments rows they hold), so
+  // the dropdown is UI support for the existing permission model — a role that
+  // cannot read a project never learns that it exists. Only the fields the
+  // selector renders are returned.
+  app.get('/api/projects', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+
+    const selectorColumns = {
+      id: projects.id,
+      code: projects.code,
+      name: projects.name,
+      status: projects.status
+    };
+    const rows = user.role === 'admin'
+      ? await db.select(selectorColumns).from(projects)
+          .where(isNull(projects.deletedAt))
+          .orderBy(asc(projects.code))
+      : await db.select(selectorColumns).from(projects)
+          .innerJoin(projectAssignments, eq(projectAssignments.projectId, projects.id))
+          .where(and(eq(projectAssignments.userId, user.id), isNull(projects.deletedAt)))
+          .orderBy(asc(projects.code));
+
+    return context.json({ projects: rows });
   });
 
   app.get('/api/projects/:projectId', async (context) => {

@@ -314,6 +314,28 @@ function readLines(events: AuditEventView[], orderKey: string): Map<string, Orde
   return lines;
 }
 
+/** One row of GET /api/projects: only the fields the top-bar selector renders. */
+export interface ProjectSummary {
+  id: string;
+  code: string;
+  name: string;
+  status: string;
+}
+
+/**
+ * M8-UI3: the projects the signed-in operator may open, read from
+ * GET /api/projects. The API answers admin with every non-deleted project and
+ * staff / viewer with only their project_assignments rows, so the top-bar
+ * selector never offers an id the operator could not already open by hand. An
+ * unreachable or empty answer yields an empty list — the direct-input field
+ * below the selector stays usable, so nothing is trapped by a list read.
+ */
+export async function loadSelectableProjects(): Promise<ProjectSummary[]> {
+  const result = await callApi<{ projects: ProjectSummary[] }>('/api/projects');
+  if (!result.ok || !result.data) return [];
+  return Array.isArray(result.data.projects) ? result.data.projects : [];
+}
+
 export async function loadWorkspace(projectId: string): Promise<Workspace> {
   const [projectResult, labelResult, filmOrderEvents, filmLineEvents, fillingOrderEvents, fillingLineEvents, poEvents, documentEvents, versionEvents, revisionEvents, approvalEvents, filmDeliveryEvents, fillingDeliveryEvents, confirmationEvents, readinessEvents] =
     await Promise.all([

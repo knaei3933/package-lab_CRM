@@ -882,10 +882,16 @@ async function loadMakerPoAudit(projectId: string): Promise<MakerPoAuditPayload>
   if (!poEvents.ok && !makerEvents.ok) {
     return { events: [], error: poEvents.error ?? makerEvents.error ?? '監査履歴が取得できませんでした。' };
   }
-  const events = [
-    ...(poEvents.ok && poEvents.data ? poEvents.data.events : []),
-    ...(makerEvents.ok && makerEvents.data ? makerEvents.data.events : [])
-  ].sort((a, b) => (a.occurredAt < b.occurredAt ? -1 : 1));
+  // M8-UI3 FIX 1: the spread of a non-array answer (`...(data.events)`) throws
+  // and, because this read happens on the /maker-po stream, the operator only
+  // sees Next.js' opaque client-exception screen. The API returns `events` as
+  // an array, but an answer that is not one must degrade to an empty dashboard,
+  // never to a thrown page.
+  const poRows = poEvents.ok && poEvents.data && Array.isArray(poEvents.data.events) ? poEvents.data.events : [];
+  const makerRows = makerEvents.ok && makerEvents.data && Array.isArray(makerEvents.data.events)
+    ? makerEvents.data.events
+    : [];
+  const events = [...poRows, ...makerRows].sort((a, b) => (a.occurredAt < b.occurredAt ? -1 : 1));
   return { events, error: null };
 }
 

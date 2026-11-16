@@ -100,9 +100,13 @@ function parseLines(raw: string, units: readonly string[], label: string):
 // ---------------------------------------------------------------------------
 
 export async function selectProjectAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
-  const projectId = field(formData, 'projectId');
+  // M8-UI3: the selector is a dropdown of the projects the operator may open.
+  // The direct-input field stays for a project that is not in the list; the
+  // dropdown wins when both are filled, so the recorded choice is never
+  // ambiguous.
+  const projectId = field(formData, 'projectId') || field(formData, 'directProjectId');
   if (projectId.length === 0) {
-    return { ok: false, message: '案件IDを入力してください。' };
+    return { ok: false, message: '案件を選択するか、案件IDを入力してください。' };
   }
   const result = await callApi<{ code: string; name: string }>(`/api/projects/${encodeURIComponent(projectId)}`);
   if (!result.ok || !result.data) {
