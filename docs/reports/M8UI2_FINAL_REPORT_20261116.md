@@ -27,7 +27,7 @@
 - 이번에 추가: EML 발송 증빙 폼(신규), 수동 확인 폼, 취소 수락 폼, 취소 버튼, EML 문서 인식
 - apps/api 변경: **없음** (UI 연결만 — 지시 준수)
 
-## 4. 대표님 브라우저 체크리스트 (localhost:3000 / arwg / rlarjsdnd)
+## 4. 대표님 브라우저 체크리스트 (localhost:3000 / arwg（비밀번호는 별도 전달）)
 
 1. **/maker-po** → 데모 발주서(`01a1dc79-0c1b-72e6-959f-ad6b2f03cf77`, APPROVED_FOR_MANUAL_SEND) 행에서 **送信証跡フォーム** 열기
 2. 실제 Thunderbird 보낸 편지에서 내보낸 **원본 .eml** 파일 선택 + sentAt 입력 → 등록
