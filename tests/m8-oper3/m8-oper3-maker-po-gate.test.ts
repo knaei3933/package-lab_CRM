@@ -155,8 +155,11 @@ async function reachApprovalPending(tag: string) {
     officialRegisteredAt: '2026-11-13T09:00:00.000Z'
   })).status).toBe(200);
 
+  // M8-HARDEN FIX C1 verifies the send .eml's subject against the frozen order
+  // code, so the chain has to carry that code out for the send step to use.
+  const orderCode = `FSO-OPER3-${tag}`;
   const createdOrder = await postAs(staffToken, `/api/seven-purchase-orders/${po.id}/supply-orders`, {
-    code: `FSO-OPER3-${tag}`,
+    code: orderCode,
     paymentTerms: 'prepaid',
     lines: [{ lineNumber: 1, description: '合成フィルム本体', orderedQuantity: 100000, unit: 'sheets' }]
   });
@@ -182,7 +185,7 @@ async function reachApprovalPending(tag: string) {
   });
   expect(revision.status).toBe(201);
 
-  return { poId: po.id, orderId: order.id, revisionId: (revision.body as { id: string }).id };
+  return { poId: po.id, orderId: order.id, orderCode, revisionId: (revision.body as { id: string }).id };
 }
 
 /** Records one counted TEXT approval whose evidence quotes its identifier. */
@@ -493,7 +496,9 @@ describe('M8-OPER3: a valid dual approval still carries the full maker chain', (
     const sent = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       poId,
-      { orderCode: `FSO-OPER3-E2E-${nextTag()}`, sentAtIso: plausibleTestSentAt() }
+      // The subject has to name the order's own code: C1 checks it against the
+      // frozen snapshot, and a code this mail was not sent for stays unverified.
+      { orderCode: chain.orderCode, sentAtIso: plausibleTestSentAt() }
     );
     expect(sent.status).toBe(200);
     expect((sent.body as { status: string; verificationStatus: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
@@ -564,7 +569,7 @@ describe('M8-OPER3: paper whose send is already proven is never retroactively bl
     const sent = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       poId,
-      { orderCode: `FSO-OPER3-REVOKE-${nextTag()}`, sentAtIso: plausibleTestSentAt() }
+      { orderCode: chain.orderCode, sentAtIso: plausibleTestSentAt() }
     );
     expect(sent.status).toBe(200);
     expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');

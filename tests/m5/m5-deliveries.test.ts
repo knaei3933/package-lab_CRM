@@ -838,7 +838,9 @@ describe('M5 Japanese status labels endpoint', () => {
       approvalOrganizations: Array<{ key: string; label: string }>;
     };
     expect(surface.filmSupplyOrderStates).toHaveLength(17);
-    expect(surface.makerPurchaseOrderStatuses).toHaveLength(6);
+    // M8-HARDEN FIX B2 added the CANCELLED maker-PO status, so the maker-PO
+    // label group grew from six to seven entries.
+    expect(surface.makerPurchaseOrderStatuses).toHaveLength(7);
     expect(surface.commissionReadinessStates).toHaveLength(3);
     expect(surface.fillingDeliveryConfirmationStates).toHaveLength(2);
     expect(surface.approvalOrganizations).toHaveLength(2);
@@ -857,6 +859,7 @@ describe('M5 Japanese status labels endpoint', () => {
       '校了（セブン化学）',
       '製造先発注承認待ち',
       '送信確認待ち',
+      '製造先発注取消（再発注待ち）',
       'フィルム納品完了',
       '充填製品納品確認待ち'
     ]) {

@@ -620,26 +620,22 @@ describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
   });
 
   it('staff records a provisional acceptance that is flagged and never finalizes; viewer is refused', async () => {
-    const ready = await reachMakerPoReady({ projectId, tag: `PROV-${nextTag()}` });
+    // M8-HARDEN FIX C1: the provisional acceptance needs a proven send, so the
+    // send is registered with the original .eml and verified as an email.
+    const tag = `PROV-${nextTag()}`;
+    const ready = await reachMakerPoReady({ projectId, tag });
     const created = await postAs(adminToken, `/api/film-supply-orders/${ready.orderId}/maker-purchase-orders`, {
       recipientAddress: 'maker-po@example.com'
     });
     const poId = (created.body as { id: string }).id;
     await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {});
-    const evidence = await uploadDocument({
-      projectId,
-      documentType: 'send_evidence',
-      issuerEntity: 'kanei',
-      orderId: ready.orderId,
-      poId: ready.poId,
-      content: 'composite m8 send evidence\n'
-    });
-    await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
-      evidenceDocumentVersionId: evidence.version.id,
-      senderAddress: 'staff@kanei.example',
-      recipients: ['maker-po@example.com'],
-      sentAt: '2026-11-13T09:00:00.000Z'
-    });
+    const sent = await sendMakerPoEmlEvidence(
+      (url, body) => postAs(staffToken, url, body),
+      poId,
+      { orderCode: `FSO-M8-${tag}`, sentAtIso: plausibleTestSentAt() }
+    );
+    expect(sent.status).toBe(200);
+    expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
 
     const viewerAttempt = await postAs(viewerToken, `/api/maker-purchase-orders/${poId}/provisional-acceptance`, {
       acceptedAt: '2026-11-13T10:00:00.000Z'
