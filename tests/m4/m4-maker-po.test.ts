@@ -734,20 +734,17 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect((await makerPoRow(po.id))?.status).toBe('APPROVED_FOR_MANUAL_SEND');
 
     // M8-HARDEN FIX A3: the re-approval is no longer the leak it used to be.
-    // Certifying the paper over the unapproved revision is refused the same way,
-    // and the recovery is both organizations approving the new revision first.
+    // Certifying again is refused by the transition guard before the approval
+    // re-check even runs — only DRAFT or SNAPSHOT_VOIDED paper can be frozen —
+    // so the answer carries no missing approvals and the paper stays untouched.
     const refusedReapproval = await approveMakerPo(po.id);
     expect(refusedReapproval.status).toBe(422);
-    expect((refusedReapproval.body as { code: string }).code).toBe('DUAL_APPROVAL_NO_LONGER_VALID');
-    expect((refusedReapproval.body as { missingApprovals: Array<{ designKey: string; organization: string }> })
-      .missingApprovals).toEqual([
-        { designKey: 'label-front', organization: 'customer' },
-        { designKey: 'label-front', organization: 'seven' }
-      ]);
+    expect((refusedReapproval.body as { code: string }).code).toBe('MAKER_PO_TRANSITION_BLOCKED');
+    expect((refusedReapproval.body as { from: string }).from).toBe('APPROVED_FOR_MANUAL_SEND');
     expect((await makerPoRow(po.id))?.status).toBe('APPROVED_FOR_MANUAL_SEND');
 
-    // The recovery: both organizations approve the NEW revision, then the paper
-    // is certifiable over it again.
+    // The recovery starts with both organizations approving the NEW revision:
+    // only then may the paper be certified over it again.
     const secondRevision = (second.body as { id: string }).id;
     for (const organization of ['customer', 'seven'] as const) {
       // The evidence issuer is the document vocabulary, not the approval
@@ -764,6 +761,18 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
       });
       expect(approval.status).toBe(201);
     }
+    // The gate has re-opened, but the approved digest still names revision 1,
+    // so the first registration over the re-approved artwork voids the paper
+    // through G10 — that void is what makes a fresh approval reachable again.
+    const staleSend = await sendMakerPoEmlEvidence(
+      (url, body) => postAs(staffToken, url, body),
+      po.id,
+      { orderCode: 'FSO-M4-T24', sentAtIso: plausibleTestSentAt() }
+    );
+    expect(staleSend.status).toBe(422);
+    expect((staleSend.body as { code: string }).code).toBe('SNAPSHOT_VOIDED');
+    expect((await makerPoRow(po.id))?.status).toBe('SNAPSHOT_VOIDED');
+
     const reapproved = await approveMakerPo(po.id);
     expect(reapproved.status).toBe(200);
     const reapprovedBody = reapproved.body as { purchaseOrder: MakerPoResponse };

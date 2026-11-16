@@ -20,6 +20,7 @@ import {
 
 const ORDER_ID = '11111111-1111-7111-8111-111111111111';
 const PROJECT_ID = '22222222-2222-7222-8222-222222222222';
+const MAKER_PO_ID = '55555555-5555-7555-8555-555555555555';
 const SHA_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const SHA_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 const SHA_C = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
@@ -56,6 +57,8 @@ function sendEvidence(overrides: Partial<MakerPoEvidenceDocument> = {}): MakerPo
     documentType: 'send_evidence',
     projectId: PROJECT_ID,
     filmSupplyOrderId: ORDER_ID,
+    // FIX B2 (d): evidence names the paper it belongs to.
+    makerPurchaseOrderId: MAKER_PO_ID,
     designKey: null,
     verificationStatus: 'unverified',
     ...overrides
@@ -330,6 +333,10 @@ describe('M4 acceptance (T-22)', () => {
   const request = { evidenceDocumentVersionId: 'v1', attachmentHashes: null, acceptedAt: '2026-11-12T10:00:00.000Z' };
   const context = {
     order: { id: ORDER_ID, projectId: PROJECT_ID },
+    // M8-HARDEN FIX B2: the evaluation is bound to one paper, so the context
+    // names the maker PO being accepted and the order the frozen paper carries.
+    makerPurchaseOrderId: MAKER_PO_ID,
+    snapshotOrder: { id: ORDER_ID },
     evidenceDocument: sendEvidence({
       documentType: 'acceptance_evidence',
       verificationStatus: 'verified'
@@ -358,6 +365,21 @@ describe('M4 acceptance (T-22)', () => {
       ...context,
       evidenceDocument: sendEvidence({ documentType: 'acceptance_evidence', filmSupplyOrderId: '44444444-4444-7444-8444-444444444444' })
     })).toMatchObject({ ok: false, outcome: 'rejected', code: 'ACCEPT_EVIDENCE_ORDER_MISMATCH' });
+    // FIX B2: an acceptance document of another paper — one order can hold a
+    // cancelled and a live one — never closes this one.
+    expect(evaluateMakerPoAcceptEvidence(request, {
+      ...context,
+      evidenceDocument: sendEvidence({
+        documentType: 'acceptance_evidence',
+        verificationStatus: 'verified',
+        makerPurchaseOrderId: '66666666-6666-7666-8666-666666666666'
+      })
+    })).toMatchObject({ ok: false, outcome: 'rejected', code: 'ACCEPT_EVIDENCE_PO_MISMATCH' });
+    // …and neither does paperwork whose frozen snapshot describes another order.
+    expect(evaluateMakerPoAcceptEvidence(request, {
+      ...context,
+      snapshotOrder: { id: '77777777-7777-7777-8777-777777777777' }
+    })).toMatchObject({ ok: false, outcome: 'rejected', code: 'ACCEPT_EVIDENCE_PO_MISMATCH' });
     const unverified = evaluateMakerPoAcceptEvidence(request, {
       ...context,
       evidenceDocument: sendEvidence({ documentType: 'acceptance_evidence', verificationStatus: 'unverified' })
