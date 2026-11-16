@@ -3172,7 +3172,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
    * document of this paper, so the send event cites stored, hashed bytes
    * exactly like the document-cited path does. One logical document per maker
    * PO (per filename), append-only versions: identical bytes resolve to the
-   * version already stored (T-27), a new attempt becomes the next version.
+   * version already stored (T-27) — no new version row and no document audit
+   * row for a repeat filing — and a new attempt becomes the next version.
    *
    * The size/type check here is the send-evidence intake's own: the payload is
    * not a generic upload, so a PDF declared as an EML is accepted for storage
@@ -3200,6 +3201,27 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       eq(documents.issuerEntity, 'kanei'),
       eq(documents.originalFilename, input.filename)
     )).limit(1);
+
+    // T-27 in the send-evidence intake, the same rule the generic document
+    // upload applies: bytes this paper already filed resolve to the version
+    // already stored, so a repeat registration files no new version row. The
+    // gap is real — two registrations of one paper inside the same wall-clock
+    // second carry a byte-identical .eml (the Date header is the only byte that
+    // moves, at whole-second resolution; the Message-ID, subject and body name
+    // the paper, not the attempt) — and without this resolution the second
+    // insert collides with document_versions_document_sha256_unique and dies as
+    // an unhandled 500 instead of registering the send.
+    if (existingDocument) {
+      const [existingVersion] = await tx.select({ id: documentVersions.id })
+        .from(documentVersions)
+        .where(and(
+          eq(documentVersions.documentId, existingDocument.id),
+          eq(documentVersions.sha256, sha256)
+        )).limit(1);
+      if (existingVersion) {
+        return { documentId: existingDocument.id, versionId: existingVersion.id, sha256 };
+      }
+    }
 
     let documentId = existingDocument?.id ?? '';
     let versionNumber = 1;

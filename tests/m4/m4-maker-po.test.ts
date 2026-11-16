@@ -817,6 +817,73 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect((await orderRow(order.orderId))?.status).toBe('CHANGE_REVIEW');
   });
 
+  it('T-24a re-filing identical evidence bytes resolves to the stored version instead of a second version row', async () => {
+    const { po } = await reachApprovedMakerPo(projectId, 'T24A');
+    // One instant for both registrations: the .eml bytes then match exactly,
+    // which is what two attempts inside the same wall-clock second produce
+    // (the Date header is the only byte of the message that moves, at
+    // whole-second resolution).
+    const sentAtIso = plausibleTestSentAt();
+
+    // The first registration fails a header check (a subject that names no
+    // order), so the paper stays where it is and a corrected filing remains
+    // possible — the shape T-24's recovery walks through.
+    const first = await sendMakerPoEmlEvidence(
+      (url, body) => postAs(staffToken, url, body),
+      po.id,
+      { orderCode: 'FSO-M4-T24A', sentAtIso, subject: '製造先発注書（件名に発注コードなし）' }
+    );
+    expect(first.status).toBe(200);
+    expect((first.body as { verificationStatus: string }).verificationStatus)
+      .toBe('PENDING_MANUAL_VERIFICATION');
+    expect((await makerPoRow(po.id))?.status).toBe('APPROVED_FOR_MANUAL_SEND');
+
+    const evidenceBefore = await db.select({ versionId: documentVersions.id, documentId: documents.id })
+      .from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(and(
+        eq(documents.projectId, projectId),
+        eq(documents.documentType, 'send_evidence'),
+        eq(documents.originalFilename, `maker-po-${po.id}-send-evidence.eml`)
+      ));
+    expect(evidenceBefore).toHaveLength(1);
+    const evidenceDocumentId = evidenceBefore[0]!.documentId;
+    const documentAuditIds = async () => (await db.select({ id: auditEvents.id }).from(auditEvents)
+      .where(and(eq(auditEvents.entityType, 'document'), eq(auditEvents.entityId, evidenceDocumentId))))
+      .map((row) => row.id).sort();
+    const auditsBefore = await documentAuditIds();
+
+    // The second filing brings the same bytes. They resolve to the version
+    // already stored (T-27, the same rule the generic upload applies): the
+    // answer is the business verdict again, never a bare Internal Server Error
+    // from a duplicate (document_id, sha256) version row.
+    const second = await sendMakerPoEmlEvidence(
+      (url, body) => postAs(staffToken, url, body),
+      po.id,
+      { orderCode: 'FSO-M4-T24A', sentAtIso, subject: '製造先発注書（件名に発注コードなし）' }
+    );
+    expect(second.status).toBe(200);
+    expect((second.body as { verificationStatus: string }).verificationStatus)
+      .toBe('PENDING_MANUAL_VERIFICATION');
+    expect((await makerPoRow(po.id))?.status).toBe('APPROVED_FOR_MANUAL_SEND');
+
+    const evidenceAfter = await db.select({ versionId: documentVersions.id, documentId: documents.id })
+      .from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(and(
+        eq(documents.projectId, projectId),
+        eq(documents.documentType, 'send_evidence'),
+        eq(documents.originalFilename, `maker-po-${po.id}-send-evidence.eml`)
+      ));
+    expect(evidenceAfter).toHaveLength(1);
+    // A repeat filing writes no document row and no document audit row.
+    expect(await documentAuditIds()).toEqual(auditsBefore);
+    expect((await listEvents(po.id))
+      .filter((event) => event.eventType === 'SEND_EVIDENCE_REGISTERED')
+      .map((event) => event.evidenceDocumentVersionId))
+      .toEqual([evidenceAfter[0]!.versionId, evidenceAfter[0]!.versionId]);
+  });
+
   it('T-25 two simultaneous transitions produce exactly one effective transition and a consistent trail', async () => {
     // Two concurrent sends of the same approved maker PO.
     const sendContext = await reachApprovedMakerPo(projectId, 'T25A');
