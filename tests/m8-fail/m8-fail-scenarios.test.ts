@@ -690,8 +690,17 @@ describe('M8-FAIL B: duplicate send and duplicate paper', () => {
       .where(eq(makerPurchaseOrders.filmSupplyOrderId, chain.orderId));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.id).toBe((winner.body as MakerPoBody).id);
+
+    // Freezing a paper records a MAKER_PO_CREATED audit row and nothing else:
+    // maker_po_events starts at the CEO approval, so a bare create leaves it
+    // empty. The loser's refusal is on the boundary, not in the paper's history.
+    const created = await db.select().from(auditEvents).where(and(
+      eq(auditEvents.action, 'MAKER_PO_CREATED'),
+      eq(auditEvents.entityId, rows[0]!.id)
+    ));
+    expect(created).toHaveLength(1);
     expect(await db.select().from(makerPoEvents).where(inArray(makerPoEvents.makerPurchaseOrderId, [rows[0]!.id])))
-      .toHaveLength(1);
+      .toHaveLength(0);
   });
 });
 

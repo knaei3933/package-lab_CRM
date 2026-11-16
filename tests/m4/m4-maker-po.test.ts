@@ -684,13 +684,13 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
       { lineNumber: 2, orderedQuantity: '50.000', unit: 'rolls' }
     ]);
 
-    const freshEvidence = await uploadOrderEvidence(order, projectId, 'send_evidence', 'T23-B');
-    const sent = await sendEvidence(po.id, {
-      evidenceDocumentVersionId: freshEvidence.version.id,
-      senderAddress: 'staff@kanei.example',
-      recipients: ['maker-po@example.com'],
-      sentAt: '2026-11-12T09:45:00.000Z'
-    });
+    // M8-HARDEN FIX C1: the re-send is proven with the original .eml, verified
+    // as an email — a stored document alone no longer proves a send.
+    const sent = await sendMakerPoEmlEvidence(
+      (url, body) => postAs(staffToken, url, body),
+      po.id,
+      { orderCode: 'FSO-M4-T23', sentAtIso: plausibleTestSentAt() }
+    );
     expect(sent.status).toBe(200);
     expect((sent.body as { status: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
   });
@@ -713,22 +713,29 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect(second.status).toBe(201);
     expect((second.body as { revisionNo: number }).revisionNo).toBe(2);
 
-    const evidence = await uploadOrderEvidence(order, projectId, 'send_evidence', 'T24');
-    const refused = await sendEvidence(po.id, {
-      evidenceDocumentVersionId: evidence.version.id,
-      senderAddress: 'staff@kanei.example',
-      recipients: ['maker-po@example.com'],
-      sentAt: '2026-11-12T09:50:00.000Z'
-    });
+    // M8-HARDEN FIX A3: revision 2 holds no approval from either organization,
+    // so the boundary refuses the send before the snapshot is even compared —
+    // and a boundary refusal is not a void, so the paper is left untouched.
+    const refused = await sendMakerPoEmlEvidence(
+      (url, body) => postAs(staffToken, url, body),
+      po.id,
+      { orderCode: 'FSO-M4-T24', sentAtIso: plausibleTestSentAt() }
+    );
     expect(refused.status).toBe(422);
-    expect((refused.body as { code: string }).code).toBe('SNAPSHOT_VOIDED');
-    expect((refused.body as { currentSnapshotSha256: string }).currentSnapshotSha256).not.toBe(approvedHash);
-    expect((await makerPoRow(po.id))?.status).toBe('SNAPSHOT_VOIDED');
+    const refusedBody = refused.body as {
+      code: string;
+      missingApprovals: Array<{ designKey: string; organization: string }>;
+    };
+    expect(refusedBody.code).toBe('DUAL_APPROVAL_NO_LONGER_VALID');
+    expect(refusedBody.missingApprovals).toEqual([
+      { designKey: 'label-front', organization: 'customer' },
+      { designKey: 'label-front', organization: 'seven' }
+    ]);
+    expect((await makerPoRow(po.id))?.status).toBe('APPROVED_FOR_MANUAL_SEND');
 
     // M8-HARDEN FIX A3: the re-approval is no longer the leak it used to be.
-    // Revision 2 holds no approval from either organization, so certifying the
-    // paper over it is refused, and the recovery is both organizations approving
-    // the new revision first.
+    // Certifying the paper over the unapproved revision is refused the same way,
+    // and the recovery is both organizations approving the new revision first.
     const refusedReapproval = await approveMakerPo(po.id);
     expect(refusedReapproval.status).toBe(422);
     expect((refusedReapproval.body as { code: string }).code).toBe('DUAL_APPROVAL_NO_LONGER_VALID');
@@ -737,13 +744,20 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
         { designKey: 'label-front', organization: 'customer' },
         { designKey: 'label-front', organization: 'seven' }
       ]);
-    expect((await makerPoRow(po.id))?.status).toBe('SNAPSHOT_VOIDED');
+    expect((await makerPoRow(po.id))?.status).toBe('APPROVED_FOR_MANUAL_SEND');
 
     // The recovery: both organizations approve the NEW revision, then the paper
     // is certifiable over it again.
     const secondRevision = (second.body as { id: string }).id;
     for (const organization of ['customer', 'seven'] as const) {
-      const approvalEvidence = await uploadApprovalEvidence(order, projectId, 'label-front', organization);
+      // The evidence issuer is the document vocabulary, not the approval
+      // organization: a customer-sourced evidence is 'customer_generated'.
+      const approvalEvidence = await uploadApprovalEvidence(
+        order,
+        projectId,
+        'label-front',
+        organization === 'seven' ? 'seven' : 'customer_generated'
+      );
       const approval = await recordApproval(secondRevision, {
         organization,
         evidenceDocumentVersionId: approvalEvidence.version.id
