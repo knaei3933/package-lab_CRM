@@ -219,11 +219,109 @@ describe('M8-HARDEN C1: the send evidence is verified as an email', () => {
     }
   });
 
-  it('never lets a missing attachment match block a genuine export, but records it', () => {
+  it('M8-HARDEN2 FIX 1: a wrong attachment keeps a header-clean mail pending, with the mismatch reason', () => {
     const result = evaluateEml(buildEml({ attachmentBytes: 'other bytes entirely\n' }));
-    expect(result.verificationStatus).toBe('VERIFIED');
+    if (result.verificationStatus !== 'PENDING_MANUAL_VERIFICATION') {
+      throw new Error(`an unapproved attachment must stay pending, not ${result.verificationStatus}`);
+    }
+    // A re-exported PDF of the approved PO is exactly this case: real-looking
+    // mail, correct headers, and bytes nobody approved.
+    expect(result.pendingCode).toBe('attachment_hash_mismatch');
+    expect(result.reasonNote).toContain('ハッシュ');
     expect(result.matchedAttachmentHashes).toEqual([]);
-    expect(result.checks.find((check) => check.key === 'attachment_hash')?.status).toBe('not_matched');
+    const byKey = new Map(result.checks.map((check) => [check.key, check.status]));
+    expect(byKey.get('attachment_hash')).toBe('not_matched');
+    expect(byKey.get('attachment_gate')).toBe('failed');
+    // Every core check passed: the attachment is the only reason.
+    expect(byKey.get('message_id')).toBe('passed');
+    expect(byKey.get('recipient_address')).toBe('passed');
+    expect(result.checks.filter((check) => check.status === 'failed')).toHaveLength(1);
+  });
+
+  it('M8-HARDEN2 FIX 1: a mail with no attachment at all stays pending as attachment_missing', () => {
+    const noAttachment = Buffer.from(
+      [
+        `From: KANEI 担当 <${SENDER}>`,
+        `To: Maker Inc. <${RECIPIENT}>`,
+        `Subject: 製造先発注書 ${ORDER_CODE}`,
+        'Date: Tue, 16 Nov 2026 00:00:00 +0000',
+        `Message-ID: <maker-po-${ORDER_CODE}@mail.kanei.example>`,
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=UTF-8',
+        '',
+        `発注コード ${ORDER_CODE} の製造先発注書を送付します。`
+      ].join('\r\n'),
+      'utf8'
+    );
+    const result = evaluateEml(noAttachment);
+    if (result.verificationStatus !== 'PENDING_MANUAL_VERIFICATION') {
+      throw new Error(`a mail without any attachment must stay pending, not ${result.verificationStatus}`);
+    }
+    expect(result.pendingCode).toBe('attachment_missing');
+    expect(result.attachmentHashes).toEqual([]);
+  });
+
+  it('M8-HARDEN2 FIX 1: a mail that only points at a download link says so', () => {
+    const linked = Buffer.from(
+      [
+        `From: KANEI 担当 <${SENDER}>`,
+        `To: Maker Inc. <${RECIPIENT}>`,
+        `Subject: 製造先発注書 ${ORDER_CODE}`,
+        'Date: Tue, 16 Nov 2026 00:00:00 +0000',
+        `Message-ID: <maker-po-${ORDER_CODE}@mail.kanei.example>`,
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=UTF-8',
+        '',
+        '発注書はこちらからダウンロードしてください: https://files.example.com/d/abc123 。',
+        '期日までに入手できない場合はご連絡ください。'
+      ].join('\r\n'),
+      'utf8'
+    );
+    const result = evaluateEml(linked);
+    if (result.verificationStatus !== 'PENDING_MANUAL_VERIFICATION') {
+      throw new Error(`a link-only mail must stay pending, not ${result.verificationStatus}`);
+    }
+    expect(result.pendingCode).toBe('attachment_link_only');
+    expect(result.reasonNote).toContain('ダウンロード');
+  });
+
+  it('M8-HARDEN2 FIX 1: the attachment reason surfaces only when the headers themselves are clean', () => {
+    // A mail that both lacks a Message-ID and carries nothing: the header is
+    // the reason a reviewer reads first, and the gate stays recorded beside it.
+    const result = evaluateEml(Buffer.from(
+      [
+        `From: KANEI 担当 <${SENDER}>`,
+        `To: Maker Inc. <${RECIPIENT}>`,
+        `Subject: 製造先発注書 ${ORDER_CODE}`,
+        'Date: Tue, 16 Nov 2026 00:00:00 +0000',
+        'MIME-Version: 1.0',
+        'Content-Type: text/plain; charset=UTF-8',
+        '',
+        '本文のみ。'
+      ].join('\r\n'),
+      'utf8'
+    ));
+    if (result.verificationStatus !== 'PENDING_MANUAL_VERIFICATION') {
+      throw new Error(`a broken mail must stay pending, not ${result.verificationStatus}`);
+    }
+    expect(result.pendingCode).toBe('EML_MESSAGE_ID_MISSING');
+    const byKey = new Map(result.checks.map((check) => [check.key, check.status]));
+    expect(byKey.get('message_id')).toBe('failed');
+    expect(byKey.get('attachment_gate')).toBe('failed');
+  });
+
+  it('M8-HARDEN2 FIX 1: an approved attachment is what verifies, and no approved hash means no verify', () => {
+    // The strong case: the attached bytes ARE the approved artifact.
+    const verified = evaluateEml(buildEml());
+    expect(verified.verificationStatus).toBe('VERIFIED');
+    expect(verified.matchedAttachmentHashes).toEqual([ARTWORK_HASH]);
+
+    // The snapshot freezes nothing: nothing can match, so the human decides.
+    const nothingApproved = evaluateEml(buildEml(), { artworkHashes: [] });
+    if (nothingApproved.verificationStatus !== 'PENDING_MANUAL_VERIFICATION') {
+      throw new Error('a mail verified against nothing approved must stay pending');
+    }
+    expect(nothingApproved.pendingCode).toBe('attachment_hash_mismatch');
   });
 
   it('refuses to parse bytes that are not a message', () => {

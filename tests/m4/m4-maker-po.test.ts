@@ -143,6 +143,12 @@ async function setupVerifiedPo(projectId: string, tag: string) {
 interface SupplyOrder {
   poId: string;
   orderId: string;
+  /**
+   * M8-HARDEN2 FIX 1: the bytes the approved artwork revision freezes, so a
+   * send .eml can attach exactly them — the only attachment a VERIFIED send
+   * accepts.
+   */
+  artworkBytes: string;
 }
 
 async function uploadBoundDocument(
@@ -151,17 +157,21 @@ async function uploadBoundDocument(
   overrides: Record<string, unknown> = {}
 ) {
   const tag = nextTag();
+  const content = `composite m4 document bytes ${tag}\n`;
   const body = {
     documentType: 'proof',
     issuerEntity: 'kanei',
     filename: `m4-doc-${tag}.txt`,
     contentType: 'text/plain',
-    contentBase64: toBase64(`composite m4 document bytes ${tag}\n`),
+    contentBase64: toBase64(content),
     ...overrides
   };
   const response = await postJson(`/api/projects/${projectId}/documents`, body);
   expect(response.status).toBe(201);
-  return response.body as { document: { id: string }; version: { id: string; sha256: string } };
+  return {
+    ...(response.body as { document: { id: string }; version: { id: string; sha256: string } }),
+    bytes: content
+  };
 }
 
 /** Uploads an order-level evidence document (send / acceptance evidence). */
@@ -183,7 +193,7 @@ async function uploadOrderEvidence(
 }
 
 /** Registers the current revision of one design from a freshly uploaded proof. */
-async function registerDesignRevision(order: SupplyOrder, projectId: string, designKey: string) {
+async function registerDesignRevision(order: { poId: string; orderId: string }, projectId: string, designKey: string) {
   const proof = await uploadBoundDocument(order, projectId, {
     documentType: 'proof',
     issuerEntity: 'kanei',
@@ -199,6 +209,8 @@ async function registerDesignRevision(order: SupplyOrder, projectId: string, des
   return {
     proofVersionId: proof.version.id,
     fileSha256: proof.version.sha256,
+    /** The proof bytes themselves: the attachment a VERIFIED send has to carry. */
+    artworkBytes: proof.bytes,
     revision: registered.body as { id: string; revisionNo: number }
   };
 }
@@ -260,9 +272,8 @@ async function createMakerPoReadyOrder(projectId: string, tag: string): Promise<
     const transition = await postJson(`/api/film-supply-orders/${order.id}/transitions`, { to });
     expect(transition.status).toBe(200);
   }
-  const supplyOrder: SupplyOrder = { poId: po.id, orderId: order.id };
-
-  const registered = await registerDesignRevision(supplyOrder, projectId, 'label-front');
+  const registered = await registerDesignRevision({ poId: po.id, orderId: order.id }, projectId, 'label-front');
+  const supplyOrder: SupplyOrder = { poId: po.id, orderId: order.id, artworkBytes: registered.artworkBytes };
   const customerEvidence = await uploadApprovalEvidence(supplyOrder, projectId, 'label-front', 'customer_generated');
   const customerApproval = await recordApproval(registered.revision.id, {
     evidenceDocumentVersionId: customerEvidence.version.id
@@ -369,13 +380,15 @@ async function reachApprovedMakerPo(projectId: string, tag: string) {
 async function reachSentMakerPo(projectId: string, tag: string) {
   const context = await reachApprovedMakerPo(projectId, tag);
   // M8-HARDEN FIX C1: the send evidence is the original .eml of the
-  // production-order mail, verified as an email.
+  // production-order mail, verified as an email. M8-HARDEN2 FIX 1: the mail
+  // carries the approved artwork, which is what a VERIFIED send requires.
   const sent = await sendMakerPoEmlEvidence(
     (url, body) => postAs(staffToken, url, body),
     context.po.id,
-    { orderCode: `FSO-M4-${tag}` }
+    { orderCode: `FSO-M4-${tag}`, attachmentBytes: context.order.artworkBytes }
   );
   expect(sent.status).toBe(200);
+  expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
   return context;
 }
 
@@ -502,7 +515,7 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     const sent = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       po.id,
-      { orderCode: 'FSO-M4-T20' }
+      { orderCode: 'FSO-M4-T20', attachmentBytes: order.artworkBytes }
     );
     expect(sent.status).toBe(200);
     const sentBody = sent.body as {
@@ -521,8 +534,9 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect(sentBody.event.senderAddress).toBe('staff@kanei.example');
     expect(sentBody.event.recipients).toEqual(['maker-po@example.com']);
     expect(sentBody.event.verificationStatus).toBe('VERIFIED');
-    // The evidence document's own bytes are always part of the recorded set.
-    expect(sentBody.event.attachmentHashes).toEqual([sent.built.sha256]);
+    // The evidence document's own bytes, then the approved artwork the message
+    // carried (M8-HARDEN2 FIX 1: that match is what verified the send).
+    expect(sentBody.event.attachmentHashes).toEqual([sent.built.sha256, sent.built.attachmentSha256]);
     expect((await orderRow(order.orderId))?.status).toBe('MAKER_PO_SENT_MANUALLY');
 
     const acceptDoc = await uploadOrderEvidence(order, projectId, 'acceptance_evidence', 'T20', po.id);
@@ -707,11 +721,13 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     ]);
 
     // M8-HARDEN FIX C1: the re-send is proven with the original .eml, verified
-    // as an email — a stored document alone no longer proves a send.
+    // as an email — a stored document alone no longer proves a send. The order
+    // data (and so the approved artwork hash) is unchanged, so the mail carries
+    // the same approved bytes (M8-HARDEN2 FIX 1).
     const sent = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       po.id,
-      { orderCode: 'FSO-M4-T23', sentAtIso: plausibleTestSentAt() }
+      { orderCode: 'FSO-M4-T23', sentAtIso: plausibleTestSentAt(), attachmentBytes: order.artworkBytes }
     );
     expect(sent.status).toBe(200);
     expect((sent.body as { status: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
@@ -807,7 +823,9 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     const sent = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       po.id,
-      { orderCode: 'FSO-M4-T24', sentAtIso: plausibleTestSentAt() }
+      // The re-approved snapshot freezes revision 2, so the mail carries those
+      // bytes (M8-HARDEN2 FIX 1).
+      { orderCode: 'FSO-M4-T24', sentAtIso: plausibleTestSentAt(), attachmentBytes: secondProof.bytes }
     );
     expect(sent.status).toBe(200);
     expect((sent.body as { status: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
@@ -891,12 +909,22 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
       sendMakerPoEmlEvidence(
         (url, body) => postAs(staffToken, url, body),
         sendContext.po.id,
-        { orderCode: 'FSO-M4-T25A', sentAtIso: plausibleTestSentAt(), messageId: '<m4-t25a-one@mail.kanei.example>' }
+        {
+          orderCode: 'FSO-M4-T25A',
+          sentAtIso: plausibleTestSentAt(),
+          messageId: '<m4-t25a-one@mail.kanei.example>',
+          attachmentBytes: sendContext.order.artworkBytes
+        }
       ),
       sendMakerPoEmlEvidence(
         (url, body) => postAs(staffToken, url, body),
         sendContext.po.id,
-        { orderCode: 'FSO-M4-T25A', sentAtIso: plausibleTestSentAt(), messageId: '<m4-t25a-two@mail.kanei.example>' }
+        {
+          orderCode: 'FSO-M4-T25A',
+          sentAtIso: plausibleTestSentAt(),
+          messageId: '<m4-t25a-two@mail.kanei.example>',
+          attachmentBytes: sendContext.order.artworkBytes
+        }
       )
     ]);
     expect([sendOne.status, sendTwo.status].sort()).toEqual([200, 422]);
@@ -934,7 +962,7 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     const sent = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       po.id,
-      { orderCode: 'FSO-M4-APP', sentAtIso: plausibleTestSentAt() }
+      { orderCode: 'FSO-M4-APP', sentAtIso: plausibleTestSentAt(), attachmentBytes: order.artworkBytes }
     );
     expect(sent.status).toBe(200);
 

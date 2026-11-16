@@ -147,7 +147,11 @@ async function uploadDocument(input: {
     ...(input.designKey ? { designKey: input.designKey } : {})
   });
   expect(response.status).toBe(201);
-  return response.body as { document: { id: string }; version: { id: string; sha256: string } };
+  return {
+    ...(response.body as { document: { id: string }; version: { id: string; sha256: string } }),
+    /** The bytes the version stores (HARDEN2 FIX 1: a send attaches exactly these). */
+    bytes: contentType === 'application/pdf' ? BINARY_PDF_BYTES.toString('utf8') : content
+  };
 }
 
 /**
@@ -194,7 +198,7 @@ async function reachApprovalPending(tag: string) {
   });
   expect(revision.status).toBe(201);
 
-  return { poId: po.id, orderId: order.id, revisionId: (revision.body as { id: string }).id };
+  return { poId: po.id, orderId: order.id, revisionId: (revision.body as { id: string }).id, artworkBytes: proof.bytes };
 }
 
 /** Records one counted approval with text evidence that quotes its identifier. */
@@ -276,12 +280,13 @@ async function reachProduction(tag: string) {
 
   expect((await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {})).status).toBe(200);
 
-  // M8-HARDEN FIX C1: the send evidence is the original .eml of the mail.
+  // M8-HARDEN FIX C1: the send evidence is the original .eml of the mail, with
+  // the approved artwork attached (M8-HARDEN2 FIX 1) so it verifies.
   expect((await sendMakerPoEmlEvidence(
     (url, body) => postAs(staffToken, url, body),
     poId,
-    { orderCode: `FSO-OPER2-${tag}`, sentAtIso: plausibleTestSentAt() }
-  )).status).toBe(200);
+    { orderCode: `FSO-OPER2-${tag}`, sentAtIso: plausibleTestSentAt(), attachmentBytes: chain.artworkBytes }
+  )).body).toMatchObject({ status: 'MAKER_PO_SENT_MANUALLY', verificationStatus: 'VERIFIED' });
 
   const acceptEvidence = await uploadDocument({
     documentType: 'acceptance_evidence',

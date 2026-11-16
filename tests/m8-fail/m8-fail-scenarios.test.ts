@@ -140,7 +140,11 @@ async function uploadDocument(input: {
     ...(input.designKey ? { designKey: input.designKey } : {})
   });
   expect(response.status).toBe(201);
-  return response.body as { document: { id: string }; version: { id: string; sha256: string } };
+  return {
+    ...(response.body as { document: { id: string }; version: { id: string; sha256: string } }),
+    /** The bytes the version stores (HARDEN2 FIX 1: a send attaches exactly these). */
+    bytes: content
+  };
 }
 
 /** An order at APPROVAL_PENDING with one registered design and no approval yet. */
@@ -329,6 +333,8 @@ async function registerNextRevision(chain: Awaited<ReturnType<typeof reachApprov
   expect(revision.status).toBe(201);
   return {
     proofSha256: proof.version.sha256,
+    /** The new artwork's bytes: the attachment the recovery send has to carry. */
+    proofBytes: proof.bytes,
     body: revision.body as { id: string; revisionNo: number; status: string; invalidatedApprovals: boolean }
   };
 }
@@ -550,8 +556,9 @@ describe('M8-FAIL A: approval reuse across revisions', () => {
     expect(approveRechecks[1]?.result).toBe('passed');
     expect(approveRechecks[1]?.reason).toBe('gate_open');
 
-    // And the send that follows is provable again.
-    const sent = await sendMakerPoEml(poId, chain.orderCode);
+    // And the send that follows is provable again: the approved artwork of the
+    // re-approved revision attached (M8-HARDEN2 FIX 1).
+    const sent = await sendMakerPoEml(poId, chain.orderCode, { attachmentBytes: next.proofBytes });
     expect(sent.status).toBe(200);
     expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
   });
@@ -572,7 +579,7 @@ describe('M8-FAIL B: duplicate send and duplicate paper', () => {
       poId: chain.poId
     });
     const sentAt = plausibleTestSentAt();
-    const sent = await sendMakerPoEml(poId, chain.orderCode, { sentAtIso: sentAt });
+    const sent = await sendMakerPoEml(poId, chain.orderCode, { sentAtIso: sentAt, attachmentBytes: chain.artworkBytes });
     expect(sent.status).toBe(200);
     expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
     expect(await poEvents(poId)).toHaveLength(2); // CEO_APPROVED + SEND_EVIDENCE_REGISTERED
@@ -893,10 +900,14 @@ describe('M8-FAIL C: invalid send evidence', () => {
     expect((await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1))[0]?.status)
       .toBe('APPROVED_FOR_MANUAL_SEND');
 
-    // Inside the tolerance the send is registrable again.
+    // Inside the tolerance the send is registrable again — with the approved
+    // artwork attached, so it verifies (M8-HARDEN2 FIX 1).
     const withinTolerance = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
-      contentBase64: buildMakerPoEml({ orderCode: chain.orderCode, messageId: '<within-tolerance@mail.kanei.example>' })
-        .contentBase64,
+      contentBase64: buildMakerPoEml({
+        orderCode: chain.orderCode,
+        messageId: '<within-tolerance@mail.kanei.example>',
+        attachmentBytes: chain.artworkBytes
+      }).contentBase64,
       senderAddress: 'staff@kanei.example',
       recipients: ['maker-po@example.com'],
       sentAt: new Date(Date.now() + 5 * 60 * 1000).toISOString()
@@ -1001,7 +1012,7 @@ describe('M8-HARDEN D: acceptance gates', () => {
 
     // The proven send opens the acceptance gate: the original .eml is
     // registered, verified as an email, and the PO leaves the company for real.
-    const sent = await sendMakerPoEml(poId, chain.orderCode);
+    const sent = await sendMakerPoEml(poId, chain.orderCode, { attachmentBytes: chain.artworkBytes });
     expect(sent.status).toBe(200);
     expect((sent.body as { status: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
     expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
@@ -1037,12 +1048,22 @@ describe('M8-HARDEN D: acceptance gates', () => {
     // refused on the new paper.
     const cancelForReplacement = await cancelMakerPo(poId, '数量訂正のため再発注');
     expect(cancelForReplacement.status).toBe(200);
+    // M8-HARDEN2 FIX 2: this paper's send was proven, so the cancelled paper
+    // holds the ordering step closed until the representative acknowledges the
+    // cancellation — then the replacement freezes as before.
+    expect((cancelForReplacement.body as { cancellationKind: string }).cancellationKind).toBe('MAKER_PO_CANCELLED');
+    const refusedBeforeAck = await createMakerPo(chain.orderId);
+    expect(refusedBeforeAck.status).toBe(422);
+    expect((refusedBeforeAck.body as { code: string }).code).toBe('MAKER_PO_CANCELLATION_ACK_REQUIRED');
+    expect((await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, {
+      note: 'メーカーより取消の受領を確認'
+    })).status).toBe(201);
     expect((await orderRow(chain.orderId))?.status).toBe('MAKER_PO_READY');
     const replaced = await createMakerPo(chain.orderId);
     expect(replaced.status).toBe(201);
     const poId2 = (replaced.body as MakerPoBody).id;
     expect((await approveMakerPo(poId2)).status).toBe(200);
-    expect((await sendMakerPoEml(poId2, chain.orderCode)).status).toBe(200);
+    expect((await sendMakerPoEml(poId2, chain.orderCode, { attachmentBytes: chain.artworkBytes })).status).toBe(200);
 
     const staleEvidence = await uploadDocument({
       documentType: 'acceptance_evidence',

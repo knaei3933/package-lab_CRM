@@ -160,19 +160,23 @@ async function uploadDocument(
   overrides: Record<string, unknown> = {}
 ) {
   const tag = nextTag();
+  const content = `composite m7 document bytes ${tag}\n`;
   const body = {
     documentType: 'proof',
     issuerEntity: 'kanei',
     filename: `m7-doc-${tag}.txt`,
     contentType: 'text/plain',
-    contentBase64: toBase64(`composite m7 document bytes ${tag}\n`),
+    contentBase64: toBase64(content),
     sevenPurchaseOrderId: poId,
     filmSupplyOrderId: orderId,
     ...overrides
   };
   const response = await postJson(`/api/projects/${projectId}/documents`, body);
   expect(response.status).toBe(201);
-  return response.body as { document: { id: string }; version: { id: string; sha256: string } };
+  return {
+    ...(response.body as { document: { id: string }; version: { id: string; sha256: string } }),
+    bytes: content
+  };
 }
 
 async function verifyDocument(documentId: string, note: string) {
@@ -190,7 +194,11 @@ async function registerRevision(poId: string, orderId: string, designKey: string
     fileDocumentVersionId: proof.version.id
   });
   expect(registered.status).toBe(201);
-  return registered.body as { id: string; revisionNo: number };
+  return {
+    ...(registered.body as { id: string; revisionNo: number }),
+    /** The proof bytes: the attachment a VERIFIED send carries (HARDEN2 FIX 1). */
+    artworkBytes: proof.bytes
+  };
 }
 
 /**
@@ -259,7 +267,9 @@ async function reachMakerPoReady(tag: string, paymentTerms: 'prepaid' | 'on_deli
 
   const ready = await transitionOrder(order.id, 'MAKER_PO_READY');
   expect(ready.status).toBe(200);
-  return { poId: po.id, orderId: order.id };
+  // M8-HARDEN2 FIX 1: the bytes the approved artwork freezes, so a send .eml
+  // can attach exactly them.
+  return { poId: po.id, orderId: order.id, artworkBytes: revision.artworkBytes };
 }
 
 async function createMakerPo(orderId: string) {
@@ -307,12 +317,14 @@ async function reachMakerPoAccepted(tag: string) {
   expect(approved.status).toBe(200);
 
   // M8-HARDEN FIX C1: the send evidence is the original .eml of the mail.
+  // M8-HARDEN2 FIX 1: with the approved artwork attached, so it verifies.
   const sent = await sendMakerPoEmlEvidence(
     (url, body) => postJson(url, body),
     poId,
-    { orderCode: `FSO-M7-${tag}` }
+    { orderCode: `FSO-M7-${tag}`, attachmentBytes: order.artworkBytes }
   );
   expect(sent.status).toBe(200);
+  expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
 
   const acceptEvidence = await uploadDocument(order.poId, order.orderId, {
     documentType: 'acceptance_evidence',
@@ -428,7 +440,7 @@ describe('S1: the generic transitions endpoint never reaches the maker chain', (
     const sent = await sendMakerPoEmlEvidence(
       (url, body) => postJson(url, body),
       poId,
-      { orderCode: 'FSO-M7-S1-DEDICATED' }
+      { orderCode: 'FSO-M7-S1-DEDICATED', attachmentBytes: order.artworkBytes }
     );
     expect(sent.status).toBe(200);
     expect(await orderStatus(order.orderId)).toBe('MAKER_PO_SENT_MANUALLY');

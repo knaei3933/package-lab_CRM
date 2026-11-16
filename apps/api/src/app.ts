@@ -6,6 +6,7 @@ import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm'
 import {
   buildMakerPoSnapshot,
   canPerform,
+  classifyMakerPoCancellation,
   computeMakerPoSnapshotSha256,
   deriveOrderApprovalGate,
   evaluateApprovalEvidenceBinding,
@@ -16,6 +17,7 @@ import {
   evaluateMakerPoAcceptEvidence,
   evaluateMakerPoApproval,
   evaluateMakerPoCancellation,
+  evaluateMakerPoCancellationAckGate,
   evaluateMakerPoCreationGate,
   evaluateMakerPoSendEvidence,
   evaluateMakerPoSendTransition,
@@ -3386,6 +3388,39 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       }, 422);
     }
 
+    // M8-HARDEN2 FIX 2: a cancelled paper whose send was proven keeps the
+    // ordering step closed until the representative acknowledges the
+    // cancellation. Without this gate the company could freeze replacement
+    // paper while the maker is still working from the mail it was sent — two
+    // production orders for the same step. The refusal names the paper that is
+    // waiting, so the operator knows exactly what to acknowledge.
+    const cancelledPapers = await db.select({ id: makerPurchaseOrders.id })
+      .from(makerPurchaseOrders)
+      .where(and(
+        eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
+        eq(makerPurchaseOrders.status, 'CANCELLED'),
+        isNull(makerPurchaseOrders.deletedAt)
+      ));
+    const cancellationGate = evaluateMakerPoCancellationAckGate(await Promise.all(cancelledPapers.map(async (paper) => {
+      const events = await db.select({
+        eventType: makerPoEvents.eventType,
+        verificationStatus: makerPoEvents.verificationStatus
+      }).from(makerPoEvents).where(eq(makerPoEvents.makerPurchaseOrderId, paper.id));
+      return {
+        id: paper.id,
+        verifiedSend: events.some((event) =>
+          event.eventType === 'SEND_EVIDENCE_REGISTERED' && event.verificationStatus === 'VERIFIED'),
+        acknowledged: events.some((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED')
+      };
+    })));
+    if (!cancellationGate.ok) {
+      return context.json({
+        error: cancellationGate.message,
+        code: cancellationGate.code,
+        pendingMakerPurchaseOrderId: cancellationGate.pendingMakerPurchaseOrderId
+      }, 422);
+    }
+
     const parts = await loadMakerPoSnapshotParts(db, orderId);
     const snapshot = buildMakerPoSnapshot({
       order: { id: parts.order.id, code: parts.order.code, sevenPoNumber: parts.sevenPoNumber },
@@ -4035,6 +4070,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
   // verification (M8-OPER2): an append-only record naming the verifier, the
   // time they checked and the reason. This is the only place a delivery is
   // asserted — storing or even verifying the EML is not proof of delivery.
+  //
+  // M8-HARDEN2 FIX 3: a 'confirmed' verification is also what lets the chain
+  // proceed — the paper moves to MAKER_PO_SENT_MANUALLY exactly as a VERIFIED
+  // send would have moved it, so acceptance becomes reachable. While the send
+  // event is still only PENDING_MANUAL_VERIFICATION the acceptance gate stays
+  // shut. A 'rejected' verification asserts no delivery and moves nothing.
+  // Double-processing is refused, not idempotent: a second 'confirmed' record
+  // for the same event is 422 MAKER_PO_SEND_ALREADY_CONFIRMED (a retraction is
+  // a new record, never an edit), per the migration 0018 rules the table
+  // enforces with its append-only trigger.
   app.post('/api/maker-po-events/:eventId/send-manual-verification', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
@@ -4110,7 +4155,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       recordedByUserId: user.id,
       recordedAt: now
     };
-    await db.transaction(async (tx) => {
+    const outcome = await db.transaction(async (tx) => {
       await tx.insert(makerPoSendManualVerifications).values(verification);
       await recordAuditEvent(tx, {
         projectId: order.projectId,
@@ -4132,13 +4177,90 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           makerPurchaseOrderId: po.id
         }
       });
+
+      // M8-HARDEN2 FIX 3: a confirmed verification is the delivery assertion a
+      // VERIFIED send never was, so it carries the paper across the same step a
+      // VERIFIED send does — the paper leaves the company and the acceptance
+      // gate opens. A rejected verification asserts the opposite and moves
+      // nothing. The move is guarded by the status the paper still holds: paper
+      // that has already moved on (a corrected .eml verified in the meantime) or
+      // that was cancelled after the pending send is left exactly where it is.
+      let statusChanged: { from: string; to: string } | null = null;
+      if (resultCheck.value === 'confirmed') {
+        // Only the state a VERIFIED send would have moved — the approved paper a
+        // pending send left where it was — may be carried forward. Paper that has
+        // moved on since (voided, cancelled, already sent, accepted) stays put.
+        const poStatus = validateMakerPoStatus(po.status);
+        if (poStatus.ok && transitionMakerPurchaseOrder(poStatus.value, 'MAKER_PO_SENT_MANUALLY').ok) {
+          const moved = await tx.update(makerPurchaseOrders)
+            .set({ status: 'MAKER_PO_SENT_MANUALLY' as const, updatedAt: now })
+            .where(and(
+              eq(makerPurchaseOrders.id, po.id),
+              eq(makerPurchaseOrders.status, poStatus.value)
+            ))
+            .returning({ id: makerPurchaseOrders.id, status: makerPurchaseOrders.status });
+          if (moved.length > 0) {
+            statusChanged = { from: poStatus.value, to: 'MAKER_PO_SENT_MANUALLY' };
+            await recordAuditEvent(tx, {
+              projectId: order.projectId,
+              id: uuidv7(now),
+              actorUserId: user.id,
+              action: 'MAKER_PO_STATUS_CHANGED',
+              entityType: 'maker_purchase_order',
+              entityId: po.id,
+              beforeState: { status: poStatus.value },
+              afterState: {
+                status: 'MAKER_PO_SENT_MANUALLY',
+                reason: 'send_manual_verification_confirmed',
+                makerPoEventId: target.id,
+                // The send event keeps its PENDING_MANUAL_VERIFICATION status:
+                // maker_po_events are append-only, and the content verification
+                // of its evidence never becomes the delivery assertion.
+                eventVerificationStatusUnchanged: true
+              },
+              occurredAt: now,
+              requestMetadata: { operation: 'maker_po:verify_send', makerPurchaseOrderId: po.id }
+            });
+
+            const [currentOrder] = await tx.select().from(filmSupplyOrders)
+              .where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
+            if (currentOrder && transitionFilmSupplyOrder(currentOrder.status, 'MAKER_PO_SENT_MANUALLY').ok) {
+              await tx.update(filmSupplyOrders).set({ status: 'MAKER_PO_SENT_MANUALLY', updatedAt: now })
+                .where(eq(filmSupplyOrders.id, currentOrder.id));
+              await recordAuditEvent(tx, {
+                projectId: order.projectId,
+                id: uuidv7(now),
+                actorUserId: user.id,
+                action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+                entityType: 'film_supply_order',
+                entityId: currentOrder.id,
+                beforeState: { status: currentOrder.status },
+                afterState: { status: 'MAKER_PO_SENT_MANUALLY' },
+                occurredAt: now,
+                requestMetadata: {
+                  operation: 'maker_po:verify_send',
+                  reason: 'send_manual_verification_confirmed'
+                }
+              });
+            }
+          }
+        }
+      }
+
+      const [currentPo] = await tx.select().from(makerPurchaseOrders)
+        .where(eq(makerPurchaseOrders.id, po.id)).limit(1);
+      return { statusChanged, purchaseOrder: currentPo ?? po };
     });
 
     return context.json({
       verification,
       makerPoEventId: target.id,
       deliveryAsserted: resultCheck.value === 'confirmed',
-      purchaseOrder: buildMakerPoViewForRole(user.role, po as MakerPoRecord)
+      // FIX 3: the chain proceeds exactly like a VERIFIED send — the paper is at
+      // MAKER_PO_SENT_MANUALLY and the acceptance gate is open. Null when the
+      // paper had already moved (or the verification rejected the send).
+      purchaseOrderStatusChanged: outcome.statusChanged,
+      purchaseOrder: buildMakerPoViewForRole(user.role, outcome.purchaseOrder as MakerPoRecord)
     }, 201);
   });
 
@@ -4179,6 +4301,20 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const now = new Date();
     try {
       const outcome = await db.transaction(async (tx) => {
+        // M8-HARDEN2 FIX 2: the cancellation is classified by what the paper
+        // already did. A proven send means the production-order mail left the
+        // company, so the replacement needs the representative's acknowledgement
+        // before a new maker PO may freeze for the order.
+        const [verifiedSend] = await tx.select({ id: makerPoEvents.id })
+          .from(makerPoEvents)
+          .where(and(
+            eq(makerPoEvents.makerPurchaseOrderId, poId),
+            eq(makerPoEvents.eventType, 'SEND_EVIDENCE_REGISTERED'),
+            eq(makerPoEvents.verificationStatus, 'VERIFIED')
+          ))
+          .limit(1);
+        const cancellation = classifyMakerPoCancellation({ verifiedSend: verifiedSend !== undefined });
+
         const updated = await tx.update(makerPurchaseOrders)
           .set({ status: 'CANCELLED' as const, updatedAt: now })
           .where(and(eq(makerPurchaseOrders.id, poId), eq(makerPurchaseOrders.status, poStatus.value)))
@@ -4206,6 +4342,13 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           afterState: {
             status: 'CANCELLED',
             note: body.note.trim(),
+            // FIX 2: which cancellation this was, and what it takes to replace
+            // the paper. An internal cancel frees the order immediately; a
+            // cancelled paper whose send was proven stays closed until the
+            // acknowledgement is recorded.
+            cancellationKind: cancellation.kind,
+            verifiedSend: cancellation.verifiedSend,
+            newMakerPoRequiresCancellationAcknowledgement: cancellation.acknowledgementRequired,
             // History is preserved: the rows stay, a new maker PO replaces them.
             rowsDeleted: false,
             replacementStep: 'cancel_then_create_new_maker_po'
@@ -4230,7 +4373,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         // paper is what moved the order along the maker chain, so the order goes
         // back to MAKER_PO_READY and a new maker PO can freeze for it. An order
         // parked in an exception state (change review, hold) is left alone — its
-        // own flow decides where it resumes.
+        // own flow decides where it resumes. FIX 2: when the cancelled paper had
+        // a proven send, the ordering step only really re-opens once the
+        // acknowledgement below is recorded — the create gate holds the line
+        // until then.
         const [currentOrder] = await tx.select().from(filmSupplyOrders)
           .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
         if (currentOrder && currentOrder.status !== 'MAKER_PO_READY'
@@ -4257,6 +4403,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
         return {
           event: cancelEvent,
+          cancellation,
           purchaseOrder: buildMakerPoViewForRole(user.role, {
             id: poId,
             filmSupplyOrderId: existing.filmSupplyOrderId,
@@ -4271,7 +4418,166 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           })
         };
       });
-      return context.json({ status: 'CANCELLED', event: outcome.event, purchaseOrder: outcome.purchaseOrder }, 200);
+      return context.json({
+        status: 'CANCELLED',
+        // M8-HARDEN2 FIX 2: which cancellation this was, and whether the
+        // representative has to acknowledge it before replacement paper freezes.
+        cancellationKind: outcome.cancellation.kind,
+        newMakerPoRequiresCancellationAcknowledgement: outcome.cancellation.acknowledgementRequired,
+        event: outcome.event,
+        purchaseOrder: outcome.purchaseOrder
+      }, 200);
+    } catch (error) {
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
+      }
+      throw error;
+    }
+  });
+
+  // M8-HARDEN2 FIX 2: the representative's acknowledgement of a cancelled paper
+  // whose send was proven — the maker-side acceptance of the cancellation
+  // (取消承認). It is the only record that re-opens the ordering step after sent
+  // paper was cancelled: until it exists, the maker-PO create endpoint refuses,
+  // so the sent paper and its replacement can never both be in production at
+  // the same time. Append-only like every maker PO event, bound to the exact
+  // paper it acknowledges, admin-only like the cancellation itself.
+  app.post('/api/maker-purchase-orders/:poId/cancellation-acknowledgement', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const poId = context.req.param('poId');
+
+    const [existing] = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.id, poId)).limit(1);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    const [order] = await db.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    // The same act as cancelling: freeing (or keeping closed) the order's
+    // production step is the representative's decision, never staff work.
+    const decision = canPerform(toActor(user), 'maker_po:cancel', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '代表者のみ承認を記録できます' }, 403);
+
+    const body = await context.req.json().catch(() => null) as any;
+    if (typeof body?.note !== 'string' || body.note.trim().length === 0) {
+      return context.json({
+        error: '承認理由（note）は必須です。取り消しを確認した根拠を記録してください',
+        code: 'MAKER_CANCELLATION_ACK_REASON_REQUIRED'
+      }, 422);
+    }
+    const acknowledgedAt = parseOptionalDate(body?.acknowledgedAt);
+    if (!acknowledgedAt.ok) return context.json({ error: '承認日時が不正です', code: 'INVALID_DATE' }, 422);
+    const requestedEvidenceId = typeof body?.evidenceDocumentVersionId === 'string'
+      && body.evidenceDocumentVersionId.length > 0
+      ? body.evidenceDocumentVersionId as string
+      : null;
+    // An accept-evidence style record: the acknowledgement may cite the
+    // document that proves the maker accepted the cancellation, and the cited
+    // version must exist when it is named.
+    let evidenceDocument: MakerPoEvidenceDocument | null = null;
+    if (requestedEvidenceId !== null) {
+      evidenceDocument = await loadMakerPoEvidenceDocument(db, requestedEvidenceId);
+      if (evidenceDocument === null) {
+        return context.json({
+          error: '引用された承認証跡のドキュメントバージョンが見つかりません',
+          code: 'MAKER_CANCELLATION_ACK_EVIDENCE_NOT_FOUND'
+        }, 422);
+      }
+    }
+
+    const now = new Date();
+    try {
+      const outcome = await db.transaction(async (tx) => {
+        const [po] = await tx.select().from(makerPurchaseOrders)
+          .where(eq(makerPurchaseOrders.id, poId)).limit(1).for('update');
+        if (!po) throw new MakerPoStateConflict();
+        if (po.status !== 'CANCELLED') {
+          return {
+            kind: 'not_cancelled' as const,
+            status: po.status,
+            message: '取り消し承認は取り消し済みのメーカー発注書にのみ記録できます',
+            code: 'MAKER_PO_NOT_CANCELLED' as const
+          };
+        }
+        const events = await tx.select({
+          id: makerPoEvents.id,
+          eventType: makerPoEvents.eventType,
+          verificationStatus: makerPoEvents.verificationStatus
+        }).from(makerPoEvents).where(eq(makerPoEvents.makerPurchaseOrderId, poId));
+        const hasVerifiedSend = events.some((event) =>
+          event.eventType === 'SEND_EVIDENCE_REGISTERED' && event.verificationStatus === 'VERIFIED');
+        if (!hasVerifiedSend) {
+          return {
+            kind: 'not_cancelled' as const,
+            status: po.status,
+            message: 'この発注書は送信証跡が確認されていないため、取り消し承認は不要です',
+            code: 'MAKER_PO_CANCELLATION_ACK_NOT_REQUIRED' as const
+          };
+        }
+        if (events.some((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED')) {
+          return {
+            kind: 'already' as const,
+            status: po.status,
+            message: 'この発注書の取り消し承認はすでに記録済みです。訂正する場合は新しい記録として残してください',
+            code: 'MAKER_CANCELLATION_ACK_ALREADY_RECORDED' as const
+          };
+        }
+
+        const ackEvent = {
+          id: uuidv7(now),
+          makerPurchaseOrderId: poId,
+          eventType: 'MAKER_CANCELLATION_ACKNOWLEDGED' as const,
+          evidenceDocumentVersionId: evidenceDocument?.versionId ?? null,
+          verificationStatus: 'UNVERIFIED' as const,
+          verificationNote: body.note.trim(),
+          recordedByUserId: user.id,
+          recordedAt: now
+        };
+        await tx.insert(makerPoEvents).values(ackEvent);
+
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_CANCELLATION_ACKNOWLEDGED',
+          entityType: 'maker_po_event',
+          entityId: ackEvent.id,
+          beforeState: { status: 'CANCELLED' },
+          afterState: {
+            status: 'CANCELLED',
+            note: body.note.trim(),
+            acknowledgedAt: acknowledgedAt.date,
+            // FIX 2: this is the record that re-opens the ordering step.
+            replacementAllowed: true,
+            verifiedSend: true,
+            rowsDeleted: false
+          },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:cancellation_acknowledgement', makerPurchaseOrderId: poId }
+        });
+
+        return {
+          kind: 'recorded' as const,
+          event: ackEvent,
+          purchaseOrder: buildMakerPoViewForRole(user.role, {
+            id: poId,
+            filmSupplyOrderId: po.filmSupplyOrderId,
+            snapshot: po.snapshot as MakerPoSnapshot,
+            snapshotSha256: po.snapshotSha256,
+            status: po.status,
+            ceoApprovedByUserId: po.ceoApprovedByUserId,
+            ceoApprovedAt: po.ceoApprovedAt,
+            createdByUserId: po.createdByUserId,
+            createdAt: po.createdAt,
+            updatedAt: now
+          })
+        };
+      });
+
+      if (outcome.kind === 'not_cancelled' || outcome.kind === 'already') {
+        return context.json({ error: outcome.message, code: outcome.code, status: outcome.status }, 422);
+      }
+      return context.json({ status: 'CANCELLED', event: outcome.event, purchaseOrder: outcome.purchaseOrder }, 201);
     } catch (error) {
       if (error instanceof MakerPoStateConflict) {
         return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);

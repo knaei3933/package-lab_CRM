@@ -7,8 +7,18 @@ import { createHash } from 'node:crypto';
  * `buildMakerPoEml` produces a minimal but genuine message — the headers the
  * verification reads (From, To, Date, Message-ID, Subject with the order code)
  * and, when asked, one base64 attachment whose bytes are the approved artwork
- * so its hash matches the frozen snapshot. `sendMakerPoEmlEvidence` registers
- * it through the send-evidence endpoint's contentBase64 intake.
+ * so its hash matches the frozen snapshot.
+ *
+ * M8-HARDEN2 FIX 1: that attachment match is the gate on VERIFIED. A send is
+ * only ever verified when the message carries the approved artifact, so a test
+ * that wants a VERIFIED send passes `attachmentBytes` — the exact bytes the
+ * approved artwork revision freezes. The negative cases (no attachment, a
+ * wrong attachment, a mail that only names a download link) pass no attachment
+ * at all, or a different body text, and land in PENDING_MANUAL_VERIFICATION
+ * with their attachment reason.
+ *
+ * `sendMakerPoEmlEvidence` registers the message through the send-evidence
+ * endpoint's contentBase64 intake.
  */
 
 export const MAKER_PO_TEST_RECIPIENT = 'maker-po@example.com';
@@ -40,8 +50,13 @@ export interface MakerPoEmlInput {
   subject?: string;
   /** Header-level overrides for the negative cases. */
   headers?: Record<string, string | null>;
-  /** Attachment bytes; their sha256 must match an approved artwork file hash. */
+  /**
+   * Attachment bytes; their sha256 must match an approved artwork file hash for
+   * the send to verify (M8-HARDEN2 FIX 1). Omitted: no attachment at all.
+   */
   attachmentBytes?: string;
+  /** Overrides the message body text (the attachment_link_only negative case). */
+  bodyText?: string;
 }
 
 export interface BuiltMakerPoEml {
@@ -83,7 +98,7 @@ export function buildMakerPoEml(input: MakerPoEmlInput): BuiltMakerPoEml {
   let body: string;
   if (attachment === undefined) {
     headers.push(['Content-Type', 'text/plain; charset=UTF-8'], ['Content-Transfer-Encoding', '8bit']);
-    body = `発注コード ${input.orderCode} の製造先発注書を送付します。\r\n`;
+    body = `${input.bodyText ?? `発注コード ${input.orderCode} の製造先発注書を送付します。`}\r\n`;
   } else {
     const boundary = '------------kanei-m8-harden-boundary';
     headers.push(['Content-Type', `multipart/mixed; boundary="${boundary}"`]);

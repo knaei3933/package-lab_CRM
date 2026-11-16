@@ -136,7 +136,11 @@ async function uploadDocument(input: {
     ...(input.designKey ? { designKey: input.designKey } : {})
   });
   expect(response.status).toBe(201);
-  return response.body as { document: { id: string }; version: { id: string; sha256: string } };
+  return {
+    ...(response.body as { document: { id: string }; version: { id: string; sha256: string } }),
+    /** The bytes the version stores (HARDEN2 FIX 1: a send attaches exactly these). */
+    bytes: content
+  };
 }
 
 /**
@@ -185,7 +189,15 @@ async function reachApprovalPending(tag: string) {
   });
   expect(revision.status).toBe(201);
 
-  return { poId: po.id, orderId: order.id, orderCode, revisionId: (revision.body as { id: string }).id };
+  return {
+    poId: po.id,
+    orderId: order.id,
+    orderCode,
+    revisionId: (revision.body as { id: string }).id,
+    // M8-HARDEN2 FIX 1: the bytes the approved artwork freezes — the attachment
+    // a VERIFIED send carries.
+    artworkBytes: proof.bytes
+  };
 }
 
 /** Records one counted TEXT approval whose evidence quotes its identifier. */
@@ -498,7 +510,8 @@ describe('M8-OPER3: a valid dual approval still carries the full maker chain', (
       poId,
       // The subject has to name the order's own code: C1 checks it against the
       // frozen snapshot, and a code this mail was not sent for stays unverified.
-      { orderCode: chain.orderCode, sentAtIso: plausibleTestSentAt() }
+      // M8-HARDEN2 FIX 1: the mail also carries the approved artwork.
+      { orderCode: chain.orderCode, sentAtIso: plausibleTestSentAt(), attachmentBytes: chain.artworkBytes }
     );
     expect(sent.status).toBe(200);
     expect((sent.body as { status: string; verificationStatus: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
@@ -569,7 +582,7 @@ describe('M8-OPER3: paper whose send is already proven is never retroactively bl
     const sent = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       poId,
-      { orderCode: chain.orderCode, sentAtIso: plausibleTestSentAt() }
+      { orderCode: chain.orderCode, sentAtIso: plausibleTestSentAt(), attachmentBytes: chain.artworkBytes }
     );
     expect(sent.status).toBe(200);
     expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');

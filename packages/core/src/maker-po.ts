@@ -60,7 +60,11 @@ export const MAKER_PO_EVENT_TYPES = [
   'SEND_EVIDENCE_REGISTERED',
   'ACCEPT_EVIDENCE_REGISTERED',
   'SEND_REJECTED',
-  'MAKER_PO_CANCELLED'
+  'MAKER_PO_CANCELLED',
+  // M8-HARDEN2 FIX 2: the representative's acknowledgement that a cancelled
+  // paper had really been sent. It is the only record that re-opens the
+  // ordering step after paper whose send was proven has been cancelled.
+  'MAKER_CANCELLATION_ACKNOWLEDGED'
 ] as const;
 
 export type MakerPoEventType = (typeof MAKER_PO_EVENT_TYPES)[number];
@@ -441,6 +445,81 @@ export function evaluateMakerPoCancellation(currentStatus: MakerPurchaseOrderSta
 }
 
 // ---------------------------------------------------------------------------
+// Replacement safety after a proven send (M8-HARDEN2 FIX 2)
+// ---------------------------------------------------------------------------
+
+/** How the cancellation of one paper is classified (M8-HARDEN2 FIX 2). */
+export type MakerPoCancellationKind = 'INTERNAL_CANCEL' | 'MAKER_PO_CANCELLED';
+
+export interface MakerPoCancellationClassification {
+  kind: MakerPoCancellationKind;
+  /** The paper's send was proven by a VERIFIED send event. */
+  verifiedSend: boolean;
+  /**
+   * True when the replacement needs the representative's acknowledgement before
+   * a new maker PO may freeze for the order — paper that already left the
+   * company cannot be quietly replaced by an internal cancel.
+   */
+  acknowledgementRequired: boolean;
+}
+
+/**
+ * Classifies one cancellation. Paper with no verified send is an internal
+ * correction: cancelling it re-opens the ordering step immediately, as it always
+ * has. Paper whose send was proven is production-order mail the maker may
+ * already be working on: cancelling it records the same append-only events, but
+ * the order stays closed until the representative acknowledges the cancellation
+ * (the maker's acceptance of it), so the company never runs two production
+ * orders for the same step.
+ */
+export function classifyMakerPoCancellation(input: { verifiedSend: boolean }): MakerPoCancellationClassification {
+  return input.verifiedSend
+    ? { kind: 'MAKER_PO_CANCELLED', verifiedSend: true, acknowledgementRequired: true }
+    : { kind: 'INTERNAL_CANCEL', verifiedSend: false, acknowledgementRequired: false };
+}
+
+/** One cancelled paper of an order, as the replacement gate reads it. */
+export interface MakerPoCancelledPaper {
+  id: string;
+  /** The paper's send is proven by a VERIFIED send event. */
+  verifiedSend: boolean;
+  /** A MAKER_CANCELLATION_ACKNOWLEDGED event is already recorded on it. */
+  acknowledged: boolean;
+}
+
+export type MakerPoCancellationAckGate =
+  | { ok: true; gatedOn: 'no_sent_paper_awaiting_acknowledgement' }
+  | {
+      ok: false;
+      code: 'MAKER_PO_CANCELLATION_ACK_REQUIRED';
+      /** The cancelled paper whose proven send is waiting for the acknowledgement. */
+      pendingMakerPurchaseOrderId: string;
+      message: string;
+    };
+
+/**
+ * The order-level invariant of FIX 2: a paper that was sent and then cancelled
+ * keeps the ordering step closed until its cancellation is acknowledged, so a
+ * sent paper and its replacement can never both be in production at the same
+ * time. Paper with no proven send (and paper already acknowledged) holds
+ * nothing back.
+ */
+export function evaluateMakerPoCancellationAckGate(
+  papers: MakerPoCancelledPaper[]
+): MakerPoCancellationAckGate {
+  const pending = papers.find((paper) => paper.verifiedSend && !paper.acknowledged);
+  if (pending === undefined) {
+    return { ok: true, gatedOn: 'no_sent_paper_awaiting_acknowledgement' };
+  }
+  return {
+    ok: false,
+    code: 'MAKER_PO_CANCELLATION_ACK_REQUIRED',
+    pendingMakerPurchaseOrderId: pending.id,
+    message: `送信済みのメーカー発注書（${pending.id}）が取り消されています。新しいメーカー発注書を作成するには、まず取り消し承認（メーカー取消確認）を記録してください`
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Time guards (M8-HARDEN FIX C2)
 // ---------------------------------------------------------------------------
 
@@ -608,12 +687,17 @@ function normalizeRecipient(value: string): string {
  * - PENDING_MANUAL_VERIFICATION: the evidence bytes are an email that fails at
  *   least one header check (no Message-ID, wrong recipient, a subject that
  *   names another order, a Date that contradicts sentAt, a send dated before
- *   the approval…). The event is recorded with the machine-readable check list
- *   and can never read as VERIFIED (M8-HARDEN FIX C1);
+ *   the approval…), or — since M8-HARDEN2 FIX 1 — a clean-header mail whose
+ *   attachments are missing, match no approved artifact hash (a re-exported
+ *   PDF among them) or are replaced by a download link. The event is recorded
+ *   with the machine-readable check list and can never read as VERIFIED
+ *   (M8-HARDEN FIX C1);
  * - VERIFIED: the evidence passes every check — since FIX C1 that means the
  *   original .eml of the production-order mail, read as an email (method
- *   eml_header_check). Storing it is NOT proof of delivery; delivery is
- *   asserted by the representative's manual confirmation only;
+ *   eml_header_check), and since M8-HARDEN2 FIX 1 also that at least one
+ *   attachment is the approved artifact bytes the snapshot freezes. Storing it
+ *   is NOT proof of delivery; delivery is asserted by the representative's
+ *   manual confirmation only;
  * - snapshot_voided: the recomputed order digest differs from the approved
  *   one. The paper no longer describes the real order: the send is refused and
  *   the PO is voided pending a fresh approval (T-23, T-24);
@@ -750,7 +834,8 @@ export function evaluateMakerPoSendEvidence(
 
   // M8-HARDEN FIX C1: the evidence bytes decide. With them, the file is read as
   // an email and its headers are checked against the frozen paper; only a
-  // message that names the maker, this order and a plausible time is VERIFIED.
+  // message that names the maker, this order, a plausible time and — since
+  // M8-HARDEN2 FIX 1 — the approved artifact bytes as an attachment is VERIFIED.
   // A caller that cannot supply bytes is not verifying content at all, so the
   // document-binding verdict above stays (no API path reaches this branch — the
   // endpoints always pass the stored bytes or the contentBase64 payload).
@@ -781,6 +866,9 @@ export function evaluateMakerPoSendEvidence(
     expectedRecipientAddress: context.snapshot.recipient.address,
     recordedSenderAddress: senderAddress,
     subjectIdentifiers: [context.snapshot.order.code, context.snapshot.order.sevenPoNumber ?? ''],
+    // M8-HARDEN2 FIX 1: the approved artifact hashes — the PO / artwork
+    // revision documents the snapshot freezes — are what an attachment must
+    // match for the send to verify.
     artworkFileSha256s: context.snapshot.specs.artworkFiles.map((file) => file.fileSha256)
   });
 
@@ -796,8 +884,9 @@ export function evaluateMakerPoSendEvidence(
   // so they replace the request-declared facts whenever the message carries them.
   const provenSenderAddress = emlEvaluation.senderAddress ?? senderAddress;
   const messageRecipients = emlEvaluation.recipients.length > 0 ? emlEvaluation.recipients : recipients;
-  // The attachments whose bytes match an approved artwork file are the strong
-  // signal FIX C1 records, so they belong on the event with the evidence bytes.
+  // The attachments whose bytes match an approved artifact are the signal FIX C1
+  // records and — since M8-HARDEN2 FIX 1 — the one a VERIFIED send rests on, so
+  // they belong on the event with the evidence bytes.
   const provenAttachmentHashes = [...attachmentHashes, ...emlEvaluation.matchedAttachmentHashes]
     .filter((hash, index, all) => all.indexOf(hash) === index);
 

@@ -79,7 +79,10 @@ export const makerPoEventType = pgEnum('maker_po_event_type', [
   'MAKER_PO_ACCEPT_RECORDED_PROVISIONAL',
   'SEND_REJECTED',
   // M8-HARDEN FIX B2: the append-only record of an explicit cancellation.
-  'MAKER_PO_CANCELLED'
+  'MAKER_PO_CANCELLED',
+  // M8-HARDEN2 FIX 2: the representative's acknowledgement of a cancelled paper
+  // whose send was proven — the only record that re-opens the ordering step.
+  'MAKER_CANCELLATION_ACKNOWLEDGED'
 ]);
 
 /**

@@ -23,6 +23,16 @@ import { createHash } from 'node:crypto';
  * Storing the EML is NOT proof of delivery. Delivery is asserted only by the
  * representative's manual confirmation (the maker PO send manual verification
  * record), which is a separate, append-only human decision.
+ *
+ * M8-HARDEN2 FIX 1 — the attachment match becomes the gate. Until now the
+ * attachment hashes were recorded but never blocked, so a mail with correct
+ * headers and no production-order paper attached still read VERIFIED. VERIFIED
+ * now requires at least one attachment whose sha256 is one of the approved
+ * artifact hashes the snapshot freezes (the approved PO / artwork revision
+ * documents). Headers that pass with no attachment, with attachments matching
+ * nothing the company approved — a re-exported PDF among them — or that only
+ * point at a download link are all PENDING_MANUAL_VERIFICATION, with the
+ * machine-readable reason on the event.
  */
 
 /** The verification method recorded on a send event whose evidence was parsed as an EML. */
@@ -61,6 +71,13 @@ export interface ParsedEml {
   dateRaw: string | null;
   subject: string | null;
   attachments: EmlAttachment[];
+  /**
+   * M8-HARDEN2 FIX 1: the decoded text of the message's non-attachment text
+   * parts. A mail that only points at a download link reads very differently
+   * from one that attached nothing at all, and the attachment reason records
+   * the difference.
+   */
+  bodyText: string;
 }
 
 export type EmlParseResult =
@@ -267,7 +284,12 @@ function dispositionSaysAttachment(dispositionHeader: string[] | undefined): boo
   return mime === 'inline' && typeof params.filename === 'string' && params.filename.length > 0;
 }
 
-function collectAttachments(headers: Record<string, string[]>, body: string, out: EmlAttachment[]): void {
+function collectAttachments(
+  headers: Record<string, string[]>,
+  body: string,
+  out: EmlAttachment[],
+  texts: string[]
+): void {
   const contentType = parseStructuredHeader(headers['content-type']?.[0] ?? null);
   if (contentType.mime.startsWith('multipart/')) {
     const boundary = contentType.params.boundary;
@@ -275,13 +297,20 @@ function collectAttachments(headers: Record<string, string[]>, body: string, out
     const marker = `--${boundary}`;
     for (const partText of splitMultipart(body, marker)) {
       const part = splitHeaders(partText);
-      collectAttachments(part.headers, part.body, out);
+      collectAttachments(part.headers, part.body, out, texts);
     }
     return;
   }
-  if (!dispositionSaysAttachment(headers['content-disposition'])) return;
-  const disposition = parseStructuredHeader(headers['content-disposition']?.[0] ?? null);
   const transferEncoding = headers['content-transfer-encoding']?.[0] ?? '7bit';
+  if (!dispositionSaysAttachment(headers['content-disposition'])) {
+    // FIX 1: the readable text of the message, so a mail that only names a
+    // download link can be told apart from one that attached nothing.
+    if (contentType.mime === '' || contentType.mime.startsWith('text/')) {
+      texts.push(decodePartBody(body, transferEncoding).toString('utf8'));
+    }
+    return;
+  }
+  const disposition = parseStructuredHeader(headers['content-disposition']?.[0] ?? null);
   const decoded = decodePartBody(body, transferEncoding);
   out.push({
     filename: disposition.params.filename ?? contentType.params.name ?? null,
@@ -289,6 +318,17 @@ function collectAttachments(headers: Record<string, string[]>, body: string, out
     sha256: sha256Of(decoded),
     byteSize: decoded.length
   });
+}
+
+/**
+ * M8-HARDEN2 FIX 1: a URL in the message text — the mail points at a file
+ * somewhere else instead of carrying it. The attachment reason distinguishes
+ * that from an export that carries no attachment at all.
+ */
+const DOWNLOAD_LINK_PATTERN = /https?:\/\/[^\s<>"')\]]+/i;
+
+function hasDownloadLink(bodyText: string): boolean {
+  return DOWNLOAD_LINK_PATTERN.test(bodyText);
 }
 
 /** Splits a multipart body on its boundary lines; the closing marker ends the walk. */
@@ -328,7 +368,8 @@ export function parseEml(bytes: Buffer): EmlParseResult {
   const dateRaw = split.headers['date']?.[0] ?? null;
   const parsedDate = dateRaw === null ? null : new Date(decodeEncodedWords(dateRaw));
   const attachments: EmlAttachment[] = [];
-  collectAttachments(split.headers, split.body, attachments);
+  const bodyTexts: string[] = [];
+  collectAttachments(split.headers, split.body, attachments, bodyTexts);
 
   return {
     ok: true,
@@ -341,7 +382,8 @@ export function parseEml(bytes: Buffer): EmlParseResult {
       date: parsedDate !== null && !Number.isNaN(parsedDate.getTime()) ? parsedDate : null,
       dateRaw,
       subject: split.headers['subject']?.[0] !== undefined ? decodeEncodedWords(split.headers['subject'][0]!) : null,
-      attachments
+      attachments,
+      bodyText: bodyTexts.join('\n')
     }
   };
 }
@@ -370,7 +412,17 @@ export type MakerPoEmlPendingCode =
   | 'EML_DATE_HEADER_UNPARSABLE'
   | 'EML_DATE_SENT_AT_CONFLICT'
   | 'EML_SUBJECT_IDENTIFIER_MISSING'
-  | 'SENT_AT_PRECEDES_CEO_APPROVAL';
+  | 'SENT_AT_PRECEDES_CEO_APPROVAL'
+  // M8-HARDEN2 FIX 1: the attachment reasons, spelled exactly as the screens
+  // and the audit read them — the mail passed every header check and still did
+  // not prove that the approved paper reached the maker.
+  | MakerPoAttachmentPendingCode;
+
+/** Why a header-clean mail stays pending on its attachments (M8-HARDEN2 FIX 1). */
+export type MakerPoAttachmentPendingCode =
+  | 'attachment_missing'
+  | 'attachment_hash_mismatch'
+  | 'attachment_link_only';
 
 export interface MakerPoEmlEvidenceInput {
   /** The raw .eml bytes (message/rfc822) the send is proven by. */
@@ -387,7 +439,11 @@ export interface MakerPoEmlEvidenceInput {
   recordedSenderAddress: string;
   /** The PO identifiers the subject must carry (order code, seven PO number). */
   subjectIdentifiers: string[];
-  /** The file hashes the snapshot freezes (the approved artwork revisions). */
+  /**
+   * The approved artifact hashes the snapshot freezes — the approved PO /
+   * artwork revision documents. Since M8-HARDEN2 FIX 1 at least one attachment
+   * of the mail must be exactly one of these bytes for the send to verify.
+   */
   artworkFileSha256s: string[];
 }
 
@@ -434,18 +490,27 @@ const PENDING_MESSAGES: Record<MakerPoEmlPendingCode, string> = {
   EML_DATE_HEADER_UNPARSABLE: '送信証跡のDateヘッダーを解釈できなかったため、送信日時を確認できませんでした',
   EML_DATE_SENT_AT_CONFLICT: '送信証跡のDateヘッダーと記録された送信日時が一致しません（許容範囲：10分）',
   EML_SUBJECT_IDENTIFIER_MISSING: '送信証跡の件名に発注書の識別子（発注コード）が含まれていません',
-  SENT_AT_PRECEDES_CEO_APPROVAL: '記録された送信日時が代表者承認より前です。送信日時を確認してください'
+  SENT_AT_PRECEDES_CEO_APPROVAL: '記録された送信日時が代表者承認より前です。送信日時を確認してください',
+  attachment_missing: '送信証跡に添付ファイルがないため、承認済み成果物（発注書・版下）との一致を確認できませんでした。原本のEMLに発注書を添付して登録してください',
+  attachment_hash_mismatch: '送信証跡の添付ファイルが承認済み成果物（発注書・版下）のハッシュと一致しませんでした。Thunderbirdから原本のEMLを書き出して登録してください（再出力したPDFも自動確認の対象になりません）',
+  attachment_link_only: '送信証跡に添付ファイルがなく、ダウンロードリンクのみが記載されているため、承認済み成果物との一致を確認できませんでした。ファイルを添付した原本のEMLを登録してください'
 };
 
 /**
- * Evaluates one .eml payload against the frozen paper (FIX C1).
+ * Evaluates one .eml payload against the frozen paper (FIX C1, tightened by
+ * M8-HARDEN2 FIX 1).
  *
- * Every check is recorded; a VERIFIED answer requires all of the core checks to
- * pass. The attachment-hash check is recorded but never blocks: a genuine
- * export may legitimately carry no attachments, and an attachment hash that
- * matches the approved artwork bytes is the strong confirmation when it is
- * there. A failing core check downgrades the event to
- * PENDING_MANUAL_VERIFICATION — it can never reach VERIFIED.
+ * Every check is recorded. A VERIFIED answer requires all of the core header
+ * checks to pass AND at least one attachment whose sha256 is one of the
+ * approved artifact hashes the snapshot freezes — the paper the maker was sent
+ * has to be the paper the message carried. A failing core check, or a message
+ * whose attachments are absent / match nothing approved / are replaced by a
+ * download link, downgrades the event to PENDING_MANUAL_VERIFICATION — it can
+ * never reach VERIFIED on its own.
+ *
+ * The core checks are evaluated first and the attachment gate last, so a mail
+ * that fails a header surfaces that header as its reason: the attachment
+ * reasons describe a mail that was otherwise clean.
  */
 export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): MakerPoEmlEvidenceEvaluation {
   const parsed = parseEml(input.bytes);
@@ -532,7 +597,9 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
     fail('EML_SUBJECT_IDENTIFIER_MISSING', 'subject_identifier', subject.slice(0, 200));
   }
 
-  // Attachment hashes: recorded, never blocking (see the contract comment).
+  // Attachment hashes against the approved artifacts the snapshot freezes. The
+  // gate itself is the last check below (M8-HARDEN2 FIX 1); this row is the
+  // detail a reviewer reads.
   const attachmentHashes = eml.attachments.map((attachment) => attachment.sha256);
   const matched = attachmentHashes.filter((hash) => input.artworkFileSha256s.includes(hash));
   if (input.artworkFileSha256s.length === 0) {
@@ -553,6 +620,30 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
   } else {
     checks.push(check('sent_at_plausibility', 'passed'));
   }
+
+  // M8-HARDEN2 FIX 1: the attachment gate. Headers alone do not prove that the
+  // approved paper reached the maker; the message has to carry it. When the
+  // snapshot freezes no approved hashes at all there is nothing the bytes could
+  // match, so the mail stays pending too — the human decides, never the header
+  // check.
+  let attachmentFailure: MakerPoAttachmentPendingCode | null = null;
+  if (matched.length > 0) {
+    checks.push(check('attachment_gate', 'passed', matched.join(',')));
+  } else if (eml.attachments.length === 0 && hasDownloadLink(eml.bodyText)) {
+    attachmentFailure = 'attachment_link_only';
+    checks.push(check('attachment_gate', 'failed', 'a download link instead of an attached file'));
+  } else if (eml.attachments.length === 0) {
+    attachmentFailure = 'attachment_missing';
+    checks.push(check('attachment_gate', 'failed', 'no attached file'));
+  } else {
+    attachmentFailure = 'attachment_hash_mismatch';
+    checks.push(check(
+      'attachment_gate',
+      'failed',
+      `${attachmentHashes.length} attachment(s), none of the ${input.artworkFileSha256s.length} approved hash(es)`
+    ));
+  }
+  if (attachmentFailure !== null) pendingCodes.push(attachmentFailure);
 
   const shared = {
     verificationMethod: MAKER_PO_SEND_VERIFICATION_METHOD_EML_HEADER_CHECK,

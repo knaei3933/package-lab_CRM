@@ -250,7 +250,11 @@ async function uploadDocument(input: {
     ...(input.designKey ? { designKey: input.designKey } : {})
   });
   expect(response.status).toBe(201);
-  return response.body as { document: { id: string }; version: { id: string; sha256: string } };
+  return {
+    ...(response.body as { document: { id: string }; version: { id: string; sha256: string } }),
+    /** The bytes the version stores (HARDEN2 FIX 1: a send attaches exactly these). */
+    bytes: contentType === 'application/pdf' ? BINARY_PDF_BYTES.toString('utf8') : content
+  };
 }
 
 /**
@@ -307,7 +311,15 @@ async function reachApprovalPending(input: {
   expect(revision.status).toBe(201);
   const revisionBody = revision.body as { id: string };
 
-  return { poId: po.id, orderId: order.id, revisionId: revisionBody.id, paymentTerms: order.paymentTerms };
+  return {
+    poId: po.id,
+    orderId: order.id,
+    revisionId: revisionBody.id,
+    paymentTerms: order.paymentTerms,
+    // M8-HARDEN2 FIX 1: the bytes the approved artwork freezes — the attachment
+    // a VERIFIED send carries.
+    artworkBytes: proof.bytes
+  };
 }
 
 /** Records one counted approval with text evidence that quotes its identifier. */
@@ -592,7 +604,7 @@ describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
     const sendWithEml = () => sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       poId,
-      { orderCode: `FSO-M8-${sendTag}`, sentAtIso: plausibleTestSentAt() }
+      { orderCode: `FSO-M8-${sendTag}`, sentAtIso: plausibleTestSentAt(), attachmentBytes: ready.artworkBytes }
     );
     const viewerAttempt = await postAs(viewerToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
       evidenceDocumentVersionId: evidence.version.id,
@@ -632,7 +644,7 @@ describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
     const sent = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       poId,
-      { orderCode: `FSO-M8-${tag}`, sentAtIso: plausibleTestSentAt() }
+      { orderCode: `FSO-M8-${tag}`, sentAtIso: plausibleTestSentAt(), attachmentBytes: ready.artworkBytes }
     );
     expect(sent.status).toBe(200);
     expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
@@ -682,7 +694,7 @@ describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
     const sendEvidence = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       poId,
-      { orderCode: `FSO-M8-${tag}`, sentAtIso: plausibleTestSentAt() }
+      { orderCode: `FSO-M8-${tag}`, sentAtIso: plausibleTestSentAt(), attachmentBytes: ready.artworkBytes }
     );
     expect(sendEvidence.status).toBe(200);
     const acceptEvidence = await uploadDocument({
@@ -753,7 +765,7 @@ describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
     const sendAttempt = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       poId,
-      { orderCode: `FSO-M8-${tag}`, sentAtIso: plausibleTestSentAt() }
+      { orderCode: `FSO-M8-${tag}`, sentAtIso: plausibleTestSentAt(), attachmentBytes: ready.artworkBytes }
     );
     expect(sendAttempt.status).toBe(200);
     const acceptEvidence = await uploadDocument({

@@ -1,0 +1,20 @@
+-- M8-HARDEN2 FIX 2: replacement safety after a proven send.
+--
+-- A maker purchase order whose send was proven (a SEND_EVIDENCE_REGISTERED
+-- event with verification_status VERIFIED) is production-order mail the Korean
+-- maker may already be working on. Cancelling it records the same append-only
+-- MAKER_PO_CANCELLED event as before, but the ordering step must stay closed
+-- until the representative acknowledges the cancellation — the maker's
+-- acceptance of it — so a sent paper and its replacement can never both be in
+-- production at the same time.
+--
+-- This migration adds exactly one thing: that acknowledgement as its own
+-- maker_po_events type. The value is only added; the enum's existing values,
+-- the append-only triggers of migration 0010 and every existing row are
+-- untouched. No column, table or constraint changes, so no existing row is
+-- rewritten and nothing already stored changes meaning.
+--
+-- The gate itself is the application's: the maker-PO create endpoint refuses
+-- (422 MAKER_PO_CANCELLATION_ACK_REQUIRED) while a cancelled paper of the order
+-- holds a VERIFIED send and no MAKER_CANCELLATION_ACKNOWLEDGED event.
+ALTER TYPE "maker_po_event_type" ADD VALUE IF NOT EXISTS 'MAKER_CANCELLATION_ACKNOWLEDGED';

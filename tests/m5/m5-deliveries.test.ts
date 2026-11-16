@@ -175,6 +175,11 @@ interface ChainOrder {
   poId: string;
   orderId: string;
   firstLineId: string;
+  /**
+   * M8-HARDEN2 FIX 1: the bytes the approved artwork revision freezes, when the
+   * chain reached the artwork step — the attachment a VERIFIED send carries.
+   */
+  artworkBytes: string;
 }
 
 /**
@@ -186,6 +191,7 @@ interface ChainOrder {
  * order states directly.
  */
 async function createChainOrderAt(projectIdValue: string, tag: string, targetStatus: string): Promise<ChainOrder> {
+  const artworkBytes = `composite m5 proof ${tag}\n`;
   const po = await setupVerifiedPo(projectIdValue, tag);
   const created = await postJson(`/api/seven-purchase-orders/${po.id}/supply-orders`, {
     code: `FSO-M5-${tag}`,
@@ -203,7 +209,7 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
     if (to === targetStatus) {
       const [row] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.id)).limit(1);
       expect(row?.status).toBe(targetStatus);
-      return { poId: po.id, orderId: order.id, firstLineId: order.lines[0]!.id };
+      return { poId: po.id, orderId: order.id, firstLineId: order.lines[0]!.id, artworkBytes: '' };
     }
   }
 
@@ -280,9 +286,12 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
   const sent = await sendMakerPoEmlEvidence(
     (url, body) => postJson(url, body),
     makerPoId,
-    { orderCode: `FSO-M5-${tag}` }
+    // M8-HARDEN2 FIX 1: the mail carries the approved artwork, which is what a
+    // VERIFIED send requires.
+    { orderCode: `FSO-M5-${tag}`, attachmentBytes: artworkBytes }
   );
   expect(sent.status).toBe(200);
+  expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
 
   const acceptEvidence = await postJson(`/api/projects/${projectIdValue}/documents`, {
     documentType: 'acceptance_evidence',
@@ -310,7 +319,7 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
   }
   const [row] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.id)).limit(1);
   expect(row?.status).toBe(targetStatus);
-  return { poId: po.id, orderId: order.id, firstLineId: order.lines[0]!.id };
+  return { poId: po.id, orderId: order.id, firstLineId: order.lines[0]!.id, artworkBytes };
 }
 
 interface ReadinessResponse {
