@@ -60,9 +60,31 @@ function jsonPost(token: string, body: unknown) {
   } as const;
 }
 
+/**
+ * A body that does not parse as JSON is an unhandled endpoint failure (Hono's
+ * default answer is the plain text "Internal Server Error" with no handler
+ * stack), not a business refusal. Naming the endpoint and the body here is what
+ * turns a bare `SyntaxError: Unexpected token 'I'` from an order-dependent
+ * failure into a one-line pointer at the culprit route.
+ */
+async function parseJsonResponse(
+  method: string,
+  url: string,
+  response: { status: number; text(): Promise<string> }
+) {
+  const raw = await response.text();
+  try {
+    return { status: response.status, body: JSON.parse(raw) };
+  } catch {
+    throw new Error(
+      `${method} ${url} answered HTTP ${response.status} with a non-JSON body: ${raw.slice(0, 300)}`
+    );
+  }
+}
+
 async function postAs(token: string, url: string, body: unknown) {
   const response = await app.request(url, jsonPost(token, body));
-  return { status: response.status, body: await response.json() };
+  return await parseJsonResponse('POST', url, response);
 }
 
 async function postJson(url: string, body: unknown) {
@@ -71,7 +93,7 @@ async function postJson(url: string, body: unknown) {
 
 async function getJson(url: string) {
   const response = await app.request(url, { method: 'GET', headers: cookieHeader(staffToken) });
-  return { status: response.status, body: await response.json() };
+  return await parseJsonResponse('GET', url, response);
 }
 
 /** A complete human record of the seven checklist items (design section 5.10). */
