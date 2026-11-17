@@ -48,6 +48,11 @@ describe('maker PO datetime-local submissions', () => {
     form.set('verifiedAtLocal', '2026-11-17T18:54');
     expect(offsetDateTimeField(form, 'verifiedAt')).toBe('2026-11-17T18:54:00+09:00');
 
+    // A present but malformed hidden value must not suppress the Local fallback.
+    form.set('verifiedAt', 'broken-server-conversion');
+    form.set('verifiedAtLocal', '2026-11-17T18:54');
+    expect(offsetDateTimeField(form, 'verifiedAt')).toBe('2026-11-17T18:54:00+09:00');
+
     form.set('verifiedAtLocal', 'not-a-time');
     expect(offsetDateTimeField(form, 'verifiedAt')).toBe('');
   });

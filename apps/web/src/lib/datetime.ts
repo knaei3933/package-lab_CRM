@@ -34,8 +34,10 @@ export function normalizeDateTimeForApi(value: string): string | null {
 }
 
 /**
- * Reads the hidden explicit-offset field and, if it was submitted before
- * hydration, falls back to the visible local value with Asia/Tokyo semantics.
+ * Reads the hidden explicit-offset field. Before hydration it is empty, and a
+ * malformed hidden value can also occur from stale markup; in both cases the
+ * visible Local value gets explicit Asia/Tokyo semantics. Returning empty for
+ * two invalid values lets existing required-field validation run.
  */
 export function offsetDateTimeField(formData: FormData, key: string): string {
   const read = (name: string): string => {
@@ -43,7 +45,10 @@ export function offsetDateTimeField(formData: FormData, key: string): string {
     return typeof value === 'string' ? value.trim() : '';
   };
   const explicit = read(key);
-  if (explicit.length > 0) return normalizeDateTimeForApi(explicit) ?? '';
+  if (explicit.length > 0) {
+    const normalizedExplicit = normalizeDateTimeForApi(explicit);
+    if (normalizedExplicit !== null) return normalizedExplicit;
+  }
   const local = read(`${key}Local`);
   return local.length === 0 ? '' : normalizeDateTimeForApi(local) ?? '';
 }

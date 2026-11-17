@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { datetimeLocalToIso } from '../lib/datetime';
 import { inputStyle, noteStyle } from '../lib/ui';
@@ -28,6 +28,14 @@ export function OffsetDateTimeField({
   width = 240
 }: OffsetDateTimeFieldProps) {
   const [localValue, setLocalValue] = useState(defaultValue ?? '');
+  // SSR must not convert a naive default using the server timezone. Keep the
+  // hidden field empty until mounted; a pre-hydration submit uses the action's
+  // Local fallback, which has explicit Asia/Tokyo semantics.
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   function onChange(event: ChangeEvent<HTMLInputElement>): void {
     setLocalValue(event.target.value);
@@ -35,7 +43,12 @@ export function OffsetDateTimeField({
 
   return (
     <>
-      <input readOnly type="hidden" name={name} value={datetimeLocalToIso(localValue) ?? ''} />
+      <input
+        readOnly
+        type="hidden"
+        name={name}
+        value={mounted ? datetimeLocalToIso(localValue) ?? '' : ''}
+      />
       <label style={{ display: 'grid', gap: 2, minWidth: 220 }}>
         <span style={{ fontSize: 13, color: '#172033' }}>
           {label}
