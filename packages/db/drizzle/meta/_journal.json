@@ -127,6 +127,20 @@
       "when": 1795465560000,
       "tag": "0017_m8_oper2_evidence_manual_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1795551960000,
+      "tag": "0018_m8_harden_maker_po_active_unique_eml_evidence",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1795644760000,
+      "tag": "0019_m8_harden2_cancellation_acknowledgement",
+      "breakpoints": true
     }
   ]
 }
