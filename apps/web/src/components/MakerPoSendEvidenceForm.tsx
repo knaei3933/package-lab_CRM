@@ -9,6 +9,7 @@ import type { Choice } from '../lib/types';
 import {
   buttonStyle,
   errorMessageStyle,
+  infoBoxStyle,
   inputStyle,
   noteStyle,
   okMessageStyle,

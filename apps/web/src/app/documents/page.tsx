@@ -3,7 +3,7 @@ import { DocumentUploadForm } from '../../components/DocumentUploadForm';
 import { SelectField, TextField } from '../../components/fields';
 import { uploadDocumentAction, verifyDocumentAction } from '../actions';
 import { readSelectedProjectId } from '../../lib/api';
-import { loadMakerPoChoices } from '../../lib/document-maker-po';
+import { loadMakerPoChoices } from '../../lib/document-maker-po-server';
 import { labelLookup, loadWorkspace } from '../../lib/project-data';
 import {
   cardStyle,

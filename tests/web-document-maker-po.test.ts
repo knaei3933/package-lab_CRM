@@ -17,12 +17,14 @@ describe('document upload maker PO binding', () => {
       new Map([
         ['o1', [{ id: 'aaaaaaaa-1', status: 'CANCELLED' }, { id: 'bbbbbbbb-2', status: 'MAKER_PO_SENT_MANUALLY' }]],
         ['o2', [{ id: 'cccccccc-3', status: 'APPROVED_FOR_MANUAL_SEND' }]]
-      ])
+      ]),
+      { MAKER_PO_SENT_MANUALLY: '手動送付済み', APPROVED_FOR_MANUAL_SEND: '手動送付承認済み' }
     );
     expect(choices.map((c) => [c.value, c.filmSupplyOrderId])).toEqual([
       ['bbbbbbbb-2', 'o1'],
       ['cccccccc-3', 'o2']
     ]);
     expect(choices[0]!.label).toContain('FSO-1');
+    expect(choices[0]!.label).toContain('手動送付済み');
   });
 });

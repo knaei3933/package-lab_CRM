@@ -1,6 +1,5 @@
-import { callApi } from './api';
+// Pure helpers only: imported by a client component, so no server-only imports (api.ts, maker-po-data.ts values).
 import type { Choice } from './types';
-import { MAKER_PO_STATUS_LABELS } from './maker-po-data';
 import type { MakerPoViewRow } from './maker-po-data';
 
 /** Document types that are about one maker purchase order (API intake: makerPurchaseOrderId). */
@@ -18,7 +17,8 @@ export interface MakerPoChoice extends Choice {
 /** Cancelled papers are history only; every other status can still be the target of evidence. */
 export function toMakerPoChoices(
   orders: ReadonlyArray<{ id: string; code: string }>,
-  rowsByOrderId: ReadonlyMap<string, readonly MakerPoViewRow[]>
+  rowsByOrderId: ReadonlyMap<string, readonly MakerPoViewRow[]>,
+  statusLabels: Readonly<Record<string, string>>
 ): MakerPoChoice[] {
   const choices: MakerPoChoice[] = [];
   for (const order of orders) {
@@ -27,22 +27,9 @@ export function toMakerPoChoices(
       choices.push({
         value: row.id,
         filmSupplyOrderId: order.id,
-        label: `${order.code} / ${row.id.slice(0, 8)}（${MAKER_PO_STATUS_LABELS[row.status] ?? row.status}）`
+        label: `${order.code} / ${row.id.slice(0, 8)}（${statusLabels[row.status] ?? row.status}）`
       });
     }
   }
   return choices;
-}
-
-/** Reads the maker POs per order through the same API the maker PO screen uses. */
-export async function loadMakerPoChoices(
-  orders: ReadonlyArray<{ id: string; code: string }>
-): Promise<MakerPoChoice[]> {
-  const results = await Promise.all(orders.map(async (order) => {
-    const result = await callApi<{ makerPurchaseOrders: MakerPoViewRow[] }>(
-      `/api/film-supply-orders/${encodeURIComponent(order.id)}/maker-purchase-orders`
-    );
-    return [order.id, result.ok && result.data ? result.data.makerPurchaseOrders : []] as const;
-  }));
-  return toMakerPoChoices(orders, new Map(results));
 }
