@@ -1,6 +1,7 @@
 import { ActionForm } from '../../components/ActionForm';
 import { MakerPoSendEvidenceForm } from '../../components/MakerPoSendEvidenceForm';
 import { OrderCreateForm } from '../../components/OrderCreateForm';
+import { OffsetDateTimeField } from '../../components/OffsetDateTimeField';
 import { SelectField, TextareaField, TextField } from '../../components/fields';
 import { callApi, loadSessionUser, readSelectedProjectId } from '../../lib/api';
 import {
@@ -715,7 +716,7 @@ function MakerPoManualVerificationBlock({ poId, events }: { poId: string; events
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
               <SelectField name="result" label="確認結果" required choices={resultChoices} width={300} />
               <TextField name="verifierName" label="検証者名" required width={220} />
-              <TextField name="verifiedAt" label="検証日時" type="datetime-local" required width={240} />
+              <OffsetDateTimeField name="verifiedAt" label="検証日時" required width={240} />
               <TextareaField
                 name="reasonNote"
                 label="根拠（何を確認して納品を断定したか）"
@@ -794,7 +795,7 @@ function MakerPoCancellationAcknowledgementBlock({
         <input type="hidden" readOnly name="poId" value={po.id} />
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
           <TextareaField name="note" label="承認理由（取り消しを確認した根拠）" required rows={3} width={520} />
-          <TextField name="acknowledgedAt" label="承認日時（任意）" type="datetime-local" width={240} />
+          <OffsetDateTimeField name="acknowledgedAt" label="承認日時（任意）" width={240} />
           <SelectField
             name="evidenceDocumentVersionId"
             label="メーカー側の承諾を示す書類バージョン（任意）"
@@ -850,7 +851,7 @@ function MakerPoAcceptanceBlock({
           hint="この記録は「仮」と明示され、発注書の状態は動きません。最終受入確認は代表者だけが記録できます。"
         >
           <input type="hidden" readOnly name="poId" value={po.id} />
-          <TextField name="acceptedAt" label="メーカー受入の日時" type="datetime-local" width={240} />
+          <OffsetDateTimeField name="acceptedAt" label="メーカー受入の日時" width={240} />
         </ActionForm>
       </details>
 
@@ -881,7 +882,7 @@ function MakerPoAcceptanceBlock({
                   choices={acceptanceEvidenceChoices}
                   width={420}
                 />
-                <TextField name="acceptedAt" label="受入日時" type="datetime-local" width={240} />
+                <OffsetDateTimeField name="acceptedAt" label="受入日時" width={240} />
               </div>
             </ActionForm>
           </details>

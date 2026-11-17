@@ -14,6 +14,16 @@ export interface EmlFormDefaults {
   senderAddress?: string;
 }
 
+export interface EmlFormValues {
+  senderAddress: string;
+  sentAt: string;
+}
+
+export interface EmlFormEditedFields {
+  senderAddress: boolean;
+  sentAt: boolean;
+}
+
 /** Reads the RFC 822 header block and unfolds continuation lines. */
 export function parseEmlHeaders(text: string): Record<string, string[]> {
   const headers: Record<string, string[]> = {};
@@ -94,4 +104,23 @@ export function readEmlFormDefaults(text: string): EmlFormDefaults {
   }
 
   return defaults;
+}
+
+/**
+ * Applies a newly selected EML's defaults only to fields the operator has not
+ * deliberately edited. Missing values clear stale auto-fills; edited values stay.
+ */
+export function mergeEmlFormValues(
+  current: EmlFormValues,
+  edited: EmlFormEditedFields,
+  defaults: EmlFormDefaults
+): EmlFormValues {
+  return {
+    senderAddress: edited.senderAddress
+      ? current.senderAddress
+      : defaults.senderAddress ?? '',
+    sentAt: edited.sentAt
+      ? current.sentAt
+      : defaults.sentAt ?? ''
+  };
 }

@@ -1,6 +1,7 @@
 'use server';
 
 import { callApi } from '../../lib/api';
+import { normalizeDateTimeForApi } from '../../lib/datetime';
 import type { ActionState } from '../../lib/types';
 
 /**
@@ -14,6 +15,11 @@ import type { ActionState } from '../../lib/types';
 function field(formData: FormData, key: string): string {
   const value = formData.get(key);
   return typeof value === 'string' ? value.trim() : '';
+}
+
+function dateTimeField(formData: FormData, key: string): string {
+  const value = field(formData, key);
+  return value.length === 0 ? '' : normalizeDateTimeForApi(value) ?? '';
 }
 
 async function post(path: string, body: unknown): Promise<ActionState> {
@@ -85,7 +91,7 @@ export async function recordMakerPoSendEvidenceAction(
   const contentBase64 = field(formData, 'contentBase64');
   const senderAddress = field(formData, 'senderAddress');
   const recipientsRaw = field(formData, 'recipients');
-  const sentAt = field(formData, 'sentAt');
+  const sentAt = dateTimeField(formData, 'sentAt');
   if (poId.length === 0) return { ok: false, message: 'メーカー発注書が選択されていません。' };
   if (contentBase64.length === 0 && evidenceDocumentVersionId.length === 0) {
     return {
@@ -111,8 +117,8 @@ export async function recordMakerPoSendEvidenceAction(
  * check could not settle on its own (PENDING_MANUAL_VERIFICATION). The API
  * requires the verifier's name, the moment of the check, the result and the
  * grounds, and refuses anything but a pending send event — the screen forwards
- * those fields unchanged and shows the API's own refusal when the target is
- * not pending anymore.
+ * those fields with an explicit timestamp offset and shows the API's own
+ * refusal when the target is not pending anymore.
  */
 export async function verifyMakerPoSendAction(
   _prev: ActionState | null,
@@ -121,7 +127,7 @@ export async function verifyMakerPoSendAction(
   const eventId = field(formData, 'eventId');
   const result = field(formData, 'result');
   const verifierName = field(formData, 'verifierName');
-  const verifiedAt = field(formData, 'verifiedAt');
+  const verifiedAt = dateTimeField(formData, 'verifiedAt');
   const reasonNote = field(formData, 'reasonNote');
   if (eventId.length === 0) return { ok: false, message: '確認対象の送信イベントが選択されていません。' };
   if (!['confirmed', 'rejected'].includes(result)) {
@@ -166,7 +172,7 @@ export async function acknowledgeMakerPoCancellationAction(
 ): Promise<ActionState> {
   const poId = field(formData, 'poId');
   const note = field(formData, 'note');
-  const acknowledgedAt = field(formData, 'acknowledgedAt');
+  const acknowledgedAt = dateTimeField(formData, 'acknowledgedAt');
   const evidenceDocumentVersionId = field(formData, 'evidenceDocumentVersionId');
   if (poId.length === 0) return { ok: false, message: 'メーカー発注書が選択されていません。' };
   if (note.length === 0) {
@@ -189,7 +195,7 @@ export async function recordProvisionalAcceptanceAction(
   const poId = field(formData, 'poId');
   if (poId.length === 0) return { ok: false, message: 'メーカー発注書が選択されていません。' };
   const body: Record<string, unknown> = {};
-  const acceptedAt = field(formData, 'acceptedAt');
+  const acceptedAt = dateTimeField(formData, 'acceptedAt');
   if (acceptedAt.length > 0) body.acceptedAt = acceptedAt;
   return post(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/provisional-acceptance`, body);
 }
@@ -206,7 +212,7 @@ export async function recordFinalAcceptanceAction(
     return { ok: false, message: '受領証跡（acceptance_evidence）の書類バージョンを選択してください。' };
   }
   const body: Record<string, unknown> = { evidenceDocumentVersionId };
-  const acceptedAt = field(formData, 'acceptedAt');
+  const acceptedAt = dateTimeField(formData, 'acceptedAt');
   if (acceptedAt.length > 0) body.acceptedAt = acceptedAt;
   return post(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/accept-evidence`, body);
 }

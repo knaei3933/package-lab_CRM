@@ -4,7 +4,9 @@ import { useActionState, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { FormAction } from './ActionForm';
 import { SelectField, TextField } from './fields';
-import { isSentAtBeforeCeoApproval, readEmlFormDefaults } from '../lib/eml-form';
+import { datetimeLocalToIso } from '../lib/datetime';
+import type { EmlFormEditedFields, EmlFormValues } from '../lib/eml-form';
+import { isSentAtBeforeCeoApproval, mergeEmlFormValues, readEmlFormDefaults } from '../lib/eml-form';
 import type { Choice } from '../lib/types';
 import {
   buttonStyle,
@@ -25,6 +27,11 @@ interface MakerPoSendEvidenceFormProps {
   recipientAddress?: string | null;
   /** この発注書を代表承認した時刻。送信日時の前段警告に使う。 */
   ceoApprovedAt?: string | null;
+}
+
+interface MakerPoEmlFormState {
+  values: EmlFormValues;
+  edited: EmlFormEditedFields;
 }
 
 /**
@@ -51,8 +58,10 @@ export function MakerPoSendEvidenceForm({
   const [state, formAction, pending] = useActionState(action, null);
   const [contentBase64, setContentBase64] = useState('');
   const [emlFilename, setEmlFilename] = useState('');
-  const [senderAddress, setSenderAddress] = useState('');
-  const [sentAt, setSentAt] = useState('');
+  const [formState, setFormState] = useState<MakerPoEmlFormState>({
+    values: { senderAddress: '', sentAt: '' },
+    edited: { senderAddress: false, sentAt: false }
+  });
   const [message, setMessage] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -85,11 +94,15 @@ export function MakerPoSendEvidenceForm({
       headerReader.onload = () => {
         const emlText = typeof headerReader.result === 'string' ? headerReader.result : '';
         const defaults = readEmlFormDefaults(emlText);
-        setSenderAddress((current) => (current.length === 0 ? defaults.senderAddress ?? '' : current));
+        setFormState((current) => ({
+          values: mergeEmlFormValues(current.values, current.edited, defaults),
+          edited: current.edited
+        }));
         if (defaults.sentAt !== undefined) {
-          setSentAt(defaults.sentAt);
           setMessage(
-            `EMLのDateヘッダーから送信日時を既定値として設定しました（${defaults.sentAt}）。必要なら修正できます。`
+            formState.edited.sentAt
+              ? `EMLのDateヘッダーを読み取りました（${defaults.sentAt}）。編集済みの送信日時は保持します。`
+              : `EMLのDateヘッダーから送信日時を既定値として設定しました（${defaults.sentAt}）。必要なら修正できます。`
           );
         } else {
           setMessage('EMLのDateヘッダーを読み取れませんでした。送信日時は手動で入力してください。');
@@ -157,8 +170,14 @@ export function MakerPoSendEvidenceForm({
           name="senderAddress"
           label="送信元アドレス"
           required
-          value={senderAddress}
-          onChange={(event) => setSenderAddress(event.target.value)}
+          value={formState.values.senderAddress}
+          onChange={(event) => {
+            const senderAddress = event.target.value;
+            setFormState((current) => ({
+              values: { ...current.values, senderAddress },
+              edited: { ...current.edited, senderAddress: true }
+            }));
+          }}
           width={260}
         />
         <TextField
@@ -169,22 +188,30 @@ export function MakerPoSendEvidenceForm({
           width={260}
         />
         <TextField
-          name="sentAt"
+          name="sentAtLocal"
           label="送信日時"
           type="datetime-local"
           required
-          value={sentAt}
-          onChange={(event) => setSentAt(event.target.value)}
+          value={formState.values.sentAt}
+          onChange={(event) => {
+            const sentAt = event.target.value;
+            setFormState((current) => ({
+              values: { ...current.values, sentAt },
+              edited: { ...current.edited, sentAt: true }
+            }));
+          }}
           width={240}
         />
       </div>
 
-      {isSentAtBeforeCeoApproval(sentAt, ceoApprovedAt) ? (
+      {isSentAtBeforeCeoApproval(formState.values.sentAt, ceoApprovedAt) ? (
         <div style={{ ...infoBoxStyle, fontSize: 13 }}>
           注意: 入力された送信日時が、この発注書の代表承認時刻より前です。日付や時刻の誤りを確認してください。
           （この警告は記録を止めませんが、承認前の送信はAPIで保留になります。）
         </div>
       ) : null}
+
+      <input readOnly type="hidden" name="sentAt" value={datetimeLocalToIso(formState.values.sentAt) ?? ''} />
 
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
         <button type="submit" disabled={pending} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
