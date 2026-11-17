@@ -35,9 +35,21 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     label: `${project.code}（${project.name}）`
   }));
 
+  // HANDOFF §5-4 (hydration #418): every screen's markup is deterministic —
+  // timestamps and choice lists are computed only in server components and
+  // reach client forms as props, so the app itself has no server/client
+  // divergence (verified in source and by headless-browser smoke on all
+  // pages). The one warning source left is browser extensions mutating the
+  // html/body attributes (e.g. injecting helper classes) before hydration;
+  // React then reports a mismatch that the app cannot avoid.
+  // suppressHydrationWarning covers ONLY these two elements (one level deep),
+  // so genuine mismatches inside the page tree still surface.
   return (
-    <html lang="ja">
-      <body style={{ fontFamily: 'system-ui, sans-serif', margin: 0, color: '#172033', background: '#f7f9fc' }}>
+    <html lang="ja" suppressHydrationWarning>
+      <body
+        suppressHydrationWarning
+        style={{ fontFamily: 'system-ui, sans-serif', margin: 0, color: '#172033', background: '#f7f9fc' }}
+      >
         <header style={{ borderBottom: '1px solid #d8dfeb', background: '#ffffff' }}>
           <div style={{ maxWidth: 1100, margin: '0 auto', padding: '12px 24px', display: 'grid', gap: 10 }}>
             <div
