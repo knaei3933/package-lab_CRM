@@ -1,7 +1,7 @@
 import { callApi } from './api';
 import { isFilmOrderPastMakerAcceptance } from '@kanei/core';
 import { loadWorkspace } from './project-data';
-import type { FilmSupplyOrderView, Workspace } from './project-data';
+import type { AuditEventView, FilmSupplyOrderView, Workspace } from './project-data';
 
 /**
  * M8-OPERATOR S5 data assembly for the /maker-po area.
@@ -51,6 +51,18 @@ export interface MakerPoEventRow {
   senderAddress?: string | null;
   recipients?: Array<string> | null;
   attachmentHashes?: Array<string> | null;
+}
+
+/** A manual verification of one send event, shaped from its audit record. */
+export type MakerPoSendManualVerificationResult = 'confirmed' | 'rejected';
+
+export interface MakerPoSendManualVerification {
+  makerPoEventId: string;
+  result: MakerPoSendManualVerificationResult;
+  verifierName: string | null;
+  verifiedAt: string | null;
+  reasonNote: string | null;
+  recordedAt: string | null;
 }
 
 export interface PaymentGateView {
@@ -219,13 +231,66 @@ export async function loadMakerPoDetail(
 /**
  * M8-UI2: the send events a human still has to settle. The EML check records
  * what it could not prove (PENDING_MANUAL_VERIFICATION) and the paper stays
- * where it is; the representative's confirmation is the only record that
- * carries it forward, so these are exactly the rows the confirm form targets.
+ * where it is; the representative's confirmation is a separate append-only
+ * record, so a settled event is excluded even though its original status is
+ * unchanged.
  */
-export function pendingManualVerificationEvents(events: MakerPoEventRow[]): MakerPoEventRow[] {
+export function pendingManualVerificationEvents(
+  events: MakerPoEventRow[],
+  manualVerifications: ReadonlyArray<MakerPoSendManualVerification> = []
+): MakerPoEventRow[] {
+  const settledEventIds = new Set(manualVerifications.map((verification) => verification.makerPoEventId));
   return events.filter((event) =>
     event.eventType === 'SEND_EVIDENCE_REGISTERED'
-    && event.verificationStatus === 'PENDING_MANUAL_VERIFICATION');
+    && event.verificationStatus === 'PENDING_MANUAL_VERIFICATION'
+    && !settledEventIds.has(event.id));
+}
+
+/**
+ * Reads the representative's append-only send decisions from the audit rows the
+ * page already loads. The original send event keeps its pending content-check
+ * status forever, so the separate audit record — not that status — says whether
+ * a human has settled it.
+ */
+export function sendManualVerificationsFromAuditEvents(
+  auditEvents: ReadonlyArray<AuditEventView>
+): MakerPoSendManualVerification[] {
+  return auditEvents.flatMap((auditEvent) => {
+    if (
+      auditEvent.action !== 'MAKER_PO_SEND_MANUAL_VERIFICATION_RECORDED'
+      || auditEvent.entityType !== 'maker_po_event'
+    ) {
+      return [];
+    }
+
+    const afterState = auditEvent.afterState;
+    const makerPoEventId = afterState?.makerPoEventId;
+    const result = afterState?.result;
+    if (
+      typeof makerPoEventId !== 'string'
+      || makerPoEventId !== auditEvent.entityId
+      || (result !== 'confirmed' && result !== 'rejected')
+    ) {
+      return [];
+    }
+
+    const text = (value: unknown): string | null => typeof value === 'string' ? value : null;
+    return [{
+      makerPoEventId,
+      result,
+      verifierName: text(afterState?.verifierName),
+      verifiedAt: text(afterState?.verifiedAt),
+      reasonNote: text(afterState?.reasonNote),
+      recordedAt: auditEvent.occurredAt
+    }];
+  });
+}
+
+/** The rejected decisions shown as history rather than as actionable rows. */
+export function rejectedSendManualVerifications(
+  manualVerifications: ReadonlyArray<MakerPoSendManualVerification>
+): MakerPoSendManualVerification[] {
+  return manualVerifications.filter((verification) => verification.result === 'rejected');
 }
 
 /**

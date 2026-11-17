@@ -14,9 +14,16 @@ import {
   MAKER_PO_STATUS_LABELS,
   nextActionForStatus,
   PAYMENT_TERMS_LABELS,
-  pendingManualVerificationEvents
+  pendingManualVerificationEvents,
+  rejectedSendManualVerifications,
+  sendManualVerificationsFromAuditEvents
 } from '../../lib/maker-po-data';
-import type { MakerPoEventRow, MakerPoViewRow, OrderMakerPoBoard } from '../../lib/maker-po-data';
+import type {
+  MakerPoEventRow,
+  MakerPoSendManualVerification,
+  MakerPoViewRow,
+  OrderMakerPoBoard
+} from '../../lib/maker-po-data';
 import type { AuditEventView } from '../../lib/project-data';
 import { labelLookup } from '../../lib/project-data';
 import {
@@ -95,6 +102,7 @@ export default async function MakerPoPage() {
   }));
 
   const audit = await loadMakerPoAudit(projectId);
+  const sendManualVerifications = sendManualVerificationsFromAuditEvents(audit.events);
 
   const documentVersionChoices = (orderId: string, documentType: string): Choice[] =>
     board.workspace.documents
@@ -167,6 +175,7 @@ export default async function MakerPoPage() {
           sendEvidenceChoices={documentVersionChoices(entry.order.id, 'send_evidence')}
           acceptanceEvidenceChoices={documentVersionChoices(entry.order.id, 'acceptance_evidence')}
           orderEvidenceChoices={orderDocumentVersionChoices(entry.order.id)}
+          sendManualVerifications={sendManualVerifications}
         />
       ))}
 
@@ -255,7 +264,8 @@ function MakerPoOrderSection({
   stateLabel,
   sendEvidenceChoices,
   acceptanceEvidenceChoices,
-  orderEvidenceChoices
+  orderEvidenceChoices,
+  sendManualVerifications
 }: {
   entry: OrderMakerPoBoard;
   isAdmin: boolean;
@@ -264,6 +274,7 @@ function MakerPoOrderSection({
   sendEvidenceChoices: Choice[];
   acceptanceEvidenceChoices: Choice[];
   orderEvidenceChoices: Choice[];
+  sendManualVerifications: MakerPoSendManualVerification[];
 }) {
   const gate = entry.paymentGate;
   const list = entry.makerPurchaseOrders;
@@ -387,6 +398,7 @@ function MakerPoOrderSection({
               sendEvidenceChoices={sendEvidenceChoices}
               acceptanceEvidenceChoices={acceptanceEvidenceChoices}
               orderEvidenceChoices={orderEvidenceChoices}
+              sendManualVerifications={sendManualVerifications}
             />
           ))}
         </>
@@ -534,7 +546,8 @@ async function MakerPoWorkBlocks({
   role,
   sendEvidenceChoices,
   acceptanceEvidenceChoices,
-  orderEvidenceChoices
+  orderEvidenceChoices,
+  sendManualVerifications
 }: {
   po: MakerPoViewRow;
   isAdmin: boolean;
@@ -542,10 +555,14 @@ async function MakerPoWorkBlocks({
   sendEvidenceChoices: Choice[];
   acceptanceEvidenceChoices: Choice[];
   orderEvidenceChoices: Choice[];
+  sendManualVerifications: MakerPoSendManualVerification[];
 }) {
   const detail = await loadMakerPoDetail(po.id);
   const events = detail.events;
-  const pendingVerifications = pendingManualVerificationEvents(events);
+  const pendingVerifications = pendingManualVerificationEvents(events, sendManualVerifications);
+  const eventIds = new Set(events.map((event) => event.id));
+  const rejectedVerifications = rejectedSendManualVerifications(sendManualVerifications)
+    .filter((verification) => eventIds.has(verification.makerPoEventId));
   const verifiedSend = hasVerifiedSendEvent(events);
   const acknowledgementRecorded = hasCancellationAcknowledgement(events);
 
@@ -579,6 +596,20 @@ async function MakerPoWorkBlocks({
 
       {isAdmin && pendingVerifications.length > 0 ? (
         <MakerPoManualVerificationBlock poId={po.id} events={pendingVerifications} />
+      ) : null}
+
+      {isAdmin && rejectedVerifications.length > 0 ? (
+        <p style={noteStyle}>
+          手動確認履歴（却下）: {rejectedVerifications.map((verification, index) => (
+            <span key={`${verification.makerPoEventId}:${index}`}>
+              <span style={monoStyle}>{verification.makerPoEventId.slice(0, 8)}…</span>
+              ／{MAKER_PO_MANUAL_VERIFICATION_RESULT_LABELS[verification.result]}
+              ／{verification.verifierName ?? '—'}
+              ／{formatTimestamp(verification.verifiedAt ?? verification.recordedAt)}
+              {verification.reasonNote ? `／根拠: ${verification.reasonNote}` : ''}
+            </span>
+          ))}
+        </p>
       ) : null}
 
       {po.status === 'MAKER_PO_SENT_MANUALLY' ? (
