@@ -88,6 +88,59 @@ interface UploadOverrides {
   originalReceivedAt?: string;
 }
 
+interface ErrorBody {
+  code: string;
+  /** Only the CHECKLIST_INCOMPLETE answer carries the missing items. */
+  missing?: string[];
+}
+
+interface DocumentUploadBody {
+  idempotent?: boolean;
+  document: {
+    id: string;
+    projectId: string;
+    preOrderReferenceId: string | null;
+    sevenPurchaseOrderId: string | null;
+    verificationStatus: string;
+    originalFilename: string;
+  };
+  version: {
+    id: string;
+    sha256: string;
+    storagePath: string;
+    declaredMimeType: string;
+    detectedMimeType: string | null;
+    byteSize: number;
+  };
+}
+
+interface DocumentBody {
+  verificationStatus: string;
+  verifiedByUserId: string | null;
+  verifiedAt: string | null;
+  verificationNote: string | null;
+}
+
+interface SevenPurchaseOrderBody {
+  id: string;
+  verificationStatus: string;
+  verifiedByUserId: string | null;
+  verifiedAt: string | null;
+  verificationNote: string | null;
+  reviewPending: boolean;
+  reviewNote: string | null;
+  promotedAt: string | null;
+  promotedByUserId: string | null;
+  authenticityChecklist: { tamperHints: string; pastTransactionCompared: boolean };
+}
+
+interface SupplyOrderBody {
+  id: string;
+  sevenPurchaseOrderId: string;
+  status: string;
+  lines: Array<{ unit: string }>;
+}
+
 function uploadBody(_projectId: string, overrides: UploadOverrides = {}) {
   return {
     documentType: 'film_quote_kanei',
@@ -110,7 +163,7 @@ async function createPo(
     jsonPost(staffToken, { poNumber, ...extra })
   );
   expect(response.status).toBe(201);
-  return await response.json();
+  return (await response.json()) as { id: string };
 }
 
 /** A complete human record of the seven checklist items (design section 5.10). */
@@ -284,7 +337,7 @@ describe('M2 document intake and PO precedence', () => {
       uncertain: false
     }));
     expect(metadataOnly.status).toBe(422);
-    const metadataBody = await metadataOnly.json();
+    const metadataBody = (await metadataOnly.json()) as ErrorBody;
     expect(metadataBody.code).toBe('CHECKLIST_INCOMPLETE');
     expect(metadataBody.missing).toContain('past-transaction comparison');
     expect(metadataBody.missing).toContain('quote comparison');
@@ -310,7 +363,7 @@ describe('M2 document intake and PO precedence', () => {
       verificationNote: '合成チェックリスト記録T18'
     });
     expect(verified.status).toBe(200);
-    const verifiedBody = await verified.json();
+    const verifiedBody = (await verified.json()) as SevenPurchaseOrderBody;
     expect(verifiedBody.verificationStatus).toBe('verified');
     expect(verifiedBody.verifiedByUserId).toBe(staffId);
     expect(verifiedBody.verifiedAt).not.toBeNull();
@@ -333,7 +386,7 @@ describe('M2 document intake and PO precedence', () => {
       quoteComparisonNote: '金額が見積より120,000円大きい'
     });
     expect(mismatch.status).toBe(200);
-    const mismatchBody = await mismatch.json();
+    const mismatchBody = (await mismatch.json()) as SevenPurchaseOrderBody;
     expect(mismatchBody.verificationStatus).toBe('mismatch');
     expect(mismatchBody.reviewPending).toBe(true);
     expect(mismatchBody.reviewNote).toBe('金額が見積より120,000円大きい');
@@ -377,7 +430,7 @@ describe('M2 document intake and PO precedence', () => {
       })
     );
     expect(first.status).toBe(201);
-    const firstBody = await first.json();
+    const firstBody = (await first.json()) as DocumentUploadBody;
 
     const second = await app.request(
       `/api/projects/${projectIdB}/documents`,
@@ -390,7 +443,7 @@ describe('M2 document intake and PO precedence', () => {
       })
     );
     expect(second.status).toBe(201);
-    const secondBody = await second.json();
+    const secondBody = (await second.json()) as DocumentUploadBody;
 
     // Separate logical documents, one physical file.
     expect(secondBody.document.id).not.toBe(firstBody.document.id);
@@ -436,14 +489,14 @@ describe('M2 document intake and PO precedence', () => {
 
     const first = await app.request(`/api/projects/${projectIdA}/documents`, jsonPost(staffToken, body));
     expect(first.status).toBe(201);
-    const firstBody = await first.json();
+    const firstBody = (await first.json()) as DocumentUploadBody;
     expect(firstBody.document.preOrderReferenceId).not.toBeNull();
 
     const before = await fetchCounts();
 
     const second = await app.request(`/api/projects/${projectIdA}/documents`, jsonPost(staffToken, body));
     expect(second.status).toBe(200);
-    const secondBody = await second.json();
+    const secondBody = (await second.json()) as DocumentUploadBody;
     expect(secondBody.idempotent).toBe(true);
     expect(secondBody.document.id).toBe(firstBody.document.id);
     expect(secondBody.version.id).toBe(firstBody.version.id);
@@ -468,8 +521,8 @@ describe('M2 document intake and PO precedence', () => {
       })
     );
     expect(upload.status).toBe(201);
-    const uploadJson = await upload.json();
-    const referenceId = uploadJson.document.preOrderReferenceId;
+    const uploadJson = (await upload.json()) as DocumentUploadBody;
+    const referenceId = uploadJson.document.preOrderReferenceId as string;
     expect(referenceId).not.toBeNull();
 
     const [reference] = await db.select().from(preOrderReferences).where(eq(preOrderReferences.id, referenceId));
@@ -505,7 +558,7 @@ describe('M2 document intake and PO precedence', () => {
       })
     );
     expect(upload.status).toBe(201);
-    const uploadJson = await upload.json();
+    const uploadJson = (await upload.json()) as DocumentUploadBody;
     const referenceId = uploadJson.document.preOrderReferenceId as string;
 
     const promoted = await app.request(
@@ -513,7 +566,7 @@ describe('M2 document intake and PO precedence', () => {
       jsonPost(staffToken, { poNumber: 'SEVEN-M2-T08-1' })
     );
     expect(promoted.status).toBe(201);
-    const po = await promoted.json();
+    const po = (await promoted.json()) as SevenPurchaseOrderBody;
 
     const before = await fetchCounts();
     const rejected = await app.request(
@@ -532,7 +585,7 @@ describe('M2 document intake and PO precedence', () => {
       jsonPost(staffToken, { officialRegisteredAt: '2026-11-11T00:00:00.000Z' })
     );
     expect(official.status).toBe(200);
-    const officialBody = await official.json();
+    const officialBody = (await official.json()) as SevenPurchaseOrderBody;
     expect(officialBody.promotedAt).not.toBeNull();
     expect(officialBody.promotedByUserId).toBe(staffId);
 
@@ -580,7 +633,7 @@ describe('M2 document intake and PO precedence', () => {
     );
     expect(filmOrder.status).toBe(201);
     const transition = await app.request(
-      `/api/film-supply-orders/${(await filmOrder.json()).id}/transitions`,
+      `/api/film-supply-orders/${((await filmOrder.json()) as { id: string }).id}/transitions`,
       jsonPost(staffToken, { to: 'SEVEN_PO_VERIFIED' })
     );
     expect(transition.status).toBe(422);
@@ -602,7 +655,7 @@ describe('M2 document intake and PO precedence', () => {
       }))
     );
     expect(artwork.status).toBe(201);
-    const artworkJson = await artwork.json();
+    const artworkJson = (await artwork.json()) as DocumentUploadBody;
     expect(artworkJson.document.sevenPurchaseOrderId).toBe(po.id);
     expect(artworkJson.document.verificationStatus).toBe('unverified');
 
@@ -614,11 +667,11 @@ describe('M2 document intake and PO precedence', () => {
       })
     );
     expect(supplyOrder.status).toBe(201);
-    const supplyJson = await supplyOrder.json();
+    const supplyJson = (await supplyOrder.json()) as SupplyOrderBody;
     expect(supplyJson.sevenPurchaseOrderId).toBe(po.id);
     expect(supplyJson.status).toBe('DRAFT');
     expect(supplyJson.lines).toHaveLength(1);
-    expect(supplyJson.lines[0].unit).toBe('rolls');
+    expect(supplyJson.lines[0]!.unit).toBe('rolls');
 
     const [filmOrderRow] = await db.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.sevenPurchaseOrderId, po.id));
@@ -681,7 +734,7 @@ describe('M2 document intake and PO precedence', () => {
       body: form
     });
     expect(multipart.status).toBe(201);
-    const multipartBody = await multipart.json();
+    const multipartBody = (await multipart.json()) as DocumentUploadBody;
     expect(multipartBody.version.sha256).toBe(sha256OfBytes(bytes));
     expect(multipartBody.version.declaredMimeType).toBe('text/plain');
     expect(multipartBody.version.detectedMimeType).toBeNull();
@@ -700,7 +753,7 @@ describe('M2 document intake and PO precedence', () => {
       }))
     );
     expect(upload.status).toBe(201);
-    const documentId = (await upload.json()).document.id as string;
+    const documentId = ((await upload.json()) as DocumentUploadBody).document.id;
 
     const rejected = await app.request(
       `/api/documents/${documentId}/verify`,
@@ -714,7 +767,7 @@ describe('M2 document intake and PO precedence', () => {
       jsonPost(staffToken, { verificationStatus: 'verified', verificationNote: '原本と照合済み' })
     );
     expect(verified.status).toBe(200);
-    const verifiedBody = await verified.json();
+    const verifiedBody = (await verified.json()) as DocumentBody;
     expect(verifiedBody.verificationStatus).toBe('verified');
     expect(verifiedBody.verifiedByUserId).toBe(staffId);
     expect(verifiedBody.verifiedAt).not.toBeNull();

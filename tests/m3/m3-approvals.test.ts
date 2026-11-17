@@ -60,14 +60,56 @@ function jsonPost(token: string, body: unknown) {
   } as const;
 }
 
-async function postJson(url: string, body: unknown) {
-  const response = await app.request(url, jsonPost(staffToken, body));
-  return { status: response.status, body: await response.json() };
+/** Error responses carry a machine-readable code. */
+interface ErrorBody {
+  code: string;
 }
 
-async function getJson(url: string) {
+/** POST /api/artwork-revisions/:id/approvals (success fields, or the error code). */
+interface ApprovalResult extends Partial<ErrorBody> {
+  dualApproved: boolean;
+  orderStatus: string;
+  approvalEvent: { id: string };
+}
+
+/** POST /api/film-supply-orders/:id/artwork-revisions (success fields, or the error code). */
+interface RevisionResult extends Partial<ErrorBody> {
+  id: string;
+  designKey: string;
+  revisionNo: number;
+  status: string;
+  invalidatedApprovals: boolean;
+}
+
+interface GateApproval {
+  valid: boolean;
+  revoked: boolean;
+}
+
+interface GateDesign {
+  currentRevisionNo: number;
+  fileSha256: string;
+  customer: GateApproval;
+  seven: GateApproval;
+}
+
+/** GET /api/film-supply-orders/:id/approval-gate; every gate read here has at least one design. */
+interface ApprovalGate {
+  dualApproved: boolean;
+  orderStatus: string;
+  requiredDesignKeys: string[];
+  missingApprovals: { designKey: string; organization: string }[];
+  designs: [GateDesign, ...GateDesign[]];
+}
+
+async function postJson<T = unknown>(url: string, body: unknown) {
+  const response = await app.request(url, jsonPost(staffToken, body));
+  return { status: response.status, body: (await response.json()) as T };
+}
+
+async function getJson<T = unknown>(url: string) {
   const response = await app.request(url, { method: 'GET', headers: cookieHeader(staffToken) });
-  return { status: response.status, body: await response.json() };
+  return { status: response.status, body: (await response.json()) as T };
 }
 
 /** A complete human record of the seven checklist items (design section 5.10). */
@@ -211,11 +253,11 @@ function approvalBody(overrides: Record<string, unknown> = {}) {
 }
 
 async function recordApproval(revisionId: string, overrides: Record<string, unknown> = {}) {
-  return await postJson(`/api/artwork-revisions/${revisionId}/approvals`, approvalBody(overrides));
+  return await postJson<ApprovalResult>(`/api/artwork-revisions/${revisionId}/approvals`, approvalBody(overrides));
 }
 
 async function getGate(orderId: string) {
-  return await getJson(`/api/film-supply-orders/${orderId}/approval-gate`);
+  return await getJson<ApprovalGate>(`/api/film-supply-orders/${orderId}/approval-gate`);
 }
 
 /** Full approval flow for one design, in the given organization order. */
@@ -425,7 +467,7 @@ describe('M3 proof revisions and dual approval', () => {
       filmSupplyOrderId: order.orderId,
       designKey: 'label-front'
     });
-    const second = await postJson(`/api/film-supply-orders/${order.orderId}/artwork-revisions`, {
+    const second = await postJson<RevisionResult>(`/api/film-supply-orders/${order.orderId}/artwork-revisions`, {
       designKey: 'label-front',
       fileDocumentVersionId: secondProof.version.id,
       lotMarking: 'LOT-M3-0002'
@@ -548,7 +590,7 @@ describe('M3 proof revisions and dual approval', () => {
     expect(events.some((row) => row.decision === 'REVOKE' && row.organization === 'customer')).toBe(true);
 
     // The closed gate blocks the downstream maker ordering step.
-    const transition = await postJson(`/api/film-supply-orders/${order.orderId}/transitions`, { to: 'MAKER_PO_READY' });
+    const transition = await postJson<ErrorBody>(`/api/film-supply-orders/${order.orderId}/transitions`, { to: 'MAKER_PO_READY' });
     expect(transition.status).toBe(422);
     expect(transition.body.code).toBe('DUAL_APPROVAL_REQUIRED');
 
@@ -699,7 +741,7 @@ describe('M3 proof revisions and dual approval', () => {
       designKey: 'label-front'
     });
 
-    const gated = await postJson(`/api/film-supply-orders/${draftOrder.id}/artwork-revisions`, {
+    const gated = await postJson<ErrorBody>(`/api/film-supply-orders/${draftOrder.id}/artwork-revisions`, {
       designKey: 'label-front',
       fileDocumentVersionId: proof.version.id
     });
@@ -721,13 +763,13 @@ describe('M3 proof revisions and dual approval', () => {
     const secondFront = await registerDesignRevision(order, projectIdA, 'label-front');
     expect(secondFront.revision.revisionNo).toBe(2);
 
-    const missingDesign = await postJson(`/api/film-supply-orders/${order.orderId}/artwork-revisions`, {
+    const missingDesign = await postJson<ErrorBody>(`/api/film-supply-orders/${order.orderId}/artwork-revisions`, {
       fileDocumentVersionId: front.proofVersionId
     });
     expect(missingDesign.status).toBe(422);
     expect(missingDesign.body.code).toBe('DESIGN_KEY_REQUIRED');
 
-    const explicitClash = await postJson(`/api/film-supply-orders/${order.orderId}/artwork-revisions`, {
+    const explicitClash = await postJson<ErrorBody>(`/api/film-supply-orders/${order.orderId}/artwork-revisions`, {
       designKey: 'label-front',
       fileDocumentVersionId: front.proofVersionId,
       revisionNo: 1

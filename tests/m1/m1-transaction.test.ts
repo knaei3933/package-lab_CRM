@@ -40,6 +40,24 @@ interface CreatedOrder {
   lines: { id: string; orderedQuantity: string; unit: string }[];
 }
 
+interface ErrorBody {
+  code: string;
+}
+
+interface DeliveryBody {
+  id: string;
+  deliveredQuantity: string;
+  unit: string;
+}
+
+interface SevenPurchaseOrderBody {
+  id: string;
+  originalReceivedAt: string | null;
+  officialRegisteredAt: string | null;
+  preOrderReferenceId: string | null;
+  promotedAt: string | null;
+}
+
 function firstLineId(order: CreatedOrder): string {
   const line = order.lines[0];
   if (!line) throw new Error('order was created without its first line');
@@ -133,7 +151,7 @@ async function createFilmOrder(
     })
   );
   expect(response.status).toBe(201);
-  return await response.json();
+  return (await response.json()) as CreatedOrder;
 }
 
 async function createFillingOrder(
@@ -151,7 +169,7 @@ async function createFillingOrder(
     })
   );
   expect(response.status).toBe(201);
-  return await response.json();
+  return (await response.json()) as CreatedOrder;
 }
 
 /**
@@ -271,7 +289,7 @@ describe('M1 transaction structure', () => {
     // The delivery and its audit row are written together in one transaction.
     expect(after.audit_events).toBe(before.audit_events + 1);
 
-    const delivery = await response.json();
+    const delivery = (await response.json()) as DeliveryBody;
     expect(delivery.deliveredQuantity).toBe('8000.000');
     expect(delivery.unit).toBe('rolls');
     const [row] = await db.select().from(filmDeliveries).where(eq(filmDeliveries.id, delivery.id)).limit(1);
@@ -297,7 +315,7 @@ describe('M1 transaction structure', () => {
       })
     );
     expect(response.status).toBe(201);
-    const delivery = await response.json();
+    const delivery = (await response.json()) as DeliveryBody;
     expect(delivery.deliveredQuantity).toBe('95000.000');
     expect(delivery.unit).toBe('pods');
 
@@ -329,7 +347,7 @@ describe('M1 transaction structure', () => {
       })
     );
     expect(filmDeliveryWrongUnit.status).toBe(422);
-    expect((await filmDeliveryWrongUnit.json()).code).toBe('UNIT_DOMAIN_MISMATCH');
+    expect(((await filmDeliveryWrongUnit.json()) as ErrorBody).code).toBe('UNIT_DOMAIN_MISMATCH');
 
     const filmLineWrongUnit = await app.request(
       `/api/film-supply-orders/${filmOrder.id}/lines`,
@@ -406,7 +424,7 @@ describe('M1 transaction structure', () => {
       jsonPost(staffToken, { poNumber: 'SEVEN-M1-DATE-1', originalReceivedAt: '2026-11-01T00:00:00.000Z' })
     );
     expect(poResponse.status).toBe(201);
-    const po = await poResponse.json();
+    const po = (await poResponse.json()) as SevenPurchaseOrderBody;
     expect(po.originalReceivedAt).not.toBeNull();
     expect(po.officialRegisteredAt).toBeNull();
 
@@ -417,7 +435,7 @@ describe('M1 transaction structure', () => {
       jsonPost(staffToken, { to: 'SEVEN_PO_VERIFIED' })
     );
     expect(rejected.status).toBe(422);
-    expect((await rejected.json()).code).toBe('OFFICIAL_REGISTRATION_REQUIRED');
+    expect(((await rejected.json()) as ErrorBody).code).toBe('OFFICIAL_REGISTRATION_REQUIRED');
 
     const [stillDraft] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.id)).limit(1);
     expect(stillDraft?.status).toBe('DRAFT');
@@ -435,7 +453,7 @@ describe('M1 transaction structure', () => {
       jsonPost(staffToken, { to: 'SEVEN_PO_VERIFIED' })
     );
     expect(unverified.status).toBe(422);
-    expect((await unverified.json()).code).toBe('SEVEN_PO_NOT_VERIFIED');
+    expect(((await unverified.json()) as ErrorBody).code).toBe('SEVEN_PO_NOT_VERIFIED');
     expect((await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.id)).limit(1))[0]?.status)
       .toBe('DRAFT');
 
@@ -450,7 +468,7 @@ describe('M1 transaction structure', () => {
       jsonPost(staffToken, { to: 'SEVEN_PO_VERIFIED' })
     );
     expect(approved.status).toBe(200);
-    expect((await approved.json()).status).toBe('SEVEN_PO_VERIFIED');
+    expect(((await approved.json()) as { status: string }).status).toBe('SEVEN_PO_VERIFIED');
 
     const [transitionAudit] = await db.select().from(auditEvents)
       .where(and(
@@ -471,14 +489,14 @@ describe('M1 transaction structure', () => {
       jsonPost(staffToken, { to: 'FILM_SHIPPED' })
     );
     expect(skippedTransition.status).toBe(422);
-    expect((await skippedTransition.json()).code).toBe('INVALID_TRANSITION');
+    expect(((await skippedTransition.json()) as ErrorBody).code).toBe('INVALID_TRANSITION');
 
     const unknown = await app.request(
       `/api/film-supply-orders/${order.id}/transitions`,
       jsonPost(staffToken, { to: 'SOMewhere else' })
     );
     expect(unknown.status).toBe(422);
-    expect((await unknown.json()).code).toBe('UNKNOWN_STATE');
+    expect(((await unknown.json()) as ErrorBody).code).toBe('UNKNOWN_STATE');
 
     expect(await fetchCounts()).toEqual(before);
   });
@@ -504,7 +522,7 @@ describe('M1 transaction structure', () => {
 
     const initial = await app.request(url, jsonPost(staffToken, {}));
     expect(initial.status).toBe(201);
-    const initialRow = await initial.json();
+    const initialRow = (await initial.json()) as { readyAt: string | null };
     expect(initialRow).toMatchObject({
       filmDeliveryRecorded: false,
       fillingDeliveryRecorded: false,
@@ -519,13 +537,13 @@ describe('M1 transaction structure', () => {
       jsonPost(staffToken, { fillingOrderLineId: firstLineId(fillingOrder), deliveredQuantity: 9000, unit: 'pods' })
     );
     expect(fillingDeliveryResponse.status).toBe(201);
-    const fillingDelivery = await fillingDeliveryResponse.json();
+    const fillingDelivery = (await fillingDeliveryResponse.json()) as DeliveryBody;
     const poResponse = await app.request(
       `/api/projects/${commissionProjectId}/seven-purchase-orders`,
       jsonPost(staffToken, { poNumber: 'SEVEN-M1-COMMISSION-1', officialRegisteredAt: '2026-11-04T00:00:00.000Z' })
     );
     expect(poResponse.status).toBe(201);
-    const po = await poResponse.json();
+    const po = (await poResponse.json()) as SevenPurchaseOrderBody;
 
     const partial = await app.request(url, jsonPost(staffToken, {}));
     expect(partial.status).toBe(201);
@@ -542,7 +560,7 @@ describe('M1 transaction structure', () => {
       jsonPost(staffToken, { filmSupplyOrderLineId: firstLineId(filmOrder), deliveredQuantity: 300, unit: 'rolls' })
     );
     expect(filmDeliveryResponse.status).toBe(201);
-    const filmDelivery = await filmDeliveryResponse.json();
+    const filmDelivery = (await filmDeliveryResponse.json()) as DeliveryBody;
 
     // M5 (T-36): recorded deliveries escalate nothing on their own — both are
     // pending confirmation here, so the explicit evaluation must stay below
@@ -582,7 +600,7 @@ describe('M1 transaction structure', () => {
 
     const ready = await app.request(url, jsonPost(staffToken, {}));
     expect(ready.status).toBe(201);
-    const readyRow = await ready.json();
+    const readyRow = (await ready.json()) as { readyAt: string | null };
     expect(readyRow).toMatchObject({
       filmDeliveryRecorded: true,
       fillingDeliveryRecorded: true,
@@ -611,14 +629,14 @@ describe('M1 transaction structure', () => {
       jsonPost(staffToken, { referenceCode: 'PRE-M1-0001', note: '合成先行発注', originalReceivedAt: '2026-10-20T00:00:00.000Z' })
     );
     expect(referenceResponse.status).toBe(201);
-    const reference = await referenceResponse.json();
+    const reference = (await referenceResponse.json()) as { id: string };
 
     const promoteResponse = await app.request(
       `/api/pre-order-references/${reference.id}/promote`,
       jsonPost(staffToken, { poNumber: 'SEVEN-M1-PROMOTED-1' })
     );
     expect(promoteResponse.status).toBe(201);
-    const promoted = await promoteResponse.json();
+    const promoted = (await promoteResponse.json()) as SevenPurchaseOrderBody;
     expect(promoted.preOrderReferenceId).toBe(reference.id);
     expect(promoted.promotedAt).not.toBeNull();
     expect(promoted.officialRegisteredAt).toBeNull();

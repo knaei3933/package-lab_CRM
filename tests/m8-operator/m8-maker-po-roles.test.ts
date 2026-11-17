@@ -17,6 +17,7 @@ import {
   users,
   uuidv7
 } from '@kanei/db';
+import type { FilmSupplyOrderState, MakerPurchaseOrderStatus } from '@kanei/core';
 import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
@@ -84,7 +85,7 @@ async function requestAs(token: string, method: 'GET' | 'POST' | 'PATCH', url: s
   const response = await app.request(url, {
     method,
     headers: { 'content-type': 'application/json', ...cookieHeader(token) },
-    body: body === undefined ? undefined : JSON.stringify(body)
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
   });
   return { status: response.status, body: await response.json() };
 }
@@ -125,7 +126,7 @@ function snapshotFixture(orderId: string, code: string): MakerPoSnapshotFixture 
 async function insertMakerPo(input: {
   orderId: string;
   orderCode: string;
-  status?: string;
+  status?: MakerPurchaseOrderStatus;
   withAmounts?: boolean;
 }) {
   const now = new Date();
@@ -164,7 +165,7 @@ async function insertOrder(input: {
   projectId: string;
   code: string;
   paymentTerms?: string;
-  status?: string;
+  status?: FilmSupplyOrderState;
 }) {
   const now = new Date();
   const orderId = uuidv7(now);

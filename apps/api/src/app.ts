@@ -1294,7 +1294,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const projectId = context.req.param('projectId');
     // An unknown project is 404 before the assignment check: staff of this
     // company learn nothing about a project that does not exist.
-    const [project] = await db.select({ id: projects.id }).from(projects)
+    const [project] = await db.select({ id: projects.id, deletedAt: projects.deletedAt }).from(projects)
       .where(eq(projects.id, projectId)).limit(1);
     if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
     const decision = canPerform(toActor(user), 'audit_history:read', 'F1', projectId);
@@ -1341,7 +1341,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       afterState: row.afterState,
       occurredAt: row.occurredAt,
       requestMetadata: row.requestMetadata,
-      actor: row.actorId
+      // display_name is NOT NULL; it is only nullable here through the left join.
+      actor: row.actorId && row.actorDisplayName !== null
         ? { id: row.actorId, displayName: row.actorDisplayName, role: row.actorRole }
         : null
     }));
@@ -2288,7 +2289,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         verifiedAt: evidenceManualVerifications.verifiedAt,
         recordedAt: evidenceManualVerifications.recordedAt
       }).from(evidenceManualVerifications)
-        .where(inArray(evidenceManualVerifications.artworkRevisionId, revisionIds));
+        .where(inArray(evidenceManualVerifications.artworkRevisionId, revisionIds)) as EvidenceVerificationView[];
+    // result is a text column held to the EvidenceVerificationResult vocabulary by
+    // the evidence_manual_verifications_result_vocabulary CHECK (migration 0017).
 
     return { revisions: revisionRows, events: eventRows, verifications: verificationRows };
   }

@@ -152,7 +152,7 @@ interface SupplyOrder {
 }
 
 async function uploadBoundDocument(
-  order: SupplyOrder,
+  order: Pick<SupplyOrder, 'poId' | 'orderId'>,
   projectId: string,
   overrides: Record<string, unknown> = {}
 ) {

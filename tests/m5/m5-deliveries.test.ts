@@ -958,7 +958,7 @@ describe('M5 audit history endpoint', () => {
 
     const other = await getJson(`/api/projects/${otherProjectId}/audit-history`);
     expect(other.status).toBe(200);
-    const otherEvents = (other.body as { events: Array<{ entityId: string }> }).events;
+    const otherEvents = (other.body as { events: Array<{ entityId: string; entityType: string }> }).events;
     expect(otherEvents.some((event) => event.entityId === foreignPo.id)).toBe(true);
     expect(otherEvents.some((event) => event.entityType === 'film_supply_order')).toBe(false);
   });

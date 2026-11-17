@@ -10,6 +10,7 @@ import {
   evaluateMakerPoSendEvidence,
   evaluateMakerPoSendTransition,
   MAKER_PURCHASE_ORDER_STATUSES,
+  makerPurchaseOrderTransitions,
   transitionMakerPurchaseOrder,
   validateMakerPoEventType,
   validateMakerPoStatus,

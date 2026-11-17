@@ -80,7 +80,7 @@ async function requestAs(token: string, method: 'GET' | 'POST' | 'PATCH', url: s
   const response = await app.request(url, {
     method,
     headers: { 'content-type': 'application/json', ...cookieHeader(token) },
-    body: body === undefined ? undefined : JSON.stringify(body)
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
   });
   return { status: response.status, body: await response.json() };
 }
@@ -430,8 +430,8 @@ describe('M8-OPER3: a withdrawal closes the maker-PO boundary in real time', () 
     expect(rows).toHaveLength(4);
     const passedRows = rows.filter((row) => recheckState(row).result === 'passed');
     expect(passedRows).toHaveLength(1);
-    expect(recheckState(passedRows[0!]).stage).toBe('maker_po:create');
-    expect(recheckState(passedRows[0!]).reason).toBe('gate_open');
+    expect(recheckState(passedRows[0]!).stage).toBe('maker_po:create');
+    expect(recheckState(passedRows[0]!).reason).toBe('gate_open');
 
     const blockedRows = rows.filter((row) => recheckState(row).result === 'blocked');
     expect(blockedRows).toHaveLength(3);
@@ -484,8 +484,8 @@ describe('M8-OPER3: a withdrawal closes the maker-PO boundary in real time', () 
     const passedRows = rows.filter((row) => recheckState(row).result === 'passed');
     expect(blockedRows).toHaveLength(1);
     expect(passedRows).toHaveLength(1);
-    expect(recheckState(passedRows[0!]).reason).toBe('gate_open');
-    expect(recheckState(passedRows[0!]).gate.dualApproved).toBe(true);
+    expect(recheckState(passedRows[0]!).reason).toBe('gate_open');
+    expect(recheckState(passedRows[0]!).gate.dualApproved).toBe(true);
   });
 });
 

@@ -19,7 +19,12 @@ import {
 import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
-import { buildMakerPoEml, plausibleTestSentAt, sendMakerPoEmlEvidence } from '../helpers/maker-po-evidence.js';
+import {
+  buildMakerPoEml,
+  plausibleTestSentAt,
+  sendMakerPoEmlEvidence,
+  type MakerPoEmlInput
+} from '../helpers/maker-po-evidence.js';
 
 /**
  * M8-HARDEN regression tests: the four CEO-directed failure scenarios, pinned
@@ -80,7 +85,7 @@ async function requestAs(token: string, method: 'GET' | 'POST', url: string, bod
   const response = await app.request(url, {
     method,
     headers: { 'content-type': 'application/json', ...cookieHeader(token) },
-    body: body === undefined ? undefined : JSON.stringify(body)
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
   });
   return { status: response.status, body: await response.json() };
 }
@@ -258,7 +263,7 @@ async function cancelMakerPo(poId: string, note = '発注内容の訂正のた�
 }
 
 /** Registers the send as the original .eml of the production-order mail. */
-async function sendMakerPoEml(poId: string, orderCode: string, overrides: Parameters<typeof buildMakerPoEml>[0] = {}) {
+async function sendMakerPoEml(poId: string, orderCode: string, overrides: Omit<MakerPoEmlInput, 'orderCode'> = {}) {
   return await sendMakerPoEmlEvidence((url, body) => postAs(staffToken, url, body), poId, {
     orderCode,
     ...overrides

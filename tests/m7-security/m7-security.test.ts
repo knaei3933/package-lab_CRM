@@ -654,6 +654,30 @@ describe('S3: the audit history answer is filtered by role, the rows never are',
       ));
     expect((sendEventRow as unknown as { senderAddress: string }).senderAddress).toBe('staff@kanei.example');
   });
+
+  it('answers 404 for a soft-deleted project, even to admin', async () => {
+    const at = new Date();
+    const deletedProjectId = uuidv7(at);
+    await db.insert(projects).values({
+      id: deletedProjectId,
+      code: `TEST-M7-DELETED-${deletedProjectId.slice(-8)}`,
+      name: '合成M7削除済み案件',
+      businessUnit: 'F1' as const,
+      route: 'F1' as const,
+      leadSource: 'KANEI',
+      status: 'DRAFT' as const,
+      endCustomerAccountId: customerAccountId,
+      sevenAccountId,
+      makerAccountId,
+      createdByUserId: adminId,
+      createdAt: at,
+      updatedAt: at,
+      deletedAt: at
+    });
+
+    const answer = await getAs(adminToken, `/api/projects/${deletedProjectId}/audit-history`);
+    expect(answer.status).toBe(404);
+  });
 });
 
 describe('S4: a checklist-unverified purchase order cannot advance work', () => {

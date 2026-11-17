@@ -89,7 +89,7 @@ async function requestAs(token: string, method: 'GET' | 'POST', url: string, bod
   const response = await app.request(url, {
     method,
     headers: { 'content-type': 'application/json', ...cookieHeader(token) },
-    body: body === undefined ? undefined : JSON.stringify(body)
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
   });
   return { status: response.status, body: await response.json() };
 }
