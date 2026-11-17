@@ -141,6 +141,13 @@
       "when": 1795644760000,
       "tag": "0019_m8_harden2_cancellation_acknowledgement",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1795731560000,
+      "tag": "0020_m8_harden3_maker_po_active_insert_guard",
+      "breakpoints": true
     }
   ]
 }
