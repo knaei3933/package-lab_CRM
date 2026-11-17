@@ -16,6 +16,17 @@
 # and the acceptance. The M8-OPER3 dual-approval re-check fires on the boundary
 # the CEO reviews: maker-PO create, CEO approval, send evidence, acceptance.
 #
+# Idempotent re-runs: the demo project carries the FIXED code DEMO-OPER3 (an
+# earlier version stamped the code with $(date), so every re-run minted a fresh
+# project — the source of the five duplicate demo projects). Before creating
+# anything the script lists GET /api/projects and, when a project with that
+# code already exists, reuses its id and skips the whole build, so re-running
+# never creates a second demo project. To rebuild the demo from scratch, first
+# hard-delete the existing project row (projects.code is UNIQUE even for
+# soft-deleted rows, so a soft delete leaves the code reserved and the next
+# run fails loudly instead of duplicating). The reuse lookup runs before the
+# account-id requirement so a plain re-run needs no environment at all.
+#
 # Run it against the server whose DATABASE_URL points at the database the demo
 # belongs in (the script itself holds no credentials and writes only through
 # the API):
@@ -39,6 +50,8 @@
 set -uo pipefail
 
 API_BASE="${KANEI_API_BASE_URL:-http://127.0.0.1:3081}"
+# Fixed demo project code — the idempotency key for re-runs (never stamp it).
+DEMO_PROJECT_CODE="DEMO-OPER3"
 USERNAME="${KANEI_DEMO_USERNAME:-admin_composite}"
 PASSWORD="${KANEI_DEMO_PASSWORD:-composite-admin-pass}"
 CUSTOMER_ACCOUNT_ID="${KANEI_DEMO_CUSTOMER_ACCOUNT_ID:-}"
@@ -96,13 +109,6 @@ base64_content() {
   printf '%s' "$1" | base64 | tr -d '\n'
 }
 
-if [ -z "$CUSTOMER_ACCOUNT_ID" ] || [ -z "$SEVEN_ACCOUNT_ID" ] || [ -z "$MAKER_ACCOUNT_ID" ]; then
-  echo "使い方: KANEI_DEMO_CUSTOMER_ACCOUNT_ID / KANEI_DEMO_SEVEN_ACCOUNT_ID / KANEI_DEMO_MAKER_ACCOUNT_ID を指定してください"
-  echo "  既存IDの一覧: psql \"\$DATABASE_URL\" -c \"select role, id from accounts where deleted_at is null and is_active order by created_at\""
-  echo "  空のデータベースなら先に npm run db:seed （COMP-CUST-001 / COMP-SEVEN-001 / COMP-MAKER-001 を作成）"
-  exit 2
-fi
-
 echo "KANEI M8-OPER3 demo seed — API: $API_BASE / paymentTerms: $PAYMENT_TERMS"
 
 # ---------------------------------------------------------------- session
@@ -112,9 +118,41 @@ step "GET /api/health" 200 "$STATUS"
 call POST /api/auth/login "$(printf '{"username":"%s","password":"%s"}' "$USERNAME" "$PASSWORD")"
 step "POST /api/auth/login ($USERNAME)" 201 "$STATUS"
 
+# ------------------------------------------------- reuse existing demo project
+# The list endpoint answers compact JSON {"projects":[{"id":"…","code":"…"}]}
+# with id before code; the grep relies on that key order. If the order ever
+# changes, EXISTING_PROJECT_ID stays empty and the create below fails on the
+# reserved unique code — it fails loudly instead of duplicating.
+call GET /api/projects
+step "GET /api/projects (demo project lookup)" 200 "$STATUS"
+EXISTING_PROJECT_ID="$(grep -oE "\"id\":\"[0-9a-f-]{36}\",\"code\":\"$DEMO_PROJECT_CODE\"" "$BODY" | head -n 1 | cut -d'"' -f4)"
+
+if [ -n "$EXISTING_PROJECT_ID" ]; then
+  PASSED=$((PASSED + 1))
+  printf 'ok   %-58s %s\n' "existing demo project (code $DEMO_PROJECT_CODE) reuse" "$EXISTING_PROJECT_ID"
+  echo
+  echo "既存のデモ案件 (code $DEMO_PROJECT_CODE) を再利用 — 新しいデータは作成しません（冪等再実行）。"
+  echo "  再構築したい場合は既存の案件行を物理削除してから再実行してください。"
+  echo
+  echo "  project id : $EXISTING_PROJECT_ID"
+  echo
+  echo "steps passed: $PASSED / failed: $FAILED"
+  [ "$FAILED" -eq 0 ] || exit 1
+  exit 0
+fi
+
+# Creation path: the three demo account ids are required from here on.
+if [ -z "$CUSTOMER_ACCOUNT_ID" ] || [ -z "$SEVEN_ACCOUNT_ID" ] || [ -z "$MAKER_ACCOUNT_ID" ]; then
+  echo "使い方: KANEI_DEMO_CUSTOMER_ACCOUNT_ID / KANEI_DEMO_SEVEN_ACCOUNT_ID / KANEI_DEMO_MAKER_ACCOUNT_ID を指定してください"
+  echo "  既存IDの一覧: psql \"\$DATABASE_URL\" -c \"select role, id from accounts where deleted_at is null and is_active order by created_at\""
+  echo "  空のデータベースなら先に npm run db:seed （COMP-CUST-001 / COMP-SEVEN-001 / COMP-MAKER-001 を作成）"
+  echo "  既存のデモ案件があれば上の再利用チェックで抜けるため、環境変数なしの再実行は安全です。"
+  exit 2
+fi
+
 # The representative (admin) may drive every step; no project assignment is
 # needed, so the demo project stays self-contained.
-call POST /api/projects "$(printf '{"code":"DEMO-OPER3-%s","name":"デモOPER3案件（CEO確認用）","route":"F1","endCustomerAccountId":"%s","sevenAccountId":"%s","makerAccountId":"%s"}' "$STAMP" "$CUSTOMER_ACCOUNT_ID" "$SEVEN_ACCOUNT_ID" "$MAKER_ACCOUNT_ID")"
+call POST /api/projects "$(printf '{"code":"%s","name":"デモOPER3案件（CEO確認用）","route":"F1","endCustomerAccountId":"%s","sevenAccountId":"%s","makerAccountId":"%s"}' "$DEMO_PROJECT_CODE" "$CUSTOMER_ACCOUNT_ID" "$SEVEN_ACCOUNT_ID" "$MAKER_ACCOUNT_ID")"
 step "POST /api/projects (demo project)" 201 "$STATUS"
 PROJECT_ID="$(extract '"id":"[0-9a-f-]{36}"' 4)"
 require_id "demo project id" "$PROJECT_ID"
