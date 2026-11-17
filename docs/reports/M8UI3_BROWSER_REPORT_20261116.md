@@ -28,7 +28,7 @@
 1. **브라우저 폼에서의 실제 EML 업로드 제출** — 실제 Thunderbird 원본 .eml이 필요 (합성 EML은 API 레벨 E2E로 실측 완료). 대표님이 데모 화면에서 등록 시 이상 동작이 있으면 콘솔 로그·화면 캡처를 공유 주시면 대응합니다.
 2. 브라우저 Console 상세 (내 도구는 pageerror·console.error 캡처만 가능 — 네트워크 탭 상세는 대표님 DevTools 확인 필요 시 공유 요청)
 
-## 4. 대표님 체크리스트 (localhost:3000 / arwg / rlarjsdnd)
+## 4. 대표님 체크리스트 (localhost:3000 / admin 계정 — 비밀번호는 문서에 기재하지 않음)
 
 1. 재접속(Ctrl+F5) → Application error 없음 + **案件選択이 드롭다운**
 2. 드롭다운에서 「デモOPER3案件（CEO確認用）」 선택 → /maker-po
