@@ -8,7 +8,7 @@
  * trusting the server's TZ.
  */
 
-const DATETIME_LOCAL_PATTERN =
+export const DATETIME_LOCAL_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?$/;
 const DATETIME_WITH_EXPLICIT_OFFSET_PATTERN =
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,6})?)?(?:Z|[+-]\d{2}:\d{2})$/;
@@ -31,4 +31,41 @@ export function normalizeDateTimeForApi(value: string): string | null {
   if (!DATETIME_LOCAL_PATTERN.test(value)) return null;
   const seconds = DATETIME_WITH_SECONDS_PATTERN.test(value) ? '' : ':00';
   return `${value}${seconds}+09:00`;
+}
+
+/**
+ * Reads the hidden explicit-offset field and, if it was submitted before
+ * hydration, falls back to the visible local value with Asia/Tokyo semantics.
+ */
+export function offsetDateTimeField(formData: FormData, key: string): string {
+  const read = (name: string): string => {
+    const value = formData.get(name);
+    return typeof value === 'string' ? value.trim() : '';
+  };
+  const explicit = read(key);
+  if (explicit.length > 0) return normalizeDateTimeForApi(explicit) ?? '';
+  const local = read(`${key}Local`);
+  return local.length === 0 ? '' : normalizeDateTimeForApi(local) ?? '';
+}
+
+/** The current wall clock in Japan, regardless of the server process timezone. */
+export function asiaTokyoDatetimeLocalNow(now: Date = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(now);
+  const value = (partType: string): string => parts.find((part) => part.type === partType)?.value ?? '';
+  const year = value('year');
+  const month = value('month');
+  const day = value('day');
+  const hour = value('hour');
+  const minute = value('minute');
+  return year.length > 0 && month.length > 0 && day.length > 0 && hour.length > 0 && minute.length > 0
+    ? `${year}-${month}-${day}T${hour}:${minute}`
+    : '';
 }

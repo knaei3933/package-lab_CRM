@@ -7,6 +7,8 @@
  * Node's crypto and the browser form only needs Date and From.
  */
 
+import { DATETIME_LOCAL_PATTERN } from './datetime';
+
 export interface EmlFormDefaults {
   /** The EML Date header, formatted for <input type="datetime-local">. */
   sentAt?: string;
@@ -70,7 +72,7 @@ export function toDatetimeLocalValue(date: Date): string {
 
 /** Parses exactly the minute precision accepted by datetime-local. */
 export function parseDatetimeLocalValue(value: string): Date | null {
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?$/.test(value)) return null;
+  if (!DATETIME_LOCAL_PATTERN.test(value)) return null;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? null : date;
 }

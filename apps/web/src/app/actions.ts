@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { FILM_UNITS, FILLING_UNITS } from '@kanei/core';
 import { callApi, PROJECT_COOKIE, readSelectedProjectId } from '../lib/api';
+import { offsetDateTimeField } from '../lib/datetime';
 import type { ActionState } from '../lib/types';
 
 /**
@@ -35,6 +36,8 @@ function numberField(formData: FormData, key: string): number | null {
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : null;
 }
+
+const dateTimeField = offsetDateTimeField;
 
 async function requireProjectId(): Promise<string | ActionState> {
   const projectId = await readSelectedProjectId();
@@ -226,7 +229,7 @@ export async function verifyEvidenceManualAction(_prev: ActionState | null, form
   const approvalEventId = field(formData, 'approvalEventId');
   const result = field(formData, 'result');
   const verifierName = field(formData, 'verifierName');
-  const verifiedAt = field(formData, 'verifiedAt');
+  const verifiedAt = dateTimeField(formData, 'verifiedAt');
   const reasonNote = field(formData, 'reasonNote');
   if (approvalEventId.length === 0) return { ok: false, message: '確認対象の承認イベントが見つかりません。' };
   if (result !== 'confirmed' && result !== 'rejected') {
@@ -349,7 +352,7 @@ export async function recordArtworkApprovalAction(_prev: ActionState | null, for
   const evidenceDocumentVersionId = field(formData, 'evidenceDocumentVersionId');
   const evidenceIdentifier = field(formData, 'evidenceIdentifier');
   const evidenceSource = field(formData, 'evidenceSource');
-  const eventTime = field(formData, 'eventTime');
+  const eventTime = dateTimeField(formData, 'eventTime');
   if (revisionId.length === 0) return { ok: false, message: '校了対象の版が見つかりません。' };
   if (organization !== 'customer' && organization !== 'seven') {
     return { ok: false, message: '承認組織（顧客／セブン化学）を選んでください。' };
@@ -400,7 +403,7 @@ export async function recordDeliveryAction(_prev: ActionState | null, formData: 
     unit,
     deliveredQuantity: quantity
   };
-  const deliveredAt = field(formData, 'deliveredAt');
+  const deliveredAt = dateTimeField(formData, 'deliveredAt');
   if (deliveredAt.length > 0) body.deliveredAt = deliveredAt;
   const carrierReference = optionalField(formData, 'carrierReference');
   if (carrierReference) body.carrierReference = carrierReference;

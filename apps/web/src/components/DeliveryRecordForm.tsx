@@ -2,6 +2,7 @@
 
 import { useActionState, useState } from 'react';
 import type { FormAction } from './ActionForm';
+import { OffsetDateTimeField } from './OffsetDateTimeField';
 import type { Choice } from '../lib/types';
 import { buttonStyle, errorMessageStyle, inputStyle, noteStyle, okMessageStyle } from '../lib/ui';
 
@@ -92,10 +93,7 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices }: Delive
             ))}
           </select>
         </label>
-        <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>納品日（任意・未入力は現在日時）</span>
-          <input type="datetime-local" name="deliveredAt" style={{ ...inputStyle, width: 240 }} />
-        </label>
+        <OffsetDateTimeField name="deliveredAt" label="納品日（任意・未入力は現在日時）" width={240} />
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>運送業者参照（任意）</span>
           <input name="carrierReference" style={{ ...inputStyle, width: 200 }} />

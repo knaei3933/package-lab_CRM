@@ -1,7 +1,7 @@
 'use server';
 
 import { callApi } from '../../lib/api';
-import { normalizeDateTimeForApi } from '../../lib/datetime';
+import { offsetDateTimeField } from '../../lib/datetime';
 import type { ActionState } from '../../lib/types';
 
 /**
@@ -17,10 +17,7 @@ function field(formData: FormData, key: string): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
-function dateTimeField(formData: FormData, key: string): string {
-  const value = field(formData, key);
-  return value.length === 0 ? '' : normalizeDateTimeForApi(value) ?? '';
-}
+const dateTimeField = offsetDateTimeField;
 
 async function post(path: string, body: unknown): Promise<ActionState> {
   const result = await callApi(path, { method: 'POST', body });

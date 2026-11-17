@@ -1,5 +1,6 @@
 import { ActionForm } from '../../components/ActionForm';
 import { ApprovalDecisionForm } from '../../components/ApprovalDecisionForm';
+import { OffsetDateTimeField } from '../../components/OffsetDateTimeField';
 import { SelectField, TextField } from '../../components/fields';
 import {
   recordArtworkApprovalAction,
@@ -7,6 +8,7 @@ import {
   verifyEvidenceManualAction
 } from '../actions';
 import { loadSessionUser, readSelectedProjectId } from '../../lib/api';
+import { asiaTokyoDatetimeLocalNow } from '../../lib/datetime';
 import { labelLookup, loadApprovalGate, loadWorkspace } from '../../lib/project-data';
 import type {
   ApprovalGateView,
@@ -363,7 +365,7 @@ function PendingVerificationSection({
               <input type="hidden" readOnly name="approvalEventId" value={entry.approvalEventId} />
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
                 <TextField name="verifierName" label="検証者" required width={200} />
-                <TextField name="verifiedAt" label="検証日時" type="datetime-local" required width={240} />
+                <OffsetDateTimeField name="verifiedAt" label="検証日時" required width={240} />
                 <SelectField
                   name="result"
                   label="結果"
@@ -390,11 +392,7 @@ function PendingVerificationSection({
   );
 }
 
-/** Current wall-clock time as a datetime-local value (server local time). */
+/** Current wall-clock time in Japan, explicitly independent of the server timezone. */
 function nowInputValue(): string {
-  const now = new Date();
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(
-    now.getMinutes()
-  )}`;
+  return asiaTokyoDatetimeLocalNow();
 }

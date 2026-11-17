@@ -2,6 +2,7 @@
 
 import { useActionState } from 'react';
 import type { FormAction } from './ActionForm';
+import { OffsetDateTimeField } from './OffsetDateTimeField';
 import type { Choice } from '../lib/types';
 import { buttonStyle, errorMessageStyle, inputStyle, noteStyle, okMessageStyle } from '../lib/ui';
 
@@ -77,10 +78,13 @@ export function ApprovalDecisionForm({
             ))}
           </select>
         </label>
-        <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>承認日時（外部イベントの時刻）<span style={{ color: '#b91c1c' }}>（必須）</span></span>
-          <input type="datetime-local" name="eventTime" required defaultValue={defaultEventTime} style={{ ...inputStyle, width: 240 }} />
-        </label>
+        <OffsetDateTimeField
+          name="eventTime"
+          label="承認日時（外部イベントの時刻）"
+          required
+          defaultValue={defaultEventTime}
+          width={240}
+        />
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>承認者名（任意・そのまま記録します）</span>
           <input name="approverName" style={{ ...inputStyle, width: 180 }} />
