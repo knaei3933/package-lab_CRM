@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState } from 'react';
+import { useActionState, useState } from 'react';
 import type { FormAction } from './ActionForm';
 import { OffsetDateTimeField } from './OffsetDateTimeField';
 import type { Choice } from '../lib/types';
@@ -30,6 +30,18 @@ export function ApprovalDecisionForm({
   defaultEventTime
 }: ApprovalDecisionFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
+  const [evidenceIdentifier, setEvidenceIdentifier] = useState(
+    evidenceChoices[0]?.autoEvidenceIdentifier ?? ''
+  );
+  const [selectedEvidenceVersionId, setSelectedEvidenceVersionId] = useState(
+    evidenceChoices[0]?.value ?? ''
+  );
+
+  function onEvidenceChange(value: string): void {
+    const selected = evidenceChoices.find((choice) => choice.value === value);
+    setSelectedEvidenceVersionId(value);
+    setEvidenceIdentifier(selected?.autoEvidenceIdentifier ?? '');
+  }
 
   if (evidenceChoices.length === 0) {
     return (
@@ -48,13 +60,21 @@ export function ApprovalDecisionForm({
           <span style={{ fontSize: 13 }}>
             承認証跡の書類バージョン<span style={{ color: '#b91c1c' }}>（必須・両組織で同じ版を引用します）</span>
           </span>
-          <select name="evidenceDocumentVersionId" required style={{ ...inputStyle, width: 380 }}>
+          <select
+            name="evidenceDocumentVersionId"
+            required
+            onChange={(event) => onEvidenceChange(event.target.value)}
+            style={{ ...inputStyle, width: 380 }}
+          >
             {evidenceChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
                 {choice.label}
               </option>
             ))}
           </select>
+          <span style={noteStyle}>
+            保存済みEMLのMessage-IDはシステムが自動抽出します。PDF・画像などEML以外だけ入力できます。
+          </span>
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>
@@ -63,10 +83,16 @@ export function ApprovalDecisionForm({
           <input
             name="evidenceIdentifier"
             required
+            value={evidenceIdentifier}
+            onChange={(event) => setEvidenceIdentifier(event.target.value)}
+            readOnly={Boolean(evidenceChoices.find((choice) => choice.value === selectedEvidenceVersionId)?.autoEvidenceIdentifier)}
             minLength={8}
-            placeholder="例：メールのMessage-IDや署名ブロックのハッシュ"
+            placeholder="例：メールは自動入力、PDFは署名ブロックのハッシュ"
             style={{ ...inputStyle, width: 300 }}
           />
+          <span style={noteStyle}>
+            保存済みEMLのMessage-IDはシステムが自動抽出します。PDF・画像などEML以外だけ入力できます。
+          </span>
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>証跡の入手経路<span style={{ color: '#b91c1c' }}>（必須）</span></span>

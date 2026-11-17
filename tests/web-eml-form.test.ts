@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   isSentAtBeforeCeoApproval,
+  makerPoMailSubject,
   parseDatetimeLocalValue,
   parseEmlHeaders,
   parseEmlFormSender,
@@ -30,6 +31,13 @@ describe('maker PO manual-send EML defaults', () => {
     );
     expect(defaults.senderAddress).toBe('staff@kanei.example');
     expect(defaults.sentAt).toBe(toDatetimeLocalValue(new Date('2026-11-17T09:54:00+00:00')));
+  });
+
+  it('reads the raw subject and keeps G3 code insertion client-side only', () => {
+    const defaults = readEmlFormDefaults('Subject:  製造依頼\r\n\r\nbody');
+    expect(defaults.subject).toBe('製造依頼');
+    expect(makerPoMailSubject('FSO-001', defaults.subject)).toBe('FSO-001 製造依頼');
+    expect(makerPoMailSubject('FSO-001', 'FSO-001 製造依頼')).toBe('FSO-001 製造依頼');
   });
 
   it('flags only a valid send time earlier than CEO approval', () => {

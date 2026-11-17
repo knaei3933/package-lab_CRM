@@ -74,17 +74,25 @@ export function SelectField({
   includeBlank = false,
   blankLabel = '（選択なし）',
   defaultValue,
-  width
+  width,
+  onChange
 }: FieldProps & {
   choices: Choice[];
   includeBlank?: boolean | undefined;
   blankLabel?: string | undefined;
   defaultValue?: string | undefined;
   width?: number | undefined;
+  onChange?: ChangeEventHandler<HTMLSelectElement> | undefined;
 }) {
   return (
     <LabelWrapper name={name} label={label} required={required} hint={hint}>
-      <select name={name} defaultValue={defaultValue} required={required} style={{ ...inputStyle, width: width ?? 280 }}>
+      <select
+        name={name}
+        defaultValue={defaultValue}
+        required={required}
+        onChange={onChange}
+        style={{ ...inputStyle, width: width ?? 280 }}
+      >
         {includeBlank ? <option value="">{blankLabel}</option> : null}
         {/* M8-UI3 FIX 1: a choice list is always server-assembled, so a read
             that came back empty-handed must render an empty selector rather

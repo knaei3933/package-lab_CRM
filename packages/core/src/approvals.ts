@@ -1,5 +1,5 @@
 import type { DocumentType } from './documents.js';
-import { normalizeMessageId, parseEml } from './eml.js';
+import { isValidMessageId, normalizeMessageId, parseEml } from './eml.js';
 
 /**
  * M3 proof revisions and dual approval (design sections 5.7 and 6.1).
@@ -90,6 +90,27 @@ const TEXT_LIKE_EVIDENCE_PREFIXES = ['text/'] as const;
 export function isTextLikeEvidence(contentType: string | null | undefined): boolean {
   if (typeof contentType !== 'string') return false;
   return TEXT_LIKE_EVIDENCE_PREFIXES.some((prefix) => contentType.toLowerCase().startsWith(prefix));
+}
+
+/**
+ * G6: the only identifier the system may auto-fill for a stored mail is that
+ * mail's own Message-ID. Exactly one valid Message-ID header is required; quoted
+ * text, In-Reply-To, References and repeated headers never become an identifier.
+ */
+export function extractStoredEmlMessageId(bytes: Buffer): string | null {
+  const parsed = parseEml(bytes);
+  if (!parsed.ok) return null;
+  const headers = parsed.eml.headers;
+  const idHeaders = headers['message-id'] ?? [];
+  const looksLikeMail =
+    idHeaders.length > 0 ||
+    headers['in-reply-to'] !== undefined ||
+    headers['references'] !== undefined ||
+    headers['received'] !== undefined ||
+    (headers['from'] !== undefined && headers['date'] !== undefined);
+  if (!looksLikeMail || idHeaders.length !== 1) return null;
+  const messageId = parsed.eml.messageId;
+  return messageId !== null && isValidMessageId(messageId) ? messageId : null;
 }
 
 /** The two organizations whose approvals the artwork gate requires. */

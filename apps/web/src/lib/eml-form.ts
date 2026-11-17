@@ -14,6 +14,8 @@ export interface EmlFormDefaults {
   sentAt?: string;
   /** The usable mailbox in From, without any display name. */
   senderAddress?: string;
+  /** The raw EML Subject header, for the compose-subject helper below. */
+  subject?: string;
 }
 
 export interface EmlFormValues {
@@ -105,7 +107,22 @@ export function readEmlFormDefaults(text: string): EmlFormDefaults {
     if (senderAddress !== undefined) defaults.senderAddress = senderAddress;
   }
 
+  const rawSubject = headers.subject?.[0];
+  if (rawSubject !== undefined) defaults.subject = rawSubject;
+
   return defaults;
+}
+
+/**
+ * G3: the code the evidence gate checks is inserted at the front of the subject
+ * the operator uses outside the CRM. The strict API never repairs or trusts a
+ * rewritten EML; this helper gives the manual mail one unambiguous template.
+ */
+export function makerPoMailSubject(orderCode: string, subject = '製造先発注書'): string {
+  const trimmedSubject = subject.trim();
+  return trimmedSubject.toLowerCase().startsWith(orderCode.toLowerCase())
+    ? trimmedSubject
+    : `${orderCode} ${trimmedSubject}`;
 }
 
 /**

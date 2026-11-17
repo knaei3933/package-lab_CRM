@@ -6,13 +6,14 @@ import type { FormAction } from './ActionForm';
 import { SelectField, TextField } from './fields';
 import { datetimeLocalToIso } from '../lib/datetime';
 import type { EmlFormEditedFields, EmlFormValues } from '../lib/eml-form';
-import { isSentAtBeforeCeoApproval, mergeEmlFormValues, readEmlFormDefaults } from '../lib/eml-form';
+import { isSentAtBeforeCeoApproval, makerPoMailSubject, mergeEmlFormValues, readEmlFormDefaults } from '../lib/eml-form';
 import type { Choice } from '../lib/types';
 import {
   buttonStyle,
   errorMessageStyle,
   infoBoxStyle,
   inputStyle,
+  monoStyle,
   noteStyle,
   okMessageStyle,
   subtleButtonStyle
@@ -27,6 +28,8 @@ interface MakerPoSendEvidenceFormProps {
   recipientAddress?: string | null;
   /** この発注書を代表承認した時刻。送信日時の前段警告に使う。 */
   ceoApprovedAt?: string | null;
+  /** G3: the frozen CRM order code inserted at the front of the mail subject. */
+  orderCode?: string | null;
 }
 
 interface MakerPoEmlFormState {
@@ -53,7 +56,8 @@ export function MakerPoSendEvidenceForm({
   poId,
   sendEvidenceChoices,
   recipientAddress,
-  ceoApprovedAt
+  ceoApprovedAt,
+  orderCode
 }: MakerPoSendEvidenceFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   const [contentBase64, setContentBase64] = useState('');
@@ -64,6 +68,7 @@ export function MakerPoSendEvidenceForm({
   });
   const [message, setMessage] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
 
   function onFileChange(event: ChangeEvent<HTMLInputElement>): void {
     const file = event.target.files?.[0];
@@ -94,6 +99,7 @@ export function MakerPoSendEvidenceForm({
       headerReader.onload = () => {
         const emlText = typeof headerReader.result === 'string' ? headerReader.result : '';
         const defaults = readEmlFormDefaults(emlText);
+      setSelectedSubject(defaults.subject ?? '製造先発注書');
         setFormState((current) => ({
           values: mergeEmlFormValues(current.values, current.edited, defaults),
           edited: current.edited
@@ -123,6 +129,7 @@ export function MakerPoSendEvidenceForm({
   function clearFile(): void {
     setContentBase64('');
     setEmlFilename('');
+    setSelectedSubject(null);
     if (fileInput.current) fileInput.current.value = '';
   }
 
@@ -156,6 +163,13 @@ export function MakerPoSendEvidenceForm({
         （APIが send_evidence 書類として保存して検証します）。Thunderbirdの送信済みフォルダから
         書き出した .eml をそのまま選んでください。
       </p>
+
+      {orderCode ? (
+        <div style={noteStyle}>
+          送信前の件名テンプレート（先頭の発注コードは自動挿入）:
+          <div style={monoStyle}>{makerPoMailSubject(orderCode, selectedSubject ?? undefined)}</div>
+        </div>
+      ) : null}
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
         <SelectField

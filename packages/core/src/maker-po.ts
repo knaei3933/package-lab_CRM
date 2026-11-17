@@ -866,6 +866,9 @@ export function evaluateMakerPoSendEvidence(
     expectedRecipientAddress: context.snapshot.recipient.address,
     recordedSenderAddress: senderAddress,
     subjectIdentifiers: [context.snapshot.order.code, context.snapshot.order.sevenPoNumber ?? ''],
+    // G7: the subject template inserts this code first; a readable PDF must say
+    // the same code before the attachment hash match can verify.
+    documentCode: context.snapshot.order.code,
     // M8-HARDEN2 FIX 1: the approved artifact hashes — the PO / artwork
     // revision documents the snapshot freezes — are what an attachment must
     // match for the send to verify.

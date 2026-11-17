@@ -1,6 +1,6 @@
-# Evidence identifier input standard (proposal) — 2026-11-17
+# Evidence identifier input standard (adopted) — 2026-11-17
 
-HANDOFF §5 items 2 and 3. Status: proposal for the representative's decision.
+HANDOFF §5 items 2 and 3. Status: adopted on 2026-11-18 (대표 확정 11-18).
 Sanitized: this file contains counts, shapes and rules only. The full analysis with
 real values stays outside the repository.
 
@@ -65,15 +65,15 @@ Rules:
 |---|---|---|---|
 | G1 | `approvals.ts` `isTextLikeEvidence` | Only `text/` counts as text. `message/rfc822`, which is an accepted upload type, is treated as binary | A genuine EML uploaded as approval evidence is always `pending_manual_verification` (4 of 4) even though its Message-ID is machine verifiable | **Status: FIXED in df051a4** (G1: `message/rfc822` is parsed as an email; an unparsable payload stays pending).
 | G2 | `approvals.ts` `evaluateApprovalEvidenceIdentifier` | Raw substring match over the whole file | Reply mails quote the parent's Message-ID in two headers, so the parent's ID would be accepted as `verified_in_document` for the reply. Inferred from the code and the 87/87 header finding, not executed as an exploit | **Status: FIXED in df051a4** (an EML identifier must equal the mail's own Message-ID, brackets and domain case normalized; quoted text, In-Reply-To, References and partial ids are refused).
-| G3 | `maker-po.ts` subject check | Case-insensitive substring of order code / Seven PO number | No real outbound mail carries either, so real sends would stay pending (reproduced). A short generic code would pass trivially | **Status: OPEN**
+| G3 | `maker-po.ts` subject check | Case-insensitive substring of order code / Seven PO number | No real outbound mail carries either, so real sends would stay pending (reproduced). A short generic code would pass trivially | **Status: IMPLEMENTED 2026-11-18 (대표 확정 11-18)** (the send-record form now derives a copy-ready subject with the frozen order code first; the stored EML and strict `maker-po.ts` header check remain unchanged).
 | G4 | `eml.ts` `collectAttachments` | Inline images inside a related multipart are not collected (5 parts in 4 of 127 mails); cause not isolated | PDFs unaffected (25 of 25 found); hash list incomplete for mails with inline images | **Status: FIXED in df051a4** (inline parts of multipart/related and parts with a Content-ID are collected with their sha256).
-| G5 | maker PO, scanned order PDF | No machine path to the printed order number | Only a hash and manual confirmation are possible | **Status: OPEN**
-| G6 | web/API input | Identifier is a free-text field with an 8 character minimum | Long mixed-case Message-IDs invite copy errors; the system should extract it from the EML | **Status: OPEN**
-| G7 | order code vs document number | No cross check between subject code and the number inside the PDF | A real case exists where they differ | **Status: OPEN**
+| G5 | maker PO, scanned order PDF | No machine path to the printed order number | Only a hash and manual confirmation are possible | **Status: KEPT AS DECIDED 2026-11-18 (대표 확정 11-18)** (scans remain on the human/manual path; sha256 remains the tamper check).
+| G6 | web/API input | Identifier is a free-text field with an 8 character minimum | Long mixed-case Message-IDs invite copy errors; the system should extract it from the EML | **Status: IMPLEMENTED 2026-11-18 (대표 확정 11-18)** (the server extracts a valid stored EML's own Message-ID; the approval form auto-fills it read-only, and the server replaces client input on the approval event. The 8-character manual rule remains only for non-EML evidence).
+| G7 | order code vs document number | No cross check between subject code and the number inside the PDF | A real case exists where they differ | **Status: IMPLEMENTED 2026-11-18 (대표 확정 11-18)** (when a matched PDF has a readable text layer that does not contain the frozen order code, verification becomes `PENDING_MANUAL_VERIFICATION` with the Japanese コード不一致 warning; a text-free scan remains on the G5 manual path).
 
 ## 5. Decision requested
 
 1. Adopt the rule table above (Message-ID for mail, issue number for own text PDFs,
    manual verification for scanned PDFs).
-2. Order of fixes: G1 and G2 first (they affect what counts as verified), then G3 and G6,
-   then G4 and G7.
+2. Order of fixes: G1/G2/G4 are complete; G3/G6/G7 were implemented on 2026-11-18 after
+  the representative adopted the rule table.

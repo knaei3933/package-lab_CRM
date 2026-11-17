@@ -8,6 +8,7 @@ import {
   verifyEvidenceManualAction
 } from '../actions';
 import { loadSessionUser, readSelectedProjectId } from '../../lib/api';
+import { callApi } from '../../lib/api';
 import { asiaTokyoDatetimeLocalNow } from '../../lib/datetime';
 import { labelLookup, loadApprovalGate, loadWorkspace } from '../../lib/project-data';
 import type {
@@ -76,6 +77,18 @@ export default async function ApprovalsPage() {
     return `書類バージョン ${versionId.slice(0, 8)}…`;
   };
 
+  const evidenceAutoIdentifiers = new Map<string, string>();
+  await Promise.all(workspace.documents
+    .filter((document) => document.documentType === 'approval_evidence')
+    .flatMap((document) => document.versions.map(async (version) => {
+      const result = await callApi<{ evidenceIdentifier?: string }>(
+        `/api/document-versions/${encodeURIComponent(version.id)}/evidence-message-id`
+      );
+      if (result.ok && result.data?.evidenceIdentifier) {
+        evidenceAutoIdentifiers.set(version.id, result.data.evidenceIdentifier);
+      }
+    })));
+
   const approvalEvidenceChoices = (orderId: string, designKey: string): Choice[] =>
     workspace.documents
       .filter((document) => document.documentType === 'approval_evidence'
@@ -83,6 +96,7 @@ export default async function ApprovalsPage() {
         && document.designKey === designKey)
       .flatMap((document) => document.versions.map((version) => ({
         value: version.id,
+        autoEvidenceIdentifier: evidenceAutoIdentifiers.get(version.id) ?? null,
         label: `${document.filename}（版${version.versionNumber}／確認状態 ${
           VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus
         }／ID ${version.id.slice(0, 8)}…）`

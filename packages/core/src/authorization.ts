@@ -11,6 +11,7 @@ export type Operation =
   | 'pre_order:create'
   | 'pre_order:promote'
   | 'document:create'
+  | 'document:read'
   | 'document:verify'
   | 'artwork_revision:create'
   | 'artwork_approval:record'
@@ -125,6 +126,13 @@ export function canPerform(
     return readable
       ? { allowed: true }
       : { allowed: false, reason: 'ROLE_FORBIDDEN' };
+  }
+
+  // G6 auto-fill exposes only the mail's own Message-ID header, never stored
+  // bytes or paths. It is evidence needed to record an approval, so a viewer
+  // has no reason to call it while assigned staff and the representative may.
+  if (operation === 'document:read') {
+    return actor.role === 'staff' ? { allowed: true } : { allowed: false, reason: 'ROLE_FORBIDDEN' };
   }
 
   if (MAKER_PO_ADMIN_ONLY_OPERATIONS.includes(operation)) {

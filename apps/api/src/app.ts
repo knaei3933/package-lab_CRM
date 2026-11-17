@@ -26,6 +26,7 @@ import {
   evaluateRevisionRegistrationGate,
   evaluateSevenPoChecklist,
   evaluateSevenPoPrecedenceGate,
+  extractStoredEmlMessageId,
   DEFAULT_PAYMENT_TERMS,
   makerChainTransitionRefusal,
   normalizePaymentTerms,
@@ -2666,24 +2667,6 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     });
     if (!binding.ok) return context.json({ error: binding.message, code: binding.code }, 422);
 
-    // M7 security fix S2: every approval event carries a per-organization
-    // evidence identifier (a message id, a signature block hash …) that says
-    // which approval message or signature segment this event is about. The file
-    // version alone does not: both organizations may legitimately cite the same
-    // file, and only these identifiers tell the two decisions apart.
-    if (typeof body?.evidenceIdentifier !== 'string' || body.evidenceIdentifier.length === 0) {
-      return context.json({
-        error: '承認証跡識別子（evidenceIdentifier）が必要です。例：メッセージIDや署名ブロックのハッシュ',
-        code: 'EVIDENCE_IDENTIFIER_REQUIRED'
-      }, 422);
-    }
-    const evidenceIdentifier = body.evidenceIdentifier.trim();
-    if (evidenceIdentifier.length < 8) {
-      return context.json({
-        error: '承認証跡識別子（evidenceIdentifier）は8文字以上で指定してください',
-        code: 'EVIDENCE_IDENTIFIER_TOO_SHORT'
-      }, 422);
-    }
     // M7-SEC3 FIX 1: the identifier must be derivable from the evidence it
     // cites. M8-OPERATOR FIX 4 makes the rule content-type aware: text-like
     // evidence (text/plain, text/csv) is still a literal, case sensitive
@@ -2701,6 +2684,27 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       return context.json({
         error: '承認証跡ファイルが読み取れないため、識別子を検証できません',
         code: 'EVIDENCE_DOCUMENT_UNREADABLE'
+      }, 422);
+    }
+    // G6: a stored mail's identifier comes from its own Message-ID header. The
+    // client's auto-fill is convenient, but the server re-extracts and replaces
+    // it, so a typo or a quoted parent ID can never enter the event. Non-EML
+    // evidence keeps the existing minimum-8 identifier rule.
+    let evidenceIdentifier = typeof body?.evidenceIdentifier === 'string'
+      ? body.evidenceIdentifier.trim()
+      : '';
+    const storedMessageId = extractStoredEmlMessageId(evidenceBytes);
+    if (storedMessageId !== null) {
+      evidenceIdentifier = storedMessageId;
+    } else if (evidenceIdentifier.length === 0) {
+      return context.json({
+        error: '承認証跡識別子（evidenceIdentifier）が必要です。例：メッセージIDや署名ブロックのハッシュ',
+        code: 'EVIDENCE_IDENTIFIER_REQUIRED'
+      }, 422);
+    } else if (evidenceIdentifier.length < 8) {
+      return context.json({
+        error: '承認証跡識別子（evidenceIdentifier）は8文字以上で指定してください',
+        code: 'EVIDENCE_IDENTIFIER_TOO_SHORT'
       }, 422);
     }
     const identifierCheck = evaluateApprovalEvidenceIdentifierForBytes({
@@ -2850,6 +2854,40 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       dualApproved: gateAfter.dualApproved,
       missingApprovals: gateAfter.missingApprovals
     }, 201);
+  });
+
+  /**
+   * G6: the browser's approval form asks for the stored EML's own Message-ID.
+   * The response deliberately contains only that header value; paths, storage
+   * metadata and bytes never leave the server.
+   */
+  app.get('/api/document-versions/:versionId/evidence-message-id', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const versionId = context.req.param('versionId');
+    const [evidence] = await db.select({
+      projectId: documents.projectId,
+      storagePath: documentVersions.storagePath
+    }).from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(eq(documentVersions.id, versionId)).limit(1);
+    if (!evidence) return context.json({ error: '書類バージョンが見つかりません' }, 404);
+    const readDecision = canPerform(toActor(user), 'document:read', 'F1', evidence.projectId);
+    if (!readDecision.allowed) return context.json({ error: '権限がありません' }, 403);
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(evidence.storagePath);
+    } catch {
+      return context.json({ error: '承認証跡ファイルが読み取れません', code: 'EVIDENCE_DOCUMENT_UNREADABLE' }, 422);
+    }
+    const evidenceIdentifier = extractStoredEmlMessageId(bytes);
+    if (evidenceIdentifier === null) {
+      return context.json({
+        error: '保存済みEMLからMessage-IDを自動抽出できませんでした',
+        code: 'EVIDENCE_IDENTIFIER_NOT_EXTRACTABLE'
+      }, 422);
+    }
+    return context.json({ evidenceIdentifier, source: 'stored_eml_message_id' });
   });
 
   // M8-OPER2 FIX 2: the representative's manual verification of a pending

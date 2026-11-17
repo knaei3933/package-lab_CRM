@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { inflateSync } from 'node:zlib';
 
 /**
  * M8-HARDEN FIX C1: the send evidence of a maker purchase order is the
@@ -57,6 +58,8 @@ export interface EmlAttachment {
   contentType: string | null;
   sha256: string;
   byteSize: number;
+  /** The decoded part bytes; only the server-side evidence rules read these. */
+  bytes: Buffer;
   /** True for an inline Content-ID part (signature logo) that is not a named attachment. */
   inline?: boolean;
 }
@@ -327,11 +330,101 @@ function collectAttachments(
     contentType: contentType.mime.length > 0 ? contentType.mime : null,
     sha256: sha256Of(decoded),
     byteSize: decoded.length,
+    bytes: decoded,
     inline:
       !dispositionSaysAttachment(headers['content-disposition']) &&
       contentType.mime.startsWith('image/') &&
       (headers['content-id']?.length ?? 0) > 0
   });
+}
+
+/** Decodes one literal PDF string (the (...) Tj operator), including escapes. */
+function decodePdfLiteralString(raw: string): string {
+  let value = '';
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index]!;
+    if (character !== '\\') {
+      value += character;
+      continue;
+    }
+    const next = raw[++index];
+    if (next === undefined) break;
+    if (next === 'n') value += '\n';
+    else if (next === 'r') value += '\r';
+    else if (next === 't') value += '\t';
+    else if (next === 'b' || next === 'f') value += ' ';
+    else if (next >= '0' && next <= '7') {
+      let octal = next;
+      while (octal.length < 3 && raw[index + 1] !== undefined && raw[index + 1]! >= '0' && raw[index + 1]! <= '7') {
+        octal += raw[++index]!;
+      }
+      value += String.fromCharCode(Number.parseInt(octal, 8));
+    } else value += next;
+  }
+  return value;
+}
+
+/** Turns PDF text-operator content into searchable text (ASCII/Latin-1 range). */
+function extractPdfContentText(content: string): string {
+  const chunks: string[] = [];
+  const literal = /\(((?:\\.|[^\\)])*)\)\s*(?:Tj|TJ|'|")/g;
+  for (let match = literal.exec(content); match !== null; match = literal.exec(content)) {
+    chunks.push(decodePdfLiteralString(match[1] ?? ''));
+  }
+
+  // A TJ array can split one visible identifier across kerning-adjusted strings.
+  const arrays = /\[((?:\((?:\\.|[^\\)])*\)|[^\]])*)\]\s*TJ/g;
+  for (let array = arrays.exec(content); array !== null; array = arrays.exec(content)) {
+    const inner = array[1] ?? '';
+    let value = '';
+    const strings = /\(((?:\\.|[^\\)])*)\)/g;
+    for (let part = strings.exec(inner); part !== null; part = strings.exec(inner)) {
+      value += decodePdfLiteralString(part[1] ?? '');
+    }
+    chunks.push(value);
+  }
+
+  const hex = /<([0-9A-Fa-f\s]+)>\s*Tj/g;
+  for (let match = hex.exec(content); match !== null; match = hex.exec(content)) {
+    chunks.push(Buffer.from((match[1] ?? '').replace(/\s+/g, ''), 'hex').toString('latin1'));
+  }
+  return chunks.join('\n');
+}
+
+/**
+ * G7: reads the text layer of the small internal PDFs used for automatic
+ * checks. Compressed content streams are inflated; an image-only scan yields an
+ * empty string and deliberately stays on its existing manual-verification path.
+ */
+export function extractPdfText(bytes: Buffer): string {
+  if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') return '';
+  const chunks: string[] = [];
+  let cursor = 0;
+  const streamToken = Buffer.from('stream', 'latin1');
+  const endToken = Buffer.from('endstream', 'latin1');
+  while (cursor < bytes.length) {
+    const start = bytes.indexOf(streamToken, cursor);
+    if (start < 0) break;
+    let bodyStart = start + streamToken.length;
+    if (bytes[bodyStart] === 0x0d) bodyStart += 1;
+    if (bytes[bodyStart] === 0x0a) bodyStart += 1;
+    const end = bytes.indexOf(endToken, bodyStart);
+    if (end < 0) break;
+    const stream = bytes.subarray(bodyStart, end);
+    const dictionary = bytes.subarray(Math.max(0, start - 1024), start).toString('latin1');
+    const content = dictionary.includes('/FlateDecode')
+      ? (() => {
+        try {
+          return inflateSync(stream).toString('latin1');
+        } catch {
+          return '';
+        }
+      })()
+      : stream.toString('latin1');
+    chunks.push(extractPdfContentText(content));
+    cursor = end + endToken.length;
+  }
+  return chunks.join('\n');
 }
 
 /**
@@ -450,7 +543,9 @@ export type MakerPoEmlPendingCode =
 export type MakerPoAttachmentPendingCode =
   | 'attachment_missing'
   | 'attachment_hash_mismatch'
-  | 'attachment_link_only';
+  | 'attachment_link_only'
+  // G7: the approved bytes match, but a readable text layer names another code.
+  | 'EVIDENCE_CODE_MISMATCH';
 
 export interface MakerPoEmlEvidenceInput {
   /** The raw .eml bytes (message/rfc822) the send is proven by. */
@@ -467,6 +562,12 @@ export interface MakerPoEmlEvidenceInput {
   recordedSenderAddress: string;
   /** The PO identifiers the subject must carry (order code, seven PO number). */
   subjectIdentifiers: string[];
+  /**
+   * G7: the CRM order code the subject template inserted. Unlike the broader
+   * subject identifiers, this exact value must also occur in a readable PDF
+   * text layer before a send can verify.
+   */
+  documentCode?: string | undefined;
   /**
    * The approved artifact hashes the snapshot freezes — the approved PO /
    * artwork revision documents. Since M8-HARDEN2 FIX 1 at least one attachment
@@ -521,7 +622,8 @@ const PENDING_MESSAGES: Record<MakerPoEmlPendingCode, string> = {
   SENT_AT_PRECEDES_CEO_APPROVAL: '記録された送信日時が代表者承認より前です。送信日時を確認してください',
   attachment_missing: '送信証跡に添付ファイルがないため、承認済み成果物（発注書・版下）との一致を確認できませんでした。原本のEMLに発注書を添付して登録してください',
   attachment_hash_mismatch: '送信証跡の添付ファイルが承認済み成果物（発注書・版下）のハッシュと一致しませんでした。Thunderbirdから原本のEMLを書き出して登録してください（再出力したPDFも自動確認の対象になりません）',
-  attachment_link_only: '送信証跡に添付ファイルがなく、ダウンロードリンクのみが記載されているため、承認済み成果物との一致を確認できませんでした。ファイルを添付した原本のEMLを登録してください'
+  attachment_link_only: '送信証跡に添付ファイルがなく、ダウンロードリンクのみが記載されているため、承認済み成果物との一致を確認できませんでした。ファイルを添付した原本のEMLを登録してください',
+  EVIDENCE_CODE_MISMATCH: 'コード不一致：件名の発注コードがPDFテキスト内の番号と一致しません。自動確認は禁止し、人が原本PDFとメール件名を確認する必要があります'
 };
 
 /**
@@ -672,6 +774,39 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
     ));
   }
   if (attachmentFailure !== null) pendingCodes.push(attachmentFailure);
+
+  // G7: an exact hash match proves the approved bytes were carried; it does not
+  // prove the printed number agrees with the code in the subject. A readable
+  // text layer must agree. A scan has no such layer and keeps its existing
+  // human/manual path (G5), so an empty extraction is not treated as mismatch.
+  const matchedAttachments = eml.attachments.filter((attachment) =>
+    input.artworkFileSha256s.includes(attachment.sha256)
+  );
+  if (matchedAttachments.length > 0) {
+    const textLayers = matchedAttachments
+      .filter((attachment) => attachment.bytes.subarray(0, 5).toString('latin1') === '%PDF-')
+      .map((attachment) => extractPdfText(attachment.bytes))
+      .filter((text) => text.trim().length > 0);
+    if (textLayers.length > 0) {
+      const documentCode = input.documentCode ?? input.subjectIdentifiers[0] ?? '';
+      const codeConsistent = documentCode.length > 0
+        && textLayers.some((text) => text.includes(documentCode));
+      if (codeConsistent) {
+        checks.push(check('code_consistency', 'passed', documentCode));
+      } else {
+        checks.push(check(
+          'code_consistency',
+          'failed',
+          `subject/document code=${documentCode || '(none)'}`
+        ));
+        pendingCodes.push('EVIDENCE_CODE_MISMATCH');
+      }
+    } else {
+      checks.push(check('code_consistency', 'skipped', 'scan'));
+    }
+  } else {
+    checks.push(check('code_consistency', 'skipped', 'no approved attachment'));
+  }
 
   const shared = {
     verificationMethod: MAKER_PO_SEND_VERIFICATION_METHOD_EML_HEADER_CHECK,
