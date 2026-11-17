@@ -1,4 +1,5 @@
 import type { DocumentType } from './documents.js';
+import { normalizeMessageId, parseEml } from './eml.js';
 
 /**
  * M3 proof revisions and dual approval (design sections 5.7 and 6.1).
@@ -557,6 +558,26 @@ export function evaluateApprovalEvidenceIdentifierForBytes(
     return check.ok
       ? { ok: true, status: 'verified_in_document', matchedOn: check.matchedOn }
       : check;
+  }
+
+  // G1/G2: a real EML (message/rfc822) is an email, not opaque binary. The
+  // identifier must equal the mail's own Message-ID header (brackets and the
+  // domain's case normalized) — never a substring of quoted text, In-Reply-To
+  // or References. An unparsable message stays pending, as before.
+  if (input.contentType?.toLowerCase().split(';')[0]?.trim() === 'message/rfc822') {
+    const parsed = parseEml(input.bytes);
+    const own = parsed.ok ? normalizeMessageId(parsed.eml.messageId) : null;
+    if (own !== null) {
+      if (own === normalizeMessageId(input.identifier)) {
+        return { ok: true, status: 'verified_in_document', matchedOn: 'evidence_document_content' };
+      }
+      return {
+        ok: false,
+        code: 'EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT',
+        message:
+          '承認証跡識別子（evidenceIdentifier）は証跡メール自身のMessage-IDヘッダーと一致しなければなりません（引用文・In-Reply-To・ReferencesのメッセージIDは対象外です）'
+      };
+    }
   }
 
   return {

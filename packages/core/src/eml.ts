@@ -288,7 +288,8 @@ function collectAttachments(
   headers: Record<string, string[]>,
   body: string,
   out: EmlAttachment[],
-  texts: string[]
+  texts: string[],
+  insideRelated = false
 ): void {
   const contentType = parseStructuredHeader(headers['content-type']?.[0] ?? null);
   if (contentType.mime.startsWith('multipart/')) {
@@ -297,12 +298,19 @@ function collectAttachments(
     const marker = `--${boundary}`;
     for (const partText of splitMultipart(body, marker)) {
       const part = splitHeaders(partText);
-      collectAttachments(part.headers, part.body, out, texts);
+      collectAttachments(part.headers, part.body, out, texts, contentType.mime === 'multipart/related');
     }
     return;
   }
   const transferEncoding = headers['content-transfer-encoding']?.[0] ?? '7bit';
-  if (!dispositionSaysAttachment(headers['content-disposition'])) {
+  // G4: an inline part of multipart/related (an image referenced by Content-ID)
+  // is carried bytes, not message text, so its hash must be visible too.
+  const isInlineBinary =
+    !contentType.mime.startsWith('text/') &&
+    !contentType.mime.startsWith('multipart/') &&
+    contentType.mime !== '' &&
+    (insideRelated || (headers['content-id']?.length ?? 0) > 0);
+  if (!dispositionSaysAttachment(headers['content-disposition']) && !isInlineBinary) {
     // FIX 1: the readable text of the message, so a mail that only names a
     // download link can be told apart from one that attached nothing.
     if (contentType.mime === '' || contentType.mime.startsWith('text/')) {
@@ -350,6 +358,20 @@ function splitMultipart(body: string, marker: string): string[] {
     if (current !== null) current.push(line);
   }
   return parts;
+}
+
+/**
+ * G2: the comparison form of a Message-ID — angle brackets and surrounding
+ * whitespace dropped, the domain part (after the last @) lower-cased, the local
+ * part kept exactly. Returns null when the value is not an id-left@id-right.
+ */
+export function normalizeMessageId(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  let inner = value.trim();
+  if (inner.startsWith('<') && inner.endsWith('>')) inner = inner.slice(1, -1).trim();
+  const at = inner.lastIndexOf('@');
+  if (at <= 0 || at === inner.length - 1 || /[\s<>]/.test(inner)) return null;
+  return `${inner.slice(0, at)}@${inner.slice(at + 1).toLowerCase()}`;
 }
 
 /**
