@@ -57,6 +57,8 @@ export interface EmlAttachment {
   contentType: string | null;
   sha256: string;
   byteSize: number;
+  /** True for an inline Content-ID part (signature logo) that is not a named attachment. */
+  inline?: boolean;
 }
 
 /** The parts of a message the send verification reads. */
@@ -324,7 +326,8 @@ function collectAttachments(
     filename: disposition.params.filename ?? contentType.params.name ?? null,
     contentType: contentType.mime.length > 0 ? contentType.mime : null,
     sha256: sha256Of(decoded),
-    byteSize: decoded.length
+    byteSize: decoded.length,
+    inline: !dispositionSaysAttachment(headers['content-disposition'])
   });
 }
 
@@ -651,7 +654,7 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
   let attachmentFailure: MakerPoAttachmentPendingCode | null = null;
   if (matched.length > 0) {
     checks.push(check('attachment_gate', 'passed', matched.join(',')));
-  } else if (eml.attachments.length === 0 && hasDownloadLink(eml.bodyText)) {
+  } else if (eml.attachments.every((a) => a.inline === true) && hasDownloadLink(eml.bodyText)) {
     attachmentFailure = 'attachment_link_only';
     checks.push(check('attachment_gate', 'failed', 'a download link instead of an attached file'));
   } else if (eml.attachments.length === 0) {

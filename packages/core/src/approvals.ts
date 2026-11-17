@@ -548,6 +548,26 @@ export type ApprovalEvidenceIdentifierBytesCheck =
 export function evaluateApprovalEvidenceIdentifierForBytes(
   input: ApprovalEvidenceIdentifierBytesInput
 ): ApprovalEvidenceIdentifierBytesCheck {
+  // G1/G2: bytes that parse as an email with its own Message-ID are an email
+  // whatever content type the uploader declared (message/rfc822, text/plain,
+  // a renamed .txt). The identifier must equal the mail's own Message-ID header
+  // (brackets and the domain's case normalized) — never a substring of quoted
+  // text, In-Reply-To or References.
+  const parsed = parseEml(input.bytes);
+  const own = parsed.ok ? normalizeMessageId(parsed.eml.messageId) : null;
+  if (own !== null) {
+    if (own === normalizeMessageId(input.identifier)) {
+      return { ok: true, status: 'verified_in_document', matchedOn: 'evidence_document_content' };
+    }
+    return {
+      ok: false,
+      code: 'EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT',
+      message:
+        '承認証跡識別子（evidenceIdentifier）は証跡メール自身のMessage-IDヘッダーと一致しなければなりません（引用文・In-Reply-To・ReferencesのメッセージIDは対象外です）'
+    };
+  }
+
+  // Plain non-mail text keeps the substring rule.
   if (isTextLikeEvidence(input.contentType)) {
     const check = evaluateApprovalEvidenceIdentifier({
       identifier: input.identifier,
@@ -558,26 +578,6 @@ export function evaluateApprovalEvidenceIdentifierForBytes(
     return check.ok
       ? { ok: true, status: 'verified_in_document', matchedOn: check.matchedOn }
       : check;
-  }
-
-  // G1/G2: a real EML (message/rfc822) is an email, not opaque binary. The
-  // identifier must equal the mail's own Message-ID header (brackets and the
-  // domain's case normalized) — never a substring of quoted text, In-Reply-To
-  // or References. An unparsable message stays pending, as before.
-  if (input.contentType?.toLowerCase().split(';')[0]?.trim() === 'message/rfc822') {
-    const parsed = parseEml(input.bytes);
-    const own = parsed.ok ? normalizeMessageId(parsed.eml.messageId) : null;
-    if (own !== null) {
-      if (own === normalizeMessageId(input.identifier)) {
-        return { ok: true, status: 'verified_in_document', matchedOn: 'evidence_document_content' };
-      }
-      return {
-        ok: false,
-        code: 'EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT',
-        message:
-          '承認証跡識別子（evidenceIdentifier）は証跡メール自身のMessage-IDヘッダーと一致しなければなりません（引用文・In-Reply-To・ReferencesのメッセージIDは対象外です）'
-      };
-    }
   }
 
   return {

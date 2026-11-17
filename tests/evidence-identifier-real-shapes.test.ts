@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { evaluateApprovalEvidenceIdentifierForBytes, normalizeMessageId, parseEml } from '@kanei/core';
+import {
+  evaluateApprovalEvidenceIdentifierForBytes,
+  evaluateMakerPoEmlEvidence,
+  normalizeMessageId,
+  parseEml
+} from '@kanei/core';
 
 // SYNTHETIC fixtures only: example.test hosts, invented ids, a 1x1 PNG built here.
 const PNG = Buffer.from(
@@ -132,5 +137,75 @@ describe('evidence identifier: real EML shapes (G1 G2 G4)', () => {
     ].join('\r\n');
     const parsed = parseEml(Buffer.from(raw, 'utf8'));
     expect(parsed.ok && parsed.eml.attachments.map((a) => a.sha256)).toEqual([PNG_SHA]);
+  });
+
+  it('G2: the same .eml declared text/plain or text/plain with a .txt name still needs the own Message-ID', () => {
+    for (const contentType of ['text/plain', 'text/plain; charset=utf-8', 'application/octet-stream']) {
+      for (const identifier of [PARENT_ID, 'parent-0001', 'root-0000@mail.example.test']) {
+        const refused = evaluateApprovalEvidenceIdentifierForBytes({ identifier, bytes: replyWithInlinePng(), contentType });
+        expect(refused, `${contentType} ${identifier}`).toMatchObject({
+          ok: false,
+          code: 'EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT'
+        });
+      }
+      const accepted = evaluateApprovalEvidenceIdentifierForBytes({
+        identifier: OWN_ID.toUpperCase().replace('@MAIL.EXAMPLE.TEST', '@mail.example.test'),
+        bytes: replyWithInlinePng(),
+        contentType
+      });
+      // The local part is case sensitive, so the upper-cased local part is refused.
+      expect(accepted.ok).toBe(false);
+      expect(
+        evaluateApprovalEvidenceIdentifierForBytes({ identifier: OWN_ID, bytes: replyWithInlinePng(), contentType })
+      ).toMatchObject({ ok: true, status: 'verified_in_document' });
+    }
+  });
+
+  it('G2: plain non-mail text keeps the substring rule', () => {
+    const bytes = Buffer.from('Approval memo\nreference: ABC-12345 confirmed\n', 'utf8');
+    expect(
+      evaluateApprovalEvidenceIdentifierForBytes({ identifier: 'ABC-12345', bytes, contentType: 'text/plain' })
+    ).toMatchObject({ ok: true, status: 'verified_in_document' });
+    expect(
+      evaluateApprovalEvidenceIdentifierForBytes({ identifier: 'ZZZ-99999', bytes, contentType: 'text/plain' })
+    ).toMatchObject({ ok: false, code: 'EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT' });
+  });
+
+  it('LOW: a link-only mail with only an inline signature logo stays attachment_link_only', () => {
+    const raw = [
+      'From: Sender Example <sender@example.test>',
+      'To: Receiver Example <receiver@example.test>',
+      'Subject: PO-0001',
+      'Date: Tue, 17 Nov 2026 09:00:00 +0900',
+      'Message-ID: <link-0003@mail.example.test>',
+      'MIME-Version: 1.0',
+      'Content-Type: multipart/related; boundary="REL"',
+      '',
+      '--REL',
+      'Content-Type: text/plain; charset=UTF-8',
+      '',
+      'Download here: https://files.example.test/d/abc',
+      '--REL',
+      'Content-Type: image/png; name="logo.png"',
+      'Content-Transfer-Encoding: base64',
+      'Content-ID: <logo@example.test>',
+      'Content-Disposition: inline',
+      '',
+      PNG.toString('base64'),
+      '--REL--',
+      ''
+    ].join('\r\n');
+    const result = evaluateMakerPoEmlEvidence({
+      bytes: Buffer.from(raw, 'utf8'),
+      sentAt: new Date('2026-11-17T00:05:00Z'),
+      ceoApprovedAt: new Date('2026-11-16T00:00:00Z'),
+      now: new Date('2026-11-17T00:10:00Z'),
+      expectedRecipientAddress: 'receiver@example.test',
+      recordedSenderAddress: 'sender@example.test',
+      subjectIdentifiers: ['PO-0001'],
+      artworkFileSha256s: ['0'.repeat(64)]
+    });
+    expect(JSON.stringify(result)).toContain('attachment_link_only');
+    expect(JSON.stringify(result)).not.toContain('attachment_hash_mismatch');
   });
 });
