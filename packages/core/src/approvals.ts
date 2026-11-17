@@ -553,18 +553,41 @@ export function evaluateApprovalEvidenceIdentifierForBytes(
   // a renamed .txt). The identifier must equal the mail's own Message-ID header
   // (brackets and the domain's case normalized) — never a substring of quoted
   // text, In-Reply-To or References.
-  const parsed = parseEml(input.bytes);
-  const own = parsed.ok ? normalizeMessageId(parsed.eml.messageId) : null;
-  if (own !== null) {
-    if (own === normalizeMessageId(input.identifier)) {
-      return { ok: true, status: 'verified_in_document', matchedOn: 'evidence_document_content' };
+  const declared = (input.contentType ?? '').trim().toLowerCase();
+  const mayBeMail =
+    declared.startsWith('text/') ||
+    declared.startsWith('message/') ||
+    /^(?:From [^\r\n]*|[\x21-\x39\x3b-\x7e]+:[ \t][^\r\n]*)\r?\n/.test(
+      input.bytes.subarray(0, 512).toString('latin1')
+    );
+  const parsed = mayBeMail ? parseEml(input.bytes) : null;
+  if (parsed !== null && parsed.ok) {
+    const headers = parsed.eml.headers;
+    const idHeaders = headers['message-id'] ?? [];
+    const looksLikeMail = idHeaders.length > 0 || (headers['from'] !== undefined && headers['date'] !== undefined);
+    if (looksLikeMail) {
+      // Never fall back to the substring rule for a mail. Missing, malformed or
+      // repeated Message-ID headers cannot be tied to one own id: a human decides.
+      const own = idHeaders.length === 1 ? normalizeMessageId(parsed.eml.messageId) : null;
+      if (own === null) {
+        return {
+          ok: true,
+          status: 'pending_manual_verification',
+          matchedOn: 'manual_verification',
+          message:
+            '証跡メールのMessage-IDヘッダーが無い・不正・複数あるため、識別子（evidenceIdentifier）は自動検証できません。手動確認が完了するまで二重承認には算入されません'
+        };
+      }
+      if (own === normalizeMessageId(input.identifier)) {
+        return { ok: true, status: 'verified_in_document', matchedOn: 'evidence_document_content' };
+      }
+      return {
+        ok: false,
+        code: 'EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT',
+        message:
+          '承認証跡識別子（evidenceIdentifier）は証跡メール自身のMessage-IDヘッダーと一致しなければなりません（引用文・In-Reply-To・ReferencesのメッセージIDは対象外です）'
+      };
     }
-    return {
-      ok: false,
-      code: 'EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT',
-      message:
-        '承認証跡識別子（evidenceIdentifier）は証跡メール自身のMessage-IDヘッダーと一致しなければなりません（引用文・In-Reply-To・ReferencesのメッセージIDは対象外です）'
-    };
   }
 
   // Plain non-mail text keeps the substring rule.

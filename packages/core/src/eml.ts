@@ -327,7 +327,10 @@ function collectAttachments(
     contentType: contentType.mime.length > 0 ? contentType.mime : null,
     sha256: sha256Of(decoded),
     byteSize: decoded.length,
-    inline: !dispositionSaysAttachment(headers['content-disposition'])
+    inline:
+      !dispositionSaysAttachment(headers['content-disposition']) &&
+      contentType.mime.startsWith('image/') &&
+      (headers['content-id']?.length ?? 0) > 0
   });
 }
 

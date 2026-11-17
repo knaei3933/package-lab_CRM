@@ -208,4 +208,79 @@ describe('evidence identifier: real EML shapes (G1 G2 G4)', () => {
     expect(JSON.stringify(result)).toContain('attachment_link_only');
     expect(JSON.stringify(result)).not.toContain('attachment_hash_mismatch');
   });
+
+  const mailWith = (idLines: string[]) =>
+    Buffer.from(
+      [
+        'From: Sender Example <sender@example.test>',
+        'To: Receiver Example <receiver@example.test>',
+        'Subject: Re: sample',
+        'Date: Tue, 17 Nov 2026 09:00:00 +0900',
+        ...idLines,
+        `In-Reply-To: ${PARENT_ID}`,
+        'Content-Type: text/plain; charset=UTF-8',
+        '',
+        `> quoted Message-ID: ${PARENT_ID}`,
+        ''
+      ].join('\r\n'),
+      'utf8'
+    );
+
+  it('MEDIUM: duplicate Message-ID headers are never verified, even for a quoted id', () => {
+    const bytes = mailWith([`Message-ID: ${OWN_ID}`, 'Message-ID: <second-0009@mail.example.test>']);
+    for (const identifier of [PARENT_ID, OWN_ID]) {
+      const r = evaluateApprovalEvidenceIdentifierForBytes({ identifier, bytes, contentType: 'text/plain' });
+      expect(r.ok && r.status === 'verified_in_document').toBe(false);
+    }
+  });
+
+  it('MEDIUM: a malformed or missing Message-ID on a mail is never verified by substring', () => {
+    for (const idLines of [['Message-ID: not an id'], []]) {
+      const r = evaluateApprovalEvidenceIdentifierForBytes({
+        identifier: PARENT_ID,
+        bytes: mailWith(idLines),
+        contentType: 'text/plain'
+      });
+      expect(r.ok && r.status === 'verified_in_document').toBe(false);
+    }
+  });
+
+  it('LOW: a PDF with a Content-ID and a download link still reports attachment_hash_mismatch', () => {
+    const pdf = Buffer.from('%PDF-1.4 synthetic wrong file', 'utf8');
+    const raw = [
+      'From: Sender Example <sender@example.test>',
+      'To: Receiver Example <receiver@example.test>',
+      'Subject: PO-0001',
+      'Date: Tue, 17 Nov 2026 09:00:00 +0900',
+      'Message-ID: <pdf-0004@mail.example.test>',
+      'MIME-Version: 1.0',
+      'Content-Type: multipart/mixed; boundary="MIX"',
+      '',
+      '--MIX',
+      'Content-Type: text/plain; charset=UTF-8',
+      '',
+      'Download here: https://files.example.test/d/abc',
+      '--MIX',
+      'Content-Type: application/pdf; name="wrong.pdf"',
+      'Content-Transfer-Encoding: base64',
+      'Content-ID: <pdf@example.test>',
+      'Content-Disposition: inline',
+      '',
+      pdf.toString('base64'),
+      '--MIX--',
+      ''
+    ].join('\r\n');
+    const result = evaluateMakerPoEmlEvidence({
+      bytes: Buffer.from(raw, 'utf8'),
+      sentAt: new Date('2026-11-17T00:05:00Z'),
+      ceoApprovedAt: new Date('2026-11-16T00:00:00Z'),
+      now: new Date('2026-11-17T00:10:00Z'),
+      expectedRecipientAddress: 'receiver@example.test',
+      recordedSenderAddress: 'sender@example.test',
+      subjectIdentifiers: ['PO-0001'],
+      artworkFileSha256s: ['0'.repeat(64)]
+    });
+    expect(JSON.stringify(result)).toContain('attachment_hash_mismatch');
+    expect(JSON.stringify(result)).not.toContain('attachment_link_only');
+  });
 });
