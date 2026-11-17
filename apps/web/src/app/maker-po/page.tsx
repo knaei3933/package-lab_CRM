@@ -566,6 +566,7 @@ async function MakerPoWorkBlocks({
             poId={po.id}
             sendEvidenceChoices={sendEvidenceChoices}
             recipientAddress={po.recipientAddress ?? null}
+            ceoApprovedAt={po.ceoApprovedAt ?? null}
           />
           {sendEvidenceChoices.length === 0 ? (
             <p style={noteStyle}>

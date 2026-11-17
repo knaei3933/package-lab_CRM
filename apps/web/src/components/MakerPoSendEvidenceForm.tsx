@@ -4,6 +4,7 @@ import { useActionState, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { FormAction } from './ActionForm';
 import { SelectField, TextField } from './fields';
+import { isSentAtBeforeCeoApproval, readEmlFormDefaults } from '../lib/eml-form';
 import type { Choice } from '../lib/types';
 import {
   buttonStyle,
@@ -21,6 +22,8 @@ interface MakerPoSendEvidenceFormProps {
   sendEvidenceChoices: Choice[];
   /** 発注書の凍結済み宛先（スナップショット）。宛先欄の初期値。 */
   recipientAddress?: string | null;
+  /** この発注書を代表承認した時刻。送信日時の前段警告に使う。 */
+  ceoApprovedAt?: string | null;
 }
 
 /**
@@ -41,11 +44,14 @@ export function MakerPoSendEvidenceForm({
   action,
   poId,
   sendEvidenceChoices,
-  recipientAddress
+  recipientAddress,
+  ceoApprovedAt
 }: MakerPoSendEvidenceFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   const [contentBase64, setContentBase64] = useState('');
   const [emlFilename, setEmlFilename] = useState('');
+  const [senderAddress, setSenderAddress] = useState('');
+  const [sentAt, setSentAt] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -71,6 +77,27 @@ export function MakerPoSendEvidenceForm({
       const result = typeof reader.result === 'string' ? reader.result : '';
       const commaIndex = result.indexOf(',');
       setContentBase64(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+
+      // A data URL preserves attachment bytes exactly. Read the same file once
+      // more as text solely to inspect the header block in the browser.
+      const headerReader = new FileReader();
+      headerReader.onload = () => {
+        const emlText = typeof headerReader.result === 'string' ? headerReader.result : '';
+        const defaults = readEmlFormDefaults(emlText);
+        setSenderAddress((current) => (current.length === 0 ? defaults.senderAddress ?? '' : current));
+        if (defaults.sentAt !== undefined) {
+          setSentAt(defaults.sentAt);
+          setMessage(
+            `EMLのDateヘッダーから送信日時を既定値として設定しました（${defaults.sentAt}）。必要なら修正できます。`
+          );
+        } else {
+          setMessage('EMLのDateヘッダーを読み取れませんでした。送信日時は手動で入力してください。');
+        }
+      };
+      headerReader.onerror = () => {
+        setMessage('EMLヘッダーを読み取れませんでした。送信日時と送信元は手動で確認してください。');
+      };
+      headerReader.readAsText(file);
     };
     reader.onerror = () => {
       setMessage('ファイルを読み取れませんでした。別のファイルを試してください。');
@@ -125,7 +152,14 @@ export function MakerPoSendEvidenceForm({
           choices={sendEvidenceChoices}
           width={420}
         />
-        <TextField name="senderAddress" label="送信元アドレス" required width={260} />
+        <TextField
+          name="senderAddress"
+          label="送信元アドレス"
+          required
+          value={senderAddress}
+          onChange={(event) => setSenderAddress(event.target.value)}
+          width={260}
+        />
         <TextField
           name="recipients"
           label="宛先アドレス（カンマ区切り）"
@@ -133,8 +167,23 @@ export function MakerPoSendEvidenceForm({
           defaultValue={recipientAddress ?? undefined}
           width={260}
         />
-        <TextField name="sentAt" label="送信日時" type="datetime-local" required width={240} />
+        <TextField
+          name="sentAt"
+          label="送信日時"
+          type="datetime-local"
+          required
+          value={sentAt}
+          onChange={(event) => setSentAt(event.target.value)}
+          width={240}
+        />
       </div>
+
+      {isSentAtBeforeCeoApproval(sentAt, ceoApprovedAt) ? (
+        <div style={{ ...infoBoxStyle, fontSize: 13 }}>
+          注意: 入力された送信日時が、この発注書の代表承認時刻より前です。日付や時刻の誤りを確認してください。
+          （この警告は記録を止めませんが、承認前の送信はAPIで保留になります。）
+        </div>
+      ) : null}
 
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
         <button type="submit" disabled={pending} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>

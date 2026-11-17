@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react';
+import type { ChangeEventHandler } from 'react';
 import type { Choice } from '../lib/types';
 import { fieldRowStyle, inputStyle, noteStyle } from '../lib/ui';
 
@@ -37,21 +38,27 @@ export function TextField({
   type = 'text',
   defaultValue,
   placeholder,
-  width
+  width,
+  value,
+  onChange
 }: FieldProps & {
   type?: 'text' | 'password' | 'datetime-local' | 'date' | 'number';
   defaultValue?: string | undefined;
   placeholder?: string | undefined;
   width?: number | undefined;
+  value?: string | undefined;
+  onChange?: ChangeEventHandler<HTMLInputElement> | undefined;
 }) {
   return (
     <LabelWrapper name={name} label={label} required={required} hint={hint}>
       <input
         name={name}
         type={type}
-        defaultValue={defaultValue}
+        value={value}
+        defaultValue={value === undefined ? defaultValue : undefined}
         placeholder={placeholder}
         required={required}
+        onChange={onChange}
         style={{ ...inputStyle, width: width ?? 260 }}
       />
     </LabelWrapper>
