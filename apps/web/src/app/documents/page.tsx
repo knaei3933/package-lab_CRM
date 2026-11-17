@@ -3,6 +3,7 @@ import { DocumentUploadForm } from '../../components/DocumentUploadForm';
 import { SelectField, TextField } from '../../components/fields';
 import { uploadDocumentAction, verifyDocumentAction } from '../actions';
 import { readSelectedProjectId } from '../../lib/api';
+import { loadMakerPoChoices } from '../../lib/document-maker-po';
 import { labelLookup, loadWorkspace } from '../../lib/project-data';
 import {
   cardStyle,
@@ -41,6 +42,8 @@ export default async function DocumentsPage() {
   const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
   const poLabelById = new Map(workspace.sevenPurchaseOrders.map((po) => [po.id, po.poNumber]));
 
+  const makerPurchaseOrderChoices = await loadMakerPoChoices(workspace.filmOrders);
+
   const verificationChoices = [
     { value: 'verified', label: VERIFICATION_STATUS_LABELS.verified ?? '確認済み' },
     { value: 'mismatch', label: VERIFICATION_STATUS_LABELS.mismatch ?? '相違あり' }
@@ -69,6 +72,7 @@ export default async function DocumentsPage() {
           issuerEntityChoices={issuerEntityChoices()}
           contentTypeChoices={contentTypeChoices()}
           sevenPurchaseOrderChoices={workspace.sevenPurchaseOrders.map((po) => ({ value: po.id, label: po.poNumber }))}
+          makerPurchaseOrderChoices={makerPurchaseOrderChoices}
           filmSupplyOrderChoices={workspace.filmOrders.map((order) => ({
             value: order.id,
             label: `${order.code}（${stateLabel(order.status)}）`

@@ -4,6 +4,8 @@ import { useActionState, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { FormAction } from './ActionForm';
 import type { Choice } from '../lib/types';
+import { isMakerPoBoundDocumentType } from '../lib/document-maker-po';
+import type { MakerPoChoice } from '../lib/document-maker-po';
 import { buttonStyle, errorMessageStyle, inputStyle, noteStyle, okMessageStyle, subtleButtonStyle } from '../lib/ui';
 
 interface DocumentUploadFormProps {
@@ -13,6 +15,7 @@ interface DocumentUploadFormProps {
   contentTypeChoices: Choice[];
   sevenPurchaseOrderChoices: Choice[];
   filmSupplyOrderChoices: Choice[];
+  makerPurchaseOrderChoices?: MakerPoChoice[];
 }
 
 /** Filename suffix → the content types the API accepts. */
@@ -48,13 +51,18 @@ export function DocumentUploadForm({
   issuerEntityChoices,
   contentTypeChoices,
   sevenPurchaseOrderChoices,
-  filmSupplyOrderChoices
+  filmSupplyOrderChoices,
+  makerPurchaseOrderChoices = []
 }: DocumentUploadFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   const [contentBase64, setContentBase64] = useState('');
   const [filename, setFilename] = useState('');
   const [contentType, setContentType] = useState(contentTypeChoices[0]?.value ?? '');
   const [designKey, setDesignKey] = useState('');
+  const [documentType, setDocumentType] = useState(documentTypeChoices[0]?.value ?? '');
+  const [filmSupplyOrderId, setFilmSupplyOrderId] = useState('');
+  const showMakerPo = isMakerPoBoundDocumentType(documentType);
+  const makerPoOptions = makerPurchaseOrderChoices.filter((choice) => choice.filmSupplyOrderId === filmSupplyOrderId);
   const [message, setMessage] = useState<string | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
 
@@ -96,7 +104,7 @@ export function DocumentUploadForm({
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>書類種別<span style={{ color: '#b91c1c' }}>（必須）</span></span>
-          <select name="documentType" required style={{ ...inputStyle, width: 260 }}>
+          <select name="documentType" required value={documentType} onChange={(event) => setDocumentType(event.target.value)} style={{ ...inputStyle, width: 260 }}>
             {documentTypeChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
                 {choice.label}
@@ -172,7 +180,7 @@ export function DocumentUploadForm({
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>フィルム発注の紐付け（任意）</span>
-          <select name="filmSupplyOrderId" style={{ ...inputStyle, width: 300 }}>
+          <select name="filmSupplyOrderId" value={filmSupplyOrderId} onChange={(event) => setFilmSupplyOrderId(event.target.value)} style={{ ...inputStyle, width: 300 }}>
             <option value="">紐付けない</option>
             {filmSupplyOrderChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
@@ -181,6 +189,21 @@ export function DocumentUploadForm({
             ))}
           </select>
         </label>
+        {showMakerPo ? (
+          <label style={{ display: 'grid', gap: 4 }}>
+            <span style={{ fontSize: 13 }}>メーカー発注書の紐付け（受入証跡・送信証跡では必須）</span>
+            <select name="makerPurchaseOrderId" required style={{ ...inputStyle, width: 360 }}>
+              <option value="">
+                {filmSupplyOrderId ? '選択してください' : '先にフィルム発注を選んでください'}
+              </option>
+              {makerPoOptions.map((choice) => (
+                <option key={choice.value} value={choice.value}>
+                  {choice.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>デザインキー（校正ゲラ・承認証跡を発注に紐付ける場合は必須）</span>
           <input

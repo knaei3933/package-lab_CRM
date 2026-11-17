@@ -302,6 +302,8 @@ export async function uploadDocumentAction(_prev: ActionState | null, formData: 
   if (sevenPurchaseOrderId) body.sevenPurchaseOrderId = sevenPurchaseOrderId;
   const filmSupplyOrderId = optionalField(formData, 'filmSupplyOrderId');
   if (filmSupplyOrderId) body.filmSupplyOrderId = filmSupplyOrderId;
+  const makerPurchaseOrderId = optionalField(formData, 'makerPurchaseOrderId');
+  if (makerPurchaseOrderId) body.makerPurchaseOrderId = makerPurchaseOrderId;
   const designKey = optionalField(formData, 'designKey');
   if (designKey) body.designKey = designKey;
   const note = optionalField(formData, 'note');
