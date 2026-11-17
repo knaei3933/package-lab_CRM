@@ -1,10 +1,16 @@
 import 'dotenv/config';
+import { pathToFileURL } from 'node:url';
+import { resolve } from 'node:path';
 import { eq } from 'drizzle-orm';
 import { createDatabase, uuidv7 } from './index.js';
 import { accounts, projectAssignments, projects, users } from './schema.js';
 import { hashPassword } from '../../../apps/api/src/password.js';
 
-const databaseUrl = process.env.DATABASE_URL ?? 'postgresql://kanei:local_only_dev@127.0.0.1:5434/kanei_crm_mvp';
+export interface CompositeSeedResult {
+  userIds: Record<'admin_composite' | 'staff_composite' | 'viewer_composite', string>;
+  accountIds: Record<'end_customer' | 'seven' | 'maker', string>;
+  projectId: string;
+}
 
 const seedUsers = [
   { username: 'admin_composite', role: 'admin' as const, displayName: '合成代表者', password: 'composite-admin-pass' },
@@ -28,7 +34,14 @@ const seedAccounts = [
 // Existing rows are never mutated: a re-run does not overwrite a password
 // changed after the first seed and does not resurrect soft-deleted rows —
 // soft-deleted matches are reused as-is and reported so the operator notices.
-async function main() {
+export async function seedCompositeData(
+  databaseUrlOverride?: string
+): Promise<CompositeSeedResult> {
+  const databaseUrl = databaseUrlOverride ?? process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error('Composite seeding requires DATABASE_URL (never guess a database)');
+  }
+
   const { db, pool } = createDatabase(databaseUrl);
   try {
     const userIds: Record<string, string> = {};
@@ -113,12 +126,19 @@ async function main() {
     ]).onConflictDoNothing();
 
     console.log('Composite seed data ready (idempotent: re-running reuses existing rows).');
+
+    return { userIds: userIds as CompositeSeedResult['userIds'], accountIds: accountIds as CompositeSeedResult['accountIds'], projectId };
   } finally {
     await pool.end();
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+// Run as a CLI only; importing this module must not mutate a database.
+const invokedDirectly = process.argv[1] !== undefined
+  && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+if (invokedDirectly) {
+  seedCompositeData().catch((error) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
