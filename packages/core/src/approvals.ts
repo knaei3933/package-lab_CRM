@@ -558,13 +558,31 @@ export function evaluateApprovalEvidenceIdentifierForBytes(
     declared.startsWith('text/') ||
     declared.startsWith('message/') ||
     /^(?:From [^\r\n]*|[\x21-\x39\x3b-\x7e]+:[ \t][^\r\n]*)\r?\n/.test(
-      input.bytes.subarray(0, 512).toString('latin1')
+      input.bytes.subarray(0, 512).toString('latin1').replace(/^(?:[ \t]*\r?\n)+/, '')
     );
-  const parsed = mayBeMail ? parseEml(input.bytes) : null;
+  // Leading blank lines would end the header block before it starts.
+  let mailBytes = input.bytes;
+  if (mayBeMail) {
+    let start = 0;
+    for (;;) {
+      let end = start;
+      while (end < mailBytes.length && (mailBytes[end] === 0x20 || mailBytes[end] === 0x09)) end += 1;
+      if (mailBytes[end] === 0x0d && mailBytes[end + 1] === 0x0a) start = end + 2;
+      else if (mailBytes[end] === 0x0a) start = end + 1;
+      else break;
+    }
+    if (start > 0) mailBytes = mailBytes.subarray(start);
+  }
+  const parsed = mayBeMail ? parseEml(mailBytes) : null;
   if (parsed !== null && parsed.ok) {
     const headers = parsed.eml.headers;
     const idHeaders = headers['message-id'] ?? [];
-    const looksLikeMail = idHeaders.length > 0 || (headers['from'] !== undefined && headers['date'] !== undefined);
+    const looksLikeMail =
+      idHeaders.length > 0 ||
+      headers['in-reply-to'] !== undefined ||
+      headers['references'] !== undefined ||
+      headers['received'] !== undefined ||
+      (headers['from'] !== undefined && headers['date'] !== undefined);
     if (looksLikeMail) {
       // Never fall back to the substring rule for a mail. Missing, malformed or
       // repeated Message-ID headers cannot be tied to one own id: a human decides.

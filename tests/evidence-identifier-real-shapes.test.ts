@@ -245,6 +245,24 @@ describe('evidence identifier: real EML shapes (G1 G2 G4)', () => {
     }
   });
 
+  it('LOW: a header block with only In-Reply-To, References or Received is a mail, never substring', () => {
+    for (const line of [`In-Reply-To: ${PARENT_ID}`, `References: ${PARENT_ID}`, `Received: from a.example.test by b.example.test; ${PARENT_ID}`]) {
+      const bytes = Buffer.from([line, 'Content-Type: text/plain', '', `quoted ${PARENT_ID}`, ''].join('\r\n'), 'utf8');
+      const r = evaluateApprovalEvidenceIdentifierForBytes({ identifier: PARENT_ID, bytes, contentType: 'text/plain' });
+      expect(r.ok && r.status === 'verified_in_document').toBe(false);
+    }
+  });
+
+  it('LOW: leading blank lines do not defeat mail detection', () => {
+    for (const prefix of ['\r\n', '\n\n', ' \t\r\n\r\n']) {
+      const bytes = Buffer.concat([Buffer.from(prefix), mailWith([`Message-ID: ${OWN_ID}`])]);
+      const quoted = evaluateApprovalEvidenceIdentifierForBytes({ identifier: PARENT_ID, bytes, contentType: 'text/plain' });
+      expect(quoted.ok).toBe(false);
+      const own = evaluateApprovalEvidenceIdentifierForBytes({ identifier: OWN_ID, bytes, contentType: 'text/plain' });
+      expect(own.ok && own.status === 'verified_in_document').toBe(true);
+    }
+  });
+
   it('LOW: a PDF with a Content-ID and a download link still reports attachment_hash_mismatch', () => {
     const pdf = Buffer.from('%PDF-1.4 synthetic wrong file', 'utf8');
     const raw = [
