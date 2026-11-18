@@ -17,6 +17,8 @@ import {
 import type { FilmSupplyOrderState, Operation } from '@kanei/core';
 import { buildAuditViewForRole } from '../apps/api/src/audit-view.js';
 import type { AuditHistoryRow } from '../apps/api/src/audit-view.js';
+import { buildMakerPoViewForRole } from '../apps/api/src/maker-po-view.js';
+import type { MakerPoRecord } from '../apps/api/src/maker-po-view.js';
 
 /**
  * UI batch B (flow visibility): the progress stepper and 「次にやること」, the
@@ -64,6 +66,9 @@ const { canRoleOperate, operationRefusal, ROLE_UNKNOWN_PAGE_NOTICE, VIEWER_PAGE_
   '../apps/web/src/lib/permissions.js'
 );
 const { ProjectPicker } = await import('../apps/web/src/components/ProjectPicker.js');
+const { createProjectPickerIntent, MAIN_REGION_ID, POINTER_PICK_WINDOW_MS } = await import(
+  '../apps/web/src/lib/project-picker-intent.js'
+);
 const { shortId } = await import('../apps/web/src/lib/short-id.js');
 const { toMakerPoChoices } = await import('../apps/web/src/lib/document-maker-po.js');
 const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
@@ -360,6 +365,75 @@ describe('① replay: lastNormalStatus and the receipt assumption', () => {
     expect(groups.hidden).toHaveLength(6);
   });
 
+  /**
+   * Review mutant M08. The API writes every maker-chain move of the film order
+   * as FILM_SUPPLY_ORDER_TRANSITIONED on the order itself (operation
+   * maker_po:ceo_approve / send_evidence / verify_send / accept_evidence /
+   * cancel, apps/api/src/app.ts), each with beforeState/afterState. On such a
+   * complete trail the remembered state already equals the hold's beforeState.
+   * The hold's beforeState is the stronger source: when the trail misses a
+   * status write (a row written outside the audited endpoints, e.g. a restored
+   * or repaired database), the remembered state is stale and the hold event
+   * still names where the order really was.
+   */
+  describe('lastNormalStatus of a hold comes from the hold event itself (M08)', () => {
+    const ORDER_GAP = '01a1ec60-0000-7000-8000-00000000bb07';
+    const HEAD = ROWS.filter((row) => row.entityType === 'seven_purchase_order');
+    const created = (id: string, code: string) => auditRow('film_supply_order', 'FILM_SUPPLY_ORDER_CREATED', id, {
+      id, code, status: 'DRAFT', lineCount: 1, projectId: PROJECT_ID, paymentTerms: 'prepaid',
+      sevenPurchaseOrderId: PO_ID, createdByUserId: USER_ID
+    }, null, { operation: 'film_order:create' });
+    const moved = (id: string, from: string, to: string, requestMetadata: Record<string, unknown>) =>
+      auditRow('film_supply_order', 'FILM_SUPPLY_ORDER_TRANSITIONED', id, { status: to }, { status: from }, requestMetadata);
+    const UP_TO_READY = ['DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY'];
+    const toReady = (id: string) => UP_TO_READY.slice(1).map((to, index) =>
+      moved(id, UP_TO_READY[index]!, to, { operation: 'film_order:transition' }));
+    const ceoApprove = (id: string) => moved(id, 'MAKER_PO_READY', 'APPROVED_FOR_MANUAL_SEND',
+      { operation: 'maker_po:ceo_approve', reason: 'maker_po_approved' });
+    const hold = (id: string, from: string) => moved(id, from, 'ON_HOLD', { operation: 'film_order:transition' });
+
+    it.each(['admin', 'staff'] as const)('%s: a complete trail (the API\'s maker-chain row) remembers the maker-chain state', async (role) => {
+      serveAs(role, [...HEAD, created(ORDER_GAP, 'FSO-GAP'), ...toReady(ORDER_GAP), ceoApprove(ORDER_GAP), hold(ORDER_GAP, 'APPROVED_FOR_MANUAL_SEND')]);
+      const [order] = (await loadWorkspace(PROJECT_ID)).filmOrders;
+      expect(order).toMatchObject({ id: ORDER_GAP, status: 'ON_HOLD', lastNormalStatus: 'APPROVED_FOR_MANUAL_SEND' });
+    });
+
+    it.each(['admin', 'staff'] as const)('%s: a stale remembered state loses to the hold event\'s beforeState', async (role) => {
+      // The maker-chain row is missing: replay alone would remember MAKER_PO_READY.
+      serveAs(role, [...HEAD, created(ORDER_GAP, 'FSO-GAP'), ...toReady(ORDER_GAP), hold(ORDER_GAP, 'APPROVED_FOR_MANUAL_SEND')]);
+      const workspace = await loadWorkspace(PROJECT_ID);
+      const [order] = workspace.filmOrders;
+      expect(order).toMatchObject({ id: ORDER_GAP, status: 'ON_HOLD', lastNormalStatus: 'APPROVED_FOR_MANUAL_SEND' });
+      // What the operator sees follows from it: ask the representative (B-M1), and no jump into production (B-M2).
+      expect(nextActionForOrder(order!, workspace, role).text).toContain('管理者（代表者）に確認してください。');
+      const values = transitionChoicesFor('ON_HOLD', label, order!.lastNormalStatus).choices.map((choice) => choice.value);
+      expect(values[0]).toBe('DRAFT');
+      expect(values).not.toContain('FILM_IN_PRODUCTION');
+    });
+
+    it('viewer: the hold is withheld, so nothing is remembered', async () => {
+      serveAs('viewer', [...HEAD, created(ORDER_GAP, 'FSO-GAP'), ...toReady(ORDER_GAP), hold(ORDER_GAP, 'APPROVED_FOR_MANUAL_SEND')]);
+      const [order] = (await loadWorkspace(PROJECT_ID)).filmOrders;
+      expect(order).toMatchObject({ statusHidden: true, lastNormalStatus: null });
+    });
+
+    it('orders (staff): 次にやること for that hold links no maker PO screen (B-M1)', async () => {
+      serveAs('staff', [...HEAD, created(ORDER_GAP, 'FSO-GAP'), ...toReady(ORDER_GAP), hold(ORDER_GAP, 'APPROVED_FOR_MANUAL_SEND')]);
+      const html = await renderPage(OrdersPage);
+      expect(html).toContain(
+        `中断前の「${label('APPROVED_FOR_MANUAL_SEND')}」へはどの画面からも戻せません。保留・見直しをどう解除するかを管理者（代表者）に確認してください。`
+      );
+      const links = [...html.matchAll(/<p class="next-links">([\s\S]*?)<\/p>/g)].map((match) => match[1]!);
+      expect(links.length).toBeGreaterThan(0);
+      for (const inner of links) expect(inner).not.toContain('href="/maker-po"');
+      // The transition select of the held order offers nothing past the maker acceptance (B-M2).
+      const [select] = [...html.matchAll(/<select[^>]*name="to"[^>]*>([\s\S]*?)<\/select>/g)];
+      expect(select?.[1]).toBeDefined();
+      expect(select![1]).not.toContain('value="FILM_IN_PRODUCTION"');
+      expect(select![1]).toContain('value="MAKER_PO_READY"');
+    });
+  });
+
   it('a refused remembered project keeps the API wording and says to pick again; an outage does not', async () => {
     callApi.mockImplementation(async (apiPath: string) => apiPath === `/api/projects/${PROJECT_ID}`
       ? { ok: false, status: 404, error: '案件が見つかりません', data: null }
@@ -445,16 +519,46 @@ describe('① 次にやること: the step, the owner and the reason a role cann
     });
   });
 
-  it.each(['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED'] as const)(
-    'ON_HOLD after %s: says the left state cannot be named here (M1)',
-    (left) => {
-      const action = nextActionForOrder(order('ON_HOLD', { lastNormalStatus: left }), workspace(), 'staff');
+  // B-M1: the maker PO screen does not list an order in a hold or review and
+  // the API refuses resuming into the maker chain, so the step is to ask the
+  // representative — never a /maker-po link.
+  const MAKER_CHAIN_LEFT = ['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED'] as const;
+  describe.each(FILM_SUPPLY_ORDER_EXCEPTION_STATES)('%s left from the maker chain (B-M1)', (exception) => {
+    it.each(MAKER_CHAIN_LEFT)('after %s: ask the representative, no maker PO screen link', (left) => {
+      const action = nextActionForOrder(order(exception, { lastNormalStatus: left }), workspace(), 'staff');
       expect(action.text).toBe(
-        `中断前の「${label(left)}」へはこの画面から戻せません。メーカー発注画面の記録で進めるか、代表者に相談してください。`
+        `中断前の「${label(left)}」へはどの画面からも戻せません。保留・見直しをどう解除するかを管理者（代表者）に確認してください。`
       );
-      expect(action.screens).toEqual(['/maker-po', '/orders']);
+      expect(action.screens).toEqual(['/orders']);
+      expect(action.screens).not.toContain('/maker-po');
+      expect(action.text).not.toContain('メーカー発注画面');
+    });
+
+    it.each([
+      ['admin', null],
+      ['staff', null],
+      ['viewer', '閲覧権限のため操作できません。']
+    ] as const)('%s: the same wording; only the viewer is refused', (role, refusal) => {
+      for (const left of MAKER_CHAIN_LEFT) {
+        const action = nextActionForOrder(order(exception, { lastNormalStatus: left }), workspace(), role);
+        expect(action, `${role} ${left}`).toMatchObject({ screens: ['/orders'], operation: 'film_order:transition', refusal });
+        expect(action.text, `${role} ${left}`).toContain('管理者（代表者）に確認してください。');
+      }
+    });
+  });
+
+  it('guard: no exception state × left state ever links the maker PO screen (B-M1)', () => {
+    // The maker PO screen lists none of the exception states, so a link there
+    // from a hold or review is always a dead end.
+    for (const exception of FILM_SUPPLY_ORDER_EXCEPTION_STATES) {
+      for (const left of [...FILM_SUPPLY_ORDER_STATES, null]) {
+        for (const role of ROLES) {
+          const action = nextActionForOrder(order(exception, { lastNormalStatus: left }), workspace(), role);
+          expect(action.screens, `${exception} ${left} ${role}`).not.toContain('/maker-po');
+        }
+      }
     }
-  );
+  });
 
   it('exception, terminal and withheld states', () => {
     expect(nextActionForOrder(order('ON_HOLD'), workspace(), 'staff')).toMatchObject({
@@ -508,14 +612,15 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
     FILM_SHIPPED: ['FILM_DELIVERED', ...EX],
     FILM_DELIVERED: EX,
     FILM_RECEIPT_ASSUMED_NO_ISSUE: [],
+    // B-M2: left before MAKER_PO_ACCEPTED, so no state past it (製造中・出荷済み・納品済み).
     ON_HOLD: ['APPROVAL_PENDING', 'DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY',
-      'DUAL_APPROVED', 'MAKER_PO_READY', 'FILM_IN_PRODUCTION', 'FILM_SHIPPED', 'FILM_DELIVERED'],
+      'DUAL_APPROVED', 'MAKER_PO_READY'],
     CHANGE_REVIEW: ['APPROVAL_PENDING', 'ARTWORK_RECEIVED', 'PROOF_READY'],
     CANCELLATION_REVIEW: ['APPROVAL_PENDING', 'DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY',
-      'DUAL_APPROVED', 'MAKER_PO_READY', 'FILM_IN_PRODUCTION', 'FILM_SHIPPED', 'FILM_DELIVERED']
+      'DUAL_APPROVED', 'MAKER_PO_READY']
   };
 
-  it.each(ALL_STATES)('%s: exactly the expected targets, each allowed by core; only maker-chain / terminal left out', (state) => {
+  it.each(ALL_STATES)('%s: exactly the expected targets, each allowed by core; only maker-chain / terminal / maker-skipping jumps left out', (state) => {
     const set = transitionChoicesFor(state, label, 'APPROVAL_PENDING');
     expect(set.choices.map((choice) => choice.value)).toEqual(EXPECTED_CHOICES[state]);
     for (const choice of set.choices) {
@@ -528,9 +633,13 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
     }
     const offered = new Set(set.choices.map((choice) => choice.value));
     const leftOut = filmSupplyOrderTransitions(state).filter((to) => !offered.has(to));
+    const leftOutAllowed = (FILM_SUPPLY_ORDER_EXCEPTION_STATES as readonly string[]).includes(state)
+      // B-M2: leaving at APPROVAL_PENDING, the jumps past the maker acceptance are held back too.
+      ? ['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED', 'FILM_RECEIPT_ASSUMED_NO_ISSUE',
+        'FILM_IN_PRODUCTION', 'FILM_SHIPPED', 'FILM_DELIVERED']
+      : ['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED', 'FILM_RECEIPT_ASSUMED_NO_ISSUE'];
     for (const to of leftOut) {
-      expect(['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED', 'FILM_RECEIPT_ASSUMED_NO_ISSUE'], `${state}→${to}`)
-        .toContain(to);
+      expect(leftOutAllowed, `${state}→${to}`).toContain(to);
     }
   });
 
@@ -562,22 +671,92 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
     expect(set.choices.filter((choice) => choice.group === RESUME_GROUP_LABEL)).toHaveLength(9);
     expect(set.choices.map((choice) => choice.value)).not.toContain('MAKER_PO_ACCEPTED');
     expect(set.resumeNotice).toBeNull();
-    // Unknown left state: nothing is called ahead.
-    expect(transitionChoicesFor('ON_HOLD', label, null).choices.every((choice) => choice.group === RESUME_GROUP_LABEL)).toBe(true);
+    // Unknown left state: nothing is called ahead, and (B-M2) nothing past the maker acceptance is offered.
+    const unknown = transitionChoicesFor('ON_HOLD', label, null).choices;
+    expect(unknown.every((choice) => choice.group === RESUME_GROUP_LABEL)).toBe(true);
+    expect(unknown.map((choice) => choice.value))
+      .toEqual(['DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']);
     expect(transitionChoicesFor('CHANGE_REVIEW', label, 'PROOF_READY').choices.map((choice) => choice.value))
       .toEqual(['PROOF_READY', 'ARTWORK_RECEIVED', 'APPROVAL_PENDING']);
   });
 
-  it('a hold left from the maker chain: a notice, earlier states to resume, later ones as a jump (M1)', () => {
+  it('a hold left from the maker chain: a notice to ask the representative, earlier states to resume (M1, B-M1, B-M2)', () => {
     const set = transitionChoicesFor('ON_HOLD', label, 'MAKER_PO_SENT_MANUALLY');
     expect(set.resumeNotice).toBe(
-      `中断前の「${label('MAKER_PO_SENT_MANUALLY')}」へはこの画面から戻せません。メーカー発注画面の記録で進めるか、代表者に相談してください。`
+      `中断前の「${label('MAKER_PO_SENT_MANUALLY')}」へはどの画面からも戻せません。保留・見直しをどう解除するかを管理者（代表者）に確認してください。`
     );
+    expect(set.resumeNotice).not.toContain('メーカー発注画面');
     expect(set.choices.filter((choice) => choice.group === RESUME_GROUP_LABEL).map((choice) => choice.value))
       .toEqual(['DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']);
-    expect(set.choices.filter((choice) => choice.group === SKIP_AHEAD_GROUP_LABEL).map((choice) => choice.value))
+    // B-M2: left before the acceptance, so no jump into production (it would skip 受入).
+    expect(set.choices.filter((choice) => choice.group === SKIP_AHEAD_GROUP_LABEL)).toEqual([]);
+    // Left at the acceptance itself: production onward skips no maker step and stays a 注意 jump.
+    const accepted = transitionChoicesFor('ON_HOLD', label, 'MAKER_PO_ACCEPTED');
+    expect(accepted.choices.filter((choice) => choice.group === SKIP_AHEAD_GROUP_LABEL).map((choice) => choice.value))
       .toEqual(['FILM_IN_PRODUCTION', 'FILM_SHIPPED', 'FILM_DELIVERED']);
+    expect(accepted.resumeNotice).toContain('管理者（代表者）に確認してください。');
     expect(transitionChoicesFor('ON_HOLD', label, 'APPROVAL_PENDING').resumeNotice).toBeNull();
+  });
+
+  it('B-M2 (api-probes.txt): ON_HOLD left at APPROVED_FOR_MANUAL_SEND never offers FILM_IN_PRODUCTION', () => {
+    const values = transitionChoicesFor('ON_HOLD', label, 'APPROVED_FOR_MANUAL_SEND').choices.map((choice) => choice.value);
+    expect(values).not.toContain('FILM_IN_PRODUCTION');
+    expect(values).not.toContain('FILM_SHIPPED');
+    expect(values).not.toContain('FILM_DELIVERED');
+    expect(values).toContain('MAKER_PO_READY');
+  });
+
+  describe('B-M2: every exception state × every left state, checked against core directly', () => {
+    // Independent of transitions.ts: the order of the chain and the allowed
+    // targets come from core; the maker chain is written out by hand.
+    const CHAIN = FILM_SUPPLY_ORDER_STATES as readonly string[];
+    const ACCEPTED_AT = CHAIN.indexOf('MAKER_PO_ACCEPTED');
+    const MAKER_CHAIN = ['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED'];
+    const TERMINAL = 'FILM_RECEIPT_ASSUMED_NO_ISSUE';
+    const LEFT_STATES: Array<string | null> = [...FILM_SUPPLY_ORDER_STATES, null, 'NOT_A_STATE'];
+    const cases = FILM_SUPPLY_ORDER_EXCEPTION_STATES.flatMap((exception) =>
+      LEFT_STATES.map((left) => [exception, left] as const));
+
+    it('the fixture is what the rule is about', () => {
+      expect(ACCEPTED_AT).toBe(9);
+      expect(CHAIN.slice(ACCEPTED_AT + 1)).toEqual(['FILM_IN_PRODUCTION', 'FILM_SHIPPED', 'FILM_DELIVERED', TERMINAL]);
+      expect(cases).toHaveLength(3 * 16);
+    });
+
+    it.each(cases)('%s left at %s: no choice skips past the maker acceptance; the other core targets stay', (exception, left) => {
+      const leftAt = left === null ? -1 : CHAIN.indexOf(left);
+      const leftBeforeAcceptance = leftAt < ACCEPTED_AT; // includes unknown / null
+      const set = transitionChoicesFor(exception, label, left);
+      const values = set.choices.map((choice) => choice.value);
+      const expected = filmSupplyOrderTransitions(exception).filter((to) =>
+        !MAKER_CHAIN.includes(to)
+        && to !== TERMINAL
+        && !(leftBeforeAcceptance && CHAIN.indexOf(to) > ACCEPTED_AT));
+      expect([...values].sort()).toEqual([...expected].sort());
+      for (const choice of set.choices) {
+        const index = CHAIN.indexOf(choice.value);
+        if (leftBeforeAcceptance) expect(index, `${exception} ${left}→${choice.value}`).toBeLessThanOrEqual(ACCEPTED_AT);
+        expect(transitionFilmSupplyOrder(exception, choice.value as FilmSupplyOrderState).ok).toBe(true);
+        // Past the left state is a jump (注意); the rest resumes.
+        expect(choice.group, `${exception} ${left}→${choice.value}`)
+          .toBe(leftAt >= 0 && index > leftAt ? SKIP_AHEAD_GROUP_LABEL : RESUME_GROUP_LABEL);
+      }
+      if (!leftBeforeAcceptance) {
+        // Left at or after the acceptance: production onward skips no maker step.
+        for (const to of ['FILM_IN_PRODUCTION', 'FILM_SHIPPED', 'FILM_DELIVERED']) {
+          if (filmSupplyOrderTransitions(exception).includes(to as FilmSupplyOrderState)) expect(values, to).toContain(to);
+        }
+      }
+    });
+
+    it('the jumps that skip no maker step remain under 先の段階へ進める（注意）', () => {
+      const skip = (left: string) => transitionChoicesFor('CANCELLATION_REVIEW', label, left).choices
+        .filter((choice) => choice.group === SKIP_AHEAD_GROUP_LABEL).map((choice) => choice.value);
+      expect(skip('FILM_IN_PRODUCTION')).toEqual(['FILM_SHIPPED', 'FILM_DELIVERED']);
+      expect(skip('FILM_SHIPPED')).toEqual(['FILM_DELIVERED']);
+      expect(skip('PROOF_READY')).toEqual(['APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']);
+      expect(skip('DRAFT')).toEqual(['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']);
+    });
   });
 
   it('APPROVAL_PENDING keeps the dual approval target with a hint; FILM_DELIVERED leaves the receipt to its own form', () => {
@@ -810,7 +989,7 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
       ['', 'ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW'], // FSO-READY
       ['', 'ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW'], // FSO-SEND
       ['', 'APPROVAL_PENDING', 'DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', // FSO-HOLD
-        'DUAL_APPROVED', 'MAKER_PO_READY', 'FILM_IN_PRODUCTION', 'FILM_SHIPPED', 'FILM_DELIVERED'],
+        'DUAL_APPROVED', 'MAKER_PO_READY'], // B-M2: nothing past the maker acceptance
       ['', 'SEVEN_PO_VERIFIED', 'ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW'], // FSO-DRAFT
       ['', 'ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW'] // FSO-DELIV
     ]);
@@ -826,6 +1005,58 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
     expect(html).toContain('次はメーカー発注画面の操作で進みます。');
     expect(html).toContain('この発注は完了しています。進める先はありません。');
     expect(html).toContain('メーカー発注画面を開く');
+  });
+});
+
+/**
+ * Review mutant M11 (`canApprove = true` survived): a maker PO awaiting the
+ * representative's approval, on the order at MAKER_PO_READY, shaped per role
+ * by the API's own buildMakerPoViewForRole.
+ */
+describe('maker-po: the 代表承認 form is the representative\'s (M11)', () => {
+  const DRAFT_PO = '01a1ec60-0000-7000-8000-00000000cc02';
+  const RECORD: MakerPoRecord = {
+    id: DRAFT_PO, filmSupplyOrderId: ORDER_READY,
+    snapshot: { order: { code: 'FSO-READY' }, recipient: { address: 'maker@example.test' } },
+    snapshotSha256: 'ab'.repeat(32), status: 'DRAFT', ceoApprovedByUserId: null, ceoApprovedAt: null,
+    createdByUserId: USER_ID, createdAt: new Date(Date.UTC(2026, 10, 18, 0, 0, 0)), updatedAt: new Date(Date.UTC(2026, 10, 18, 0, 0, 0))
+  };
+  function serveDraftPo(role: Role) {
+    serveAs(role);
+    const base = callApi.getMockImplementation()!;
+    const shaped = JSON.parse(JSON.stringify(buildMakerPoViewForRole(role, RECORD)));
+    callApi.mockImplementation(async (apiPath: string, ...rest: unknown[]) => {
+      const ok = (data: unknown) => ({ ok: true, status: 200, error: null, data });
+      if (apiPath === `/api/film-supply-orders/${ORDER_READY}/maker-purchase-orders`) return ok({ makerPurchaseOrders: [shaped] });
+      if (apiPath === `/api/maker-purchase-orders/${DRAFT_PO}`) return ok({ purchaseOrder: shaped, events: [] });
+      return base(apiPath, ...rest);
+    });
+  }
+  const APPROVE_BUTTON = '>代表承認を記録する</button>';
+  const WAITING = 'メーカー発注書 …0000cc02 は代表承認待ちです。';
+
+  it('admin: the approval form for that paper, no refusal', async () => {
+    serveDraftPo('admin');
+    const html = await renderPage(MakerPoPage);
+    expect(html).toContain('② 代表承認（代表者のみ）');
+    expect(html).toContain(APPROVE_BUTTON);
+    expect(html).toMatch(new RegExp(`name="poId"[^>]*value="${DRAFT_PO}"|value="${DRAFT_PO}"[^>]*name="poId"`));
+    expect(html).not.toContain(WAITING);
+  });
+
+  it('staff: no approval form; the refusal says the representative approves', async () => {
+    serveDraftPo('staff');
+    const html = await renderPage(MakerPoPage);
+    expect(html).toContain('② 代表承認（代表者のみ）');
+    expect(html).not.toContain(APPROVE_BUTTON);
+    expect(html).toContain(`${WAITING}代表承認は代表者が行います。`);
+  });
+
+  it('viewer: no approval form and no form at all', async () => {
+    serveDraftPo('viewer');
+    const html = await renderPage(MakerPoPage);
+    expect(html).not.toContain(APPROVE_BUTTON);
+    expect(html.match(/<form\b/g) ?? []).toHaveLength(0);
   });
 });
 
@@ -869,13 +1100,103 @@ describe('② ProjectPicker', () => {
     expect(html).toContain('<option value="" selected="">（選択なし）</option>');
   });
 
-  it('source guard: the select is keyed by the project (B1) and auto-submits only pointer choices (H1)', () => {
+  it('source guard: the select is keyed by the project (B1) and every event goes through the intent rules (H1, B-M3, B-M4)', () => {
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
     const source = readFileSync(path.join(repoRoot, 'apps/web/src/components/ProjectPicker.tsx'), 'utf8');
-    // The remount after the refresh and the keyboard rule cannot be observed
-    // in a server render; pin the two lines that carry them.
+    // The remount after the refresh and the event wiring cannot be observed
+    // in a server render; pin the lines that carry them. The rules themselves
+    // are checked on the helper below.
     expect(source).toContain("key={currentProjectId ?? ''}");
-    expect(source).toMatch(/if \(pointerChoice\.current\) submitIfChosen/);
-    expect(source).toMatch(/onKeyDown[\s\S]*pointerChoice\.current = false/);
+    expect(source).toMatch(/if \(intent\.change\(event\.timeStamp\)\) submitIfChosen/);
+    expect(source).toMatch(/if \(!intent\.keyDown\(event\.key\)\) return;/);
+    expect(source).toMatch(/onPointerDown=\{[^}]*intent\.pointerDown\(event\.timeStamp\)/);
+    expect(source).toMatch(/onBlur=\{\(\) => intent\.blur\(\)\}/);
+    expect(source).toMatch(/onSubmit=\{\(\) => intent\.submitted\(\)\}/);
+    expect(source).toMatch(/if \(intent\.settled\(state\)\) document\.getElementById\(MAIN_REGION_ID\)\?\.focus\(\)/);
+    expect(source).not.toMatch(/pointerChoice/);
+  });
+
+  it('the focus target is the layout\'s main region: present, programmatically focusable, no ring (B-M3)', () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const layout = readFileSync(path.join(repoRoot, 'apps/web/src/app/layout.tsx'), 'utf8');
+    const css = readFileSync(path.join(repoRoot, 'apps/web/src/app/globals.css'), 'utf8');
+    expect(MAIN_REGION_ID).toBe('main');
+    expect(layout).toMatch(new RegExp(`<main id="${MAIN_REGION_ID}" tabIndex=\\{-1\\}`));
+    expect(css).toMatch(/main:focus-visible \{\s*outline: none;/);
+  });
+});
+
+describe('② ProjectPicker intent rules (B-M3, B-M4)', () => {
+  // Event timestamps in ms, as event.timeStamp gives them.
+  it('pointer press → change: switches at once', () => {
+    const intent = createProjectPickerIntent();
+    intent.pointerDown(100);
+    expect(intent.change(400)).toBe(true);
+  });
+
+  it('pointer press → blur → change (no pointer): does not switch', () => {
+    const intent = createProjectPickerIntent();
+    intent.pointerDown(100);
+    intent.blur();
+    expect(intent.change(400)).toBe(false);
+  });
+
+  it('pointer press → change → another change without a press: only the first switches', () => {
+    const intent = createProjectPickerIntent();
+    intent.pointerDown(100);
+    expect(intent.change(400)).toBe(true);
+    expect(intent.change(900)).toBe(false);
+  });
+
+  it('a change with no pointer press at all (virtual cursor, voice control): does not switch', () => {
+    expect(createProjectPickerIntent().change(400)).toBe(false);
+  });
+
+  it('pointer press that changes nothing, then a much later change without a key press: does not switch', () => {
+    const intent = createProjectPickerIntent();
+    intent.pointerDown(100);
+    expect(intent.change(100 + POINTER_PICK_WINDOW_MS + 1)).toBe(false);
+    const inTime = createProjectPickerIntent();
+    inTime.pointerDown(100);
+    expect(inTime.change(100 + POINTER_PICK_WINDOW_MS)).toBe(true);
+  });
+
+  it('arrow keys only move the choice; Enter switches', () => {
+    const intent = createProjectPickerIntent();
+    expect(intent.keyDown('ArrowDown')).toBe(false);
+    expect(intent.change(200)).toBe(false);
+    expect(intent.keyDown('ArrowUp')).toBe(false);
+    expect(intent.keyDown('Enter')).toBe(true);
+  });
+
+  it('a key press after a pointer press cancels the pointer pick', () => {
+    const intent = createProjectPickerIntent();
+    intent.pointerDown(100);
+    expect(intent.keyDown('ArrowDown')).toBe(false);
+    expect(intent.change(300)).toBe(false);
+  });
+
+  it('a new pointer press after a used one switches again', () => {
+    const intent = createProjectPickerIntent();
+    intent.pointerDown(100);
+    expect(intent.change(200)).toBe(true);
+    intent.pointerDown(5000);
+    expect(intent.change(5200)).toBe(true);
+  });
+
+  it('focus moves only after a switch submitted here succeeded — never on load or after a refusal', () => {
+    const intent = createProjectPickerIntent();
+    // First render: no answer yet, nothing submitted.
+    expect(intent.settled(null)).toBe(false);
+    // An answer this picker did not ask for (no submit) does not move focus.
+    expect(intent.settled({ ok: true })).toBe(false);
+    intent.submitted();
+    expect(intent.settled({ ok: false })).toBe(false);
+    // The refusal used up that submit.
+    expect(intent.settled({ ok: true })).toBe(false);
+    intent.submitted();
+    expect(intent.settled({ ok: true })).toBe(true);
+    // Once only.
+    expect(intent.settled({ ok: true })).toBe(false);
   });
 });

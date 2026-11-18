@@ -1190,9 +1190,12 @@ export function nextActionForOrder(
     case 'ON_HOLD':
     case 'CHANGE_REVIEW':
     case 'CANCELLATION_REVIEW': {
+      // B-M1: an order held from the maker chain is not on the maker PO screen
+      // and cannot be resumed there, so no /maker-po link: the notice asks the
+      // representative how to release it; the release itself is on /orders.
       const notice = makerChainResumeNotice(order.lastNormalStatus, label);
       return notice
-        ? nextAction(notice, both, ['/maker-po', '/orders'], 'film_order:transition', role)
+        ? nextAction(notice, both, ['/orders'], 'film_order:transition', role)
         : nextAction('再開する状態を選んで、状態を進める。', both, ['/orders'], 'film_order:transition', role);
     }
     default:

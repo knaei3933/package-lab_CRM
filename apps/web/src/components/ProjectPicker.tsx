@@ -1,8 +1,9 @@
 'use client';
 
-import { useActionState, useRef } from 'react';
-import type { ChangeEvent, KeyboardEvent } from 'react';
+import { useActionState, useEffect, useState } from 'react';
+import type { ChangeEvent, KeyboardEvent, PointerEvent } from 'react';
 import type { FormAction } from './ActionForm';
+import { createProjectPickerIntent, MAIN_REGION_ID } from '../lib/project-picker-intent';
 import type { Choice } from '../lib/types';
 
 /**
@@ -13,7 +14,8 @@ import type { Choice } from '../lib/types';
  * browser where the script did not run. The posted fields
  * are unchanged (projectId, directProjectId → selectProjectAction): the list
  * wins when both are filled, so the id input sits under 「詳細」 for a project
- * the list does not offer.
+ * the list does not offer. The pointer/keyboard rules and the focus move after
+ * a switch live in lib/project-picker-intent (REVIEW.md B-M3, B-M4).
  */
 export function ProjectPicker({
   action,
@@ -25,20 +27,25 @@ export function ProjectPicker({
   currentProjectId: string | null;
 }) {
   const [state, formAction, pending] = useActionState(action, null);
-  // True while the current choice is being made with the pointer.
-  const pointerChoice = useRef(false);
+  const [intent] = useState(createProjectPickerIntent);
+
+  // B-M3: the switch remounts the select (key below), which drops focus to the
+  // body. After a switch submitted here succeeds, focus goes to the page's
+  // main region (tabIndex -1, no ring); never on page load or after a refusal.
+  useEffect(() => {
+    if (intent.settled(state)) document.getElementById(MAIN_REGION_ID)?.focus();
+  }, [intent, state]);
 
   function submitIfChosen(select: HTMLSelectElement): void {
     if (select.value.length > 0) select.form?.requestSubmit();
   }
 
   function onChange(event: ChangeEvent<HTMLSelectElement>): void {
-    if (pointerChoice.current) submitIfChosen(event.currentTarget);
+    if (intent.change(event.timeStamp)) submitIfChosen(event.currentTarget);
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLSelectElement>): void {
-    pointerChoice.current = false;
-    if (event.key !== 'Enter') return;
+    if (!intent.keyDown(event.key)) return;
     event.preventDefault();
     // Read the value after the key has been applied to the select.
     const select = event.currentTarget;
@@ -46,7 +53,7 @@ export function ProjectPicker({
   }
 
   return (
-    <form action={formAction} className="project-picker">
+    <form action={formAction} className="project-picker" onSubmit={() => intent.submitted()}>
       <div className="project-picker-row">
         <label className="project-picker-field">
           <span>案件</span>
@@ -58,9 +65,8 @@ export function ProjectPicker({
             defaultValue={currentProjectId ?? ''}
             onChange={onChange}
             onKeyDown={onKeyDown}
-            onPointerDown={() => {
-              pointerChoice.current = true;
-            }}
+            onPointerDown={(event: PointerEvent<HTMLSelectElement>) => intent.pointerDown(event.timeStamp)}
+            onBlur={() => intent.blur()}
           >
             <option value="">（選択なし）</option>
             {(Array.isArray(choices) ? choices : []).map((choice) => (
