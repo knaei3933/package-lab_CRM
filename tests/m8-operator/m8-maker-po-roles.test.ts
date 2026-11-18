@@ -271,8 +271,7 @@ async function reachApprovalPending(input: {
 }) {
   const poNumber = `SEVEN-M8-${input.tag}`;
   const createdPo = await postAs(staffToken, `/api/projects/${input.projectId}/seven-purchase-orders`, {
-    poNumber,
-    officialRegisteredAt: '2026-11-01T09:00:00.000Z'
+    poNumber
   });
   expect(createdPo.status).toBe(201);
   const po = createdPo.body as { id: string };

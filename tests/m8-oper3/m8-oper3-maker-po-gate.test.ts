@@ -148,8 +148,7 @@ async function uploadDocument(input: {
  */
 async function reachApprovalPending(tag: string) {
   const createdPo = await postAs(staffToken, `/api/projects/${projectId}/seven-purchase-orders`, {
-    poNumber: `SEVEN-OPER3-${tag}`,
-    officialRegisteredAt: '2026-11-13T09:00:00.000Z'
+    poNumber: `SEVEN-OPER3-${tag}`
   });
   expect(createdPo.status).toBe(201);
   const po = createdPo.body as { id: string };

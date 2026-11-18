@@ -160,8 +160,7 @@ async function uploadDocument(input: {
  */
 async function reachApprovalPending(tag: string) {
   const createdPo = await postAs(staffToken, `/api/projects/${projectId}/seven-purchase-orders`, {
-    poNumber: `SEVEN-OPER2-${tag}`,
-    officialRegisteredAt: '2026-11-12T09:00:00.000Z'
+    poNumber: `SEVEN-OPER2-${tag}`
   });
   expect(createdPo.status).toBe(201);
   const po = createdPo.body as { id: string };
@@ -404,8 +403,7 @@ describe('M8-OPER2 FIX 1: the G6 terms are enterable end to end', () => {
     // An order created without a term (the select omitted) starts undetermined —
     // the term that keeps G6 closed — on the seven-PO linked path the screen uses.
     const createdPo = await postAs(staffToken, `/api/projects/${projectId}/seven-purchase-orders`, {
-      poNumber: `SEVEN-OPER2-PATCH-${nextTag()}`,
-      officialRegisteredAt: '2026-11-12T09:00:00.000Z'
+      poNumber: `SEVEN-OPER2-PATCH-${nextTag()}`
     });
     expect(createdPo.status).toBe(201);
     const po = createdPo.body as { id: string };

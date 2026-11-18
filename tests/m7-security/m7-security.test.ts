@@ -129,7 +129,7 @@ async function setupVerifiedPo(tag: string) {
   const po = await setupRegisteredOnlyPo(tag);
   const checklist = await postJson(`/api/seven-purchase-orders/${po.id}/verification-checklist`, fullChecklist());
   expect(checklist.status).toBe(200);
-  const official = await postJson(`/api/seven-purchase-orders/${po.id}/register-official`, {
+  const official = await postAs(adminToken, `/api/seven-purchase-orders/${po.id}/register-official`, {
     officialRegisteredAt: '2026-11-01T09:00:00.000Z'
   });
   expect(official.status).toBe(200);

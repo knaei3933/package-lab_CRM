@@ -158,8 +158,7 @@ async function uploadDocument(input: {
 /** An order at APPROVAL_PENDING with one registered design and no approval yet. */
 async function reachApprovalPending(tag: string) {
   const createdPo = await postAs(staffToken, `/api/projects/${projectId}/seven-purchase-orders`, {
-    poNumber: `SEVEN-H2-${tag}`,
-    officialRegisteredAt: '2026-11-14T09:00:00.000Z'
+    poNumber: `SEVEN-H2-${tag}`
   });
   expect(createdPo.status).toBe(201);
   const po = createdPo.body as { id: string };

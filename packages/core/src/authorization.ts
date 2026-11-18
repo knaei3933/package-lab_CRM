@@ -7,6 +7,7 @@ export type Operation =
   | 'ceo_approve'
   | 'seven_po:create'
   | 'seven_po:register'
+  | 'seven_po:register_overwrite'
   | 'seven_po:verify'
   | 'pre_order:create'
   | 'pre_order:promote'
@@ -96,6 +97,15 @@ export function canPerform(
   // the human act that lets an approval complete the dual approval, so it is
   // never delegated — the representative verifies, staff and viewer wait.
   if (operation === 'artwork_approval:verify_evidence') {
+    return actor.role === 'admin'
+      ? { allowed: true }
+      : { allowed: false, reason: 'ROLE_FORBIDDEN' };
+  }
+
+  // The first official registration is staff recording work. Once a date
+  // exists, changing it rewrites the date every downstream gate reads, so only
+  // the representative may call register-official again.
+  if (operation === 'seven_po:register_overwrite') {
     return actor.role === 'admin'
       ? { allowed: true }
       : { allowed: false, reason: 'ROLE_FORBIDDEN' };

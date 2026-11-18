@@ -549,7 +549,13 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     const [current] = await db.select().from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, poId)).limit(1);
     if (!current) return context.json({ error: 'セブン発注書が見つかりません' }, 404);
-    const decision = canPerform(toActor(user), 'seven_po:register', 'F1', current.projectId);
+    const isOverwrite = current.officialRegisteredAt !== null;
+    const decision = canPerform(
+      toActor(user),
+      isOverwrite ? 'seven_po:register_overwrite' : 'seven_po:register',
+      'F1',
+      current.projectId
+    );
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
     const body = await context.req.json().catch(() => null) as any;

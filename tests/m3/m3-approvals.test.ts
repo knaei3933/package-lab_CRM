@@ -140,8 +140,7 @@ function fullChecklist(overrides: Record<string, unknown> = {}) {
 /** PO that is both checklist-verified and officially registered (T-04/T-05/T-06). */
 async function setupVerifiedPo(projectId: string, tag: string) {
   const created = await postJson(`/api/projects/${projectId}/seven-purchase-orders`, {
-    poNumber: `SEVEN-M3-${tag}`,
-    officialRegisteredAt: '2026-11-01T09:00:00.000Z'
+    poNumber: `SEVEN-M3-${tag}`
   });
   expect(created.status).toBe(201);
   const po = created.body as { id: string };
