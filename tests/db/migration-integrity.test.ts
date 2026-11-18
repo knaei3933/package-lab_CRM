@@ -3,6 +3,8 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { filmSupplyOrderStatus } from '@kanei/db/schema';
 import pg from 'pg';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { readFile, mkdtemp, writeFile, cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -15,6 +17,7 @@ const sourceUrl = (() => {
   return url.toString();
 })();
 const { Pool } = pg;
+const run = promisify(execFile);
 
 /** Parse the guarded test URL without putting credentials into source. */
 function databaseName(url: URL): string {
@@ -97,22 +100,26 @@ async function runThrough0020(migrationsFolder: string, connectionString: string
     entries: Array<{ idx: number; when: number; tag: string }>;
   };
   const entries = journal.entries.filter((entry) => entry.idx <= 20);
-  const pool = new Pool({ connectionString });
-  const db = drizzle(pool);
+  const client = new pg.Client({ connectionString });
   try {
-    await db.execute('create schema if not exists drizzle');
-    await db.execute(`create table if not exists drizzle.__drizzle_migrations (id serial primary key, hash text not null, created_at bigint)`);
+    await client.connect();
+    await client.query('create schema if not exists drizzle');
+    await client.query(`create table if not exists drizzle.__drizzle_migrations (id serial primary key, hash text not null, created_at bigint)`);
     for (const entry of entries) {
       const content = await readFile(path.join(migrationsFolder, `${entry.tag}.sql`), 'utf8');
       for (const statement of content.split('--> statement-breakpoint\n')) {
-        await db.execute(statement);
+        await client.query(statement);
       }
-      await db.execute(
-        `insert into drizzle.__drizzle_migrations ("hash", "created_at") values ('${entry.tag}', ${entry.when})`
+      await client.query(
+        `insert into drizzle.__drizzle_migrations ("hash", "created_at") values ($1, $2)`,
+        [entry.tag, entry.when]
       );
     }
+    // 0015 intentionally leaves a transaction open so 0016 can use committed
+    // enum values; commit this staged replay before closing.
+    await client.query('commit');
   } finally {
-    await pool.end();
+    await client.end();
   }
 }
 
@@ -163,6 +170,24 @@ describe('drizzle migration ordering and 0021', () => {
     } finally {
       await pool.end();
     }
+  });
+
+  it('runs the real npm db:migrate command on an empty scratch database', async () => {
+    const name = await createScratchDatabase('kanei_crm_mvp_migrate_real_command');
+    await readFile(path.join(tempRoot, 'scratch-dbs.txt'), 'utf8')
+      .catch(() => '')
+      .then((old) => writeFile(path.join(tempRoot, 'scratch-dbs.txt'), `${old}${name}\n`));
+    const url = await scratchUrl(name);
+    const result = await run('npm', ['run', 'db:migrate'], {
+      cwd: process.cwd(),
+      env: { ...process.env, DATABASE_URL: url },
+      encoding: 'utf8'
+    });
+    expect(result.stdout).toContain('migrations applied successfully');
+    expect(await migrationRows(url)).toHaveLength(22);
+    const values = await enumValues(url);
+    expect(values).toContain('CANCELLED');
+    expect(values.indexOf('CANCELLED')).toBe(values.length - 1);
   });
 
   it('applies only 0021 to a database already migrated through 0020', async () => {

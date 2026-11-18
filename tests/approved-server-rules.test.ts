@@ -9,6 +9,7 @@ import {
   auditEvents,
   createDatabase,
   filmSupplyOrders,
+  makerPoEvents,
   makerPurchaseOrders,
   projectAssignments,
   preOrderReferences,
@@ -862,10 +863,12 @@ describe('official-date write paths', () => {
       }).where(eq(sevenPurchaseOrders.id, racePoId));
     }
   });
-  it('does not revive a closed film order through maker cancel or artwork revision', async () => {
+  it('allows cleanup-only maker cancellation on frozen/closed orders without revival', async () => {
     const now = new Date();
     const cancelOrderId = uuidv7(now);
+    const reviewOrderId = uuidv7(now);
     const paperId = uuidv7(now);
+    const reviewPaperId = uuidv7(now);
     const revisionOrderId = uuidv7(now);
     await db.insert(filmSupplyOrders).values([
       {
@@ -873,29 +876,77 @@ describe('official-date write paths', () => {
         paymentTerms: 'prepaid', createdByUserId: adminId, createdAt: now, updatedAt: now, deletedAt: null
       },
       {
+        id: reviewOrderId, projectId, code: 'FSO-CR-PAPER', status: 'CANCELLATION_REVIEW',
+        paymentTerms: 'prepaid', createdByUserId: adminId, createdAt: now, updatedAt: now, deletedAt: null
+      },
+      {
         id: revisionOrderId, projectId, code: 'FSO-CANCELLED-REVISION', status: 'CANCELLED',
         paymentTerms: 'prepaid', createdByUserId: adminId, createdAt: now, updatedAt: now, deletedAt: null
       }
     ]);
-    await db.insert(makerPurchaseOrders).values({
-      id: paperId, filmSupplyOrderId: cancelOrderId,
-      snapshot: { order: { id: cancelOrderId }, items: [], artworkFiles: [], amounts: [] },
-      snapshotSha256: 'f'.repeat(64), status: 'MAKER_PO_SENT_MANUALLY',
-      ceoApprovedByUserId: adminId, ceoApprovedAt: now,
-      createdByUserId: adminId, createdAt: now, updatedAt: now
-    });
+    await db.insert(makerPurchaseOrders).values([
+      {
+        id: paperId, filmSupplyOrderId: cancelOrderId,
+        snapshot: { order: { id: cancelOrderId }, items: [], artworkFiles: [], amounts: [] },
+        snapshotSha256: 'f'.repeat(64), status: 'MAKER_PO_SENT_MANUALLY',
+        ceoApprovedByUserId: adminId, ceoApprovedAt: now,
+        createdByUserId: adminId, createdAt: now, updatedAt: now
+      },
+      {
+        id: reviewPaperId, filmSupplyOrderId: reviewOrderId,
+        snapshot: { order: { id: reviewOrderId }, items: [], artworkFiles: [], amounts: [] },
+        snapshotSha256: 'e'.repeat(64), status: 'MAKER_PO_SENT_MANUALLY',
+        ceoApprovedByUserId: adminId, ceoApprovedAt: now,
+        createdByUserId: adminId, createdAt: now, updatedAt: now
+      }
+    ]);
+    await db.insert(makerPoEvents).values([
+      {
+        id: uuidv7(now), makerPurchaseOrderId: paperId, eventType: 'CEO_APPROVED',
+        verificationStatus: 'UNVERIFIED', recordedByUserId: adminId, recordedAt: now
+      },
+      {
+        id: uuidv7(now), makerPurchaseOrderId: paperId, eventType: 'SEND_EVIDENCE_REGISTERED',
+        verificationStatus: 'VERIFIED', recordedByUserId: staffId, recordedAt: now
+      }
+    ]);
 
+    // CANCELLATION_REVIEW: cleanup is allowed, but no mirror may move the order.
     const cancelled = await postAs(adminToken, `/api/maker-purchase-orders/${paperId}/cancel`, {
-      note: 'clean up paper after order cancellation'
+      note: 'review decision: close the obsolete paper'
     });
-    expect(cancelled.status).toBe(409);
-    expect(cancelled.body).toMatchObject({ code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED' });
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body).toMatchObject({ status: 'CANCELLED' });
     const [paper] = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.id, paperId)).limit(1);
-    expect(paper?.status).toBe('MAKER_PO_SENT_MANUALLY');
+    expect(paper?.status).toBe('CANCELLED');
+
+    const acknowledgement = await postAs(adminToken, `/api/maker-purchase-orders/${paperId}/cancellation-acknowledgement`, {
+      note: 'maker confirmed cancellation'
+    });
+    expect(acknowledgement.status).toBe(201);
+    expect(acknowledgement.body).toMatchObject({ status: 'CANCELLED' });
     const [paperOrder] = await db.execute(sql`select status from film_supply_orders where id = ${cancelOrderId}`)
       .then((result) => result.rows as Array<{ status: string }>);
     expect(paperOrder?.status).toBe('CANCELLED');
+
+    // CANCELLED: remaining paper cleanup is still possible, with no revival.
+    const closedCleanup = await postAs(adminToken, `/api/maker-purchase-orders/${reviewPaperId}/cancel`, {
+      note: 'close paper left behind by the cancelled order'
+    });
+    expect(closedCleanup.status).toBe(200);
+    expect(closedCleanup.body).toMatchObject({ status: 'CANCELLED' });
+    const [closedPaper] = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.id, reviewPaperId)).limit(1);
+    expect(closedPaper?.status).toBe('CANCELLED');
+    const [reviewOrder] = await db.execute(sql`select status from film_supply_orders where id = ${reviewOrderId}`)
+      .then((result) => result.rows as Array<{ status: string }>);
+    expect(reviewOrder?.status).toBe('CANCELLATION_REVIEW');
+
+    // Progressive work is still frozen on CANCELLATION_REVIEW.
+    const progressive = await postAs(adminToken, `/api/maker-purchase-orders/${reviewPaperId}/ceo-approval`, {});
+    expect(progressive.status).toBe(409);
+    expect(progressive.body).toMatchObject({ code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED' });
 
     const revision = await postAs(staffToken, `/api/film-supply-orders/${revisionOrderId}/artwork-revisions`, {
       designKey: 'label-front', fileDocumentVersionId: uuidv7(now)
@@ -907,6 +958,26 @@ describe('official-date write paths', () => {
     expect(revisionOrder?.status).toBe('CANCELLED');
     expect(await db.select().from(auditEvents)
       .where(eq(auditEvents.entityId, revisionOrderId))).toHaveLength(0);
+
+    // Replacement remains frozen even after cleanup is complete.
+    const replacement = await postAs(adminToken, `/api/film-supply-orders/${cancelOrderId}/maker-purchase-orders`, {
+      recipientAddress: 'replacement@example.com'
+    });
+    expect(replacement.status).toBe(409);
+    expect(replacement.body).toMatchObject({
+      code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED',
+      orderStatus: 'CANCELLED'
+    });
+    expect(await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.filmSupplyOrderId, cancelOrderId))).toHaveLength(1);
+
+    const [orderAuditCount] = await db.execute(sql`
+      select count(*)::int as count
+      from audit_events
+      where action = 'FILM_SUPPLY_ORDER_TRANSITIONED'
+        and entity_id in (${cancelOrderId}, ${reviewOrderId})
+    `).then((result) => result.rows as Array<{ count: number }>);
+    expect(orderAuditCount?.count).toBe(0);
   });
 
   it('rejects every side path to a closed film order without changing its status', async () => {

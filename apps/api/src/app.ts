@@ -468,7 +468,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       updatedAt: now
     };
 
-    await db.transaction(async (tx) => {
+    try {
+      await db.transaction(async (tx) => {
       await tx.insert(projects).values(project);
       await recordAuditEvent(tx, {
         projectId,
@@ -481,7 +482,13 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         occurredAt: now,
         requestMetadata: { businessUnit: 'F1', route: 'F1', operation: 'project:create' }
       });
-    });
+      });
+    } catch (error) {
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: '発注状態がすでに変わっています', code: 'FILM_ORDER_STATE_CHANGED' }, 409);
+      }
+      throw error;
+    }
 
     return context.json(project, 201);
   });
@@ -3156,6 +3163,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     };
 
     await db.transaction(async (tx) => {
+      // Re-read under lock: a concurrent cancellation/review transition must
+      // win over the stale preflight status used above.
+      const [lockedOrder] = await tx.select().from(filmSupplyOrders)
+        .where(eq(filmSupplyOrders.id, orderId)).limit(1).for('update');
+      if (!lockedOrder || lockedOrder.deletedAt || lockedOrder.status !== order.status) {
+        throw new MakerPoStateConflict();
+      }
+      if (String(lockedOrder.status) === 'CANCELLED') {
+        throw new MakerPoStateConflict();
+      }
       await tx.insert(artworkRevisions).values(revision);
       await recordAuditEvent(tx, {
         projectId: order.projectId,
@@ -4009,14 +4026,48 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const decision = canPerform(toActor(user), 'maker_po:create', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
-    // A hold freezes the whole maker-PO workflow. Letting the paper advance
-    // while the order stays behind makes release unable to catch up (M2).
-        if (isFrozenFilmOrderStatus(order.status)) {
+    // Progressive maker-PO work stays frozen during CR/CANCELLED. Cleanup
+    // endpoints remain available, but replacement paper cannot be created.
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({
+        error: '取消終了した発注のメーカー発注書は新規作成できません',
+        code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+    if (isFrozenFilmOrderStatus(order.status)) {
       return context.json({
         error: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください',
         code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
         orderStatus: order.status
       }, 409);
+    }
+
+    const cancelledPapers = await db.select({ id: makerPurchaseOrders.id })
+      .from(makerPurchaseOrders)
+      .where(and(
+        eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
+        eq(makerPurchaseOrders.status, 'CANCELLED'),
+        isNull(makerPurchaseOrders.deletedAt)
+      ));
+    const cancellationGate = evaluateMakerPoCancellationAckGate(await Promise.all(cancelledPapers.map(async (paper) => {
+      const events = await db.select({
+        eventType: makerPoEvents.eventType,
+        verificationStatus: makerPoEvents.verificationStatus
+      }).from(makerPoEvents).where(eq(makerPoEvents.makerPurchaseOrderId, paper.id));
+      return {
+        id: paper.id,
+        verifiedSend: events.some((event) =>
+          event.eventType === 'SEND_EVIDENCE_REGISTERED' && event.verificationStatus === 'VERIFIED'),
+        acknowledged: events.some((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED')
+      };
+    })));
+    if (!cancellationGate.ok) {
+      return context.json({
+        error: cancellationGate.message,
+        code: cancellationGate.code,
+        pendingMakerPurchaseOrderId: cancellationGate.pendingMakerPurchaseOrderId
+      }, 422);
     }
 
     const creationGate = evaluateMakerPoCreationGate({ orderStatus: order.status });
@@ -4070,10 +4121,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       status: makerPurchaseOrders.status
     }).from(makerPurchaseOrders).where(and(
       eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
-      isNull(makerPurchaseOrders.deletedAt),
-      ne(makerPurchaseOrders.status, 'CANCELLED')
+      isNull(makerPurchaseOrders.deletedAt)
     )).limit(1);
-    if (activeMakerPo) {
+    if (activeMakerPo && activeMakerPo.status !== 'CANCELLED') {
       return context.json({
         error: `この発注には既に有効なメーカー発注書があります（${activeMakerPo.id}）。発注内容を訂正する場合は、既存の発注書を取り消してから新しい発注書を作成してください。`,
         code: 'MAKER_PO_ALREADY_EXISTS',
@@ -4081,40 +4131,6 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         existingStatus: activeMakerPo.status
       }, 422);
     }
-
-    // M8-HARDEN2 FIX 2: a cancelled paper whose send was proven keeps the
-    // ordering step closed until the representative acknowledges the
-    // cancellation. Without this gate the company could freeze replacement
-    // paper while the maker is still working from the mail it was sent — two
-    // production orders for the same step. The refusal names the paper that is
-    // waiting, so the operator knows exactly what to acknowledge.
-    const cancelledPapers = await db.select({ id: makerPurchaseOrders.id })
-      .from(makerPurchaseOrders)
-      .where(and(
-        eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
-        eq(makerPurchaseOrders.status, 'CANCELLED'),
-        isNull(makerPurchaseOrders.deletedAt)
-      ));
-    const cancellationGate = evaluateMakerPoCancellationAckGate(await Promise.all(cancelledPapers.map(async (paper) => {
-      const events = await db.select({
-        eventType: makerPoEvents.eventType,
-        verificationStatus: makerPoEvents.verificationStatus
-      }).from(makerPoEvents).where(eq(makerPoEvents.makerPurchaseOrderId, paper.id));
-      return {
-        id: paper.id,
-        verifiedSend: events.some((event) =>
-          event.eventType === 'SEND_EVIDENCE_REGISTERED' && event.verificationStatus === 'VERIFIED'),
-        acknowledged: events.some((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED')
-      };
-    })));
-    if (!cancellationGate.ok) {
-      return context.json({
-        error: cancellationGate.message,
-        code: cancellationGate.code,
-        pendingMakerPurchaseOrderId: cancellationGate.pendingMakerPurchaseOrderId
-      }, 422);
-    }
-
     const parts = await loadMakerPoSnapshotParts(db, orderId);
     const snapshot = buildMakerPoSnapshot({
       order: { id: parts.order.id, code: parts.order.code, sevenPoNumber: parts.sevenPoNumber },
@@ -4155,8 +4171,6 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         });
       });
     } catch (error) {
-      // FIX B2: the concurrent create lost the unique index — exactly one of the
-      // two requests ever freezes paper, and the loser names the winner.
       if (makerPoActiveUniqueViolation(error)) {
         return context.json({
           error: `この発注には既に有効なメーカー発注書があります。発注内容を訂正する場合は、既存の発注書を取り消してから新しい発注書を作成してください。`,
@@ -5034,23 +5048,6 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const decision = canPerform(toActor(user), 'maker_po:cancel', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '代表者のみ取り消せます' }, 403);
 
-    // A hold freezes the whole maker-PO workflow. Letting the paper advance
-    // while the order stays behind makes release unable to catch up (M2).
-    if (String(order.status) === 'CANCELLED') {
-      return context.json({
-        error: '取消終了した発注のメーカー発注書は操作できません',
-        code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED',
-        orderStatus: order.status
-      }, 409);
-    }
-    if (isFrozenFilmOrderStatus(order.status)) {
-      return context.json({
-        error: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください',
-        code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
-        orderStatus: order.status
-      }, 409);
-    }
-
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.note !== 'string' || body.note.trim().length === 0) {
       return context.json({
@@ -5069,6 +5066,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const now = new Date();
     try {
       const outcome = await db.transaction(async (tx) => {
+        // Lock the order before deciding the mirror. A concurrent move into an
+        // exception/closed state must never be overwritten by this cleanup.
+        const [lockedOrder] = await tx.select().from(filmSupplyOrders)
+          .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1).for('update');
+        if (!lockedOrder || lockedOrder.deletedAt) throw new MakerPoStateConflict();
+
         // M8-HARDEN2 FIX 2: the cancellation is classified by what the paper
         // already did. A proven send means the production-order mail left the
         // company, so the replacement needs the representative's acknowledgement
@@ -5145,21 +5148,23 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         // a proven send, the ordering step only really re-opens once the
         // acknowledgement below is recorded — the create gate holds the line
         // until then.
-        const [currentOrder] = await tx.select().from(filmSupplyOrders)
-          .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
-        if (currentOrder && currentOrder.status !== 'MAKER_PO_READY'
-          && !isExceptionFilmSupplyOrderState(currentOrder.status)) {
+        // Cleanup may run while an order is frozen, but the mirror itself only
+        // follows a legal forward transition on an unfrozen order. A closed or
+        // interrupted order remains exactly where its representative left it.
+        if (lockedOrder.status !== 'MAKER_PO_READY'
+          && !isFrozenFilmOrderStatus(lockedOrder.status)
+          && transitionFilmSupplyOrder(lockedOrder.status, 'MAKER_PO_READY').ok) {
           await tx.update(filmSupplyOrders)
             .set({ status: 'MAKER_PO_READY', updatedAt: now })
-            .where(eq(filmSupplyOrders.id, currentOrder.id));
+            .where(eq(filmSupplyOrders.id, lockedOrder.id));
           await recordAuditEvent(tx, {
             projectId: order.projectId,
             id: uuidv7(now),
             actorUserId: user.id,
             action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
             entityType: 'film_supply_order',
-            entityId: currentOrder.id,
-            beforeState: { status: currentOrder.status },
+            entityId: lockedOrder.id,
+            beforeState: { status: lockedOrder.status },
             afterState: { status: 'MAKER_PO_READY' },
             occurredAt: now,
             requestMetadata: {
@@ -5226,23 +5231,6 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const decision = canPerform(toActor(user), 'maker_po:cancel', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '代表者のみ承認を記録できます' }, 403);
 
-    // A hold freezes the whole maker-PO workflow. Letting the paper advance
-    // while the order stays behind makes release unable to catch up (M2).
-    if (String(order.status) === 'CANCELLED') {
-      return context.json({
-        error: '取消終了した発注のメーカー発注書は操作できません',
-        code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED',
-        orderStatus: order.status
-      }, 409);
-    }
-    if (isFrozenFilmOrderStatus(order.status)) {
-      return context.json({
-        error: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください',
-        code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
-        orderStatus: order.status
-      }, 409);
-    }
-
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.note !== 'string' || body.note.trim().length === 0) {
       return context.json({
@@ -5273,6 +5261,13 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const now = new Date();
     try {
       const outcome = await db.transaction(async (tx) => {
+        const [lockedOrder] = await tx.select().from(filmSupplyOrders)
+          .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1).for('update');
+        if (!lockedOrder || lockedOrder.deletedAt) throw new MakerPoStateConflict();
+        if (String(lockedOrder.status) === 'CANCELLED' && order.status !== lockedOrder.status) {
+          throw new MakerPoStateConflict();
+        }
+
         const [po] = await tx.select().from(makerPurchaseOrders)
           .where(eq(makerPurchaseOrders.id, poId)).limit(1).for('update');
         if (!po) throw new MakerPoStateConflict();
@@ -5358,6 +5353,47 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           })
         };
       });
+      if (isExceptionFilmSupplyOrderState(order.status as any) || String(order.status) === 'CANCELLED') {
+        // CR/CANCELLED cleanup only: never mirror this acknowledgement back to
+        // the order, because its representative decision owns that state.
+      } else {
+        const [currentOrder] = await db.select().from(filmSupplyOrders)
+          .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1).for('update');
+        // A cancelled PO is the paper that advanced the ordering step. Once its
+        // proven send is acknowledged, reopening that same ordering step is the
+        // deliberate recovery path (not a forbidden forward transition), so it
+        // applies directly from any live maker-chain state.
+        const canReopenMakerStep = currentOrder && (
+          currentOrder.status === 'APPROVED_FOR_MANUAL_SEND' ||
+          currentOrder.status === 'MAKER_PO_SENT_MANUALLY' ||
+          currentOrder.status === 'MAKER_PO_ACCEPTED'
+        );
+        if (currentOrder && currentOrder.status !== 'MAKER_PO_READY'
+          && !isFrozenFilmOrderStatus(currentOrder.status)
+          && canReopenMakerStep) {
+          const reopened = await db.update(filmSupplyOrders)
+            .set({ status: 'MAKER_PO_READY', updatedAt: now })
+            .where(and(eq(filmSupplyOrders.id, currentOrder.id), eq(filmSupplyOrders.status, currentOrder.status)))
+            .returning({ id: filmSupplyOrders.id });
+          if (reopened.length > 0) {
+            await recordAuditEvent(db, {
+              projectId: order.projectId,
+              id: uuidv7(now),
+              actorUserId: user.id,
+              action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+              entityType: 'film_supply_order',
+              entityId: currentOrder.id,
+              beforeState: { status: currentOrder.status },
+              afterState: { status: 'MAKER_PO_READY' },
+              occurredAt: now,
+              requestMetadata: {
+                operation: 'maker_po:cancellation_acknowledgement',
+                reason: 'maker_cancellation_acknowledged_reopens_the_ordering_step'
+              }
+            });
+          }
+        }
+      }
 
       if (outcome.kind === 'not_cancelled' || outcome.kind === 'already') {
         return context.json({ error: outcome.message, code: outcome.code, status: outcome.status }, 422);

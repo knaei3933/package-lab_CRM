@@ -22,3 +22,12 @@ ALTER TYPE "public"."maker_po_event_type" ADD VALUE IF NOT EXISTS 'MAKER_PO_ACCE
 ALTER TYPE "public"."maker_purchase_order_status" ADD VALUE IF NOT EXISTS 'CANCELLED';
 ALTER TYPE "public"."maker_po_event_type" ADD VALUE IF NOT EXISTS 'MAKER_PO_CANCELLED';
 ALTER TYPE "public"."maker_po_event_verification_status" ADD VALUE IF NOT EXISTS 'PENDING_MANUAL_VERIFICATION';
+--> statement-breakpoint
+
+-- Drizzle wraps every pending migration in one transaction. PostgreSQL cannot
+-- use an enum value added in that same transaction, so commit the base schema
+-- and vocabulary here, then open the transaction Drizzle expects for the
+-- remaining migrations. If 0016+ fails, reruns start at 0016 with the enum
+-- already committed; IF NOT EXISTS keeps this idempotent.
+COMMIT;
+BEGIN;
