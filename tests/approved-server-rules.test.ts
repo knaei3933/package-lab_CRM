@@ -17,6 +17,7 @@ import {
 import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { hashToken, issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
+import { buildAuditViewForRole } from '../apps/api/src/audit-view.js';
 
 const databaseUrl = process.env.DATABASE_URL!;
 const { db, pool } = createDatabase(databaseUrl);
@@ -159,5 +160,43 @@ describe('official registration date overwrite rule', () => {
     expect(event?.afterState).toMatchObject({
       officialRegisteredAt: '2026-01-01T00:00:00.000Z'
     });
+  });
+});
+
+describe('staff approval evidence selection contract', () => {
+  it('exposes document type and artwork binding, but not raw upload snapshots', () => {
+    const row = {
+      id: 'audit-1',
+      action: 'DOCUMENT_VERSION_UPLOADED',
+      entityType: 'document_version',
+      entityId: 'version-1',
+      beforeState: null,
+      afterState: {
+        id: 'version-1',
+        documentId: 'secret-document-id',
+        documentType: 'approval_evidence',
+        filmSupplyOrderId: 'order-1',
+        designKey: 'label-front',
+        sha256: 'secret-hash',
+        storagePath: '/secret/path',
+        byteSize: 1234
+      },
+      occurredAt: new Date('2026-11-18T00:00:00.000Z'),
+      requestMetadata: { operation: 'document:create', documentId: 'secret-document-id' },
+      actor: { id: staffId, displayName: '担当者', role: 'staff' }
+    };
+
+    const staffViews = buildAuditViewForRole('staff', [row]);
+    expect(staffViews).toHaveLength(1);
+    const staffView = staffViews[0]!;
+    expect(staffView.afterState).toEqual({
+      id: 'version-1',
+      documentType: 'approval_evidence',
+      filmSupplyOrderId: 'order-1',
+      designKey: 'label-front'
+    });
+    expect(staffView.requestMetadata).toEqual({ operation: 'document:create' });
+
+    expect(buildAuditViewForRole('viewer', [row])[0]).not.toHaveProperty('afterState');
   });
 });
