@@ -49,9 +49,6 @@
 -- every added enum value is unused, and the new constraints only forbid states
 -- that could not legitimately exist (two live maker POs for one order).
 
-ALTER TYPE "public"."maker_purchase_order_status" ADD VALUE 'CANCELLED';--> statement-breakpoint
-ALTER TYPE "public"."maker_po_event_type" ADD VALUE 'MAKER_PO_CANCELLED';--> statement-breakpoint
-ALTER TYPE "public"."maker_po_event_verification_status" ADD VALUE 'PENDING_MANUAL_VERIFICATION';--> statement-breakpoint
 
 ALTER TABLE "maker_purchase_orders" ADD COLUMN "deleted_at" timestamp with time zone;--> statement-breakpoint
 ALTER TABLE "maker_purchase_orders" DROP CONSTRAINT IF EXISTS "maker_purchase_orders_status_requires_ceo_approval";--> statement-breakpoint

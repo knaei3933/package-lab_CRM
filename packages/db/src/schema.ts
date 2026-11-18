@@ -116,7 +116,10 @@ export const filmSupplyOrderStatus = pgEnum('film_supply_order_status', [
   'FILM_RECEIPT_ASSUMED_NO_ISSUE',
   'ON_HOLD',
   'CHANGE_REVIEW',
-  'CANCELLATION_REVIEW'
+  'CANCELLATION_REVIEW',
+  // Runtime enum value added by 0021. Kept here so schema and migrations agree;
+  // older deployed code cannot render or transition closed film orders.
+  'CANCELLED'
 ]);
 
 /**

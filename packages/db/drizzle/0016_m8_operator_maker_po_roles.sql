@@ -9,8 +9,7 @@
 -- ACCEPT_EVIDENCE_REGISTERED vocabulary. The value is only added here; the
 -- enum's existing values and the append-only triggers of migration 0010 are
 -- untouched.
-ALTER TYPE "maker_po_event_type" ADD VALUE IF NOT EXISTS 'MAKER_PO_ACCEPT_RECORDED_PROVISIONAL';
-
+-- The enum value was pre-committed in 0015 because this migration constrains it.
 -- FIX 2: the flag that makes a provisional record impossible to mistake for a
 -- confirmed acceptance. Default false, so every pre-existing event reads as a
 -- non-provisional fact. The API writes it together with the event type, and the

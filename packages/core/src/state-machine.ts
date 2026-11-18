@@ -191,13 +191,17 @@ const FILM_SUPPLY_ORDER_TRANSITIONS: Record<FilmSupplyOrderState, readonly FilmS
 };
 
 export function isExceptionFilmSupplyOrderState(
-  state: FilmSupplyOrderState
+  state: FilmOrderStatus
 ): state is ExceptionFilmSupplyOrderState {
   return (EXCEPTION_STATES as readonly string[]).includes(state);
 }
 
-export function isTerminalFilmSupplyOrderState(state: FilmSupplyOrderState): boolean {
-  return state === FILM_SUPPLY_ORDER_TERMINAL_STATE;
+export function isTerminalFilmSupplyOrderState(state: FilmOrderStatus): boolean {
+  return (FILM_SUPPLY_ORDER_TERMINAL_STATES as readonly string[]).includes(state);
+}
+
+export function isFrozenFilmOrderStatus(state: FilmOrderStatus): boolean {
+  return isExceptionFilmSupplyOrderState(state) || state === FILM_ORDER_CANCELLATION_STATE;
 }
 
 export function isClosedFilmOrderStatus(state: FilmOrderStatus): boolean {
@@ -220,16 +224,26 @@ export type FilmSupplyOrderTransitionResult<TFrom extends FilmSupplyOrderState, 
  * interrupted while already in production resumes exactly that production
  * state. CHANGE_REVIEW keeps its designed restart targets.
  */
-export function transitionFilmSupplyOrder<TFrom extends FilmSupplyOrderState, TTo extends FilmSupplyOrderState>(
+export function transitionFilmSupplyOrder<TFrom extends FilmOrderStatus, TTo extends FilmOrderStatus>(
   from: TFrom,
   to: TTo,
   exceptionOrigin?: NormalFilmSupplyOrderState | null
-): FilmSupplyOrderTransitionResult<TFrom, TTo> {
-  let allowed = FILM_SUPPLY_ORDER_TRANSITIONS[from].includes(to);
+): FilmSupplyOrderTransitionResult<FilmSupplyOrderState, FilmSupplyOrderState> {
+  const allowedTargets = FILM_SUPPLY_ORDER_TRANSITIONS[from as FilmSupplyOrderState];
+  if (!Array.isArray(allowedTargets)) {
+    return {
+      ok: false,
+      from: from as FilmSupplyOrderState,
+      to: to as FilmSupplyOrderState
+    };
+  }
+  let allowed = allowedTargets.includes(to as FilmSupplyOrderState);
   if (from === 'ON_HOLD' || from === 'CANCELLATION_REVIEW') {
     allowed = allowed && exceptionOrigin === to;
   }
-  return allowed ? { ok: true, from, to } : { ok: false, from, to };
+  const fromState = from as FilmSupplyOrderState;
+  const toState = to as FilmSupplyOrderState;
+  return allowed ? { ok: true, from: fromState, to: toState } : { ok: false, from: fromState, to: toState };
 }
 
 /**

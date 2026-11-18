@@ -41,6 +41,7 @@ import {
   isExceptionFilmSupplyOrderState,
   isLegacyHoldReleaseTarget,
   isOfficialArtifactDocumentType,
+  isFrozenFilmOrderStatus,
   isTerminalFilmSupplyOrderState,
   japaneseStatusSurface,
   shouldAdvanceToDualApproved,
@@ -162,6 +163,7 @@ class OfficialRegistrationReviewPending extends Error {}
 class OfficialRegistrationNotVerified extends Error {}
 
 const REASON_MAX_LENGTH = 1000;
+const REASON_RAW_MAX_LENGTH = 10000;
 
 /**
  * Remove control/format/variation/combing-mark and non-space blanks before
@@ -173,16 +175,21 @@ function normalizeRequiredReason(
   maxLength = REASON_MAX_LENGTH
 ): { ok: true; text: string } | { ok: false; tooLong: boolean } {
   if (typeof value !== 'string') return { ok: false, tooLong: false };
-  const normalizedInput = (value as string)
+  if (value.length > REASON_RAW_MAX_LENGTH) return { ok: false, tooLong: true };
+  // Storage preserves visible combining marks for scripts such as Thai and
+  // Hindi. A separate validation copy strips marks that are not attached to a
+  // visible base character, so combining-only strings cannot pass.
+  const stored = (value as string)
     .normalize('NFC')
     .replace(/\p{Zs}/gu, ' ')
-    .replace(/[\p{C}\p{M}\u{115F}-\u{11FF}\u{3164}\u{2800}]/gu, '')
+    .replace(/[\p{C}\u{115F}-\u{11FF}\u{3164}\u{2800}\u{FFA0}]/gu, '')
     .replace(/\s+/gu, ' ')
     .trim();
-  const visibleLength = [...normalizedInput].length;
+  const visibleText = stored.replace(/\p{M}/gu, '');
+  const visibleLength = [...visibleText].length;
   if (visibleLength === 0) return { ok: false, tooLong: false };
   if (visibleLength > maxLength) return { ok: false, tooLong: true };
-  return { ok: true, text: normalizedInput };
+  return { ok: true, text: stored };
 }
 
 function filmSupplyOrderStateForValue(value: unknown): NormalFilmSupplyOrderState | undefined {
@@ -908,6 +915,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     const decision = canPerform(toActor(user), 'film_order:update_payment_terms', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({ error: '取消終了した発注は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     const paymentTermsCheck = validatePaymentTermsInput(body?.paymentTerms);
@@ -952,6 +962,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
     const decision = canPerform(toActor(user), 'film_order_line:create', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({ error: '取消終了した発注は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     const lineCheck = validateOrderLineInput('film', body);
@@ -993,6 +1006,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
     const decision = canPerform(toActor(user), 'film_delivery:create', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({ error: '取消終了した発注は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     const unitCheck = validateUnit(body?.unit, 'film');
@@ -1077,7 +1093,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
     if (String(order.status) === 'CANCELLED') {
-      return context.json({ error: '取消終了した発注は遷移できません', code: 'FILM_ORDER_CANCELLED' }, 422);
+      return context.json({ error: '取消終了した発注は遷移できません', code: 'FILM_ORDER_CANCELLED' }, 409);
     }
     if (order.status === 'CANCELLATION_REVIEW') {
       return context.json({
@@ -1258,6 +1274,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const decision = canPerform(toActor(user), 'film_order:release_hold', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({ error: '取消終了した発注は解除できません', code: 'FILM_ORDER_CANCELLED' }, 409);
+    }
+
     if (order.status !== 'ON_HOLD') {
       return context.json({ error: '保留中の発注ではありません', code: 'ORDER_NOT_ON_HOLD', from: order.status }, 422);
     }
@@ -1402,7 +1422,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
     if (String(order.status) === 'CANCELLED') {
-      return context.json({ error: 'すでに取消終了しています', code: 'FILM_ORDER_CANCELLED' }, 422);
+      return context.json({ error: 'すでに取消終了しています', code: 'FILM_ORDER_CANCELLED' }, 409);
     }
     const decision = canPerform(toActor(user), 'film_order:resolve_cancellation_review', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
@@ -1568,6 +1588,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
     const decision = canPerform(toActor(user), 'film_order:assume_receipt', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({ error: '取消終了した発注は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     const assumedAtInput = parseOptionalDate(body?.assumedAt);
@@ -1656,6 +1679,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     orderId: string;
     projectId: string;
     orderDeletedAt: Date | null;
+    orderStatus?: unknown;
   }
 
   async function loadDeliveryConfirmationTarget(
@@ -1667,7 +1691,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         deliveryId: filmDeliveries.id,
         orderId: filmSupplyOrders.id,
         projectId: filmSupplyOrders.projectId,
-        orderDeletedAt: filmSupplyOrders.deletedAt
+        orderDeletedAt: filmSupplyOrders.deletedAt,
+        orderStatus: filmSupplyOrders.status
       }).from(filmDeliveries)
         .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, filmDeliveries.filmSupplyOrderId))
         .where(eq(filmDeliveries.id, deliveryId)).limit(1);
@@ -1696,6 +1721,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!target || target.orderDeletedAt) return context.json({ error: '納品行が見つかりません' }, 404);
     const decision = canPerform(toActor(user), 'delivery_confirmation:record', 'F1', target.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (kind === 'film' && String(target.orderStatus) === 'CANCELLED') {
+      return context.json({ error: '取消終了した発注は確認できません', code: 'FILM_ORDER_CANCELLED' }, 409);
+    }
 
     const [existing] = await db.select({ id: deliveryConfirmations.id })
       .from(deliveryConfirmations)
@@ -3037,6 +3065,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
     const decision = canPerform(toActor(user), 'artwork_revision:create', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({ error: '取消終了した発注には版を追加できません', code: 'FILM_ORDER_CANCELLED' }, 409);
+    }
 
     // Artwork only exists downstream of a verified purchase order.
     const registrationGate = evaluateRevisionRegistrationGate(order.status);
@@ -3178,6 +3209,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
     const decision = canPerform(toActor(user), 'artwork_approval:record', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({ error: '取消終了した発注は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     const organizationCheck = validateApprovalOrganization(body?.organization);
@@ -3499,6 +3533,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     // dual approval, so it is never delegated to staff or a viewer.
     const decision = canPerform(toActor(user), 'artwork_approval:verify_evidence', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({ error: '取消終了した発注は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     const resultCheck = validateEvidenceVerificationResult(body?.result);
@@ -3974,7 +4011,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
-    if (isExceptionFilmSupplyOrderState(order.status)) {
+        if (isFrozenFilmOrderStatus(order.status)) {
       return context.json({
         error: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください',
         code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
@@ -4153,7 +4190,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
-    if (isExceptionFilmSupplyOrderState(order.status)) {
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({
+        error: '取消終了した発注のメーカー発注書は操作できません',
+        code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+    if (isFrozenFilmOrderStatus(order.status)) {
       return context.json({
         error: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください',
         code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
@@ -4331,7 +4375,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
-    if (isExceptionFilmSupplyOrderState(order.status)) {
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({
+        error: '取消終了した発注のメーカー発注書は操作できません',
+        code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+    if (isFrozenFilmOrderStatus(order.status)) {
       return context.json({
         error: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください',
         code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
@@ -4785,7 +4836,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
-    if (isExceptionFilmSupplyOrderState(order.status)) {
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({
+        error: '取消終了した発注のメーカー発注書は操作できません',
+        code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+    if (isFrozenFilmOrderStatus(order.status)) {
       return context.json({
         error: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください',
         code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
@@ -4978,7 +5036,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
-    if (isExceptionFilmSupplyOrderState(order.status)) {
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({
+        error: '取消終了した発注のメーカー発注書は操作できません',
+        code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+    if (isFrozenFilmOrderStatus(order.status)) {
       return context.json({
         error: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください',
         code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
@@ -5163,7 +5228,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
-    if (isExceptionFilmSupplyOrderState(order.status)) {
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({
+        error: '取消終了した発注のメーカー発注書は操作できません',
+        code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+    if (isFrozenFilmOrderStatus(order.status)) {
       return context.json({
         error: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください',
         code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
@@ -5315,7 +5387,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
-    if (isExceptionFilmSupplyOrderState(order.status)) {
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({
+        error: '取消終了した発注のメーカー発注書は操作できません',
+        code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+    if (isFrozenFilmOrderStatus(order.status)) {
       return context.json({
         error: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください',
         code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
@@ -5582,7 +5661,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
-    if (isExceptionFilmSupplyOrderState(order.status)) {
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({
+        error: '取消終了した発注のメーカー発注書は操作できません',
+        code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+    if (isFrozenFilmOrderStatus(order.status)) {
       return context.json({
         error: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください',
         code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',

@@ -472,12 +472,12 @@ describe('maker-chain cancellation review recovery', () => {
       .then((result) => result.rows as Array<{ status: string }>);
     expect(row?.status).toBe('CANCELLED');
     const reopened = await postAs(adminToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'DRAFT' });
-    expect(reopened.status).toBe(422);
+    expect(reopened.status).toBe(409);
     expect(reopened.body).toMatchObject({ code: 'FILM_ORDER_CANCELLED' });
     const resolvedAgain = await postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, {
       outcome: 'cancel', reason: 'already closed'
     });
-    expect(resolvedAgain.status).toBe(422);
+    expect(resolvedAgain.status).toBe(409);
     expect(resolvedAgain.body).toMatchObject({ code: 'FILM_ORDER_CANCELLED' });
   });
 });
@@ -710,6 +710,42 @@ describe('hold reason and audit labels', () => {
     expect(releaseAudit?.entityId).toBe(orderId);
     expect(releaseAudit?.requestMetadata).toMatchObject({ operation: 'film_order:release_hold', holdEventId: enterAudit?.id });
   });
+
+  it('rejects U+FFA0, limits raw length, and preserves visible combining marks', async () => {
+    const now = new Date();
+    const orderId = uuidv7(now);
+    await db.insert(filmSupplyOrders).values({
+      id: orderId, projectId, code: 'FSO-REASON-PRESERVE', status: 'DRAFT', paymentTerms: 'prepaid',
+      holdReason: null, createdByUserId: adminId, createdAt: now, updatedAt: now, deletedAt: null
+    });
+
+    const halfwidthFiller = await postAs(adminToken, `/api/film-supply-orders/${orderId}/transitions`, {
+      to: 'ON_HOLD', holdReason: '\uFFA0'
+    });
+    expect(halfwidthFiller.status).toBe(422);
+    expect(halfwidthFiller.body).toMatchObject({ code: 'HOLD_REASON_REQUIRED' });
+
+    const rawTooLong = await postAs(adminToken, `/api/film-supply-orders/${orderId}/transitions`, {
+      to: 'ON_HOLD', holdReason: `${'\u200b'.repeat(10000)}a`
+    });
+    expect(rawTooLong.status).toBe(422);
+    expect(rawTooLong.body).toMatchObject({ code: 'HOLD_REASON_TOO_LONG' });
+
+    const thai = 'กิ';
+    const held = await postAs(adminToken, `/api/film-supply-orders/${orderId}/transitions`, {
+      to: 'ON_HOLD', holdReason: 'waiting for Thai evidence'
+    });
+    expect(held.status).toBe(200);
+    const released = await postAs(adminToken, `/api/film-supply-orders/${orderId}/hold-release`, {
+      reason: `Thai visible: ${thai}`
+    });
+    expect(released.status).toBe(200);
+    expect(released.body).toMatchObject({ status: 'DRAFT' });
+    const [event] = await db.select().from(auditEvents)
+      .where(eq(auditEvents.action, 'FILM_SUPPLY_ORDER_HOLD_RELEASED'))
+      .orderBy(sql`${auditEvents.occurredAt} desc`).limit(1);
+    expect(((event?.requestMetadata as { reason?: string }).reason ?? '').includes(thai)).toBe(true);
+  });
 });
 
 describe('official-date write paths', () => {
@@ -825,5 +861,93 @@ describe('official-date write paths', () => {
         reviewPending: false, reviewNote: null
       }).where(eq(sevenPurchaseOrders.id, racePoId));
     }
+  });
+  it('does not revive a closed film order through maker cancel or artwork revision', async () => {
+    const now = new Date();
+    const cancelOrderId = uuidv7(now);
+    const paperId = uuidv7(now);
+    const revisionOrderId = uuidv7(now);
+    await db.insert(filmSupplyOrders).values([
+      {
+        id: cancelOrderId, projectId, code: 'FSO-CANCELLED-PAPER', status: 'CANCELLED',
+        paymentTerms: 'prepaid', createdByUserId: adminId, createdAt: now, updatedAt: now, deletedAt: null
+      },
+      {
+        id: revisionOrderId, projectId, code: 'FSO-CANCELLED-REVISION', status: 'CANCELLED',
+        paymentTerms: 'prepaid', createdByUserId: adminId, createdAt: now, updatedAt: now, deletedAt: null
+      }
+    ]);
+    await db.insert(makerPurchaseOrders).values({
+      id: paperId, filmSupplyOrderId: cancelOrderId,
+      snapshot: { order: { id: cancelOrderId }, items: [], artworkFiles: [], amounts: [] },
+      snapshotSha256: 'f'.repeat(64), status: 'MAKER_PO_SENT_MANUALLY',
+      ceoApprovedByUserId: adminId, ceoApprovedAt: now,
+      createdByUserId: adminId, createdAt: now, updatedAt: now
+    });
+
+    const cancelled = await postAs(adminToken, `/api/maker-purchase-orders/${paperId}/cancel`, {
+      note: 'clean up paper after order cancellation'
+    });
+    expect(cancelled.status).toBe(409);
+    expect(cancelled.body).toMatchObject({ code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED' });
+    const [paper] = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.id, paperId)).limit(1);
+    expect(paper?.status).toBe('MAKER_PO_SENT_MANUALLY');
+    const [paperOrder] = await db.execute(sql`select status from film_supply_orders where id = ${cancelOrderId}`)
+      .then((result) => result.rows as Array<{ status: string }>);
+    expect(paperOrder?.status).toBe('CANCELLED');
+
+    const revision = await postAs(staffToken, `/api/film-supply-orders/${revisionOrderId}/artwork-revisions`, {
+      designKey: 'label-front', fileDocumentVersionId: uuidv7(now)
+    });
+    expect(revision.status).toBe(409);
+    expect(revision.body).toMatchObject({ code: 'FILM_ORDER_CANCELLED' });
+    const [revisionOrder] = await db.execute(sql`select status from film_supply_orders where id = ${revisionOrderId}`)
+      .then((result) => result.rows as Array<{ status: string }>);
+    expect(revisionOrder?.status).toBe('CANCELLED');
+    expect(await db.select().from(auditEvents)
+      .where(eq(auditEvents.entityId, revisionOrderId))).toHaveLength(0);
+  });
+
+  it('rejects every side path to a closed film order without changing its status', async () => {
+    const now = new Date();
+    const orderId = uuidv7(now);
+    await db.insert(filmSupplyOrders).values({
+      id: orderId, projectId, code: 'FSO-CANCELLED-SIDES', status: 'CANCELLED',
+      paymentTerms: 'prepaid', createdByUserId: adminId, createdAt: now, updatedAt: now, deletedAt: null
+    });
+
+    const probes = [
+      () => postAs(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'MAKER_PO_READY' }),
+      () => postAs(adminToken, `/api/film-supply-orders/${orderId}/hold-release`, { reason: 'closed must not reopen' }),
+      () => postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, { outcome: 'resume', reason: 'closed must not reopen' }),
+      () => postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, { outcome: 'cancel', reason: 'already closed' }),
+      () => (async () => {
+        const response = await app.request(`/api/film-supply-orders/${orderId}/payment-terms`, {
+          method: 'PATCH', headers: { 'content-type': 'application/json', cookie: `${SESSION_COOKIE}=${adminToken}` },
+          body: JSON.stringify({ paymentTerms: 'on_delivery' })
+        });
+        return { status: response.status, body: await response.json() };
+      })(),
+      () => postAs(staffToken, `/api/film-supply-orders/${orderId}/lines`, {
+        lineNumber: 2, description: 'cancelled order', orderedQuantity: 1, unit: 'sheets'
+      }),
+      () => postAs(staffToken, `/api/film-supply-orders/${orderId}/deliveries`, {
+        lineNumber: 2, deliveredQuantity: 1, deliveredAt: '2026-11-18T00:00:00.000Z', lotNumber: 'CANCELLED'
+      }),
+      () => postAs(adminToken, `/api/film-supply-orders/${orderId}/receipt-assumption`, {
+        assumedAt: '2026-11-18T00:00:00.000Z', note: 'cancelled order', acknowledgeNoEvidence: true
+      })
+    ];
+    for (const [index, probe] of probes.entries()) {
+      const response = await probe();
+      expect(response.status, `side path ${index}`).toBe(409);
+      expect(response.body).toMatchObject({ code: 'FILM_ORDER_CANCELLED' });
+    }
+
+    const [row] = await db.execute(sql`select status, payment_terms from film_supply_orders where id = ${orderId}`)
+      .then((result) => result.rows as Array<{ status: string; payment_terms: string }>);
+    expect(row?.status).toBe('CANCELLED');
+    expect(row?.payment_terms).toBe('prepaid');
   });
 });
