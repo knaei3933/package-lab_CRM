@@ -104,12 +104,9 @@ describe('design tokens and copy (UI batch A)', () => {
     }
   });
 
-  it('keeps the 公式登録 form for every role whose registration date is not shown (labels only, no form gating)', () => {
-    const orders = readFileSync(path.join(webSrc, 'app/orders/page.tsx'), 'utf8');
-    expect(orders).toContain('{po.officialRegisteredAt ? null : (');
-    expect(orders).not.toMatch(/officialRegistrationHidden\s*\?\s*null/);
-    expect(orders).not.toMatch(/\|\|\s*po\.officialRegistrationHidden/);
-  });
+  // The 公式登録 form gate is pinned by rendering the orders screen for admin,
+  // staff and viewer in tests/web-ui-batch-a-followup.test.tsx (it replaced the
+  // source-text check that stood here).
 
   it('no longer says 大代表承認 anywhere in the web UI', () => {
     for (const file of sourceFiles(webSrc)) {

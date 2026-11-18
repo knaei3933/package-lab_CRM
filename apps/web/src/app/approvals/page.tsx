@@ -26,7 +26,7 @@ import {
   VERIFICATION_STATUS_LABELS
 } from '../../lib/vocabulary';
 import type { Choice } from '../../lib/types';
-import { codeWithStatus } from '../../lib/redaction';
+import { codeWithStatus, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
 
 export const dynamic = 'force-dynamic';
 
@@ -130,7 +130,9 @@ export default async function ApprovalsPage() {
       {orderIds.length === 0 ? (
         <div style={cardStyle}>
           <p style={noteStyle}>
-            校了対象の版がまだありません。下の「校正ゲラの版を登録する」で版を登録すると、デザインごとの承認待ちが表示されます。
+            {workspace.revisionsWithheld > 0
+              ? `校正ゲラの版は${workspace.revisionsWithheld}件記録されていますが、紐付け先の発注とデザインが${HIDDEN_BY_ROLE_SHORT}のため、ここには表示できません。`
+              : '校了対象の版がまだありません。下の「校正ゲラの版を登録する」で版を登録すると、デザインごとの承認待ちが表示されます。'}
           </p>
         </div>
       ) : (
@@ -285,16 +287,32 @@ export default async function ApprovalsPage() {
             <tbody>
               {workspace.approvalEvents.map((event) => (
                 <tr key={event.id}>
-                  <td style={tdStyle}>{event.designKey}</td>
-                  <td style={tdStyle}>版{event.revisionNo}</td>
-                  <td style={tdStyle}>{organizationLabel(event.organization)}</td>
-                  <td style={tdStyle}>{APPROVAL_DECISION_LABELS[event.decision] ?? event.decision}</td>
-                  <td style={tdStyle}>
-                    {EVIDENCE_SOURCE_LABELS[event.evidenceSource as keyof typeof EVIDENCE_SOURCE_LABELS]
-                      ?? event.evidenceSource}
-                  </td>
-                  <td style={monoStyle}>{event.evidenceDocumentVersionId}</td>
-                  <td style={tdStyle}>{formatTimestamp(event.eventTime)}</td>
+                  {event.detailsHidden ? (
+                    // UI batch A follow-up (P1-4): the role may not read the
+                    // decision details; say so instead of 「—」 or 版0.
+                    <>
+                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
+                    </>
+                  ) : (
+                    <>
+                      <td style={tdStyle}>{event.designKey}</td>
+                      <td style={tdStyle}>{event.revisionNo === null ? '版未記録' : `版${event.revisionNo}`}</td>
+                      <td style={tdStyle}>{organizationLabel(event.organization)}</td>
+                      <td style={tdStyle}>{APPROVAL_DECISION_LABELS[event.decision] ?? event.decision}</td>
+                      <td style={tdStyle}>
+                        {EVIDENCE_SOURCE_LABELS[event.evidenceSource as keyof typeof EVIDENCE_SOURCE_LABELS]
+                          ?? event.evidenceSource}
+                      </td>
+                      <td style={monoStyle}>{event.evidenceDocumentVersionId}</td>
+                      <td style={tdStyle}>{event.eventTime ? formatTimestamp(event.eventTime) : '未記録'}</td>
+                    </>
+                  )}
                   <td style={tdStyle}>{formatTimestamp(event.recordedAt)}</td>
                 </tr>
               ))}

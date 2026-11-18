@@ -1,5 +1,6 @@
 import { callApi } from './api';
-import { displayText, isFieldHiddenByRole, isStateWithheld } from './redaction';
+import { displayText, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT, isFieldHiddenByRole, isStateWithheld } from './redaction';
+import { formatTimestamp } from './vocabulary';
 
 /**
  * M6 operator UI data assembly.
@@ -82,13 +83,55 @@ export interface FillingOrderView {
 export interface SevenPurchaseOrderView {
   id: string;
   poNumber: string;
+  /** UI batch A follow-up: the PO number was withheld from the role (staff/viewer). */
+  poNumberHidden: boolean;
+  /** The recorded 公式登録日 — only ever the API's own value, never a stand-in. */
   officialRegisteredAt: string | null;
+  /**
+   * The PO is known to be officially registered: the date is visible, or the
+   * SEVEN_PO_OFFICIALLY_REGISTERED action (which every role reads) was seen.
+   */
+  officiallyRegistered: boolean;
   verificationStatus: string | null;
   reviewPending: boolean;
-  /** UI batch A: the registration date exists but is withheld from the role. */
+  /** UI batch A: the registration date may exist but is withheld from the role. */
   officialRegistrationHidden: boolean;
   /** UI batch A: a checklist was recorded but its result is withheld from the role. */
   verificationHidden: boolean;
+}
+
+/**
+ * UI batch A follow-up (M1): the select label of a セブン化学発注書. A withheld
+ * PO number is named as withheld and the short id keeps the choices apart; the
+ * registration part says what is known — 公式登録済み (date visible, or the
+ * registration action seen), 未登録 only when the API shows the PO unregistered,
+ * and 閲覧権限なし when the role may not read it. Never 「（閲覧権限なし）（未登録）」.
+ */
+export function sevenPurchaseOrderChoiceLabel(po: SevenPurchaseOrderView): string {
+  const number = po.poNumberHidden
+    ? `発注番号 ${HIDDEN_BY_ROLE_SHORT}・ID ${po.id.slice(0, 8)}…`
+    : po.poNumber;
+  const registration = po.officiallyRegistered
+    ? '公式登録済み'
+    : po.officialRegistrationHidden
+      ? `登録状況 ${HIDDEN_BY_ROLE_SHORT}`
+      : '未登録';
+  return `${number}（${registration}）`;
+}
+
+/**
+ * The 公式登録 cell: the recorded date when the API sent it; 「公式登録済み」 with
+ * the date named as withheld when the role saw only the registration action;
+ * 「閲覧権限なし」 when the role cannot tell; 未登録 only when shown unregistered.
+ */
+export function officialRegistrationText(po: SevenPurchaseOrderView): string {
+  if (po.officialRegisteredAt) return formatTimestamp(po.officialRegisteredAt);
+  if (po.officiallyRegistered) {
+    return po.officialRegistrationHidden
+      ? `公式登録済み（登録日は${HIDDEN_BY_ROLE_SHORT}）`
+      : '公式登録済み（登録日未記録）';
+  }
+  return po.officialRegistrationHidden ? HIDDEN_BY_ROLE_LABEL : '未登録';
 }
 
 export interface DocumentVersionView {
@@ -137,26 +180,39 @@ export interface ApprovalEventRecord {
   organization: string;
   decision: string;
   designKey: string;
-  revisionNo: number;
+  revisionNo: number | null;
   evidenceDocumentVersionId: string;
   evidenceSource: string;
-  eventTime: string;
+  /** The recorded approval time; null when absent (never the record time instead). */
+  eventTime: string | null;
   recordedAt: string;
+  /** UI batch A follow-up: the decision details were withheld from the role (staff/viewer). */
+  detailsHidden: boolean;
 }
 
 export interface DeliveryView {
   id: string;
   kind: 'film' | 'filling';
-  orderId: string;
+  orderId: string | null;
   lineId: string | null;
   unit: string;
   deliveredQuantity: string;
-  deliverySequence: number;
-  deliveredAt: string;
+  deliverySequence: number | null;
+  /** The recorded delivery date; null when absent (never the record time instead). */
+  deliveredAt: string | null;
+  /** When the delivery was recorded (the audit row time); for ordering only. */
+  recordedAt: string;
   note: string | null;
   confirmed: boolean;
   evidenceDocumentVersionId: string | null;
   confirmedAt: string | null;
+  /** UI batch A follow-up: order, quantity, sequence and date were withheld from the role. */
+  detailsHidden: boolean;
+  /**
+   * Not known to be confirmed, but a confirmation exists whose delivery link
+   * the role may not read — so 未確認 cannot be claimed either.
+   */
+  confirmationHidden: boolean;
 }
 
 export interface ReadinessView {
@@ -164,6 +220,8 @@ export interface ReadinessView {
   isReady: boolean;
   blocking: string[];
   evaluatedAt: string;
+  /** UI batch A follow-up: the evaluation result was withheld from the role. */
+  hidden: boolean;
 }
 
 export interface OrganizationApprovalStateView {
@@ -230,6 +288,13 @@ export interface Workspace {
   approvalEvents: ApprovalEventRecord[];
   deliveries: DeliveryView[];
   readiness: ReadinessView | null;
+  /**
+   * UI batch A follow-up: document versions exist whose document link the role
+   * may not read, so per-document version lists are incomplete for this role.
+   */
+  documentVersionsWithheld: boolean;
+  /** Proof revisions whose film order link the role may not read. */
+  revisionsWithheld: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -435,8 +500,8 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
       lineCount: numeric(after, 'lineCount') ?? 0,
       lines: [],
       // lineCount is on every full answer and off the staff allowlist, so its
-        // absence marks a role-shaped answer (viewer: no state; staff: trimmed).
-        detailsHidden: isFieldHiddenByRole(event, 'lineCount'),
+      // absence marks a role-shaped answer (viewer: no state; staff: trimmed).
+      detailsHidden: isFieldHiddenByRole(event, 'lineCount'),
       createdAt: event.occurredAt
     });
   }
@@ -452,10 +517,13 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
   for (const event of poEvents.events) {
     const after = state(event.afterState);
     if (event.action === 'SEVEN_PO_CREATED') {
+      const registeredAt = text(after, 'officialRegisteredAt');
       sevenPurchaseOrders.set(event.entityId, {
         id: event.entityId,
         poNumber: displayText(event, 'poNumber', '（発注番号未記録）'),
-        officialRegisteredAt: text(after, 'officialRegisteredAt'),
+        poNumberHidden: isFieldHiddenByRole(event, 'poNumber'),
+        officialRegisteredAt: registeredAt,
+        officiallyRegistered: registeredAt !== null,
         verificationStatus: null,
         reviewPending: false,
         officialRegistrationHidden: isFieldHiddenByRole(event, 'officialRegisteredAt'),
@@ -464,8 +532,13 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
     } else if (event.action === 'SEVEN_PO_OFFICIALLY_REGISTERED') {
       const current = sevenPurchaseOrders.get(event.entityId);
       if (current) {
-        current.officialRegisteredAt = text(after, 'officialRegisteredAt') ?? event.occurredAt;
-        current.officialRegistrationHidden = false;
+        // The action itself is readable by every role, so the PO is known to
+        // be registered. The date is shown only when the API sent it: a hidden
+        // date stays hidden (never the record time in its place), and an admin
+        // answer without one reads as unrecorded.
+        current.officiallyRegistered = true;
+        current.officialRegisteredAt = text(after, 'officialRegisteredAt');
+        current.officialRegistrationHidden = isFieldHiddenByRole(event, 'officialRegisteredAt');
       }
     } else if (event.action === 'SEVEN_PO_VERIFICATION_RECORDED') {
       const current = sevenPurchaseOrders.get(event.entityId);
@@ -510,9 +583,11 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
       }
     }
   }
+  let documentVersionsWithheld = false;
   for (const event of versionEvents.events) {
     const after = state(event.afterState);
     const documentId = text(after, 'documentId') ?? text(state(event.requestMetadata), 'documentId');
+    if (!documentId && isFieldHiddenByRole(event, 'documentId')) documentVersionsWithheld = true;
     const current = documentId ? documents.get(documentId) : undefined;
     if (!current || !documentId) continue;
     current.versions.push({
@@ -530,11 +605,15 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
 
   // ---- artwork revisions + recorded approval events.
   const revisions: ArtworkRevisionView[] = [];
+  let revisionsWithheld = 0;
   for (const event of revisionEvents.events) {
     if (event.action !== 'ARTWORK_REVISION_REGISTERED') continue;
     const after = state(event.afterState);
     const orderId = text(after, 'filmSupplyOrderId') ?? text(state(event.requestMetadata), 'filmSupplyOrderId');
-    if (!orderId) continue;
+    if (!orderId) {
+      if (isFieldHiddenByRole(event, 'filmSupplyOrderId')) revisionsWithheld += 1;
+      continue;
+    }
     revisions.push({
       id: event.entityId,
       filmSupplyOrderId: orderId,
@@ -562,23 +641,29 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
       organization: requiredText(after, 'organization', '—'),
       decision: requiredText(after, 'decision', '—'),
       designKey: requiredText(after, 'designKey', '—'),
-      revisionNo: numeric(after, 'revisionNo') ?? 0,
+      revisionNo: numeric(after, 'revisionNo'),
       evidenceDocumentVersionId: requiredText(after, 'evidenceDocumentVersionId', '—'),
       evidenceSource: requiredText(after, 'evidenceSource', '—'),
-      eventTime: requiredText(after, 'eventTime', event.occurredAt),
-      recordedAt: event.occurredAt
+      eventTime: text(after, 'eventTime'),
+      recordedAt: event.occurredAt,
+      // organization is on every full answer and off the staff allowlist.
+      detailsHidden: isFieldHiddenByRole(event, 'organization')
     });
   }
 
   // ---- deliveries + confirmations (deliveryId → confirmation).
   const confirmations = new Map<string, { evidenceDocumentVersionId: string | null; confirmedAt: string }>();
+  let confirmationsWithheld = false;
   for (const event of confirmationEvents.events) {
     const after = state(event.afterState);
     const deliveryId = text(after, 'deliveryId')
       ?? (event.action === 'FILM_DELIVERY_CONFIRMED'
         ? text(after, 'filmDeliveryId')
         : text(after, 'fillingDeliveryId'));
-    if (!deliveryId) continue;
+    if (!deliveryId) {
+      if (isFieldHiddenByRole(event, 'deliveryId')) confirmationsWithheld = true;
+      continue;
+    }
     confirmations.set(deliveryId, {
       evidenceDocumentVersionId: text(after, 'evidenceDocumentVersionId'),
       confirmedAt: event.occurredAt
@@ -588,13 +673,15 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
   const deliveries: DeliveryView[] = [];
   for (const event of filmDeliveryEvents.events) {
     const after = state(event.afterState);
-    deliveries.push(toDeliveryView(event, after, 'film', 'filmSupplyOrderId', 'filmSupplyOrderLineId', confirmations));
+    deliveries.push(toDeliveryView(event, after, 'film', 'filmSupplyOrderId', 'filmSupplyOrderLineId', confirmations, confirmationsWithheld));
   }
   for (const event of fillingDeliveryEvents.events) {
     const after = state(event.afterState);
-    deliveries.push(toDeliveryView(event, after, 'filling', 'fillingOrderId', 'fillingOrderLineId', confirmations));
+    deliveries.push(toDeliveryView(event, after, 'filling', 'fillingOrderId', 'fillingOrderLineId', confirmations, confirmationsWithheld));
   }
-  deliveries.sort((a, b) => (a.deliveredAt < b.deliveredAt ? -1 : 1));
+  // Hidden delivery dates sort by the record time (order only — never shown as the date).
+  const sortKey = (delivery: DeliveryView) => delivery.deliveredAt ?? delivery.recordedAt;
+  deliveries.sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : 1));
 
   // ---- commission readiness: the latest evaluation wins.
   let readiness: ReadinessView | null = null;
@@ -607,7 +694,10 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
       readinessState: requiredText(after, 'readinessState', 'MISSING_DATA'),
       isReady: bool(after, 'isReady'),
       blocking,
-      evaluatedAt: event.occurredAt
+      evaluatedAt: event.occurredAt,
+      // The full evaluation answer is never empty, so an empty staff answer is
+      // the allowlist trimming every key away — not a missing evaluation.
+      hidden: isFieldHiddenByRole(event, 'readinessState', { emptyMeansTrimmed: true })
     };
   }
 
@@ -622,7 +712,9 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
     revisions,
     approvalEvents: approvalRecords,
     deliveries,
-    readiness
+    readiness,
+    documentVersionsWithheld,
+    revisionsWithheld
   };
 }
 
@@ -632,22 +724,27 @@ function toDeliveryView(
   kind: 'film' | 'filling',
   orderKey: string,
   lineKey: string,
-  confirmations: Map<string, { evidenceDocumentVersionId: string | null; confirmedAt: string }>
+  confirmations: Map<string, { evidenceDocumentVersionId: string | null; confirmedAt: string }>,
+  confirmationsWithheld: boolean
 ): DeliveryView {
   const confirmation = confirmations.get(event.entityId);
   return {
     id: event.entityId,
     kind,
-    orderId: text(after, orderKey) ?? text(state(event.requestMetadata), orderKey) ?? '—',
+    orderId: text(after, orderKey) ?? text(state(event.requestMetadata), orderKey),
     lineId: text(after, lineKey),
     unit: requiredText(after, 'unit', '—'),
     deliveredQuantity: requiredText(after, 'deliveredQuantity', '—'),
-    deliverySequence: numeric(after, 'deliverySequence') ?? 1,
-    deliveredAt: requiredText(after, 'deliveredAt', event.occurredAt),
+    deliverySequence: numeric(after, 'deliverySequence'),
+    deliveredAt: text(after, 'deliveredAt'),
+    recordedAt: event.occurredAt,
     note: text(after, 'note'),
     confirmed: confirmation !== undefined,
     evidenceDocumentVersionId: confirmation?.evidenceDocumentVersionId ?? null,
-    confirmedAt: confirmation?.confirmedAt ?? null
+    confirmedAt: confirmation?.confirmedAt ?? null,
+    // deliveredQuantity is on every full answer and off the staff allowlist.
+    detailsHidden: isFieldHiddenByRole(event, 'deliveredQuantity'),
+    confirmationHidden: confirmation === undefined && confirmationsWithheld
   };
 }
 

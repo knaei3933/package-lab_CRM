@@ -28,7 +28,7 @@ import type {
   OrderMakerPoBoard
 } from '../../lib/maker-po-data';
 import type { AuditEventView } from '../../lib/project-data';
-import { labelLookup } from '../../lib/project-data';
+import { labelLookup, sevenPurchaseOrderChoiceLabel } from '../../lib/project-data';
 import {
   badgeStyle,
   cardStyle,
@@ -105,7 +105,7 @@ export default async function MakerPoPage() {
   const stateLabel = labelLookup(board.workspace.labels, 'filmSupplyOrderStates');
   const poChoices = board.workspace.sevenPurchaseOrders.map((po) => ({
     value: po.id,
-    label: `${po.poNumber}（${po.officialRegisteredAt ? '公式登録済み' : '未登録'}）`
+    label: sevenPurchaseOrderChoiceLabel(po)
   }));
 
   const audit = await loadMakerPoAudit(projectId);

@@ -6,6 +6,7 @@ import { confirmDeliveryAction, evaluateCommissionReadinessAction, recordDeliver
 import { readSelectedProjectId } from '../../lib/api';
 import { labelLookup, loadWorkspace } from '../../lib/project-data';
 import type { DeliveryView } from '../../lib/project-data';
+import { HIDDEN_BY_ROLE_LABEL } from '../../lib/redaction';
 import {
   badgeStyle,
   cardStyle,
@@ -45,6 +46,10 @@ export default async function DeliveriesPage() {
     workspace.filmOrders.find((order) => order.id === orderId)?.code
       ?? workspace.fillingOrders.find((order) => order.id === orderId)?.code
       ?? orderId;
+  /** UI batch A follow-up (P1-4): a withheld value reads 閲覧権限なし, a missing one 未記録. */
+  const orderText = (delivery: DeliveryView) =>
+    delivery.orderId ? orderCode(delivery.orderId) : delivery.detailsHidden ? HIDDEN_BY_ROLE_LABEL : '（発注未記録）';
+  const hiddenOr = (delivery: DeliveryView, value: string) => (delivery.detailsHidden ? HIDDEN_BY_ROLE_LABEL : value);
 
   // Confirmation evidence: 受領証跡（acceptance_evidence）のうち人が確認済みの
   // バージョンだけが納品確認に使える。フィルム納品は発注への紐付けも一致が必要
@@ -53,7 +58,8 @@ export default async function DeliveriesPage() {
     workspace.documents
       .filter((document) => document.documentType === 'acceptance_evidence'
         && document.verificationStatus === 'verified'
-        && (delivery.kind === 'filling' || document.filmSupplyOrderId === delivery.orderId))
+        && (delivery.kind === 'filling'
+          || (delivery.orderId !== null && document.filmSupplyOrderId === delivery.orderId)))
       .flatMap((document) => document.versions.map((version) => ({
         value: version.id,
         label: `${document.filename}（版${version.versionNumber}／${
@@ -99,23 +105,29 @@ export default async function DeliveriesPage() {
             <tbody>
               <tr>
                 <th style={thStyle}>準備状態（readinessState）</th>
-                <td style={tdStyle}>{readinessStateLabel(readiness.readinessState)}（{readiness.readinessState}）</td>
+                <td style={tdStyle}>
+                  {readiness.hidden
+                    ? HIDDEN_BY_ROLE_LABEL
+                    : `${readinessStateLabel(readiness.readinessState)}（${readiness.readinessState}）`}
+                </td>
               </tr>
               <tr>
                 <th style={thStyle}>準備完了（isReady）</th>
-                <td style={tdStyle}>{readinessIsReady ? 'はい' : 'いいえ'}</td>
+                <td style={tdStyle}>{readiness.hidden ? HIDDEN_BY_ROLE_LABEL : readinessIsReady ? 'はい' : 'いいえ'}</td>
               </tr>
               <tr>
                 <th style={thStyle}>手数料計算（commissionCalculationAllowed）</th>
                 <td style={tdStyle}>
-                  {readinessIsReady ? '可能です' : 'まだできません'}
+                  {readiness.hidden ? HIDDEN_BY_ROLE_LABEL : readinessIsReady ? '可能です' : 'まだできません'}
                   <span style={noteStyle}>（READY のときだけ手数料計算ができます）</span>
                 </td>
               </tr>
               <tr>
                 <th style={thStyle}>未達の要件（blocking）</th>
                 <td style={tdStyle}>
-                  {readiness.blocking.length === 0
+                  {readiness.hidden
+                    ? HIDDEN_BY_ROLE_LABEL
+                    : readiness.blocking.length === 0
                     ? 'ありません'
                     : (
                       <ul style={{ margin: 0, paddingLeft: 18 }}>
@@ -174,19 +186,23 @@ export default async function DeliveriesPage() {
                 <tr key={delivery.id}>
                   <td style={tdStyle}>{delivery.kind === 'film' ? 'フィルム納品' : '充填製品納品'}</td>
                   <td style={tdStyle}>
-                    {orderCode(delivery.orderId)}
+                    {orderText(delivery)}
                     <div style={monoStyle}>{delivery.id}</div>
                   </td>
-                  <td style={tdStyle}>{delivery.deliveredQuantity} {delivery.unit}</td>
-                  <td style={tdStyle}>{delivery.deliverySequence}</td>
-                  <td style={tdStyle}>{formatTimestamp(delivery.deliveredAt)}</td>
+                  <td style={tdStyle}>{hiddenOr(delivery, `${delivery.deliveredQuantity} ${delivery.unit}`)}</td>
+                  <td style={tdStyle}>{hiddenOr(delivery, delivery.deliverySequence === null ? '未記録' : String(delivery.deliverySequence))}</td>
+                  <td style={tdStyle}>{hiddenOr(delivery, delivery.deliveredAt ? formatTimestamp(delivery.deliveredAt) : '未記録')}</td>
                   <td style={tdStyle}>
-                    <span style={{ ...badgeStyle, borderColor: delivery.confirmed ? 'var(--ok)' : 'var(--warn)', color: delivery.confirmed ? 'var(--ok)' : 'var(--warn)' }}>
-                      {confirmationLabel(delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION')}
-                    </span>
+                    {delivery.confirmationHidden ? (
+                      HIDDEN_BY_ROLE_LABEL
+                    ) : (
+                      <span style={{ ...badgeStyle, borderColor: delivery.confirmed ? 'var(--ok)' : 'var(--warn)', color: delivery.confirmed ? 'var(--ok)' : 'var(--warn)' }}>
+                        {confirmationLabel(delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION')}
+                      </span>
+                    )}
                   </td>
                   <td style={monoStyle}>
-                    {delivery.evidenceDocumentVersionId ?? '—'}
+                    {delivery.confirmationHidden ? HIDDEN_BY_ROLE_LABEL : delivery.evidenceDocumentVersionId ?? '—'}
                     {delivery.confirmedAt ? <div>確認 {formatTimestamp(delivery.confirmedAt)}</div> : null}
                   </td>
                   <td style={{ ...tdStyle, minWidth: 260 }}>

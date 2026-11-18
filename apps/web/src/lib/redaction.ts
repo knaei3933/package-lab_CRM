@@ -54,16 +54,24 @@ export function isStateWithheld(event: StateCarrier): boolean {
  * staff allowlist. An admin answer for the same event carries the full state
  * (the keys this helper is asked about are always present in it), so a key
  * that is missing there is genuinely unrecorded and stays 「未記録」.
+ * Pass `emptyMeansTrimmed` only for events whose full state is never empty
+ * (e.g. COMMISSION_READINESS_EVALUATED, whose keys are all off the allowlist).
  */
-export function isFieldHiddenByRole(event: StateCarrier, key: string): boolean {
+export function isFieldHiddenByRole(
+  event: StateCarrier,
+  key: string,
+  options: { emptyMeansTrimmed?: boolean } = {}
+): boolean {
   if (isStateWithheld(event)) return true;
   const after = event.afterState;
   if (!isPlainRecord(after)) return false;
   if (key in after) return false;
   if (STAFF_VISIBLE_STATE_KEYS.includes(key)) return false;
   const present = Object.keys(after);
-  // An empty state carries no evidence of trimming: treat it as unrecorded.
-  if (present.length === 0) return false;
+  // An empty state carries no evidence of trimming: treat it as unrecorded —
+  // unless the caller knows the full state of this event is never empty (the
+  // staff allowlist can then only have trimmed every key away).
+  if (present.length === 0) return options.emptyMeansTrimmed === true;
   return present.every((name) => STAFF_VISIBLE_STATE_KEYS.includes(name));
 }
 

@@ -8,6 +8,9 @@ import { DISPLAY_NAME_COOKIE } from '../../../../lib/session-display';
  */
 export const dynamic = 'force-dynamic';
 
+const CLEARED_SESSION_COOKIE = `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+const CLEARED_DISPLAY_NAME_COOKIE = `${DISPLAY_NAME_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+
 export async function POST(request: Request): Promise<Response> {
   const cookie = request.headers.get('cookie') ?? '';
 
@@ -21,10 +24,15 @@ export async function POST(request: Request): Promise<Response> {
       cache: 'no-store'
     });
   } catch {
-    return Response.json(
+    // The API is unreachable, but the browser session must still end: the
+    // 502 answer drops both cookies locally (the body and status are as before).
+    const unreachable = Response.json(
       { error: `API（${apiBaseUrl}）に接続できません。APIの起動を確認してください。` },
       { status: 502 }
     );
+    unreachable.headers.append('set-cookie', CLEARED_SESSION_COOKIE);
+    unreachable.headers.append('set-cookie', CLEARED_DISPLAY_NAME_COOKIE);
+    return unreachable;
   }
 
   const payload = await upstream.text();
@@ -35,14 +43,11 @@ export async function POST(request: Request): Promise<Response> {
   for (const cookieHeader of upstream.headers.getSetCookie()) {
     response.headers.append('set-cookie', cookieHeader);
   }
-  // Even if the API is unreachable the browser session must end: drop the
-  // cookie locally as well.
+  // Even if the API answers with an error the browser session must end: drop
+  // the cookie locally as well.
   if (!upstream.ok) {
-    response.headers.append(
-      'set-cookie',
-      `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
-    );
+    response.headers.append('set-cookie', CLEARED_SESSION_COOKIE);
   }
-  response.headers.append('set-cookie', `${DISPLAY_NAME_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
+  response.headers.append('set-cookie', CLEARED_DISPLAY_NAME_COOKIE);
   return response;
 }

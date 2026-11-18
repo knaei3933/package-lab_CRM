@@ -14,9 +14,9 @@ import {
 } from '../actions';
 import { readSelectedProjectId } from '../../lib/api';
 import { loadPaymentGate, PAYMENT_TERMS_LABELS } from '../../lib/maker-po-data';
-import { labelLookup, loadWorkspace } from '../../lib/project-data';
+import { labelLookup, loadWorkspace, officialRegistrationText, sevenPurchaseOrderChoiceLabel } from '../../lib/project-data';
 import type { FilmSupplyOrderView } from '../../lib/project-data';
-import { HIDDEN_BY_ROLE_LABEL } from '../../lib/redaction';
+import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
 import {
   cardStyle,
   infoBoxStyle,
@@ -75,13 +75,15 @@ export default async function OrdersPage() {
   const poLabelById = new Map(workspace.sevenPurchaseOrders.map((po) => [po.id, po.poNumber]));
   const poChoices = workspace.sevenPurchaseOrders.map((po) => ({
     value: po.id,
-    label: `${po.poNumber}（${po.officialRegisteredAt ? '公式登録済み' : '未登録'}）`
+    label: sevenPurchaseOrderChoiceLabel(po)
   }));
 
   // M8-OPER2 FIX 1: the current G6 terms of the draft orders, read from the
   // API's payment-gate answer (the same read the maker-PO screen uses), so the
   // form always shows the recorded value instead of guessing from history.
-  const draftOrders = workspace.filmOrders.filter((order) => order.status === 'DRAFT');
+  // A withheld status (viewer) is not a draft: the 'DRAFT' value there is only
+  // the data layer's placeholder, so no payment-gate read is made for it.
+  const draftOrders = workspace.filmOrders.filter((order) => !order.statusHidden && order.status === 'DRAFT');
   const paymentGates = await Promise.all(draftOrders.map((order) => loadPaymentGate(order.id)));
   const paymentGateByOrderId = new Map<string, Awaited<ReturnType<typeof loadPaymentGate>>>();
   for (const [index, order] of draftOrders.entries()) {
@@ -199,7 +201,9 @@ export default async function OrdersPage() {
         <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>充填発注 一覧・作成</h2>
         <p style={noteStyle}>
           充填製品（カプセル等）の発注です。単位はポッド／個。納品の確認状態は「納品確認・手数料準備」画面で扱います
-          （準備状態: {readinessLabel(workspace.readiness?.readinessState ?? 'MISSING_DATA')}）。
+          （準備状態: {workspace.readiness?.hidden
+            ? HIDDEN_BY_ROLE_SHORT
+            : readinessLabel(workspace.readiness?.readinessState ?? 'MISSING_DATA')}）。
         </p>
         {workspace.fillingOrders.length === 0 ? (
           <p style={noteStyle}>充填発注はまだありません。</p>
@@ -328,11 +332,7 @@ function SevenPurchaseOrderSection({
                   <div style={monoStyle}>{po.id}</div>
                 </td>
                 <td style={tdStyle}>
-                  {po.officialRegisteredAt
-                    ? formatTimestamp(po.officialRegisteredAt)
-                    : po.officialRegistrationHidden
-                      ? HIDDEN_BY_ROLE_LABEL
-                      : '未登録'}
+                  {officialRegistrationText(po)}
                 </td>
                 <td style={tdStyle}>
                   {po.verificationStatus
@@ -343,7 +343,7 @@ function SevenPurchaseOrderSection({
                   {po.reviewPending ? <div style={noteStyle}>確認中（不一致レビュー）</div> : null}
                 </td>
                 <td style={{ ...tdStyle, minWidth: 280 }}>
-                  {po.officialRegisteredAt ? null : (
+                  {po.officiallyRegistered ? null : (
                     <details style={{ marginBottom: 8 }}>
                       <summary style={{ fontSize: 13, cursor: 'pointer' }}>公式登録日を記録する</summary>
                       <ActionForm action={registerSevenPurchaseOrderAction} submitLabel="公式登録する">

@@ -80,7 +80,9 @@ function serveAs(role: 'admin' | 'staff' | 'viewer') {
   });
 }
 
-beforeEach(() => callApi.mockReset());
+beforeEach(() => {
+  callApi.mockReset();
+});
 
 describe('loadWorkspace role labels (UI batch A, P1-4)', () => {
   it('admin sees every recorded value and no hidden flags', async () => {

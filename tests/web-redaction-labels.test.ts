@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { buildAuditViewForRole } from '../apps/api/src/audit-view.js';
 import type { AuditHistoryRow } from '../apps/api/src/audit-view.js';
@@ -37,6 +40,32 @@ function viewAs(role: 'admin' | 'staff' | 'viewer', state: Record<string, unknow
 }
 
 describe('role redaction labels (UI batch A, P1-4)', () => {
+  it('mirrors the API staff allowlist in both directions (a key added on either side fails)', () => {
+    // Read the API's own literal: a key the API starts allowing tomorrow is not
+    // in any input this test could invent, so the behavioural check alone would
+    // miss it (review L2).
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const source = readFileSync(path.join(repoRoot, 'apps/api/src/audit-view.ts'), 'utf8');
+    const literal = /const STAFF_STATE_KEYS: readonly string\[\] = \[([^\]]*)\]/.exec(source);
+    expect(literal, 'STAFF_STATE_KEYS literal in apps/api/src/audit-view.ts').not.toBeNull();
+    const apiKeys = [...literal![1]!.matchAll(/'([^']+)'/g)].map((match) => match[1]!);
+    expect(apiKeys.length).toBeGreaterThan(0);
+    expect([...apiKeys].sort()).toEqual([...STAFF_VISIBLE_STATE_KEYS].sort());
+    // And the parsed list is what the filter really applies.
+    const everyKey = Object.fromEntries([...apiKeys, 'poNumber', 'amount'].map((key) => [key, 'x']));
+    expect(Object.keys(viewAs('staff', everyKey).afterState as object).sort()).toEqual([...apiKeys].sort());
+  });
+
+  it('emptyMeansTrimmed: an empty staff answer reads hidden only when the caller opts in; admin stays truthful', () => {
+    const readiness = { projectId: 'p-1', readinessState: 'READY', isReady: true, blocking: [] };
+    const staff = viewAs('staff', readiness);
+    expect(staff.afterState).toEqual({});
+    expect(isFieldHiddenByRole(staff, 'readinessState')).toBe(false);
+    expect(isFieldHiddenByRole(staff, 'readinessState', { emptyMeansTrimmed: true })).toBe(true);
+    expect(isFieldHiddenByRole(viewAs('viewer', readiness), 'readinessState', { emptyMeansTrimmed: true })).toBe(true);
+    expect(isFieldHiddenByRole(viewAs('admin', readiness), 'readinessState', { emptyMeansTrimmed: true })).toBe(false);
+  });
+
   it('mirrors the API staff allowlist exactly', () => {
     const everyKey = Object.fromEntries(
       [...STAFF_VISIBLE_STATE_KEYS, 'poNumber', 'amount', 'originalFilename'].map((key) => [key, 'x'])

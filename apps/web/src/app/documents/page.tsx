@@ -24,7 +24,7 @@ import {
   issuerEntityChoices,
   VERIFICATION_STATUS_LABELS
 } from '../../lib/vocabulary';
-import { codeWithStatus, HIDDEN_BY_ROLE_LABEL } from '../../lib/redaction';
+import { codeWithStatus, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
 
 export const dynamic = 'force-dynamic';
 
@@ -125,7 +125,13 @@ export default async function DocumentsPage() {
                     {document.filename}
                     {document.note ? <div style={noteStyle}>{document.note}</div> : null}
                     <details style={{ marginTop: 4 }}>
-                      <summary style={{ fontSize: 12, cursor: 'pointer' }}>版（{document.versions.length}件）</summary>
+                      <summary style={{ fontSize: 12, cursor: 'pointer' }}>
+                        {/* UI batch A follow-up (P1-4): versions whose document link is
+                            withheld cannot be counted here — never claim 「0件」. */}
+                        {document.versions.length === 0 && workspace.documentVersionsWithheld
+                          ? `版（${HIDDEN_BY_ROLE_SHORT}）`
+                          : `版（${document.versions.length}件）`}
+                      </summary>
                       {document.versions.map((version) => (
                         <div key={version.id} style={monoStyle}>
                           版{version.versionNumber}／{version.sha256.slice(0, 12)}…／ID {version.id}
