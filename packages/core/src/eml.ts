@@ -426,9 +426,23 @@ interface ParsedPdfObject {
 type PdfObjectMap = Map<number, ParsedPdfObject>;
 type PdfObjectParse = { valid: true; objects: PdfObjectMap } | { valid: false };
 
+const PDF_MAX_OBJECTS = 5000;
+const PDF_MAX_STREAMS = 1000;
+const PDF_MAX_PAGES = 1000;
+const PDF_MAX_CONTENT_REFERENCES = 20;
+const PDF_MAX_STREAM_OUTPUT_BYTES = 8 * 1024 * 1024;
+const PDF_MAX_TOTAL_DECODED_BYTES = 32 * 1024 * 1024;
+
+interface PdfDecodeBudget {
+  decodedBytes: number;
+  exhausted: boolean;
+  decodedStreams: Map<number, string>;
+}
+
 function parsePdfObjects(bytes: Buffer): PdfObjectParse {
   const latin = bytes.toString('latin1');
   const objects: PdfObjectMap = new Map();
+  let streamCount = 0;
   const objectPattern = /(?:^|[\r\n\t\f\v ])(\d+)\s+(\d+)\s+obj(?=[\s/<[])/g;
   let cursor = 0;
   for (;;) {
@@ -436,7 +450,9 @@ function parsePdfObjects(bytes: Buffer): PdfObjectParse {
     const match = objectPattern.exec(latin);
     if (match === null) break;
     const id = Number.parseInt(match[1] ?? '', 10);
-    if (!Number.isInteger(id) || id <= 0 || objects.has(id)) return { valid: false };
+    if (!Number.isInteger(id) || id <= 0 || objects.has(id) || objects.size >= PDF_MAX_OBJECTS) {
+      return { valid: false };
+    }
     const objectStart = match.index + match[0].length;
     const objectEnd = latin.indexOf('endobj', objectStart);
     if (objectEnd < 0) return { valid: false };
@@ -456,12 +472,20 @@ function parsePdfObjects(bytes: Buffer): PdfObjectParse {
     if (dataEnd < 0 || dataEnd > objectEnd) return { valid: false };
     const endObject = latin.indexOf('endobj', dataEnd);
     if (endObject !== objectEnd) return { valid: false };
+    streamCount += 1;
+    if (streamCount > PDF_MAX_STREAMS) return { valid: false };
     objects.set(id, {
       id,
       header: latin.slice(objectStart, streamStart),
       stream: Buffer.from(latin.slice(dataStart, dataEnd), 'latin1')
     });
     cursor = endObject + 'endobj'.length;
+  }
+  // These container formats require a full PDF object parser that this
+  // intentionally conservative verifier does not implement.
+  for (const object of objects.values()) {
+    if (/\/Type\s*\/(?:ObjStm|XRef)(?![A-Za-z0-9_])/.test(object.header)) return { valid: false };
+    if (/\/Type\s*\/[^\s]*#/.test(object.header)) return { valid: false };
   }
   return objects.size > 0 ? { valid: true, objects } : { valid: false };
 }
@@ -474,11 +498,11 @@ function findDictionaryValue(dictionary: string, key: string): { start: number; 
   while (cursor < dictionary.length && /\s/.test(dictionary[cursor] ?? '')) cursor += 1;
   if (dictionary[cursor] !== '<') {
     // Bound the direct value (for example `3 0 R`) before the next `/Key`.
-    // This prevents a later nested resource reference from being mistaken for
-    // an indirect /Contents or /Resources object reference.
     const nextKey = dictionary.indexOf('/', cursor + 1);
     const end = nextKey < 0 ? dictionary.length : nextKey;
-    return { start: cursor, value: dictionary.slice(cursor, end) };
+      const close = dictionary.indexOf('>>', cursor + 1);
+      const boundedEnd = close >= 0 && close < end ? close : end;
+      return { start: cursor, value: dictionary.slice(cursor, boundedEnd) };
   }
   const open = cursor;
   let depth = 0;
@@ -488,9 +512,7 @@ function findDictionaryValue(dictionary: string, key: string): { start: number; 
       index += 1;
     } else if (dictionary.startsWith('>>', index)) {
       depth -= 1;
-      if (depth === 0) {
-        return { start: open, value: dictionary.slice(open, index + 2) };
-      }
+      if (depth === 0) return { start: open, value: dictionary.slice(open, index + 2) };
       index += 1;
     }
   }
@@ -506,25 +528,57 @@ function indirectRefs(value: string): Array<{ id: number }> {
   return refs;
 }
 
-function decodePdfStream(object: ParsedPdfObject): { state: 'text' | 'indeterminate'; text: string } {
+function boundedIndirectRefs(value: string, max: number): Array<{ id: number }> | null {
+  if (value.length > 128 * 1024) return null;
+  const refs: Array<{ id: number }> = [];
+  const pattern = /(\d+)\s+\d+\s+R/g;
+  for (let match = pattern.exec(value); match !== null; match = pattern.exec(value)) {
+    if (refs.length >= max) return null;
+    refs.push({ id: Number.parseInt(match[1] ?? '', 10) });
+  }
+  return refs;
+}
+
+function decodePdfStream(
+  object: ParsedPdfObject,
+  budget: PdfDecodeBudget
+): { state: 'text' | 'indeterminate'; text: string } {
+  if (budget.exhausted) return { state: 'indeterminate', text: '' };
   const filters = object.header.match(/\/[A-Za-z][A-Za-z0-9]+Decode\b/g) ?? [];
-  if (filters.some((filter) => filter !== '/FlateDecode')) {
+  if (filters.some((filter) => filter !== '/FlateDecode')) return { state: 'indeterminate', text: '' };
+  const data = object.stream;
+  if (data === null || data.length > PDF_MAX_STREAM_OUTPUT_BYTES) {
+    budget.exhausted = true;
     return { state: 'indeterminate', text: '' };
   }
-  const data = object.stream;
-  if (data === null) return { state: 'indeterminate', text: '' };
   if (filters.length === 0) {
-    return { state: 'text', text: data.toString('latin1') };
+    const text = data.toString('latin1');
+    budget.decodedBytes += data.length;
+    if (budget.decodedBytes > PDF_MAX_TOTAL_DECODED_BYTES) budget.exhausted = true;
+    return { state: 'text', text };
   }
   if (filters.length > 1) return { state: 'indeterminate', text: '' };
-  // Standard PDF FlateDecode uses zlib framing. Some producers emit a bare raw
-  // DEFLATE payload; that is accepted only after the standard framing fails.
+  // Standard PDF FlateDecode uses zlib framing. A bare raw DEFLATE payload is
+  // accepted only when the standard framing fails. maxOutputLength stops a bomb
+  // before the Buffer is materialized at full expansion.
   try {
-    const text = inflateSync(data).toString('latin1');
-    return { state: 'text', text };
+    const inflated = inflateSync(data, { maxOutputLength: PDF_MAX_STREAM_OUTPUT_BYTES });
+    if (inflated.length > PDF_MAX_STREAM_OUTPUT_BYTES
+      || budget.decodedBytes + inflated.length > PDF_MAX_TOTAL_DECODED_BYTES) {
+      budget.exhausted = true;
+      return { state: 'indeterminate', text: '' };
+    }
+    budget.decodedBytes += inflated.length;
+    return { state: 'text', text: inflated.toString('latin1') };
   } catch {
     try {
-      return { state: 'text', text: inflateRawSync(data).toString('latin1') };
+      const inflated = inflateRawSync(data, { maxOutputLength: PDF_MAX_STREAM_OUTPUT_BYTES });
+      if (inflated.length > PDF_MAX_STREAM_OUTPUT_BYTES
+        || budget.decodedBytes + inflated.length > PDF_MAX_TOTAL_DECODED_BYTES) {
+        return { state: 'indeterminate', text: '' };
+      }
+      budget.decodedBytes += inflated.length;
+      return { state: 'text', text: inflated.toString('latin1') };
     } catch {
       return { state: 'indeterminate', text: '' };
     }
@@ -542,13 +596,9 @@ function resolvePageResources(pageHeader: string, objects: PdfObjectMap): Resour
     const resources = findDictionaryValue(source, 'Resources');
     if (resources !== null) {
       const trimmedValue = resources.value.trimStart();
-      if (trimmedValue.startsWith('<<')) {
-        // findDictionaryValue already returned the balanced inline dictionary.
-        // Its nested /Font 4 0 R references are not a /Resources object ref.
-        return { valid: true, dictionary: resources.value };
-      }
-      const refs = indirectRefs(trimmedValue);
-      if (refs.length !== 1) return { valid: false };
+      if (trimmedValue.startsWith('<<')) return { valid: true, dictionary: resources.value };
+      const refs = boundedIndirectRefs(trimmedValue, 4);
+      if (refs === null || refs.length !== 1) return { valid: false };
       const resourceObject = objects.get(refs[0]!.id);
       if (resourceObject === undefined || resourceObject.stream !== null) return { valid: false };
       const dictionary = findDictionaryValue(resourceObject.header, 'Resources');
@@ -558,8 +608,8 @@ function resolvePageResources(pageHeader: string, objects: PdfObjectMap): Resour
 
     const parent = findDictionaryValue(source, 'Parent');
     if (parent === null) return { valid: true, dictionary: null };
-    const refs = indirectRefs(parent.value);
-    if (refs.length !== 1) return { valid: false };
+    const refs = boundedIndirectRefs(parent.value, 8);
+    if (refs === null || refs.length !== 1) return { valid: false };
     const parentKey = String(refs[0]!.id);
     if (visited.has(parentKey)) return { valid: false };
     visited.add(parentKey);
@@ -601,57 +651,290 @@ function resourceMap(resources: string | null, group: 'Font' | 'XObject'): Map<s
   return map;
 }
 
-function parsePageContents(pageHeader: string, objects: PdfObjectMap): Array<string> | null {
+function parsePageContents(
+  pageHeader: string,
+  objects: PdfObjectMap,
+  budget: PdfDecodeBudget
+): Array<string> | null {
   const value = findDictionaryValue(pageHeader, 'Contents');
   if (value === null) return null;
-  const refs = indirectRefs(value.value);
-  if (refs.length === 0) return null;
+  const refs = boundedIndirectRefs(value.value, PDF_MAX_CONTENT_REFERENCES);
+  if (refs === null || refs.length === 0) return null;
+  const uniqueIds = [...new Set(refs.map((ref) => ref.id))];
+  if (uniqueIds.length > PDF_MAX_CONTENT_REFERENCES) return null;
   const parts: string[] = [];
-  for (const ref of refs) {
-    const object = objects.get(ref.id);
+  for (const id of uniqueIds) {
+    const cached = budget.decodedStreams.get(id);
+    if (cached !== undefined) {
+      parts.push(cached);
+      continue;
+    }
+    const object = objects.get(id);
     if (object === undefined || object.stream === null) return null;
-    const decoded = decodePdfStream(object);
-    if (decoded.state === 'indeterminate') return null;
+    const decoded = decodePdfStream(object, budget);
+    if (decoded.state === 'indeterminate' || budget.exhausted) return null;
+    budget.decodedStreams.set(id, decoded.text);
     parts.push(decoded.text);
   }
   return parts;
 }
 
+function directTypeName(header: string): string | null {
+  const value = findDictionaryValue(header, 'Type');
+  if (value === null) return null;
+  const name = value.value.trim();
+  return /^\/[A-Za-z0-9]+$/.test(name) ? name.slice(1) : null;
+}
+
+function directIndirectReference(header: string, key: string): number | null {
+  const value = findDictionaryValue(header, key);
+  if (value === null) return null;
+  const refs = boundedIndirectRefs(value.value, 1);
+  return refs !== null && refs.length === 1 ? refs[0]!.id : null;
+}
+
+function directPageCount(header: string): number | null {
+  const value = findDictionaryValue(header, 'Count');
+  if (value === null) return null;
+  const text = value.value.trim();
+  return /^\d+$/.test(text) ? Number.parseInt(text, 10) : null;
+}
+
+function collectPageTree(
+  objectId: number,
+  objects: PdfObjectMap,
+  ancestors: ReadonlySet<number>
+): Array<number> | null {
+  if (ancestors.has(objectId)) return null;
+  const object = objects.get(objectId);
+  if (object === undefined || object.stream !== null) return null;
+  const typeName = directTypeName(object.header);
+  if (typeName !== 'Page' && typeName !== 'Pages') return null;
+
+  const kidsValue = findDictionaryValue(object.header, 'Kids');
+  if (kidsValue === null || !kidsValue.value.includes('[')) return null;
+  const kids = boundedIndirectRefs(kidsValue.value, PDF_MAX_PAGES);
+  if (kids === null) return null;
+  const count = directPageCount(object.header);
+  if (count === null) return null;
+
+  const nextAncestors = new Set(ancestors);
+  nextAncestors.add(objectId);
+  const leaves: number[] = [];
+  for (const kid of kids) {
+    const kidObject = objects.get(kid.id);
+    if (kidObject === undefined || kidObject.stream !== null) return null;
+    const kidType = directTypeName(kidObject.header);
+    if (kidType === 'Page') {
+      leaves.push(kid.id);
+    } else if (kidType === 'Pages') {
+      const subtree = collectPageTree(kid.id, objects, nextAncestors);
+      if (subtree === null) return null;
+      leaves.push(...subtree);
+    } else {
+      return null;
+    }
+    if (leaves.length > PDF_MAX_PAGES) return null;
+  }
+  return leaves.length === count ? leaves : null;
+}
+
+/** Removes `%...end-of-line` comments only when they are outside PDF strings. */
+function stripPdfContentComments(content: string): string | null {
+  const out: string[] = [];
+  let cursor = 0;
+  while (cursor < content.length) {
+    const character = content[cursor]!;
+    if (character === '(') {
+      let depth = 1;
+      let index = cursor + 1;
+      let escaped = false;
+      while (index < content.length && depth > 0) {
+        const current = content[index]!;
+        if (escaped) escaped = false;
+        else if (current === '\\') escaped = true;
+        else if (current === '(') depth += 1;
+        else if (current === ')') depth -= 1;
+        index += 1;
+      }
+      if (depth !== 0) return null;
+      out.push(content.slice(cursor, index));
+      cursor = index;
+      continue;
+    }
+    if (character === '<') {
+      const close = content.indexOf('>', cursor + 1);
+      if (close < 0) return null;
+      out.push(content.slice(cursor, close + 1));
+      cursor = close + 1;
+      continue;
+    }
+    if (character === '%') {
+      const end = content.slice(cursor).search(/\r\n|\n|\r/);
+      if (end < 0) cursor = content.length;
+      else cursor += end + (content.slice(cursor + end).startsWith('\r\n') ? 2 : 1);
+      continue;
+    }
+    out.push(character);
+    cursor += 1;
+  }
+  return out.join('');
+}
+
+type PdfContentTokenKind = 'name' | 'number' | 'boolean' | 'operator' | 'string' | 'delimiter';
+interface PdfContentToken {
+  kind: PdfContentTokenKind;
+  value: string;
+}
+
+function tokenizePdfContent(content: string): Array<PdfContentToken> | null {
+  const tokens: Array<PdfContentToken> = [];
+  let cursor = 0;
+  while (cursor < content.length) {
+    const character = content[cursor]!;
+    if (/\s/.test(character)) {
+      cursor += 1;
+      continue;
+    }
+    if (character === '(') {
+      let depth = 1;
+      let index = cursor + 1;
+      let escaped = false;
+      while (index < content.length && depth > 0) {
+        const current = content[index]!;
+        if (escaped) escaped = false;
+        else if (current === '\\') escaped = true;
+        else if (current === '(') depth += 1;
+        else if (current === ')') depth -= 1;
+        index += 1;
+      }
+      if (depth !== 0) return null;
+      tokens.push({ kind: 'string', value: '' });
+      cursor = index;
+      continue;
+    }
+    if (character === '<') {
+      const close = content.indexOf('>', cursor + 1);
+      if (close < 0) return null;
+      if (!/^[0-9A-Fa-f\s]*$/.test(content.slice(cursor + 1, close))) return null;
+      tokens.push({ kind: 'string', value: '' });
+      cursor = close + 1;
+      continue;
+    }
+    if (character === '[' || character === ']') {
+      tokens.push({ kind: 'delimiter', value: character });
+      cursor += 1;
+      continue;
+    }
+    if (character === '/') {
+      let index = cursor + 1;
+      while (index < content.length && !/[\s/<>\[\]()]/.test(content[index] ?? '')) index += 1;
+      if (index === cursor + 1) return null;
+      tokens.push({ kind: 'name', value: content.slice(cursor + 1, index) });
+      cursor = index;
+      continue;
+    }
+    let index = cursor;
+    while (index < content.length && !/[\s/<>\[\]()]/.test(content[index] ?? '')) index += 1;
+    if (index === cursor) return null;
+    const value = content.slice(cursor, index);
+    tokens.push({
+      kind: /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(value) ? 'number'
+        : /^(?:true|false)$/.test(value) ? 'boolean'
+        : 'operator',
+      value
+    });
+    cursor = index;
+  }
+  return tokens;
+}
+
+function isSimpleTextContent(content: string): boolean {
+  const safeOperators = new Set([
+    'q', 'Q', 'cm', 'BT', 'ET', 'Tf', 'Td', 'TD', 'Tm', 'T*', 'Tj', 'TJ', "'", '"', 'Do',
+    'g', 'rg', 'k', 'Tr'
+  ]);
+  const tokens = tokenizePdfContent(content);
+  if (tokens === null) return false;
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token.kind !== 'operator') continue;
+    if (!safeOperators.has(token.value)) return false;
+    if (token.value === 'Tf') {
+      const size = tokens[index - 1];
+      if (size === undefined || size.kind !== 'number' || !(Number.parseFloat(size.value) > 0)) return false;
+    }
+    if (token.value === 'Tr') {
+      const mode = tokens[index - 1];
+      if (mode === undefined || mode.kind !== 'number'
+        || !/^[+-]?\d+$/.test(mode.value) || Number.parseInt(mode.value, 10) !== 0) return false;
+    }
+    if (token.value === 'g') {
+      const values = tokens.slice(Math.max(0, index - 1), index);
+      if (values.length !== 1 || values.some((entry) => entry.kind !== 'number')) return false;
+      if (Number.parseFloat(values[0]!.value) === 1) return false;
+    }
+    if (token.value === 'rg') {
+      const values = tokens.slice(Math.max(0, index - 3), index);
+      if (values.length !== 3 || values.some((entry) => entry.kind !== 'number')) return false;
+      if (values.every((entry) => Number.parseFloat(entry.value) === 1)) return false;
+    }
+    if (token.value === 'k') {
+      const values = tokens.slice(Math.max(0, index - 4), index);
+      if (values.length !== 4 || values.some((entry) => entry.kind !== 'number')) return false;
+      if (values.every((entry) => Number.parseFloat(entry.value) === 0)) return false;
+    }
+  }
+  return true;
+}
+
 /**
- * G5/G7: classify only the streams a page's /Contents actually references.
- * Unreferenced FontFile/CMap/hidden-text streams cannot authenticate a page.
- * A text page over an image, or transparent text (3 Tr), is an OCR layer and
- * stays with a human. Missing objects/resources or undecodable referenced
- * content is indeterminate.
+ * G5/G7: only the Catalog→Pages→Kids tree participates. Only its referenced
+ * /Contents streams are decoded. Simple text pages can be automatic; images,
+ * OCR layers, clipping/shading, unsupported operators and resource/budget
+ * problems are all fail-closed.
  */
 export function inspectPdfTextLayers(bytes: Buffer): PdfTextLayerPage[] {
+  const indeterminate: PdfTextLayerPage[] = [{ state: 'indeterminate', text: '' }];
   if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') return [];
   const parsedObjects = parsePdfObjects(bytes);
-  if (!parsedObjects.valid) return [{ state: 'indeterminate', text: '' }];
+  if (!parsedObjects.valid) return indeterminate;
 
-  const pageIds = [...parsedObjects.objects.values()]
-    .filter((object) => /\/Type\s*\/Page(?![A-Za-z0-9_])/.test(object.header))
-    .map((object) => object.id)
-    .sort((a, b) => a - b);
-  if (pageIds.length === 0) return [{ state: 'indeterminate', text: '' }];
+  const catalogIds = [...parsedObjects.objects.entries()]
+    .filter(([, object]) => object.stream === null && directTypeName(object.header) === 'Catalog')
+    .map(([id]) => id);
+  if (catalogIds.length !== 1) return indeterminate;
+  const pagesId = directIndirectReference(
+    parsedObjects.objects.get(catalogIds[0]!)!.header,
+    'Pages'
+  );
+  if (pagesId === null) return indeterminate;
+  const pageIds = collectPageTree(pagesId, parsedObjects.objects, new Set());
+  if (pageIds === null || pageIds.length === 0) return indeterminate;
+
+  const budget: PdfDecodeBudget = {
+    decodedBytes: 0,
+    exhausted: false,
+    decodedStreams: new Map()
+  };
   const pages: PdfTextLayerPage[] = [];
   for (const pageId of pageIds) {
-    const page = parsedObjects.objects.get(pageId);
-    if (page === undefined || page.stream !== null) return [{ state: 'indeterminate', text: '' }];
-    const contentParts = parsePageContents(page.header, parsedObjects.objects);
-    if (contentParts === null) return [{ state: 'indeterminate', text: '' }];
-    const content = contentParts.join('\n');
-    const transparent = /(?:^|[\s>])3\s+Tr(?=\s|$)/.test(content);
-    const text = extractPdfContentText(content);
-    const usedFonts = [...content.matchAll(/\/([^\s/<>\[\]()]+)\s+(?:[\d.]+\s+)?Tf(?=\s|$)/g)]
+    const page = parsedObjects.objects.get(pageId)!;
+    const contentParts = parsePageContents(page.header, parsedObjects.objects, budget);
+    if (contentParts === null || budget.exhausted) return indeterminate;
+    const cleanContent = stripPdfContentComments(contentParts.join('\n'));
+    if (cleanContent === null || !isSimpleTextContent(cleanContent)) return indeterminate;
+
+    const text = extractPdfContentText(cleanContent);
+    const usedFonts = [...cleanContent.matchAll(/\/([^\s/<>\[\]()]+)\s+(?:[\d.]+\s+)?Tf(?=\s|$)/g)]
       .map((match) => match[1] ?? '');
-    const imageNames = [...content.matchAll(/\/([^\s/<>\[\]()]+)\s+Do(?=\s|$)/g)]
+    const imageNames = [...cleanContent.matchAll(/\/([^\s/<>\[\]()]+)\s+Do(?=\s|$)/g)]
       .map((match) => match[1] ?? '');
 
     let resources: string | null = null;
     if (usedFonts.length > 0 || imageNames.length > 0) {
       const resolution = resolvePageResources(page.header, parsedObjects.objects);
-      if (!resolution.valid) return [{ state: 'indeterminate', text: '' }];
+      if (!resolution.valid) return indeterminate;
       resources = resolution.dictionary;
     }
 
@@ -660,9 +943,10 @@ export function inspectPdfTextLayers(bytes: Buffer): PdfTextLayerPage[] {
       const validFonts = usedFonts.every((name) => {
         const id = fonts.get(name);
         const font = id === undefined ? undefined : parsedObjects.objects.get(id);
-        return font !== undefined && /\/Type\s*\/Font(?![A-Za-z0-9_])/.test(font.header);
+        return font !== undefined && font.stream === null
+          && /\/Type\s*\/Font(?![A-Za-z0-9_])/.test(font.header);
       });
-      if (!validFonts) return [{ state: 'indeterminate', text: '' }];
+      if (!validFonts) return indeterminate;
     }
 
     let hasImage = false;
@@ -674,16 +958,13 @@ export function inspectPdfTextLayers(bytes: Buffer): PdfTextLayerPage[] {
         return xobject !== undefined && xobject.stream !== null
           && /\/Subtype\s*\/Image(?![A-Za-z0-9_])/.test(xobject.header);
       });
-      if (!hasImage) return [{ state: 'indeterminate', text: '' }];
+      if (!hasImage) return indeterminate;
     }
 
-    if (transparent || (hasImage && text.trim().length > 0)) {
-      pages.push({ state: 'ocr', text });
-    } else if (text.trim().length > 0) {
-      pages.push({ state: 'text', text });
-    } else {
-      pages.push({ state: 'scan', text: '' });
-    }
+    if (hasImage && text.trim().length > 0) pages.push({ state: 'ocr', text });
+    else if (hasImage) pages.push({ state: 'scan', text: '' });
+    else if (text.trim().length > 0) pages.push({ state: 'text', text });
+    else pages.push({ state: 'scan', text: '' });
   }
   return pages;
 }

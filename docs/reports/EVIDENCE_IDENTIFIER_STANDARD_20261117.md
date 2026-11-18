@@ -58,6 +58,15 @@ Rules:
    (organization, Message-ID), not on the attachment hash alone.
 5. The CRM order code should be put in the subject by the operator at send time,
    otherwise the subject check fails for every real mail.
+6. Automatic PDF verification is allow-listed. The PDF must be reachable through a
+   direct Catalog→Pages→Kids tree, and only simple text pages are accepted: a supported
+   text stream, no images/inline images/shading/clipping, render mode `0`, nonzero
+   fonts, non-white text color, no object streams/xref streams and bounded resources.
+   Every other PDF is `PENDING_MANUAL_VERIFICATION`; automatic success never substitutes
+   for the required human send/delivery verification.
+7. Known residual limit: extraction reads PDF literal text but does not apply ToUnicode
+   glyph mappings. If a font displays glyphs that differ from its encoded text, automatic
+   matching may be wrong; a person must verify suspicious paperwork as usual.
 
 ## 4. Code gaps found against the real samples
 
@@ -67,9 +76,9 @@ Rules:
 | G2 | `approvals.ts` `evaluateApprovalEvidenceIdentifier` | Raw substring match over the whole file | Reply mails quote the parent's Message-ID in two headers, so the parent's ID would be accepted as `verified_in_document` for the reply. Inferred from the code and the 87/87 header finding, not executed as an exploit | **Status: FIXED in df051a4** (an EML identifier must equal the mail's own Message-ID, brackets and domain case normalized; quoted text, In-Reply-To, References and partial ids are refused).
 | G3 | `maker-po.ts` subject check | Case-insensitive substring of order code / Seven PO number | No real outbound mail carries either, so real sends would stay pending (reproduced). A short generic code would pass trivially | **Status: IMPLEMENTED 2026-11-18 (대표 확정 11-18)** (the send-record form inserts the frozen order code into the submitted EML's actual Subject header with token-boundary normalization; `maker-po.ts` still re-checks the stored bytes strictly).
 | G4 | `eml.ts` `collectAttachments` | Inline images inside a related multipart are not collected (5 parts in 4 of 127 mails); cause not isolated | PDFs unaffected (25 of 25 found); hash list incomplete for mails with inline images | **Status: FIXED in df051a4** (inline parts of multipart/related and parts with a Content-ID are collected with their sha256).
-| G5 | maker PO, scanned order PDF | No machine path to the printed order number | Only a hash and manual confirmation are possible | **Status: ENFORCED 2026-11-18 (대표 확정 11-18)** (classification is page `/Contents`-based: a text-free/image-only page is always `PENDING_MANUAL_VERIFICATION`, even with matching headers and sha256; unreferenced text, transparent/overlay OCR text, unsupported filters and unparsable page structure remain fail-closed; sha256 remains the tamper check).
+| G5 | maker PO, scanned order PDF | No machine path to the printed order number | Only a hash and manual confirmation are possible | **Status: ENFORCED 2026-11-18 (대표 확정 11-18)** (automatic classification is limited to simple text PDFs reached through Catalog→Pages→Kids. Scans, images/inline images, OCR/transparent text, clipping/shading, ObjStm/XRef, obfuscated or indirect types, unparsable structure and budget overflows remain `PENDING_MANUAL_VERIFICATION`; sha256 remains the tamper check).
 | G6 | web/API input | Identifier is a free-text field with an 8 character minimum | Long mixed-case Message-IDs invite copy errors; the system should extract it from the EML | **Status: IMPLEMENTED 2026-11-18 (대표 확정 11-18)** (the server extracts a valid stored EML's own Message-ID; the approval form auto-fills it read-only, and the server replaces client input on the approval event. The 8-character manual rule remains only for non-EML evidence).
-| G7 | order code vs document number | No cross check between subject code and the number inside the PDF | A real case exists where they differ | **Status: IMPLEMENTED 2026-11-18 (대표 확정 11-18)** (matched PDF pages must carry both the snapshot code and the subject code using normalized token-boundary matching; any mismatching page blocks auto-verification, and all pending reasons remain visible in the check list; a text-free scan remains on the G5 manual path).
+| G7 | order code vs document number | No cross check between subject code and the number inside the PDF | A real case exists where they differ | **Status: IMPLEMENTED 2026-11-18 (대표 확정 11-18)** (only simple allow-listed PDF pages can match automatically; they must carry both the snapshot code and subject code using normalized token-boundary matching. Any opaque page, mismatching page or ToUnicode glyph mismatch is left to human verification).
 
 ## 5. Decision requested
 
