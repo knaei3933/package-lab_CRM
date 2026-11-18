@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -1014,11 +1014,20 @@ describe('seventh recheck approval order-state races', () => {
     ) => {
       if (injectVerification) {
         injectVerification = false;
+        // A rejected first record is correctable. Simulate two queued follow-ups
+        // behind it; only the API request itself may become the first confirmed
+        // row, and a second queued confirmed row must be refused.
         await db.insert(evidenceManualVerifications).values({
           id: uuidv7(), approvalEventId: approvalEvent!.id, artworkRevisionId: registered.revision.id,
           evidenceDocumentVersionId: binaryEvidence.version.id, approvedFileSha256: approvalEvent!.approvedFileSha256,
           result: 'confirmed', verifierName: '先行確認', verifiedAt: new Date(), reasonNote: 'race winner',
-          recordedByUserId: adminId, recordedAt: new Date()
+          recordedByUserId: adminId, recordedAt: new Date(Date.now() + 1_000)
+        });
+        await db.insert(evidenceManualVerifications).values({
+          id: uuidv7(), approvalEventId: approvalEvent!.id, artworkRevisionId: registered.revision.id,
+          evidenceDocumentVersionId: binaryEvidence.version.id, approvedFileSha256: approvalEvent!.approvedFileSha256,
+          result: 'rejected', verifierName: '先行却下', verifiedAt: new Date(), reasonNote: 'queued rejected',
+          recordedByUserId: adminId, recordedAt: new Date(Date.now() + 2_000)
         });
       }
       return originalTransaction(callback, ...rest as []);
@@ -1026,15 +1035,22 @@ describe('seventh recheck approval order-state races', () => {
     let second;
     try {
       second = await postAdmin(`/api/artwork-approval-events/${approvalEvent!.id}/verification`, {
-        result: 'rejected', verifierName: '合成代表者', verifiedAt: new Date().toISOString(), reasonNote: 'racing loser'
+        result: 'confirmed', verifierName: '合成代表者', verifiedAt: new Date().toISOString(), reasonNote: 'racing loser'
       });
     } finally {
       (db as unknown as { transaction: unknown }).transaction = originalTransaction;
     }
     expect(second?.status).toBe(422);
     expect(second?.body).toMatchObject({ code: 'EVIDENCE_ALREADY_VERIFIED' });
-    expect(await db.select().from(evidenceManualVerifications)
-      .where(eq(evidenceManualVerifications.approvalEventId, approvalEvent!.id))).toHaveLength(1);
+    const verificationRows = await db.select().from(evidenceManualVerifications)
+      .where(eq(evidenceManualVerifications.approvalEventId, approvalEvent!.id));
+    expect(verificationRows.map((row) => row.result)).toEqual(['confirmed', 'rejected']);
+    const transitions = await db.select().from(auditEvents).where(and(
+      eq(auditEvents.entityType, 'film_supply_order'),
+      eq(auditEvents.entityId, base.orderId),
+      sql`${auditEvents.afterState} ->> 'status' = 'DUAL_APPROVED'`
+    ));
+    expect(transitions).toHaveLength(0);
 
     const badPaths = await Promise.all([
       postAdmin('/api/film-deliveries/not-a-uuid/confirmation', {}),

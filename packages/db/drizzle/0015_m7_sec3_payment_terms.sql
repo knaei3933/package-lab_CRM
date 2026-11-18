@@ -55,9 +55,31 @@ BEGIN
     RAISE EXCEPTION 'payment_terms constraint definition drift: expected %, found %', expected_constraint_definition, named_constraint_definition;
   END IF;
 
-  -- Only a validated CHECK on payment_terms that explicitly permits NULL and
-  -- the exact three-value membership expression can stand in for the canonical
-  -- constraint. A broad/NOT IN/NOT VALID CHECK is drift, not an equivalent.
+  -- Any validated CHECK on this column other than the canonical PostgreSQL
+  -- deparse is drift. This includes extra vocabulary, lower(), NOT (... IN ...),
+  -- extra OR disjuncts, reordered operands, and NOT VALID guards.
+  IF EXISTS (
+    SELECT 1
+    FROM pg_constraint con
+    WHERE con.conrelid = '"public"."film_supply_orders"'::regclass
+      AND contype = 'c'
+      AND convalidated
+      AND EXISTS (
+        SELECT 1
+        FROM unnest(con.conkey) AS column_id
+        JOIN pg_attribute attr
+          ON attr.attrelid = con.conrelid
+         AND attr.attnum = column_id
+        WHERE attr.attname = 'payment_terms'
+      )
+      AND pg_get_constraintdef(con.oid) IS DISTINCT FROM 'CHECK (((payment_terms IS NULL) OR (payment_terms = ANY (ARRAY[''prepaid''::text, ''on_delivery''::text, ''undetermined''::text]))))'
+  ) THEN
+    RAISE EXCEPTION 'payment_terms has a non-canonical CHECK constraint; refusing migration fail-open';
+  END IF;
+
+  -- Only the canonical PostgreSQL deparse of the exact three-value vocabulary
+  -- is accepted as a differently named stand-in. The canonical name is checked
+  -- separately above.
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint con
     WHERE con.conrelid = '"public"."film_supply_orders"'::regclass
@@ -71,9 +93,7 @@ BEGIN
          AND attr.attnum = column_id
         WHERE attr.attname = 'payment_terms'
       )
-      AND pg_get_constraintdef(con.oid) ILIKE '%payment_terms%'
-      AND pg_get_constraintdef(con.oid) ILIKE '%payment_terms%is%null%'
-      AND pg_get_constraintdef(con.oid) ILIKE '%payment_terms%any%(array[%''prepaid''::text, ''on_delivery''::text, ''undetermined''::text]%)%'
+      AND pg_get_constraintdef(con.oid) = 'CHECK (((payment_terms IS NULL) OR (payment_terms = ANY (ARRAY[''prepaid''::text, ''on_delivery''::text, ''undetermined''::text]))))'
   ) THEN
     ALTER TABLE "film_supply_orders"
       ADD CONSTRAINT "film_supply_orders_payment_terms_vocabulary"

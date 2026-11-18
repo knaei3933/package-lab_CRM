@@ -435,11 +435,23 @@ function parseStrictRequiredDate(value: unknown): { ok: true; date: Date } | { o
   if (!isIsoDateWithOffset(value)) return { ok: false };
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return { ok: false };
-  // Date accepts calendar overflows (Feb 30 becomes Mar 2). Round-trip UTC
-  // fields reject those silently shifted values.
+  // Date accepts calendar overflows (Feb 30 becomes Mar 2). Compare the
+  // calendar fields in the instant named by the input offset (JST 00:30 is a
+  // real local date even though its UTC instant falls on the prior day).
   const [calendar] = value.split('T');
   const [year, month, day] = calendar!.split('-').map(Number);
-  if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) {
+  const offsetMatch = /(?:Z|([+-])(\d{2}):(\d{2}))$/.exec(value);
+  if (!offsetMatch) return { ok: false };
+  // For `Z`, the sign/minute groups are undefined; compute their values only
+  // for numeric offsets so an UTC suffix can never produce NaN.
+  const offsetMinutes = offsetMatch[1] === undefined
+    ? 0
+    : (offsetMatch[1] === '-' ? -1 : 1)
+      * ((Number(offsetMatch[2]) * 60) + Number(offsetMatch[3]));
+  const localInstant = new Date(date.getTime() + (offsetMinutes * 60_000));
+  if (localInstant.getUTCFullYear() !== year
+    || localInstant.getUTCMonth() + 1 !== month
+    || localInstant.getUTCDate() !== day) {
     return { ok: false };
   }
   return { ok: true, date };
@@ -4137,14 +4149,18 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       if (!lockedOrder || lockedOrder.deletedAt) throw new MakerPoStateConflict();
       if (String(lockedOrder.status) === 'CANCELLED') throw new MakerPoStateConflict();
       const lockedStatus: FilmOrderStatus = lockedOrder.status;
-      // Low-2: a rejected first record remains correctable by confirmation, but
-      // a queued record must never follow a final confirmed assertion.
+      // Low-2/Medium-2: a rejected first record remains correctable, but a
+      // queued record must never follow a final confirmed assertion.
       const [racingVerification] = await tx.select({ result: evidenceManualVerifications.result })
         .from(evidenceManualVerifications)
-        .where(eq(evidenceManualVerifications.approvalEventId, target.id))
+        .where(and(
+          eq(evidenceManualVerifications.approvalEventId, target.id),
+          eq(evidenceManualVerifications.result, 'confirmed')
+        ))
+        .orderBy(asc(evidenceManualVerifications.recordedAt), asc(evidenceManualVerifications.id))
         .limit(1)
-        .for('share');
-      if (racingVerification?.result === 'confirmed') {
+        .for('update');
+      if (racingVerification) {
         return { kind: 'duplicateVerification' as const };
       }
       await tx.insert(evidenceManualVerifications).values(verification);

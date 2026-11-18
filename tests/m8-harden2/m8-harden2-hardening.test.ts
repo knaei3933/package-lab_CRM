@@ -1666,4 +1666,34 @@ describe('eighth recheck server regressions', () => {
     expect(badAcknowledgedAt.status).toBe(422);
     expect((await poEvents(poId)).filter((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED')).toHaveLength(0);
   });
+
+  it('accepts calendar dates named by non-UTC offsets', async () => {
+    const chain = await reachMakerPoReady(`R9JST-${nextTag()}`);
+    const poId = ((await createMakerPo(chain.orderId)).body as { id: string }).id;
+    expect((await approveMakerPo(poId)).status).toBe(200);
+    const pending = await sendHeaderCleanEml(poId, chain.orderCode, { kind: 'none', artworkBytes: chain.artworkBytes });
+    const pendingBody = pending.body as { verificationStatus: string; event: { id: string } };
+
+    // A UTC suffix must stay valid. Recording rejected first also proves the
+    // rejected-correctable path still works before the JST confirmation.
+    const utcZ = await postAs(adminToken, `/api/maker-po-events/${pendingBody.event.id}/send-manual-verification`, {
+      result: 'rejected',
+      verifierName: '合成代表者',
+      verifiedAt: '2026-11-18T02:00:00.000Z',
+      reasonNote: 'UTC suffix regression'
+    });
+    expect(utcZ.status).toBe(201);
+
+    const jstAfterMidnight = await postAs(adminToken, `/api/maker-po-events/${pendingBody.event.id}/send-manual-verification`, {
+      result: 'confirmed',
+      verifierName: '合成代表者',
+      verifiedAt: '2026-11-18T00:30:00.000+09:00',
+      reasonNote: 'JST calendar date differs from UTC date'
+    });
+    expect(jstAfterMidnight.status).toBe(201);
+    const [recorded] = await db.select().from(makerPoSendManualVerifications)
+      .where(eq(makerPoSendManualVerifications.makerPoEventId, pendingBody.event.id));
+    expect(recorded?.verifiedAt.toISOString()).toBe('2026-11-18T02:00:00.000Z');
+
+  });
 });
