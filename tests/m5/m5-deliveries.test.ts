@@ -845,7 +845,7 @@ describe('M5 Japanese status labels endpoint', () => {
       fillingDeliveryConfirmationStates: Array<{ key: string; label: string }>;
       approvalOrganizations: Array<{ key: string; label: string }>;
     };
-    expect(surface.filmSupplyOrderStates).toHaveLength(17);
+    expect(surface.filmSupplyOrderStates).toHaveLength(18);
     // M8-HARDEN FIX B2 added the CANCELLED maker-PO status, so the maker-PO
     // label group grew from six to seven entries.
     expect(surface.makerPurchaseOrderStatuses).toHaveLength(7);

@@ -47,9 +47,17 @@ export const FILM_SUPPLY_ORDER_EXCEPTION_STATES = ['ON_HOLD', 'CHANGE_REVIEW', '
 
 export type NormalFilmSupplyOrderState = (typeof FILM_SUPPLY_ORDER_STATES)[number];
 export type ExceptionFilmSupplyOrderState = (typeof FILM_SUPPLY_ORDER_EXCEPTION_STATES)[number];
+/** Admin-only resolution of CANCELLATION_REVIEW may end the film order here. */
+export const FILM_ORDER_CANCELLATION_STATE = 'CANCELLED' as const;
+export type CancelledFilmSupplyOrderState = typeof FILM_ORDER_CANCELLATION_STATE;
 export type FilmSupplyOrderState = NormalFilmSupplyOrderState | ExceptionFilmSupplyOrderState;
+export type FilmOrderStatus = FilmSupplyOrderState | CancelledFilmSupplyOrderState;
 
 export const FILM_SUPPLY_ORDER_TERMINAL_STATE: NormalFilmSupplyOrderState = 'FILM_RECEIPT_ASSUMED_NO_ISSUE';
+export const FILM_SUPPLY_ORDER_TERMINAL_STATES = [
+  FILM_SUPPLY_ORDER_TERMINAL_STATE,
+  FILM_ORDER_CANCELLATION_STATE
+] as const;
 
 /**
  * A legacy hold without an audit trail can be released only to a state at or
@@ -62,6 +70,59 @@ export const LEGACY_HOLD_RELEASE_TARGETS = FILM_SUPPLY_ORDER_STATES
 export function isLegacyHoldReleaseTarget(value: unknown): value is NormalFilmSupplyOrderState {
   return typeof value === 'string'
     && (LEGACY_HOLD_RELEASE_TARGETS as readonly string[]).includes(value);
+}
+
+export type CancellationReviewOutcome = 'resume' | 'cancel';
+
+export type CancellationReviewResolution<T extends FilmOrderStatus = FilmOrderStatus> =
+  | { ok: true; outcome: CancellationReviewOutcome; target: T }
+  | {
+    ok: false;
+    code: 'CANCELLATION_RESUME_REQUIRED' | 'CANCELLATION_RESUME_TARGET_INVALID';
+    message: string;
+  };
+
+/**
+ * A known cancellation-review origin resumes exactly once; a maker-chain origin
+ * is deliberately allowed here because the dedicated resolution endpoint—not
+ * the generic transition API—is the safe way out of that dead end. Unknown
+ * legacy rows must name one of the same conservative targets as legacy holds.
+ */
+export function resolveCancellationReview(
+  outcome: CancellationReviewOutcome,
+  origin: NormalFilmSupplyOrderState | null | undefined,
+  requestedResume?: unknown
+): CancellationReviewResolution {
+  if (outcome === 'cancel') {
+    return { ok: true, outcome, target: FILM_ORDER_CANCELLATION_STATE };
+  }
+
+  if (origin) {
+    if (requestedResume !== undefined && requestedResume !== origin) {
+      return {
+        ok: false,
+        code: 'CANCELLATION_RESUME_TARGET_INVALID',
+        message: 'cancellation review can resume only to its exact entry origin'
+      };
+    }
+    return { ok: true, outcome, target: origin };
+  }
+
+  if (requestedResume === undefined || requestedResume === null) {
+    return {
+      ok: false,
+      code: 'CANCELLATION_RESUME_REQUIRED',
+      message: 'a legacy cancellation review requires an explicit resumeStatus'
+    };
+  }
+  if (!isLegacyHoldReleaseTarget(requestedResume)) {
+    return {
+      ok: false,
+      code: 'CANCELLATION_RESUME_TARGET_INVALID',
+      message: 'legacy cancellation recovery may resume only to DRAFT through MAKER_PO_ACCEPTED'
+    };
+  }
+  return { ok: true, outcome, target: requestedResume };
 }
 
 const NEXT_NORMAL_STATE: Record<NormalFilmSupplyOrderState, NormalFilmSupplyOrderState | null> = {
@@ -137,6 +198,10 @@ export function isExceptionFilmSupplyOrderState(
 
 export function isTerminalFilmSupplyOrderState(state: FilmSupplyOrderState): boolean {
   return state === FILM_SUPPLY_ORDER_TERMINAL_STATE;
+}
+
+export function isClosedFilmOrderStatus(state: FilmOrderStatus): boolean {
+  return (FILM_SUPPLY_ORDER_TERMINAL_STATES as readonly string[]).includes(state);
 }
 
 export function filmSupplyOrderTransitions(state: FilmSupplyOrderState): readonly FilmSupplyOrderState[] {

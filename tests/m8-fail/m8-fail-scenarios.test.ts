@@ -449,6 +449,17 @@ describe('M8-FAIL A: approval reuse across revisions', () => {
     // code per the CEO brief was DUAL_APPROVAL_NO_LONGER_VALID): the refusal
     // comes from the creation state gate instead, because CHANGE_REVIEW is not
     // MAKER_PO_READY — the re-check is never even consulted for this attempt.
+    // M2 fix: maker work is frozen while the review is open.
+    const heldCreate = await createMakerPo(chain.orderId);
+    expect(heldCreate.status).toBe(409);
+    expect((heldCreate.body as { code: string }).code).toBe('ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED');
+
+    // Change review leaves only through its designed restart path; its gate
+    // still requires the linked, verified seven PO.
+    expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
+      to: 'APPROVAL_PENDING'
+    })).status).toBe(200);
+
     const createAttempt = await createMakerPo(chain.orderId);
     expect(createAttempt.status).toBe(422);
     expect((createAttempt.body as { code: string }).code).toBe('MAKER_PO_NOT_READY');
@@ -474,6 +485,13 @@ describe('M8-FAIL A: approval reuse across revisions', () => {
     // revision holds no valid approval from either organization, and certifying
     // the paper over artwork nobody approved is exactly the leak that was
     // closed. The refusal names both missing approvals.
+    const heldApproval = await approveMakerPo(poId);
+    expect(heldApproval.status).toBe(409);
+    expect((heldApproval.body as { code: string }).code).toBe('ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED');
+    expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
+      to: 'APPROVAL_PENDING'
+    })).status).toBe(200);
+
     const approval = await approveMakerPo(poId);
     expect(approval.status).toBe(422);
     const refusal = approval.body as {
@@ -522,6 +540,11 @@ describe('M8-FAIL A: approval reuse across revisions', () => {
 
     const next = await registerNextRevision(chain);
     expect(next.body.status).toBe('CHANGE_REVIEW');
+    expect((await approveMakerPo(poId)).status).toBe(409);
+    expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
+      to: 'APPROVAL_PENDING'
+    })).status).toBe(200);
+    // Outside the frozen-review gate, the old dual-approval refusal is preserved.
     expect((await approveMakerPo(poId)).status).toBe(422);
 
     // The recovery: both organizations approve the NEW revision.
@@ -530,14 +553,8 @@ describe('M8-FAIL A: approval reuse across revisions', () => {
     expect((await recordTextApproval({ chain, organization: 'seven', revisionId: next.body.id })).dualApproved)
       .toBe(true);
 
-    // The change review resolves back into the maker chain: the gate is open
-    // again, so the paper is certifiable and the approval re-freezes revision 2.
-    expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
-      to: 'APPROVAL_PENDING'
-    })).status).toBe(200);
-    expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
-      to: 'DUAL_APPROVED'
-    })).status).toBe(200);
+    // The second approval advanced the chain to DUAL_APPROVED; move
+    // to READY before certifying the replacement paper.
     expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
       to: 'MAKER_PO_READY'
     })).status).toBe(200);

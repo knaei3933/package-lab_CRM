@@ -22,14 +22,15 @@ import {
   makerPoStatusLabelEntries,
   transitionFilmSupplyOrder,
   type CommissionReadinessState,
-  type FilmSupplyOrderState
+  type FilmSupplyOrderState,
+  type FilmOrderStatus
 } from '@kanei/core';
 
 const JAPANESE_TEXT = /[぀-ヿ一-鿿]/;
 
 describe('M5 Japanese status surface (design section 8)', () => {
   it('every film supply order state has exactly one Japanese label', () => {
-    const allStates: FilmSupplyOrderState[] = [...FILM_SUPPLY_ORDER_STATES, ...FILM_SUPPLY_ORDER_EXCEPTION_STATES];
+    const allStates: FilmOrderStatus[] = [...FILM_SUPPLY_ORDER_STATES, ...FILM_SUPPLY_ORDER_EXCEPTION_STATES, 'CANCELLED'];
     expect(Object.keys(FILM_SUPPLY_ORDER_STATUS_LABELS).sort()).toEqual([...allStates].sort());
     for (const state of allStates) {
       const label = FILM_SUPPLY_ORDER_STATUS_LABELS[state];
@@ -71,10 +72,10 @@ describe('M5 Japanese status surface (design section 8)', () => {
   it('serves the surface in the canonical state order through the entry helpers', () => {
     const surface = japaneseStatusSurface();
     expect(surface.filmSupplyOrderStates).toHaveLength(
-      FILM_SUPPLY_ORDER_STATES.length + FILM_SUPPLY_ORDER_EXCEPTION_STATES.length
+      FILM_SUPPLY_ORDER_STATES.length + FILM_SUPPLY_ORDER_EXCEPTION_STATES.length + 1
     );
     expect(surface.filmSupplyOrderStates[0]).toEqual({ key: 'DRAFT', label: '下書き' });
-    expect(surface.filmSupplyOrderStates.at(-1)).toEqual({ key: 'CANCELLATION_REVIEW', label: 'キャンセルレビュー中' });
+    expect(surface.filmSupplyOrderStates.at(-1)).toEqual({ key: 'CANCELLED', label: 'キャンセル終了' });
     expect(surface.makerPurchaseOrderStatuses).toEqual(makerPoStatusLabelEntries());
     expect(surface.commissionReadinessStates).toEqual([
       { key: 'MISSING_DATA', label: 'データ不足' },
@@ -83,7 +84,8 @@ describe('M5 Japanese status surface (design section 8)', () => {
     ]);
     expect(filmSupplyOrderStatusLabelEntries().map((entry) => entry.key)).toEqual([
       ...FILM_SUPPLY_ORDER_STATES,
-      ...FILM_SUPPLY_ORDER_EXCEPTION_STATES
+      ...FILM_SUPPLY_ORDER_EXCEPTION_STATES,
+      'CANCELLED'
     ]);
   });
 });

@@ -31,6 +31,7 @@ export type Operation =
   | 'film_order_line:create'
   | 'film_order:transition'
   | 'film_order:release_hold'
+  | 'film_order:resolve_cancellation_review'
   | 'film_order:assume_receipt'
   | 'film_delivery:create'
   | 'delivery_confirmation:record'
@@ -116,6 +117,14 @@ export function canPerform(
   // representative owns that recovery decision; staff and viewer are denied
   // before project assignment can make the answer differ.
   if (operation === 'film_order:release_hold') {
+    return actor.role === 'admin'
+      ? { allowed: true }
+      : { allowed: false, reason: 'ROLE_FORBIDDEN' };
+  }
+
+  // Closing a cancellation review is equally final: it resumes the exact entry
+  // origin or closes the film order as cancelled. The representative owns both.
+  if (operation === 'film_order:resolve_cancellation_review') {
     return actor.role === 'admin'
       ? { allowed: true }
       : { allowed: false, reason: 'ROLE_FORBIDDEN' };

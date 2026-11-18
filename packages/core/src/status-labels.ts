@@ -1,5 +1,9 @@
-import { FILM_SUPPLY_ORDER_EXCEPTION_STATES, FILM_SUPPLY_ORDER_STATES } from './state-machine.js';
-import type { FilmSupplyOrderState } from './state-machine.js';
+import {
+  FILM_ORDER_CANCELLATION_STATE,
+  FILM_SUPPLY_ORDER_EXCEPTION_STATES,
+  FILM_SUPPLY_ORDER_STATES
+} from './state-machine.js';
+import type { FilmOrderStatus } from './state-machine.js';
 import { MAKER_PURCHASE_ORDER_STATUSES } from './maker-po.js';
 import type { MakerPurchaseOrderStatus } from './maker-po.js';
 import { COMMISSION_READINESS_STATES, FILLING_DELIVERY_CONFIRMATION_STATES } from './commission.js';
@@ -20,7 +24,7 @@ import type { ApprovalOrganization } from './approvals.js';
  * state without a label fails to compile.
  */
 export const FILM_SUPPLY_ORDER_STATUS_LABELS: Readonly<
-  Record<FilmSupplyOrderState, string>
+  Record<FilmOrderStatus, string>
 > = {
   DRAFT: '下書き',
   SEVEN_PO_VERIFIED: 'セブン化学発注書確認済',
@@ -38,7 +42,8 @@ export const FILM_SUPPLY_ORDER_STATUS_LABELS: Readonly<
   FILM_RECEIPT_ASSUMED_NO_ISSUE: '受領確認済（問題なし）',
   ON_HOLD: '保留中',
   CHANGE_REVIEW: '変更レビュー中',
-  CANCELLATION_REVIEW: 'キャンセルレビュー中'
+  CANCELLATION_REVIEW: 'キャンセルレビュー中',
+  CANCELLED: 'キャンセル終了'
 };
 
 export const MAKER_PO_STATUS_LABELS: Readonly<
@@ -95,9 +100,9 @@ export function statusLabelEntries<T extends string>(
 }
 
 /** The film supply order surface: normal chain first, then the exception side-channels. */
-export function filmSupplyOrderStatusLabelEntries(): Array<StatusLabelEntry<FilmSupplyOrderState>> {
+export function filmSupplyOrderStatusLabelEntries(): Array<StatusLabelEntry<FilmOrderStatus>> {
   return statusLabelEntries(
-    [...FILM_SUPPLY_ORDER_STATES, ...FILM_SUPPLY_ORDER_EXCEPTION_STATES],
+    [...FILM_SUPPLY_ORDER_STATES, ...FILM_SUPPLY_ORDER_EXCEPTION_STATES, FILM_ORDER_CANCELLATION_STATE],
     FILM_SUPPLY_ORDER_STATUS_LABELS
   );
 }
@@ -120,7 +125,7 @@ export function approvalOrganizationStatusLabelEntries(): Array<StatusLabelEntry
 
 /** The whole Japanese status surface as the status-labels endpoint serves it. */
 export interface JapaneseStatusSurface {
-  filmSupplyOrderStates: Array<StatusLabelEntry<FilmSupplyOrderState>>;
+  filmSupplyOrderStates: Array<StatusLabelEntry<FilmOrderStatus>>;
   makerPurchaseOrderStatuses: Array<StatusLabelEntry<MakerPurchaseOrderStatus>>;
   commissionReadinessStates: Array<StatusLabelEntry<CommissionReadinessState>>;
   fillingDeliveryConfirmationStates: Array<StatusLabelEntry<FillingDeliveryConfirmationState>>;

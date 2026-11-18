@@ -5,7 +5,9 @@ import {
   evaluateSevenPoVerificationGate,
   filmSupplyOrderTransitions,
   isExceptionFilmSupplyOrderState,
+  isLegacyHoldReleaseTarget,
   toQuantityString,
+  resolveCancellationReview,
   transitionFilmSupplyOrder,
   validateQuantity,
   validateUnit,
@@ -81,6 +83,23 @@ describe('M1 film supply order state machine', () => {
     expect(transitionFilmSupplyOrder('CANCELLATION_REVIEW', 'MAKER_PO_READY').ok).toBe(false);
   });
 
+  it('resolves a cancellation review only to its origin, an allowed legacy target, or cancellation', () => {
+    expect(resolveCancellationReview('resume', 'APPROVED_FOR_MANUAL_SEND', 'APPROVED_FOR_MANUAL_SEND'))
+      .toMatchObject({ ok: true, outcome: 'resume', target: 'APPROVED_FOR_MANUAL_SEND' });
+    expect(resolveCancellationReview('resume', 'APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_READY'))
+      .toMatchObject({ ok: false, code: 'CANCELLATION_RESUME_TARGET_INVALID' });
+    expect(resolveCancellationReview('resume', 'MAKER_PO_SENT_MANUALLY'))
+      .toMatchObject({ ok: true, target: 'MAKER_PO_SENT_MANUALLY' });
+    expect(resolveCancellationReview('resume', undefined, 'MAKER_PO_ACCEPTED'))
+      .toMatchObject({ ok: true, target: 'MAKER_PO_ACCEPTED' });
+    expect(resolveCancellationReview('resume', undefined, 'FILM_IN_PRODUCTION'))
+      .toMatchObject({ ok: false, code: 'CANCELLATION_RESUME_TARGET_INVALID' });
+    expect(resolveCancellationReview('resume', undefined))
+      .toMatchObject({ ok: false, code: 'CANCELLATION_RESUME_REQUIRED' });
+    expect(resolveCancellationReview('cancel', 'MAKER_PO_ACCEPTED'))
+      .toMatchObject({ ok: true, outcome: 'cancel', target: 'CANCELLED' });
+  });
+
   it('exhaustively keeps production unreachable without maker acceptance', () => {
     const chain = FILM_SUPPLY_ORDER_STATES as readonly FilmSupplyOrderState[];
     const acceptedIndex = chain.indexOf('MAKER_PO_ACCEPTED');
@@ -115,6 +134,80 @@ describe('M1 film supply order state machine', () => {
         for (const later of chain.slice(acceptedIndex + 1)) {
           expect(reachable, `${start} -> ${later}`).not.toContain(later);
         }
+      }
+    }
+
+    // The pre-fix escape was a maker-chain origin entering CR and leaving to a
+    // different state. Core keeps that origin exact; API additionally denies
+    // every generic CR exit and exposes the admin resolution endpoint.
+    for (const origin of ['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED'] as const) {
+      for (const state of FILM_SUPPLY_ORDER_STATES) {
+        if (state === origin) continue;
+        expect(transitionFilmSupplyOrder('CANCELLATION_REVIEW', state, origin).ok, `${origin}->CR->${state}`).toBe(false);
+      }
+      expect(transitionFilmSupplyOrder('CANCELLATION_REVIEW', origin, origin).ok).toBe(true);
+    }
+  });
+
+  it('models the updated 124-edge H1 probe graph without unsafe late reachability', () => {
+    const normal = FILM_SUPPLY_ORDER_STATES as readonly NormalFilmSupplyOrderState[];
+    const acceptedIndex = normal.indexOf('MAKER_PO_ACCEPTED');
+    const makerChain = new Set(['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED']);
+    // The recheck probe measured 124 API edges at HEAD 56422c8. This update
+    // removes all 13 generic CR exits and adds two admin resolution outcomes
+    // per CR origin: 124 - 13 + (13 * 2) = 137.
+    let edgeCount = 124;
+    for (const origin of normal.filter((state) => state !== 'FILM_RECEIPT_ASSUMED_NO_ISSUE')) {
+      expect(transitionFilmSupplyOrder('CANCELLATION_REVIEW', origin, origin).ok).toBe(true);
+      expect(resolveCancellationReview('resume', origin)).toMatchObject({ ok: true, target: origin });
+      expect(resolveCancellationReview('cancel', origin)).toMatchObject({ ok: true, target: 'CANCELLED' });
+      edgeCount += 1;
+    }
+
+    expect(edgeCount).toBe(137);
+
+    // BFS the API-visible graph from every pre-acceptance start plus the
+    // legacy hold node and assert no send/accept/late state appears.
+    type Node = { state: FilmSupplyOrderState; origin: NormalFilmSupplyOrderState | null };
+    const late = new Set(normal.slice(acceptedIndex + 1));
+    for (const start of normal.slice(0, acceptedIndex)) {
+      const seen = new Set<string>([start]);
+      const queue: Node[] = [{ state: start, origin: null }];
+      while (queue.length > 0) {
+        const node = queue.shift()!;
+        for (const target of normal) {
+          if (makerChain.has(target) || !transitionFilmSupplyOrder(node.state, target).ok) continue;
+          const nextOrigin = isExceptionFilmSupplyOrderState(target) ? node.state as NormalFilmSupplyOrderState : null;
+          const key = `${target}|${nextOrigin ?? ''}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            queue.push({ state: target, origin: nextOrigin });
+          }
+        }
+        if (node.state === 'ON_HOLD' && node.origin) {
+          const key = `${node.origin}|`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            queue.push({ state: node.origin, origin: null });
+          }
+        }
+        if (node.state === 'CANCELLATION_REVIEW') {
+          // Resolving to CANCELLED or the exact origin never adds a late state.
+          continue;
+        }
+        if (node.state === 'CHANGE_REVIEW') {
+          for (const target of ['ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING'] as const) {
+            const key = `${target}|`;
+            if (!seen.has(key)) {
+              seen.add(key);
+              queue.push({ state: target, origin: null });
+            }
+          }
+        }
+      }
+      for (const reached of seen) {
+        const state = reached.split('|')[0]!;
+        expect(late.has(state as NormalFilmSupplyOrderState), `${start} reached ${state}`).toBe(false);
       }
     }
   });

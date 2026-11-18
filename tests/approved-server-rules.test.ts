@@ -390,13 +390,188 @@ describe('cancellation review production guard', () => {
     });
     const staffJump = await postAs(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'FILM_IN_PRODUCTION' });
     expect(staffJump.status).toBe(422);
-    expect(staffJump.body).toMatchObject({ code: 'INVALID_TRANSITION' });
+    expect(staffJump.body).toMatchObject({ code: 'CANCELLATION_REVIEW_RESOLUTION_REQUIRED' });
     const adminJump = await postAs(adminToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'FILM_IN_PRODUCTION' });
     expect(adminJump.status).toBe(422);
-    expect(adminJump.body).toMatchObject({ code: 'INVALID_TRANSITION' });
-    const resumed = await postAs(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'DRAFT' });
+    expect(adminJump.body).toMatchObject({ code: 'CANCELLATION_REVIEW_RESOLUTION_REQUIRED' });
+    const staffResume = await postAs(staffToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, {
+      outcome: 'resume', reason: 'staff cannot resolve'
+    });
+    expect(staffResume.status).toBe(403);
+    const resumed = await postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, {
+      outcome: 'resume', reason: 'cancellation concern resolved'
+    });
     expect(resumed.status).toBe(200);
     expect(resumed.body).toMatchObject({ status: 'DRAFT' });
+  });
+});
+
+describe('maker-chain cancellation review recovery', () => {
+  it('lets admin resume only the maker-chain origin or close the order as cancelled', async () => {
+    const now = new Date();
+    const origin = 'MAKER_PO_SENT_MANUALLY';
+    const orderId = uuidv7(now);
+    await db.insert(filmSupplyOrders).values({
+      id: orderId, projectId, code: 'FSO-CR-MAKER-ORIGIN', status: 'CANCELLATION_REVIEW',
+      paymentTerms: 'prepaid', createdByUserId: adminId, createdAt: now, updatedAt: now, deletedAt: null
+    });
+    const entry = await db.insert(auditEvents).values({
+      id: uuidv7(now), projectId, actorUserId: staffId, action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+      entityType: 'film_supply_order', entityId: orderId, beforeState: { status: origin },
+      afterState: { status: 'CANCELLATION_REVIEW' }, occurredAt: now,
+      requestMetadata: { operation: 'film_order:transition' }
+    }).returning({ id: auditEvents.id });
+
+    const generic = await postAs(adminToken, `/api/film-supply-orders/${orderId}/transitions`, { to: origin });
+    expect(generic.status).toBe(422);
+    expect(generic.body).toMatchObject({ code: 'CANCELLATION_REVIEW_RESOLUTION_REQUIRED' });
+
+    const wrongResume = await postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, {
+      outcome: 'resume', reason: 'wrong origin requested', resumeStatus: 'MAKER_PO_ACCEPTED'
+    });
+    expect(wrongResume.status).toBe(422);
+    expect(wrongResume.body).toMatchObject({ code: 'CANCELLATION_RESUME_TARGET_INVALID' });
+
+    const resumed = await postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, {
+      outcome: 'resume', reason: 'review resolved at the original maker step'
+    });
+    expect(resumed.status).toBe(200);
+    expect(resumed.body).toMatchObject({ status: origin });
+    const [audit] = await db.select().from(auditEvents)
+      .where(eq(auditEvents.action, 'FILM_SUPPLY_ORDER_CANCELLATION_REVIEW_RESOLVED'))
+      .orderBy(sql`${auditEvents.occurredAt} desc`).limit(1);
+    expect(audit?.beforeState).toMatchObject({ status: 'CANCELLATION_REVIEW' });
+    expect(audit?.afterState).toMatchObject({ status: origin });
+    expect(audit?.requestMetadata).toMatchObject({
+      operation: 'film_order:resolve_cancellation_review',
+      outcome: 'resume',
+      origin,
+      reviewEventId: entry[0]?.id
+    });
+  });
+
+  it('lets admin end a known-origin review as terminal CANCELLED', async () => {
+    const now = new Date();
+    const orderId = uuidv7(now);
+    await db.insert(filmSupplyOrders).values({
+      id: orderId, projectId, code: 'FSO-CR-CANCEL-END', status: 'CANCELLATION_REVIEW',
+      paymentTerms: 'prepaid', createdByUserId: adminId, createdAt: now, updatedAt: now, deletedAt: null
+    });
+    await db.insert(auditEvents).values({
+      id: uuidv7(now), projectId, actorUserId: staffId, action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+      entityType: 'film_supply_order', entityId: orderId, beforeState: { status: 'MAKER_PO_ACCEPTED' },
+      afterState: { status: 'CANCELLATION_REVIEW' }, occurredAt: now,
+      requestMetadata: { operation: 'film_order:transition' }
+    });
+    const closed = await postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, {
+      outcome: 'cancel', reason: 'external cancellation confirmed'
+    });
+    expect(closed.status).toBe(200);
+    expect(closed.body).toMatchObject({ status: 'CANCELLED' });
+    const [row] = await db.execute(sql`select status from film_supply_orders where id = ${orderId}`)
+      .then((result) => result.rows as Array<{ status: string }>);
+    expect(row?.status).toBe('CANCELLED');
+    const reopened = await postAs(adminToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'DRAFT' });
+    expect(reopened.status).toBe(422);
+    expect(reopened.body).toMatchObject({ code: 'FILM_ORDER_CANCELLED' });
+    const resolvedAgain = await postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, {
+      outcome: 'cancel', reason: 'already closed'
+    });
+    expect(resolvedAgain.status).toBe(422);
+    expect(resolvedAgain.body).toMatchObject({ code: 'FILM_ORDER_CANCELLED' });
+  });
+});
+
+describe('legacy cancellation review recovery', () => {
+  it('requires an explicit safe resume target and validates maker evidence', async () => {
+    const now = new Date();
+    const orderId = uuidv7(now);
+    const paperId = uuidv7(now);
+    await db.insert(filmSupplyOrders).values({
+      id: orderId, projectId, code: 'FSO-LEGACY-CR', status: 'CANCELLATION_REVIEW',
+      paymentTerms: 'prepaid', createdByUserId: adminId, createdAt: now, updatedAt: now, deletedAt: null
+    });
+    await db.insert(makerPurchaseOrders).values({
+      id: paperId, filmSupplyOrderId: orderId,
+      snapshot: { order: { id: orderId }, items: [], artworkFiles: [], amounts: [] },
+      snapshotSha256: 'c'.repeat(64), status: 'DRAFT', createdByUserId: adminId, createdAt: now, updatedAt: now
+    });
+    const staffResolve = await postAs(staffToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, {
+      outcome: 'resume', reason: 'staff cannot resolve', resumeStatus: 'DRAFT'
+    });
+    expect(staffResolve.status).toBe(403);
+    const missingResume = await postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, {
+      outcome: 'resume', reason: 'legacy recovery'
+    });
+    expect(missingResume.status).toBe(422);
+    expect(missingResume.body).toMatchObject({ code: 'CANCELLATION_RESUME_REQUIRED' });
+    const unsafeResume = await postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, {
+      outcome: 'resume', reason: 'unsafe recovery', resumeStatus: 'FILM_IN_PRODUCTION'
+    });
+    expect(unsafeResume.status).toBe(422);
+    expect(unsafeResume.body).toMatchObject({ code: 'CANCELLATION_RESUME_TARGET_INVALID' });
+    const evidenceMismatch = await postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, {
+      outcome: 'resume', reason: 'accepted paper claimed without evidence', resumeStatus: 'MAKER_PO_ACCEPTED'
+    });
+    expect(evidenceMismatch.status).toBe(422);
+    expect(evidenceMismatch.body).toMatchObject({ code: 'CANCELLATION_RESUME_EVIDENCE_MISMATCH' });
+    const resumed = await postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, {
+      outcome: 'resume', reason: 'legacy recovery', resumeStatus: 'DRAFT'
+    });
+    expect(resumed.status).toBe(200);
+    expect(resumed.body).toMatchObject({ status: 'DRAFT' });
+  });
+});
+
+describe('exception-state maker gates and change review gate', () => {
+  it.each([
+    ['CANCELLATION_REVIEW'],
+    ['CHANGE_REVIEW']
+  ])('blocks maker PO CEO approval while %s and leaves the paper unchanged', async (status) => {
+    const now = new Date();
+    const orderId = uuidv7(now);
+    const paperId = uuidv7(now);
+    await db.insert(filmSupplyOrders).values({
+      id: orderId, projectId, code: `FSO-${status}-MAKER-GATE`, status: status as 'CANCELLATION_REVIEW' | 'CHANGE_REVIEW',
+      paymentTerms: 'prepaid', createdByUserId: adminId, createdAt: now, updatedAt: now, deletedAt: null
+    });
+    await db.insert(makerPurchaseOrders).values({
+      id: paperId, filmSupplyOrderId: orderId,
+      snapshot: { order: { id: orderId }, items: [], artworkFiles: [], amounts: [] },
+      snapshotSha256: status === 'CANCELLATION_REVIEW' ? 'd'.repeat(64) : 'e'.repeat(64),
+      status: 'DRAFT', createdByUserId: adminId, createdAt: now, updatedAt: now
+    });
+    const approved = await postAs(adminToken, `/api/maker-purchase-orders/${paperId}/ceo-approval`, {});
+    expect(approved.status).toBe(409);
+    expect(approved.body).toMatchObject({
+      code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
+      orderStatus: status
+    });
+    const [paper] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, paperId)).limit(1);
+    expect(paper?.status).toBe('DRAFT');
+    expect(paper?.ceoApprovedAt).toBeNull();
+  });
+
+  it('does not let CHANGE_REVIEW skip the verified seven-PO boundary', async () => {
+    const now = new Date();
+    const orderId = uuidv7(now);
+    await db.insert(filmSupplyOrders).values({
+      id: orderId, projectId, code: 'FSO-CHANGE-PO-GATE', status: 'CHANGE_REVIEW',
+      paymentTerms: 'prepaid', createdByUserId: adminId, createdAt: now, updatedAt: now, deletedAt: null
+    });
+    const skipped = await postAs(staffToken, `/api/film-supply-orders/${orderId}/transitions`, {
+      to: 'APPROVAL_PENDING'
+    });
+    expect(skipped.status).toBe(422);
+    expect(skipped.body).toMatchObject({ code: 'SEVEN_PO_REQUIRED' });
+
+    await db.update(filmSupplyOrders).set({ sevenPurchaseOrderId: poId })
+      .where(eq(filmSupplyOrders.id, orderId));
+    const allowed = await postAs(staffToken, `/api/film-supply-orders/${orderId}/transitions`, {
+      to: 'APPROVAL_PENDING'
+    });
+    expect(allowed.status).toBe(200);
+    expect(allowed.body).toMatchObject({ status: 'APPROVAL_PENDING' });
   });
 });
 
@@ -484,6 +659,24 @@ describe('hold reason and audit labels', () => {
     });
     expect(blank.status).toBe(422);
     expect(blank.body).toMatchObject({ code: 'HOLD_REASON_REQUIRED' });
+    for (const [label, hidden] of [
+      ['U+3164', '\u3164'],
+      ['U+115F', '\u115f'],
+      ['U+2800', '\u2800'],
+      ['combining mark', '\u1161'],
+      ['variation selector', '\ufe0f']
+    ] as const) {
+      const rejected = await postAs(adminToken, `/api/film-supply-orders/${orderId}/transitions`, {
+        to: 'ON_HOLD', holdReason: hidden
+      });
+      expect(rejected.status, `${label} is not visible content`).toBe(422);
+      expect(rejected.body).toMatchObject({ code: 'HOLD_REASON_REQUIRED' });
+    }
+    const tooLong = await postAs(adminToken, `/api/film-supply-orders/${orderId}/transitions`, {
+      to: 'ON_HOLD', holdReason: 'a'.repeat(1001)
+    });
+    expect(tooLong.status).toBe(422);
+    expect(tooLong.body).toMatchObject({ code: 'HOLD_REASON_TOO_LONG' });
     const held = await postAs(adminToken, `/api/film-supply-orders/${orderId}/transitions`, {
       to: 'ON_HOLD', holdReason: ' customer confirmation pending '
     });
@@ -496,6 +689,11 @@ describe('hold reason and audit labels', () => {
     const blankRelease = await postAs(adminToken, `/api/film-supply-orders/${orderId}/hold-release`, { reason: '\u200b\t ' });
     expect(blankRelease.status).toBe(422);
     expect(blankRelease.body).toMatchObject({ code: 'HOLD_RELEASE_REASON_REQUIRED' });
+    const hiddenRelease = await postAs(adminToken, `/api/film-supply-orders/${orderId}/hold-release`, {
+      reason: '\u3164\u2800\ufe0f'
+    });
+    expect(hiddenRelease.status).toBe(422);
+    expect(hiddenRelease.body).toMatchObject({ code: 'HOLD_RELEASE_REASON_REQUIRED' });
     const wrongResume = await postAs(adminToken, `/api/film-supply-orders/${orderId}/hold-release`, {
       reason: 'origin is known', resumeStatus: 'MAKER_PO_READY'
     });
@@ -591,6 +789,41 @@ describe('official-date write paths', () => {
       expect(events).toHaveLength(1);
       expect(events[0]!.beforeState).toMatchObject({ officialRegisteredAt: null });
       expect(events[0]!.afterState).toMatchObject({ officialRegisteredAt: winner });
+    }
+  });
+
+  it('never turns a promote-official gate refusal inside the race into a null 200', async () => {
+    const now = new Date();
+    const referenceId = uuidv7(now);
+    const racePoId = uuidv7(now);
+    await db.insert(preOrderReferences).values({
+      id: referenceId, projectId, referenceCode: 'PRE-APPROVED-RACE', originalReceivedAt: now,
+      createdByUserId: staffId, createdAt: now, updatedAt: now
+    });
+    await db.insert(sevenPurchaseOrders).values({
+      id: racePoId, projectId, poNumber: 'PO-APPROVED-PROMOTE-RACE', preOrderReferenceId: referenceId,
+      originalReceivedAt: now, officialRegisteredAt: null, verificationStatus: 'verified', verifiedAt: now,
+      verifiedByUserId: staffId, promotedAt: null, promotedByUserId: null, createdByUserId: staffId,
+      createdAt: now, updatedAt: now
+    });
+
+    for (let round = 0; round < 5; round += 1) {
+      const [promoted] = await Promise.all([
+        postAs(staffToken, `/api/pre-order-references/${referenceId}/promote-official`, {
+          officialRegisteredAt: '2026-05-01T00:00:00.000Z'
+        }),
+        db.update(sevenPurchaseOrders).set({ verificationStatus: 'unverified', verifiedAt: null, verifiedByUserId: null, reviewPending: true, reviewNote: 'race gate probe' })
+          .where(eq(sevenPurchaseOrders.id, racePoId))
+      ]);
+      expect([409, 422]).toContain(promoted.status);
+      expect(promoted.body, 'a refused race must never answer a null 200').toBeTruthy();
+      const [row] = await db.select().from(sevenPurchaseOrders)
+        .where(eq(sevenPurchaseOrders.id, racePoId)).limit(1);
+      expect(row?.officialRegisteredAt).toBeNull();
+      await db.update(sevenPurchaseOrders).set({
+        verificationStatus: 'verified', verifiedAt: now, verifiedByUserId: staffId,
+        reviewPending: false, reviewNote: null
+      }).where(eq(sevenPurchaseOrders.id, racePoId));
     }
   });
 });

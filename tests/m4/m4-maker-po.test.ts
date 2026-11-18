@@ -753,6 +753,16 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     // M8-HARDEN FIX A3: revision 2 holds no approval from either organization,
     // so the boundary refuses the send before the snapshot is even compared —
     // and a boundary refusal is not a void, so the paper is left untouched.
+    const heldSend = await sendMakerPoEmlEvidence(
+      (url, body) => postAs(staffToken, url, body),
+      po.id,
+      { orderCode: 'FSO-M4-T24', sentAtIso: plausibleTestSentAt() }
+    );
+    expect(heldSend.status).toBe(409);
+    expect((await postJson(`/api/film-supply-orders/${order.orderId}/transitions`, {
+      to: 'APPROVAL_PENDING'
+    })).status).toBe(200);
+
     const refused = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       po.id,
@@ -817,7 +827,7 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect(reapprovedBody.purchaseOrder.snapshot.specs.artworkFiles).toEqual([
       { designKey: 'label-front', revisionNo: 2, fileSha256: secondProof.version.sha256 }
     ]);
-    expect((await orderRow(order.orderId))?.status).toBe('CHANGE_REVIEW');
+    expect((await orderRow(order.orderId))?.status).toBe('DUAL_APPROVED');
 
     const sent = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
@@ -829,9 +839,9 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect(sent.status).toBe(200);
     expect((sent.body as { status: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
     expect((await makerPoRow(po.id))?.status).toBe('MAKER_PO_SENT_MANUALLY');
-    // The order mirror is skipped from an exception state; the maker PO remains
-    // the authority for its own lifecycle.
-    expect((await orderRow(order.orderId))?.status).toBe('CHANGE_REVIEW');
+    // Review resolved earlier to its exact maker-chain origin; that origin stays
+    // unchanged while the paper advances.
+    expect((await orderRow(order.orderId))?.status).toBe('DUAL_APPROVED');
   });
 
   it('T-24a re-filing identical evidence bytes resolves to the stored version instead of a second version row', async () => {
