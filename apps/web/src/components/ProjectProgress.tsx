@@ -55,13 +55,16 @@ function OrderProgressRow({ order, stateLabel }: { order: FilmSupplyOrderView; s
     <div className="progress-row">
       <p className="progress-head">
         <span className="progress-code">{order.code}</span>
-        {progress.status === null ? null : progress.phase === 'exception' ? (
+        {progress.status === null ? null : progress.phase === 'exception' || progress.phase === 'cancelled' ? (
           <span className="progress-badge">{stateLabel(progress.status)}</span>
         ) : (
           <span>{stateLabel(progress.status)}</span>
         )}
       </p>
       <Stepper marks={progress.marks} label={`${order.code} の進み具合`} />
+      {progress.phase === 'cancelled' ? (
+        <p className="progress-note">この発注は取消で終了しました（キャンセル終了）。段階は進みません。</p>
+      ) : null}
       {progress.phase === 'exception' && progress.interruptedStep === null ? (
         <p className="progress-note">中断した段階は記録から分かりません。</p>
       ) : null}

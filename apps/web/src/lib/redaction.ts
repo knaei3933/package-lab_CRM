@@ -28,6 +28,13 @@ export const STAFF_VISIBLE_STATE_KEYS: readonly string[] = [
   'state',
   'code',
   'name',
+  // 62d9305: staff may see where an uploaded version is bound (approval
+  // evidence selection); bytes, amounts and storage paths stay out.
+  'documentType',
+  'documentId',
+  'filmSupplyOrderId',
+  'designKey',
+  'versionNumber',
   'verificationStatus',
   'deliveryKind',
   'confirmationState'

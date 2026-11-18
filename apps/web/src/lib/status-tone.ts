@@ -1,4 +1,4 @@
-import type { FilmSupplyOrderState, MakerPurchaseOrderStatus } from '@kanei/core';
+import type { FilmOrderStatus, MakerPurchaseOrderStatus } from '@kanei/core';
 
 /**
  * UI batch C (2-⑤): one tone per status a screen shows as a badge. A tone is a
@@ -25,8 +25,11 @@ export const TONE_SYMBOLS: Readonly<Record<StatusTone, string>> = {
   hidden: '—'
 };
 
-/** Film supply order (core state machine: 14 normal states + 3 exceptions). */
-export const FILM_ORDER_STATUS_TONES: Readonly<Record<FilmSupplyOrderState, StatusTone>> = {
+/**
+ * Film supply order (core state machine: 14 normal states + 3 exceptions, and
+ * CANCELLED — the terminal end of a cancellation review resolved as cancel).
+ */
+export const FILM_ORDER_STATUS_TONES: Readonly<Record<FilmOrderStatus, StatusTone>> = {
   DRAFT: 'active',
   SEVEN_PO_VERIFIED: 'active',
   ARTWORK_RECEIVED: 'active',
@@ -43,7 +46,9 @@ export const FILM_ORDER_STATUS_TONES: Readonly<Record<FilmSupplyOrderState, Stat
   FILM_RECEIPT_ASSUMED_NO_ISSUE: 'done',
   ON_HOLD: 'blocked',
   CHANGE_REVIEW: 'blocked',
-  CANCELLATION_REVIEW: 'blocked'
+  CANCELLATION_REVIEW: 'blocked',
+  // 取消終了: stopped for good — the ✕ mark with キャンセル終了, never neutral ○.
+  CANCELLED: 'blocked'
 };
 
 /** Maker purchase order (every key of MAKER_PO_STATUS_LABELS). */

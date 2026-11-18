@@ -115,7 +115,7 @@ export default async function DocumentsPage() {
               {workspace.documents.map((document) => (
                 <tr key={document.id}>
                   <td style={tdStyle}>
-                    {document.detailsHidden
+                    {document.typeHidden
                       ? HIDDEN_BY_ROLE_LABEL
                       : DOCUMENT_TYPE_LABELS[document.documentType as keyof typeof DOCUMENT_TYPE_LABELS]
                         ?? document.documentType}
@@ -140,7 +140,9 @@ export default async function DocumentsPage() {
                       </summary>
                       {document.versions.map((version) => (
                         <div key={version.id} style={monoStyle}>
-                          版{version.versionNumber}／{version.sha256.slice(0, 12)}…
+                          版{version.versionNumber}／{version.sha256
+                            ? `${version.sha256.slice(0, 12)}…`
+                            : version.sha256Hidden ? `ハッシュ ${HIDDEN_BY_ROLE_SHORT}` : 'ハッシュ未記録'}
                           <TechDetails context="版ID">{version.id}</TechDetails>
                         </div>
                       ))}

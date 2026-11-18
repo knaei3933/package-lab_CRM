@@ -30,7 +30,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   loadSessionUser: async () => ({ id: USER_ID, role: sessionRole.current, displayName: '合成' })
 }));
 
-const { loadWorkspace, officialRegistrationText, sevenPurchaseOrderChoiceLabel } = await import(
+const { loadWorkspace, officialRegistrationText, revisionNumberText, sevenPurchaseOrderChoiceLabel } = await import(
   '../apps/web/src/lib/project-data.js'
 );
 const { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } = await import('../apps/web/src/lib/redaction.js');
@@ -242,24 +242,56 @@ describe('M4: deliveries, approvals, document versions and readiness use the sam
     expect(workspace.readiness).toMatchObject({ readinessState: 'PENDING_VERIFICATION', hidden: false });
   });
 
-  for (const role of ['staff', 'viewer'] as const) {
-    it(`${role}: withheld values are flagged hidden and never replaced by defaults or record times`, async () => {
-      serveAs(role);
-      const workspace = await loadWorkspace(PROJECT_ID);
-      const [delivery] = workspace.deliveries;
-      expect(delivery).toMatchObject({
-        orderId: null, deliveredAt: null, deliverySequence: null, confirmed: false,
-        detailsHidden: true, confirmationHidden: true
-      });
-      const [approval] = workspace.approvalEvents;
-      expect(approval).toMatchObject({ eventTime: null, revisionNo: null, detailsHidden: true });
-      expect(workspace.documents[0]?.versions).toHaveLength(0);
-      expect(workspace.documentVersionsWithheld).toBe(true);
-      expect(workspace.revisions).toHaveLength(0);
-      expect(workspace.revisionsWithheld).toBe(1);
-      expect(workspace.readiness?.hidden).toBe(true);
+  it('staff: the bindings 62d9305 allows are shown; every withheld value is flagged hidden, never a default or record time', async () => {
+    serveAs('staff');
+    const workspace = await loadWorkspace(PROJECT_ID);
+    const [delivery] = workspace.deliveries;
+    // filmSupplyOrderId is on the staff allowlist since 62d9305: the order is known, the rest is not.
+    expect(delivery).toMatchObject({
+      orderId: FILM_ID, deliveredAt: null, deliverySequence: null, confirmed: false,
+      detailsHidden: true, confirmationHidden: true
     });
-  }
+    const [approval] = workspace.approvalEvents;
+    expect(approval).toMatchObject({ eventTime: null, revisionNo: null, detailsHidden: true });
+    // documentId/versionNumber are visible: the version is listed, its digest is not.
+    expect(workspace.documentVersionsWithheld).toBe(false);
+    expect(workspace.documents[0]?.versions).toEqual([
+      expect.objectContaining({ id: VERSION_ID, versionNumber: 1, sha256: null, sha256Hidden: true })
+    ]);
+    expect(RECORD_TIMES).not.toContain(workspace.documents[0]?.versions[0]?.sha256);
+    // filmSupplyOrderId/designKey are visible: the revision is bound; its number is withheld — never 版1 by default.
+    expect(workspace.revisionsWithheld).toBe(0);
+    expect(workspace.revisions).toEqual([
+      expect.objectContaining({ id: REVISION_ID, filmSupplyOrderId: FILM_ID, designKey: 'label-front', revisionNo: null, revisionNoHidden: true })
+    ]);
+    expect(revisionNumberText(workspace.revisions[0]!)).toBe('版（閲覧権限なし）');
+    expect(workspace.readiness?.hidden).toBe(true);
+  });
+
+  it('viewer: withheld values are flagged hidden and never replaced by defaults or record times', async () => {
+    serveAs('viewer');
+    const workspace = await loadWorkspace(PROJECT_ID);
+    const [delivery] = workspace.deliveries;
+    expect(delivery).toMatchObject({
+      orderId: null, deliveredAt: null, deliverySequence: null, confirmed: false,
+      detailsHidden: true, confirmationHidden: true
+    });
+    const [approval] = workspace.approvalEvents;
+    expect(approval).toMatchObject({ eventTime: null, revisionNo: null, detailsHidden: true });
+    expect(workspace.documents[0]?.versions).toHaveLength(0);
+    expect(workspace.documentVersionsWithheld).toBe(true);
+    expect(workspace.revisions).toHaveLength(0);
+    expect(workspace.revisionsWithheld).toBe(1);
+    expect(workspace.readiness?.hidden).toBe(true);
+  });
+
+  it('admin: a recorded revision number and digest are shown as they are', async () => {
+    serveAs('admin');
+    const workspace = await loadWorkspace(PROJECT_ID);
+    expect(revisionNumberText(workspace.revisions[0]!)).toBe('版1');
+    expect(workspace.documents[0]?.versions[0]).toMatchObject({ sha256: 'ab'.repeat(32), sha256Hidden: false });
+    expect(revisionNumberText({ revisionNo: null, revisionNoHidden: false })).toBe('版未記録');
+  });
 });
 
 describe('rendered screens per role (display only — the forms and permissions are unchanged)', () => {
@@ -319,6 +351,15 @@ describe('rendered screens per role (display only — the forms and permissions 
     if (role === 'admin') {
       expect(html).toContain('2026/11/17 18:00 JST');
       expect(html).not.toContain('校正ゲラの版は1件記録されていますが');
+    } else if (role === 'staff') {
+      // 62d9305: the revision's binding is visible to staff, its number is not.
+      expect(html.replaceAll('<!-- -->', '')).toContain('デザイン label-front ／ 版（閲覧権限なし）');
+      expect(html).not.toContain('校正ゲラの版は1件記録されていますが');
+      expect(html).not.toContain('校了対象の版がまだありません');
+      expect(html).not.toContain('2026/11/17 18:00 JST');
+      expect(html).toContain(HIDDEN_BY_ROLE_LABEL);
+      const approvalRow = ROWS.find((row) => row.action === 'ARTWORK_APPROVAL_RECORDED')!;
+      expect(html.split(formatTimestamp(approvalRow.occurredAt.toISOString()))).toHaveLength(2);
     } else {
       expect(html).toContain('校正ゲラの版は1件記録されていますが、紐付け先の発注とデザインが閲覧権限なしのため');
       expect(html).not.toContain('校了対象の版がまだありません');
@@ -335,6 +376,13 @@ describe('rendered screens per role (display only — the forms and permissions 
     const html = await renderPage(DocumentsPage);
     if (role === 'admin') {
       expect(html).toContain('版（1件）');
+    } else if (role === 'staff') {
+      // 62d9305: staff sees the version and its number; the digest stays withheld.
+      expect(html).toContain('版（1件）');
+      expect(html.replaceAll('<!-- -->', '')).toContain('版1／ハッシュ 閲覧権限なし');
+      expect(html).not.toContain('—…');
+      // The issuer is still withheld — never its real-looking 「不明」 value.
+      expect(html).not.toContain('>不明</td>');
     } else {
       expect(html).toContain('版（閲覧権限なし）');
       expect(html).not.toContain('版（0件）');

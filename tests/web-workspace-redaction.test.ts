@@ -93,7 +93,7 @@ describe('loadWorkspace role labels (UI batch A, P1-4)', () => {
     expect(po?.officialRegisteredAt).toBe('2026-11-18T01:05:00.000Z');
     expect(workspace.filmOrders[0]).toMatchObject({ code: 'FSO-2026-001', status: 'DRAFT', sevenPurchaseOrderId: PO_ID, lineCount: 1, detailsHidden: false, statusHidden: false });
     expect(workspace.fillingOrders[0]).toMatchObject({ code: 'FIL-2026-001', detailsHidden: false });
-    expect(workspace.documents[0]).toMatchObject({ documentType: 'seven_po', filename: 'SC-2026-1118.pdf', detailsHidden: false, verificationHidden: false });
+    expect(workspace.documents[0]).toMatchObject({ documentType: 'seven_po', filename: 'SC-2026-1118.pdf', detailsHidden: false, typeHidden: false, verificationHidden: false });
   });
 
   it('staff: allowlisted code/status/verification stay visible; PO number, dates, lines, links read hidden', async () => {
@@ -107,7 +107,12 @@ describe('loadWorkspace role labels (UI batch A, P1-4)', () => {
     expect(po?.verificationHidden).toBe(false);
     expect(workspace.filmOrders[0]).toMatchObject({ code: 'FSO-2026-001', status: 'DRAFT', statusHidden: false, detailsHidden: true });
     expect(workspace.fillingOrders[0]).toMatchObject({ code: 'FIL-2026-001', detailsHidden: true });
-    expect(workspace.documents[0]).toMatchObject({ filename: HIDDEN_BY_ROLE_LABEL, detailsHidden: true, verificationStatus: 'verified', verificationHidden: false });
+    // 62d9305: staff sees the document type (approval-evidence selection);
+    // the issuer and the links still read hidden (probe: issuerEntity).
+    expect(workspace.documents[0]).toMatchObject({
+      documentType: 'seven_po', typeHidden: false, filename: HIDDEN_BY_ROLE_LABEL, detailsHidden: true,
+      verificationStatus: 'verified', verificationHidden: false
+    });
   });
 
   it('viewer: every recorded value reads hidden — never 未記録, 未登録 or a default 下書き', async () => {
@@ -118,6 +123,6 @@ describe('loadWorkspace role labels (UI batch A, P1-4)', () => {
     expect(po?.officialRegisteredAt).toBeNull();
     expect(workspace.filmOrders[0]).toMatchObject({ code: HIDDEN_BY_ROLE_LABEL, statusHidden: true, detailsHidden: true });
     expect(workspace.fillingOrders[0]).toMatchObject({ code: HIDDEN_BY_ROLE_LABEL, detailsHidden: true });
-    expect(workspace.documents[0]).toMatchObject({ filename: HIDDEN_BY_ROLE_LABEL, detailsHidden: true, verificationHidden: true });
+    expect(workspace.documents[0]).toMatchObject({ filename: HIDDEN_BY_ROLE_LABEL, detailsHidden: true, typeHidden: true, verificationHidden: true });
   });
 });

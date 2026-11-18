@@ -22,7 +22,8 @@ import {
   labelLookup,
   loadApprovalGate,
   loadWorkspace,
-  NO_PROJECT_SELECTED_MESSAGE
+  NO_PROJECT_SELECTED_MESSAGE,
+  revisionNumberText
 } from '../../lib/project-data';
 import { shortId } from '../../lib/short-id';
 import type {
@@ -206,7 +207,7 @@ export default async function ApprovalsPage() {
                 <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13 }}>
                   {orderRevisions.map((revision) => (
                     <li key={revision.id}>
-                      デザイン {revision.designKey} ／ 版{revision.revisionNo} ／ 登録 {formatTimestamp(revision.createdAt)}
+                      デザイン {revision.designKey} ／ {revisionNumberText(revision)} ／ 登録 {formatTimestamp(revision.createdAt)}
                       {revision.invalidatedApprovals ? <span style={noteStyle}>（既存の承認を無効化）</span> : null}
                       <TechDetails context="版ID">{revision.id}</TechDetails>
                     </li>
@@ -416,7 +417,7 @@ function PendingVerificationSection({
                 <p>承認証跡識別子: {entry.evidenceIdentifier ?? '—'}</p>
                 <p>版ハッシュ（approved_file_sha256）: {entry.approvedFileSha256}</p>
               </TechDetails>
-              교정본（確認対象の校正）: デザイン {entry.designKey} ／ 版{entry.revisionNo} ／{' '}
+              確認対象の校正: デザイン {entry.designKey} ／ 版{entry.revisionNo} ／{' '}
               {formatTimestamp(entry.eventTime)} 承認（記録 {formatTimestamp(entry.recordedAt)}）
               {entry.manualVerification ? (
                 <div>

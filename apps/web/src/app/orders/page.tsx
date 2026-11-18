@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { LEGACY_HOLD_RELEASE_TARGETS } from '@kanei/core';
 import { ActionForm } from '../../components/ActionForm';
 import { OrderCreateForm } from '../../components/OrderCreateForm';
 import { ProjectProgress } from '../../components/ProjectProgress';
@@ -6,13 +7,15 @@ import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
 import { TechDetails } from '../../components/TechDetails';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
-import { CheckboxField, DateTextField, SelectField, TextField } from '../../components/fields';
+import { CheckboxField, DateTextField, SelectField, TextareaField, TextField } from '../../components/fields';
 import {
   assumeFilmReceiptAction,
   createFilmSupplyOrderAction,
   createFillingOrderAction,
   createSevenPurchaseOrderAction,
   registerSevenPurchaseOrderAction,
+  releaseFilmOrderHoldAction,
+  resolveCancellationReviewAction,
   transitionFilmSupplyOrderAction,
   updateFilmPaymentTermsAction,
   verifySevenPurchaseOrderAction
@@ -162,7 +165,7 @@ export default async function OrdersPage() {
                     {showOrderOperations ? (
                       <td style={{ ...tdStyle, minWidth: 'min(260px, 80vw)' }}>
                         {status === null ? null : (
-                          <TransitionCell order={order} status={status} stateLabel={stateLabel} />
+                          <TransitionCell order={order} status={status} stateLabel={stateLabel} role={role} />
                         )}
                         {status === 'DRAFT' ? (
                           <RoleGate role={role} operation="film_order:update_payment_terms" label="決済条件の記録">
@@ -274,13 +277,16 @@ export default async function OrdersPage() {
 function TransitionCell({
   order,
   status,
-  stateLabel
+  stateLabel,
+  role
 }: {
   order: FilmSupplyOrderView;
   status: string;
   stateLabel: (key: string) => string;
+  role: string | null;
 }) {
   const set = transitionChoicesFor(status, stateLabel, order.lastNormalStatus);
+  const offersHold = set.choices.some((choice) => choice.value === 'ON_HOLD');
   return (
     <>
       {set.makerChainNotice ? <p style={noteStyle}>{MAKER_CHAIN_NOTICE}。</p> : null}
@@ -295,7 +301,7 @@ function TransitionCell({
           confirm={{
             title: '発注の状態を変更しますか？',
             body: `状態を変更します。発注 ${order.code} の状態を、選んだ「進める先の状態」に変更し、変更は履歴に記録されます（記録は消えません）。`,
-            summaryFields: ['to']
+            summaryFields: offersHold ? ['to', 'holdReason'] : ['to']
           }}
         >
           <input type="hidden" readOnly name="orderId" value={order.id} />
@@ -309,9 +315,153 @@ function TransitionCell({
             choices={set.choices}
             hint={set.hint ?? undefined}
           />
+          {offersHold ? (
+            // The API refuses a hold without a reason (HOLD_REASON_REQUIRED);
+            // the other targets take none, so the field is not marked required
+            // and stays folded (one per row would double every row's height).
+            <details>
+              <summary style={{ fontSize: 13, cursor: 'pointer' }}>
+                「{stateLabel('ON_HOLD')}」にするときの理由（必須）
+              </summary>
+              <TextareaField
+                name="holdReason"
+                label={`保留にする理由（「${stateLabel('ON_HOLD')}」を選ぶときは必須）`}
+                rows={2}
+                width={280}
+              />
+            </details>
+          ) : null}
         </ActionForm>
       )}
+      {status === 'ON_HOLD' ? <HoldReleaseForm order={order} role={role} stateLabel={stateLabel} /> : null}
+      {status === 'CANCELLATION_REVIEW' ? (
+        <CancellationReviewForm order={order} role={role} stateLabel={stateLabel} />
+      ) : null}
     </>
+  );
+}
+
+/**
+ * A legacy hold or review whose origin the API has no audit row for: the API
+ * then needs the resume target named (HOLD_ORIGIN_UNKNOWN /
+ * CANCELLATION_RESUME_REQUIRED) and accepts only DRAFT through
+ * MAKER_PO_ACCEPTED. The screen cannot tell such a row apart (it replays all
+ * transitions; the API reads only the hold/review event), so the field is
+ * always there but folded and blank: nothing is sent unless picked, and with a
+ * recorded origin the API refuses any other value.
+ */
+function LegacyResumeField({ stateLabel, hint }: { stateLabel: (key: string) => string; hint: string }) {
+  return (
+    <details>
+      <summary style={{ fontSize: 13, cursor: 'pointer' }}>前の状態が記録されていない古い発注の場合</summary>
+      <SelectField
+        name="resumeStatus"
+        label="再開する状態（APIが「再開する状態の指定が必要」と返したときだけ選ぶ）"
+        includeBlank
+        blankLabel="（選ばない：記録された前の状態に戻す）"
+        width={280}
+        hint={hint}
+        choices={LEGACY_HOLD_RELEASE_TARGETS.map((value) => ({ value, label: stateLabel(value) }))}
+      />
+    </details>
+  );
+}
+
+/**
+ * Hold release: representative only, reason required. The API returns the
+ * order to the state it left (from its own hold audit row) — or to
+ * MAKER_PO_READY when the maker paper of that state was cancelled meanwhile —
+ * so no target is chosen here, except for a legacy hold (LegacyResumeField).
+ */
+function HoldReleaseForm({
+  order,
+  role,
+  stateLabel
+}: {
+  order: FilmSupplyOrderView;
+  role: string | null;
+  stateLabel: (key: string) => string;
+}) {
+  return (
+    <RoleGate role={role} operation="film_order:release_hold" label="保留の解除">
+      <details style={{ marginTop: 8 }} open>
+        <summary style={{ fontSize: 13, cursor: 'pointer' }}>保留を解除する（代表者のみ）</summary>
+        <ActionForm
+          action={releaseFilmOrderHoldAction}
+          submitLabel="保留を解除する"
+          hint="理由は必須です（1000字以内）。発注は保留にする前の状態に戻ります。その段階のメーカー発注書が取り消されている場合は「発注書の作成」から再開します（送信ずみの発注書の取消なら、先にメーカー発注画面で「取り消し承認」の記録が必要です）。"
+          confirm={{
+            title: '保留を解除しますか？',
+            body: `発注 ${order.code} の保留を解除し、保留にする前の状態に戻します。解除の理由と結果は履歴に記録されます（記録は消えません）。`,
+            tone: 'primary',
+            summaryFields: ['reason', 'resumeStatus']
+          }}
+        >
+          <input type="hidden" readOnly name="orderId" value={order.id} />
+          <TextareaField name="reason" label="保留解除の理由" required rows={2} width={280} />
+          <LegacyResumeField
+            stateLabel={stateLabel}
+            hint="保留前の状態が記録から分からない場合だけ選んでください。記録がある場合に違う状態を選ぶと、APIが拒否します。"
+          />
+        </ActionForm>
+      </details>
+    </RoleGate>
+  );
+}
+
+const CANCELLATION_OUTCOME_CHOICES = [
+  { value: 'resume', label: '再開する（取消レビュー前の状態に戻す）' },
+  { value: 'cancel', label: '取消で終了する（キャンセル終了・元に戻せません）' }
+];
+
+/**
+ * Cancellation review resolution: representative only, reason required.
+ * resume returns the order to the state it left; cancel ends it for good
+ * (CANCELLED — no transition, release or new maker PO afterwards).
+ */
+function CancellationReviewForm({
+  order,
+  role,
+  stateLabel
+}: {
+  order: FilmSupplyOrderView;
+  role: string | null;
+  stateLabel: (key: string) => string;
+}) {
+  return (
+    <RoleGate role={role} operation="film_order:resolve_cancellation_review" label="取消レビューの処理">
+      <details style={{ marginTop: 8 }} open>
+        <summary style={{ fontSize: 13, cursor: 'pointer' }}>取消レビューを処理する（代表者のみ）</summary>
+        <ActionForm
+          action={resolveCancellationReviewAction}
+          submitLabel="取消レビューを処理する"
+          tone="danger"
+          hint={`理由は必須です（1000字以内）。「取消で終了する」を選ぶと状態は「${stateLabel('CANCELLED')}」になり、以後この発注は進められません。`}
+          confirm={{
+            title: '取消レビューを処理しますか？',
+            body: `発注 ${order.code} の取消レビューを、選んだ処理で終えます。「取消で終了する」は元に戻せません（以後、状態の変更・保留の解除・メーカー発注書の作成はできません）。「再開する」は取消レビュー前の状態に戻します。`,
+            tone: 'danger',
+            summaryFields: ['outcome', 'reason', 'resumeStatus']
+          }}
+        >
+          <input type="hidden" readOnly name="orderId" value={order.id} />
+          <SelectField
+            name="outcome"
+            label="処理"
+            required
+            includeBlank
+            blankLabel="（処理を選ぶ）"
+            width={280}
+            choices={CANCELLATION_OUTCOME_CHOICES}
+          />
+          <TextareaField name="reason" label="処理の理由" required rows={2} width={280} />
+          <LegacyResumeField
+            stateLabel={stateLabel}
+            hint="「再開する」で、取消レビュー前の状態が記録から分からない場合だけ選んでください（「取消で終了する」では使いません）。"
+          />
+        </ActionForm>
+      </details>
+    </RoleGate>
   );
 }
 

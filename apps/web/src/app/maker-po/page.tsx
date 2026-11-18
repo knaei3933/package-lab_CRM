@@ -11,23 +11,30 @@ import { TechDetails } from '../../components/TechDetails';
 import { SelectField, TextareaField, TextField } from '../../components/fields';
 import { callApi, loadSessionUser, readSelectedProjectId } from '../../lib/api';
 import {
+  acknowledgementEvidenceDocuments,
+  cancellationAcknowledgementMayBeRequired,
   hasCancellationAcknowledgement,
-  hasVerifiedSendEvent,
   formatMakerPoVerificationChecks,
   isCancellableMakerPoStatus,
   isOrderPastMakerAcceptance,
   loadMakerPoBoard,
   loadMakerPoDetail,
+  loadManualVerificationsForEvents,
+  makerPoSendProof,
   MAKER_PO_EVENT_TYPE_LABELS,
   MAKER_PO_STATUS_LABELS,
   nextActionForStatus,
   PAYMENT_TERMS_LABELS,
   pendingManualVerificationEvents,
+  cancelSendStateCopy,
   rejectedSendManualVerifications,
+  sendEventsWithoutKnownDecision,
   sendManualVerificationsFromAuditEvents
 } from '../../lib/maker-po-data';
 import type {
+  CancelSendStateCopy,
   MakerPoEventRow,
+  MakerPoSendProof,
   MakerPoSendManualVerification,
   MakerPoViewRow,
   OrderMakerPoBoard
@@ -130,10 +137,11 @@ export default async function MakerPoPage() {
       })));
 
   // 取り消し承認が引用できる証跡（メーカー側の取消承諾メールなど）は種別を決め
-  // つけない。この発注に紐付いた書類バージョンをすべて候補にする（任意入力）。
-  const orderDocumentVersionChoices = (orderId: string): Choice[] =>
-    board.workspace.documents
-      .filter((document) => document.filmSupplyOrderId === orderId)
+  // つけない（任意入力）。ただし API は同じ発注・同じメーカー発注書に紐付いた
+  // 書類だけを受け付ける（Low-6: MAKER_CANCELLATION_ACK_EVIDENCE_MISMATCH）ので、
+  // その発注書に紐付いた書類バージョンだけを候補にする。
+  const acknowledgementEvidenceChoices = (orderId: string, poId: string): Choice[] =>
+    acknowledgementEvidenceDocuments(board.workspace.documents, orderId, poId)
       .flatMap((document) => document.versions.map((version) => ({
         value: version.id,
         label: `${
@@ -179,8 +187,9 @@ export default async function MakerPoPage() {
           stateLabel={stateLabel}
           sendEvidenceChoices={documentVersionChoices(entry.order.id, 'send_evidence')}
           acceptanceEvidenceChoices={documentVersionChoices(entry.order.id, 'acceptance_evidence')}
-          orderEvidenceChoices={orderDocumentVersionChoices(entry.order.id)}
+          acknowledgementEvidenceChoices={(poId: string) => acknowledgementEvidenceChoices(entry.order.id, poId)}
           sendManualVerifications={sendManualVerifications}
+          projectId={projectId}
         />
       ))}
 
@@ -328,7 +337,8 @@ interface PaperWork extends MakerPoStagePaper {
   error: string | null;
   pendingVerifications: MakerPoEventRow[];
   rejectedVerifications: MakerPoSendManualVerification[];
-  verifiedSend: boolean;
+  /** The API's proven-send rule (VERIFIED or confirmed manual verification); see makerPoSendProof. */
+  sendProof: MakerPoSendProof;
   acknowledgementRecorded: boolean;
 }
 
@@ -382,8 +392,9 @@ async function MakerPoOrderSection({
   stateLabel,
   sendEvidenceChoices,
   acceptanceEvidenceChoices,
-  orderEvidenceChoices,
-  sendManualVerifications
+  acknowledgementEvidenceChoices,
+  sendManualVerifications,
+  projectId
 }: {
   entry: OrderMakerPoBoard;
   isAdmin: boolean;
@@ -391,8 +402,10 @@ async function MakerPoOrderSection({
   stateLabel: (key: string) => string;
   sendEvidenceChoices: Choice[];
   acceptanceEvidenceChoices: Choice[];
-  orderEvidenceChoices: Choice[];
+  /** The document versions bound to this order and to the given maker PO (Low-6). */
+  acknowledgementEvidenceChoices: (poId: string) => Choice[];
   sendManualVerifications: MakerPoSendManualVerification[];
+  projectId: string;
 }) {
   const gate = entry.paymentGate;
   const list = entry.makerPurchaseOrders;
@@ -404,22 +417,37 @@ async function MakerPoOrderSection({
   // UI batch C: one read of each paper's event trail feeds the stages, the
   // work blocks and the history (before: the same read, made per block).
   const details = await Promise.all(list.map((po) => loadMakerPoDetail(po.id)));
+  // UI batch B (④): the representative-only blocks, through the shared helper.
+  const canVerifySend = canRoleOperate(role, 'maker_po:verify_send');
+  const canCancel = canRoleOperate(role, 'maker_po:cancel');
+  // High-A (recheck 6): a confirmed manual verification proves a send exactly
+  // like a VERIFIED event. The project-wide audit list is capped, so a pending
+  // send with no decision in it is asked about by its own id before the screen
+  // calls it unsent. Only the representative's screen needs (and can read) it.
+  const undecided = canVerifySend || canCancel
+    ? sendEventsWithoutKnownDecision(details.flatMap((detail) => detail?.events ?? []), sendManualVerifications)
+    : [];
+  const targeted = undecided.length > 0
+    ? await loadManualVerificationsForEvents(projectId, undecided)
+    : { verifications: [], unreadEventIds: new Set<string>() };
+  const knownVerifications = [...sendManualVerifications, ...targeted.verifications];
   const papers: PaperWork[] = list.map((po, index) => {
     const detail = details[index] ?? { purchaseOrder: null, events: [], error: '取得できませんでした。' };
     const events = detail.events;
     const eventIds = new Set(events.map((event) => event.id));
-    const pendingVerifications = pendingManualVerificationEvents(events, sendManualVerifications);
+    const pendingVerifications = pendingManualVerificationEvents(events, knownVerifications);
     return {
       po,
       events,
       error: detail.error,
       pendingVerifications,
       pendingVerification: pendingVerifications.length > 0,
-      confirmedVerification: sendManualVerifications.find((verification) =>
+      confirmedVerification: knownVerifications.find((verification) =>
         verification.result === 'confirmed' && eventIds.has(verification.makerPoEventId)) ?? null,
-      rejectedVerifications: rejectedSendManualVerifications(sendManualVerifications)
+      rejectedVerifications: rejectedSendManualVerifications(knownVerifications)
         .filter((verification) => eventIds.has(verification.makerPoEventId)),
-      verifiedSend: hasVerifiedSendEvent(events),
+      // A failed read of the paper's own events cannot prove "unsent" (review M1).
+      sendProof: detail.error ? 'unknown' : makerPoSendProof(events, knownVerifications, targeted.unreadEventIds),
       acknowledgementRecorded: hasCancellationAcknowledgement(events)
     };
   });
@@ -433,16 +461,16 @@ async function MakerPoOrderSection({
   const doneStages = stages.stages.filter((stage) => stage.state === 'done' && stage.summary);
   const nextLine = upcomingStagesLine(stages);
 
-  // UI batch B (④): the representative-only blocks, through the shared helper.
-  const canVerifySend = canRoleOperate(role, 'maker_po:verify_send');
-  const canCancel = canRoleOperate(role, 'maker_po:cancel');
-  // The danger zone holds exactly the cancellation blocks rendered before.
+  // The danger zone holds the cancel control of live paper and the
+  // 取り消し承認 work of a cancelled paper whose send is proven — by the same
+  // rule the API applies (VERIFIED or confirmed manual verification) — or
+  // cannot be judged because its decision records could not be read.
   const cancelWork = canCancel && !pastAcceptance
     ? papers.filter((paper) => isCancellableMakerPoStatus(paper.po.status)
-      || (paper.po.status === 'CANCELLED' && paper.verifiedSend))
+      || cancellationAcknowledgementMayBeRequired(paper.po.status, paper.sendProof))
     : [];
   const acknowledgementDue = cancelWork.some((paper) =>
-    paper.po.status === 'CANCELLED' && paper.verifiedSend && !paper.acknowledgementRecorded);
+    cancellationAcknowledgementMayBeRequired(paper.po.status, paper.sendProof) && !paper.acknowledgementRecorded);
 
   // A line for a current stage that has no block of its own for this role.
   const fallback: string | null = stages.unknown === 'list-error'
@@ -625,7 +653,11 @@ async function MakerPoOrderSection({
         <details className="danger-zone" open={acknowledgementDue}>
           <summary>取り消し（代表者のみ）</summary>
           {cancelWork.map((paper) => (
-            <MakerPoCancelWork key={paper.po.id} paper={paper} orderEvidenceChoices={orderEvidenceChoices} />
+            <MakerPoCancelWork
+              key={paper.po.id}
+              paper={paper}
+              evidenceChoices={acknowledgementEvidenceChoices(paper.po.id)}
+            />
           ))}
         </details>
       ) : null}
@@ -855,17 +887,20 @@ function MakerPoWorkBlocks({
  * caller only for the representative (maker_po:cancel) — the same conditions
  * as before, now inside the 「取り消し（代表者のみ）」 danger zone.
  */
-function MakerPoCancelWork({ paper, orderEvidenceChoices }: { paper: PaperWork; orderEvidenceChoices: Choice[] }) {
-  const { po, verifiedSend, acknowledgementRecorded } = paper;
+function MakerPoCancelWork({ paper, evidenceChoices }: { paper: PaperWork; evidenceChoices: Choice[] }) {
+  const { po, sendProof, acknowledgementRecorded } = paper;
+  const acknowledgementMayBeRequired = cancellationAcknowledgementMayBeRequired(po.status, sendProof);
   return (
     <>
-      {isCancellableMakerPoStatus(po.status) ? <MakerPoCancelBlock po={po} verifiedSend={verifiedSend} /> : null}
-
-      {po.status === 'CANCELLED' && verifiedSend && !acknowledgementRecorded ? (
-        <MakerPoCancellationAcknowledgementBlock po={po} orderEvidenceChoices={orderEvidenceChoices} />
+      {isCancellableMakerPoStatus(po.status) ? (
+        <MakerPoCancelBlock po={po} sendProof={sendProof} pendingSend={paper.pendingVerification} />
       ) : null}
 
-      {po.status === 'CANCELLED' && verifiedSend && acknowledgementRecorded ? (
+      {acknowledgementMayBeRequired && !acknowledgementRecorded ? (
+        <MakerPoCancellationAcknowledgementBlock po={po} sendProof={sendProof} evidenceChoices={evidenceChoices} />
+      ) : null}
+
+      {acknowledgementMayBeRequired && acknowledgementRecorded ? (
         <div style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
           <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>取り消し承認（メーカー取消確認）: 記録済み</h3>
           <p style={noteStyle}>
@@ -971,22 +1006,36 @@ function MakerPoManualVerificationBlock({ poId, events }: { poId: string; events
 }
 
 /**
- * M8-UI2: the cancel control for live paper. The hint states which
- * cancellation this is before the button is pressed: unsent paper is an
- * internal correction (the ordering step re-opens at once), paper whose send
- * was proven has already left the company, so cancelling it keeps the step
- * closed until the 取り消し承認 is recorded. SEND_UNVERIFIED and accepted
- * paper offer no button at all — the API refuses them.
+ * M8-UI2: the cancel control for live paper. The box and the dialog state which
+ * cancellation this is before the button is pressed, by the API's own rule
+ * (cancelSendStateCopy): a proven send — a VERIFIED event or a confirmed
+ * manual verification — keeps the ordering step closed until the 取り消し承認;
+ * an unproven one is an internal correction that re-opens it at once.
+ * SEND_UNVERIFIED and accepted paper offer no button at all — the API refuses them.
  */
-function MakerPoCancelBlock({ po, verifiedSend }: { po: MakerPoViewRow; verifiedSend: boolean }) {
+const SEND_STATE_BOX_COLORS: Readonly<Record<CancelSendStateCopy['tone'], { line: string; tint: string }>> = {
+  danger: { line: 'var(--danger)', tint: 'var(--danger-tint)' },
+  warning: { line: 'var(--warn)', tint: 'var(--warn-tint)' },
+  ok: { line: 'var(--ok)', tint: 'var(--ok-tint)' }
+};
+
+function MakerPoCancelBlock({
+  po,
+  sendProof,
+  pendingSend
+}: {
+  po: MakerPoViewRow;
+  sendProof: MakerPoSendProof;
+  pendingSend: boolean;
+}) {
+  const copy = cancelSendStateCopy(sendProof, pendingSend);
+  const colors = SEND_STATE_BOX_COLORS[copy.tone];
   return (
     <div style={{ marginTop: 12 }}>
       <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>発注書の取り消し（代表者のみ）</h3>
-      <div style={{ ...infoBoxStyle, borderColor: verifiedSend ? 'var(--danger)' : 'var(--ok)', color: verifiedSend ? 'var(--danger)' : 'var(--ok)', background: verifiedSend ? 'var(--danger-tint)' : 'var(--ok-tint)' }}>
+      <div style={{ ...infoBoxStyle, borderColor: colors.line, color: colors.line, background: colors.tint }}>
         <strong>この発注書の送信状態: </strong>
-        {verifiedSend
-          ? '送信ずみ（送信証跡が確認されています）。取り消すと生産手順の再開には「取り消し承認（メーカー取消確認）」が必要です。'
-          : '未送信（送信証跡の確認はありません）。取り消すとすぐに発注の作成ステップが再度開きます。'}
+        {copy.status}
       </div>
       <p style={noteStyle}>
         取り消しは記録を消しません（取消イベントと履歴が残ります）。訂正後の発注書は新しい発注書として作成します。
@@ -999,9 +1048,7 @@ function MakerPoCancelBlock({ po, verifiedSend }: { po: MakerPoViewRow; verified
         tone="danger"
         confirm={{
           title: `メーカー発注書 ${shortId(po.id)} を取り消しますか？`,
-          body: verifiedSend
-            ? 'この発注書は送信ずみです。取り消すと、生産手順の再開には「取り消し承認（メーカー取消確認）」の記録が必要になります。取り消しは元に戻せません（取消イベントと履歴は残ります）。'
-            : 'この発注書は未送信です。取り消すと、すぐに発注書の作成ステップが再度開きます。取り消しは元に戻せません（取消イベントと履歴は残ります）。',
+          body: copy.dialog,
           tone: 'danger',
           summaryFields: ['note']
         }}
@@ -1018,26 +1065,34 @@ function MakerPoCancelBlock({ po, verifiedSend }: { po: MakerPoViewRow; verified
  * was proven (取消承認／メーカー取消確認). It is the record that re-opens the
  * ordering step: until it exists the create form refuses a replacement paper,
  * so sent paper and its replacement are never in production at the same time.
+ * For a paper whose proof could not be read (unknown) the block is offered too:
+ * the API itself answers 「取り消し承認は不要です」 when it is not required.
  */
 function MakerPoCancellationAcknowledgementBlock({
   po,
-  orderEvidenceChoices
+  sendProof,
+  evidenceChoices
 }: {
   po: MakerPoViewRow;
-  orderEvidenceChoices: Choice[];
+  sendProof: MakerPoSendProof;
+  /** Versions bound to this order and this maker PO only (Low-6). */
+  evidenceChoices: Choice[];
 }) {
   return (
     <div style={{ marginTop: 12 }}>
       <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>取り消し承認を記録する（メーカー取消確認・代表者のみ）</h3>
       <p style={noteStyle}>
-        この発注書は送信ずみのまま取り消されています。発注先（メーカー）が取り消しを受け入れたことを代表者が確認して
+        {sendProof === 'unknown'
+          ? 'この発注書の送信の記録を読み込めなかったため、この取り消しに取り消し承認が必要かどうかを画面で判定できません。必要でない場合、記録しようとすると API が「取り消し承認は不要です」と返します。'
+          : 'この発注書は送信ずみ（送信証跡の確認、または送信の手動確認あり）のまま取り消されています。'}
+        発注先（メーカー）が取り消しを受け入れたことを代表者が確認して
         「取り消し承認」を記録してください。承認の記録まで、この発注の新しい発注書は作成できません
         （作成フォームは API が「まず取り消し承認を記録してください」と返します）。
       </p>
       <ActionForm
         action={acknowledgeMakerPoCancellationAction}
         submitLabel="取り消し承認を記録する"
-        hint="承認理由（note）はAPIの必須項目です。メーカー側の承諾メールの原本を文書画面に登録してある場合は、その書類バージョンを引用できます（任意）。"
+        hint="承認理由（note）はAPIの必須項目です。証跡の引用は任意で、引用できるのはこの発注書に紐付けて登録し、確認済みにした受領証跡のバージョンだけです。"
         confirm={{
           title: '取り消し承認を記録しますか？',
           body: `メーカーが発注書 ${shortId(po.id)} の取り消しを受け入れたことを記録します。記録すると、この発注の新しい発注書を作成できるようになります。記録は取り消せません。`,
@@ -1048,14 +1103,23 @@ function MakerPoCancellationAcknowledgementBlock({
         <div className="form-row">
           <TextareaField name="note" label="承認理由（取り消しを確認した根拠）" required rows={3} width={520} />
           <OffsetDateTimeField name="acknowledgedAt" label="承認日時（任意）" width={240} />
-          <SelectField
-            name="evidenceDocumentVersionId"
-            label="メーカー側の承諾を示す書類バージョン（任意）"
-            includeBlank
-            choices={orderEvidenceChoices}
-            width={420}
-          />
+          {evidenceChoices.length > 0 ? (
+            <SelectField
+              name="evidenceDocumentVersionId"
+              label="メーカー側の承諾を示す書類バージョン（任意・この発注書に紐付いた確認済みの受領証跡のみ）"
+              includeBlank
+              choices={evidenceChoices}
+              width={420}
+            />
+          ) : null}
         </div>
+        {evidenceChoices.length === 0 ? (
+          <p style={noteStyle}>
+            引用できる書類はありません（証跡は任意です）。証跡として引用できるのは、この発注とこのメーカー発注書
+            （{shortId(po.id)}）の両方に紐付けて登録し、「確認済み」にした受領証跡（検収）の書類だけです。この発注の
+            ほかの書類は API が拒否するため候補に出していません。根拠は承認理由に書いてください。
+          </p>
+        ) : null}
       </ActionForm>
     </div>
   );

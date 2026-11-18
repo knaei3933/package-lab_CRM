@@ -314,15 +314,181 @@ export function rejectedSendManualVerifications(
 }
 
 /**
- * True when this paper's send is proven by a verified send event — the
- * classification the API's own cancel and acknowledgement gates re-derive. A
- * paper whose send was already proven cannot be quietly replaced: cancelling
- * it keeps the ordering step closed until the 取り消し承認 is recorded.
+ * True when a send event of this paper was VERIFIED by the EML check. Only one
+ * half of the API's proven-send rule: a confirmed manual verification proves a
+ * send too, so screens decide with makerPoSendProof, never with this alone.
  */
-export function hasVerifiedSendEvent(events: MakerPoEventRow[]): boolean {
+export function hasVerifiedSendEvent(events: ReadonlyArray<MakerPoEventRow>): boolean {
   return events.some((event) =>
     event.eventType === 'SEND_EVIDENCE_REGISTERED'
     && event.verificationStatus === 'VERIFIED');
+}
+
+/**
+ * Whether this paper's send is proven, by the API's own rule (cancel
+ * classification, 取り消し承認 gate and the create gate since cc9144f): a
+ * VERIFIED send event, OR a representative's confirmed manual verification
+ * (FIX 3) of a send of this paper.
+ *
+ * - proven: cancelling keeps the ordering step closed until the 取り消し承認;
+ * - unproven: nothing proves a send (cancelling is an internal correction);
+ * - unknown: a send still in PENDING_MANUAL_VERIFICATION whose manual
+ *   verification records could not be read, so the screen cannot tell — it
+ *   must never fall back to 「未送信」 (recheck 6 High-A).
+ */
+export type MakerPoSendProof = 'proven' | 'unproven' | 'unknown';
+
+export function makerPoSendProof(
+  events: ReadonlyArray<MakerPoEventRow>,
+  manualVerifications: ReadonlyArray<MakerPoSendManualVerification>,
+  unreadEventIds: ReadonlySet<string> = new Set()
+): MakerPoSendProof {
+  if (hasVerifiedSendEvent(events)) return 'proven';
+  const eventIds = new Set(events.map((event) => event.id));
+  if (manualVerifications.some((verification) =>
+    verification.result === 'confirmed' && eventIds.has(verification.makerPoEventId))) {
+    return 'proven';
+  }
+  const unread = events.some((event) =>
+    event.eventType === 'SEND_EVIDENCE_REGISTERED'
+    && event.verificationStatus === 'PENDING_MANUAL_VERIFICATION'
+    && unreadEventIds.has(event.id));
+  return unread ? 'unknown' : 'unproven';
+}
+
+export interface CancelSendStateCopy {
+  /** danger: the step stays closed; ok: it re-opens; warning: cannot be judged here. */
+  tone: 'danger' | 'ok' | 'warning';
+  /** The 「この発注書の送信状態」 line. */
+  status: string;
+  /** The confirmation dialog body. */
+  dialog: string;
+}
+
+const CANCEL_IRREVERSIBLE = '取り消しは元に戻せません（取消イベントと履歴は残ります）。';
+
+/**
+ * The cancel block's wording, from the same judgement the API makes when it
+ * classifies the cancellation (recheck 6 High-A: the box and the dialog said
+ * 「未送信…すぐに再度開きます」 for a send the representative had confirmed).
+ * pendingSend: a send of this paper is recorded but still waits for the
+ * manual check — it is not proven, so the API treats the cancel as internal.
+ */
+export function cancelSendStateCopy(proof: MakerPoSendProof, pendingSend: boolean): CancelSendStateCopy {
+  if (proof === 'proven') {
+    return {
+      tone: 'danger',
+      status: '送信ずみ（送信証跡の確認、または代表者による送信の手動確認があります）。取り消すと、発注書の作成ステップの再開には「取り消し承認（メーカー取消確認）」が必要です。',
+      dialog: `この発注書は送信ずみです（送信証跡の確認、または送信の手動確認の記録があります）。取り消すと、新しい発注書の作成には「取り消し承認（メーカー取消確認）」の記録が必要になります。${CANCEL_IRREVERSIBLE}`
+    };
+  }
+  if (proof === 'unknown') {
+    return {
+      tone: 'warning',
+      status: '判定できません（この発注書の送信の記録を読み込めませんでした）。送信が確認済みの場合、取り消すと「取り消し承認（メーカー取消確認）」が必要になります。画面を再読み込みしてから取り消してください。',
+      dialog: `この発注書が送信ずみかどうかを画面で判定できません（この発注書の送信の記録を読み込めませんでした）。送信が確認済みの場合、取り消すと新しい発注書の作成には「取り消し承認（メーカー取消確認）」の記録が必要になります。${CANCEL_IRREVERSIBLE}`
+    };
+  }
+  if (pendingSend) {
+    return {
+      tone: 'warning',
+      status: '送信は記録されていますが、まだ確認されていません（手動確認待ち）。いま取り消すと内部の訂正として扱われ、すぐに発注書の作成ステップが再度開きます。メーカーに届いている場合は、先に「③′ 送信の手動確認」を記録してください。',
+      dialog: `この発注書の送信は手動確認待ちで、まだ確認されていません。取り消すと内部の訂正として扱われ、すぐに発注書の作成ステップが再度開きます。メーカーに届いている場合は、取り消す前に送信の手動確認を記録してください。${CANCEL_IRREVERSIBLE}`
+    };
+  }
+  return {
+    tone: 'ok',
+    status: '未送信（送信証跡の確認も、送信の手動確認もありません）。取り消すとすぐに発注書の作成ステップが再度開きます。',
+    dialog: `この発注書は未送信です。取り消すと、すぐに発注書の作成ステップが再度開きます。${CANCEL_IRREVERSIBLE}`
+  };
+}
+
+/** A cancelled paper whose 取り消し承認 the API will (or may) ask for. */
+export function cancellationAcknowledgementMayBeRequired(status: string, proof: MakerPoSendProof): boolean {
+  return status === 'CANCELLED' && proof !== 'unproven';
+}
+
+export interface EventManualVerificationRead {
+  verifications: MakerPoSendManualVerification[];
+  /** Events whose manual verification records could not be read (API error or a trimmed answer). */
+  unreadEventIds: Set<string>;
+}
+
+/**
+ * The project-wide audit read is capped (limit 200, oldest first), so a
+ * busy project can lose the newest manual verifications from it. For each
+ * send that still shows PENDING_MANUAL_VERIFICATION and has no decision in
+ * that list, this asks the audit history for that one event (entityId), so a
+ * confirmed send is never mistaken for an unsent one. A failed read, or an
+ * answer whose decision row came back without its result (a role-trimmed
+ * view), marks the event unread instead of "no decision".
+ */
+export async function loadManualVerificationsForEvents(
+  projectId: string,
+  eventIds: readonly string[]
+): Promise<EventManualVerificationRead> {
+  const unreadEventIds = new Set<string>();
+  const verifications: MakerPoSendManualVerification[] = [];
+  await Promise.all([...new Set(eventIds)].map(async (eventId) => {
+    const result = await callApi<{ events: AuditEventView[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/audit-history?entityType=maker_po_event&entityId=${encodeURIComponent(eventId)}&limit=500`
+    );
+    const rows = result.ok && result.data && Array.isArray(result.data.events) ? result.data.events : null;
+    if (rows === null) {
+      unreadEventIds.add(eventId);
+      return;
+    }
+    const decisions = rows.filter((row) =>
+      row.action === 'MAKER_PO_SEND_MANUAL_VERIFICATION_RECORDED' && row.entityId === eventId);
+    const parsed = sendManualVerificationsFromAuditEvents(decisions);
+    if (parsed.length < decisions.length) unreadEventIds.add(eventId);
+    verifications.push(...parsed);
+  }));
+  return { verifications, unreadEventIds };
+}
+
+/**
+ * Send events still in PENDING_MANUAL_VERIFICATION with no confirmation in
+ * `known`. A rejection does not settle the question: the API lets a rejected
+ * send be confirmed later, and that confirmation may lie past the window.
+ */
+export function sendEventsWithoutKnownDecision(
+  events: ReadonlyArray<MakerPoEventRow>,
+  known: ReadonlyArray<MakerPoSendManualVerification>
+): string[] {
+  const decided = new Set(known
+    .filter((verification) => verification.result === 'confirmed')
+    .map((verification) => verification.makerPoEventId));
+  return events
+    .filter((event) =>
+      event.eventType === 'SEND_EVIDENCE_REGISTERED'
+      && event.verificationStatus === 'PENDING_MANUAL_VERIFICATION'
+      && !decided.has(event.id))
+    .map((event) => event.id);
+}
+
+/**
+ * Low-6 (recheck 6): the 取り消し承認 may cite only a document bound to the
+ * same order AND the same maker PO (422 MAKER_CANCELLATION_ACK_EVIDENCE_MISMATCH),
+ * and since 20d5f70 only an acceptance_evidence document a human marked
+ * verified (422 …_EVIDENCE_TYPE_INVALID / …_EVIDENCE_NOT_VERIFIED). The select
+ * offers exactly those versions.
+ */
+export const ACKNOWLEDGEMENT_EVIDENCE_DOCUMENT_TYPE = 'acceptance_evidence';
+
+export function acknowledgementEvidenceDocuments<
+  T extends {
+    documentType: string;
+    verificationStatus: string;
+    filmSupplyOrderId: string | null;
+    makerPurchaseOrderId: string | null;
+  }
+>(documents: ReadonlyArray<T>, orderId: string, poId: string): T[] {
+  return documents.filter((document) =>
+    document.filmSupplyOrderId === orderId
+    && document.makerPurchaseOrderId === poId
+    && document.documentType === ACKNOWLEDGEMENT_EVIDENCE_DOCUMENT_TYPE
+    && document.verificationStatus === 'verified');
 }
 
 /** True when the 取り消し承認 (MAKER_CANCELLATION_ACKNOWLEDGED) is already recorded. */

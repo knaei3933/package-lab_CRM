@@ -1,9 +1,8 @@
-import { FILM_SUPPLY_ORDER_STATES, FILM_SUPPLY_ORDER_TERMINAL_STATE } from '@kanei/core';
+import { FILM_ORDER_CANCELLATION_STATE, FILM_SUPPLY_ORDER_STATES, FILM_SUPPLY_ORDER_TERMINAL_STATE } from '@kanei/core';
 import type { FilmSupplyOrderState, Operation } from '@kanei/core';
 import { callApi } from './api';
 import { operationRefusal } from './permissions';
 import { shortId } from './short-id';
-import { makerChainResumeNotice } from './transitions';
 import { codeWithStatus, displayText, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT, isFieldHiddenByRole, isStateWithheld } from './redaction';
 import { formatTimestamp } from './vocabulary';
 
@@ -151,7 +150,10 @@ export interface DocumentVersionView {
   id: string;
   documentId: string;
   versionNumber: number;
-  sha256: string;
+  /** null when absent; see sha256Hidden for whether the role was denied it. */
+  sha256: string | null;
+  /** The content digest was withheld from the role (staff/viewer). */
+  sha256Hidden: boolean;
   originalFilename: string;
   createdAt: string;
 }
@@ -167,8 +169,12 @@ export interface DocumentView {
   sevenPurchaseOrderId: string | null;
   filmSupplyOrderId: string | null;
   designKey: string | null;
-  /** UI batch A: type, issuer and links were withheld from the role (staff/viewer). */
+  /** The maker PO the document was uploaded for (admin answer only; null when unbound or withheld). */
+  makerPurchaseOrderId: string | null;
+  /** UI batch A: issuer and links were withheld from the role (staff/viewer). */
   detailsHidden: boolean;
+  /** The document type was withheld (viewer; staff sees it since 62d9305). */
+  typeHidden: boolean;
   /** UI batch A: the verification result was withheld from the role (viewer). */
   verificationHidden: boolean;
   createdAt: string;
@@ -180,7 +186,10 @@ export interface ArtworkRevisionView {
   id: string;
   filmSupplyOrderId: string;
   designKey: string;
-  revisionNo: number;
+  /** null when absent — never a stand-in number; see revisionNoHidden. */
+  revisionNo: number | null;
+  /** The revision number was withheld from the role (staff since 62d9305 sees the binding but not the number). */
+  revisionNoHidden: boolean;
   fileDocumentVersionId: string;
   note: string | null;
   invalidatedApprovals: boolean;
@@ -498,6 +507,12 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
       // UI batch B: the 受領確認 (receipt assumption) moves the order into the
       // terminal state through its own action, recorded on the same entity.
       || event.action === 'FILM_RECEIPT_ASSUMPTION_RECORDED'
+      // UI batch D: the admin-only hold release and cancellation review
+      // resolution record their own actions (afterState.status is the state
+      // resumed, or CANCELLED); without them a released order kept reading
+      // 保留中 and a cancelled one キャンセルレビュー中.
+      || event.action === 'FILM_SUPPLY_ORDER_HOLD_RELEASED'
+      || event.action === 'FILM_SUPPLY_ORDER_CANCELLATION_REVIEW_RESOLVED'
     ) {
       const current = filmOrders.get(event.entityId);
       if (current) {
@@ -597,8 +612,12 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
         sevenPurchaseOrderId: text(after, 'sevenPurchaseOrderId'),
         filmSupplyOrderId: text(after, 'filmSupplyOrderId'),
         designKey: text(after, 'designKey'),
-        // documentType is on every full answer and off the staff allowlist.
-        detailsHidden: isFieldHiddenByRole(event, 'documentType'),
+        makerPurchaseOrderId: text(after, 'makerPurchaseOrderId'),
+        // issuerEntity is on every full answer and off the staff allowlist
+        // (documentType joined the staff allowlist in 62d9305, so it no longer
+        // tells a trimmed answer apart).
+        detailsHidden: isFieldHiddenByRole(event, 'issuerEntity'),
+        typeHidden: isFieldHiddenByRole(event, 'documentType'),
         verificationHidden: isFieldHiddenByRole(event, 'verificationStatus'),
         createdAt: event.occurredAt,
         updatedAt: event.occurredAt,
@@ -625,7 +644,8 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
       id: event.entityId,
       documentId,
       versionNumber: numeric(after, 'versionNumber') ?? current.versions.length + 1,
-      sha256: requiredText(after, 'sha256', '—'),
+      sha256: text(after, 'sha256'),
+      sha256Hidden: isFieldHiddenByRole(event, 'sha256'),
       originalFilename: requiredText(after, 'originalFilename', current.filename),
       createdAt: event.occurredAt
     });
@@ -649,7 +669,8 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
       id: event.entityId,
       filmSupplyOrderId: orderId,
       designKey: displayText(event, 'designKey', '（デザイン未記録）'),
-      revisionNo: numeric(after, 'revisionNo') ?? 1,
+      revisionNo: numeric(after, 'revisionNo'),
+      revisionNoHidden: isFieldHiddenByRole(event, 'revisionNo'),
       fileDocumentVersionId: requiredText(after, 'fileDocumentVersionId', '—'),
       note: text(after, 'note'),
       invalidatedApprovals: bool(after, 'invalidatedApprovals'),
@@ -916,6 +937,16 @@ export function knownStatus(order: Pick<FilmSupplyOrderView, 'status' | 'statusH
   return order.statusHidden ? null : order.status;
 }
 
+/**
+ * 「版3」, or 「版（閲覧権限なし）」 when the role may see the revision's binding
+ * but not its number (staff since 62d9305), or 「版未記録」 — never a stand-in
+ * number.
+ */
+export function revisionNumberText(revision: Pick<ArtworkRevisionView, 'revisionNo' | 'revisionNoHidden'>): string {
+  if (revision.revisionNo !== null) return `版${revision.revisionNo}`;
+  return revision.revisionNoHidden ? `版（${HIDDEN_BY_ROLE_SHORT}）` : '版未記録';
+}
+
 /** 「code（状態）」 of a film order for selects and headings. */
 export function filmOrderChoiceLabel(
   order: Pick<FilmSupplyOrderView, 'code' | 'status' | 'statusHidden'>,
@@ -967,7 +998,7 @@ export type ProgressStepMark = 'done' | 'current' | 'interrupted' | 'upcoming' |
 
 export interface OrderProgress {
   /** hidden: the role may not read the status; unknown: a status the table does not name. */
-  phase: 'hidden' | 'unknown' | 'active' | 'exception' | 'complete';
+  phase: 'hidden' | 'unknown' | 'active' | 'exception' | 'complete' | 'cancelled';
   status: string | null;
   currentStep: number | null;
   interruptedStep: number | null;
@@ -989,6 +1020,11 @@ export function orderProgress(
   const unmarked = PROGRESS_STEPS.map((): ProgressStepMark => 'unmarked');
   if (status === null) {
     return { phase: 'hidden', status: null, currentStep: null, interruptedStep: null, marks: unmarked };
+  }
+  // CANCELLATION_REVIEW resolved as cancel ends the order (キャンセル終了): no
+  // step is current or done any more, and it is not an unknown status.
+  if (status === FILM_ORDER_CANCELLATION_STATE) {
+    return { phase: 'cancelled', status, currentStep: null, interruptedStep: null, marks: unmarked };
   }
   const step = stepOf(status);
   if (step === undefined) {
@@ -1187,17 +1223,24 @@ export function nextActionForOrder(
       );
     case FILM_SUPPLY_ORDER_TERMINAL_STATE:
       return { text: 'この発注は完了しています。', owner: null, screens: [], operation: null, refusal: null };
+    // Hold and cancellation review are left only through their admin-only
+    // endpoints (reason required); the server resumes the state the order
+    // left, so the screen names no target. No /maker-po link: a held order is
+    // not on the maker PO board (B-M1).
     case 'ON_HOLD':
+      return nextAction(
+        '代表者が理由を記録して保留を解除する（保留にする前の状態に戻ります）。',
+        OWNER_ADMIN, ['/orders'], 'film_order:release_hold', role
+      );
+    case 'CANCELLATION_REVIEW':
+      return nextAction(
+        '代表者が理由を記録して取消レビューを処理する（再開するか、取消で終了するか）。',
+        OWNER_ADMIN, ['/orders'], 'film_order:resolve_cancellation_review', role
+      );
     case 'CHANGE_REVIEW':
-    case 'CANCELLATION_REVIEW': {
-      // B-M1: an order held from the maker chain is not on the maker PO screen
-      // and cannot be resumed there, so no /maker-po link: the notice asks the
-      // representative how to release it; the release itself is on /orders.
-      const notice = makerChainResumeNotice(order.lastNormalStatus, label);
-      return notice
-        ? nextAction(notice, both, ['/orders'], 'film_order:transition', role)
-        : nextAction('再開する状態を選んで、状態を進める。', both, ['/orders'], 'film_order:transition', role);
-    }
+      return nextAction('再開する状態を選んで、状態を進める。', both, ['/orders'], 'film_order:transition', role);
+    case FILM_ORDER_CANCELLATION_STATE:
+      return { text: 'この発注は取消で終了しています。これ以上の作業はありません。', owner: null, screens: [], operation: null, refusal: null };
     default:
       return {
         text: `この状態（${label(status)}）の次の作業は画面に表示できません。`,

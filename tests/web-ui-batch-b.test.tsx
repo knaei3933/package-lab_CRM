@@ -59,9 +59,14 @@ const {
   sevenPurchaseOrderChoiceLabel,
   STATUS_PROGRESS_STEP
 } = await import('../apps/web/src/lib/project-data.js');
-const { transitionChoicesFor, EXCEPTION_GROUP_LABEL, RESUME_GROUP_LABEL, SKIP_AHEAD_GROUP_LABEL } = await import(
-  '../apps/web/src/lib/transitions.js'
-);
+const {
+  transitionChoicesFor,
+  CANCELLATION_REVIEW_NOTICE,
+  EXCEPTION_GROUP_LABEL,
+  HOLD_RELEASE_NOTICE,
+  RESUME_GROUP_LABEL,
+  SKIP_AHEAD_GROUP_LABEL
+} = await import('../apps/web/src/lib/transitions.js');
 const { canRoleOperate, operationRefusal, ROLE_UNKNOWN_PAGE_NOTICE, VIEWER_PAGE_NOTICE } = await import(
   '../apps/web/src/lib/permissions.js'
 );
@@ -404,11 +409,15 @@ describe('① replay: lastNormalStatus and the receipt assumption', () => {
       const workspace = await loadWorkspace(PROJECT_ID);
       const [order] = workspace.filmOrders;
       expect(order).toMatchObject({ id: ORDER_GAP, status: 'ON_HOLD', lastNormalStatus: 'APPROVED_FOR_MANUAL_SEND' });
-      // What the operator sees follows from it: ask the representative (B-M1), and no jump into production (B-M2).
-      expect(nextActionForOrder(order!, workspace, role).text).toContain('管理者（代表者）に確認してください。');
-      const values = transitionChoicesFor('ON_HOLD', label, order!.lastNormalStatus).choices.map((choice) => choice.value);
-      expect(values[0]).toBe('DRAFT');
-      expect(values).not.toContain('FILM_IN_PRODUCTION');
+      // UI batch D: a hold is left only through the representative's release,
+      // which resumes the remembered state on the server — the generic select
+      // offers nothing (the API refuses every target without the origin).
+      expect(nextActionForOrder(order!, workspace, role)).toMatchObject({
+        operation: 'film_order:release_hold', owner: '代表者', screens: ['/orders']
+      });
+      expect(transitionChoicesFor('ON_HOLD', label, order!.lastNormalStatus)).toMatchObject({
+        choices: [], emptyReason: HOLD_RELEASE_NOTICE, resumeNotice: null
+      });
     });
 
     it('viewer: the hold is withheld, so nothing is remembered', async () => {
@@ -417,20 +426,17 @@ describe('① replay: lastNormalStatus and the receipt assumption', () => {
       expect(order).toMatchObject({ statusHidden: true, lastNormalStatus: null });
     });
 
-    it('orders (staff): 次にやること for that hold links no maker PO screen (B-M1)', async () => {
+    it('orders (staff): 次にやること for that hold links no maker PO screen (B-M1); the release is the representative\'s', async () => {
       serveAs('staff', [...HEAD, created(ORDER_GAP, 'FSO-GAP'), ...toReady(ORDER_GAP), hold(ORDER_GAP, 'APPROVED_FOR_MANUAL_SEND')]);
       const html = await renderPage(OrdersPage);
-      expect(html).toContain(
-        `中断前の「${label('APPROVED_FOR_MANUAL_SEND')}」へはどの画面からも戻せません。保留・見直しをどう解除するかを管理者（代表者）に確認してください。`
-      );
+      expect(html).toContain('代表者が理由を記録して保留を解除する（保留にする前の状態に戻ります）。');
+      expect(html).toContain('保留の解除は代表者が行います。');
       const links = [...html.matchAll(/<p class="next-links">([\s\S]*?)<\/p>/g)].map((match) => match[1]!);
       expect(links.length).toBeGreaterThan(0);
       for (const inner of links) expect(inner).not.toContain('href="/maker-po"');
-      // The transition select of the held order offers nothing past the maker acceptance (B-M2).
-      const [select] = [...html.matchAll(/<select[^>]*name="to"[^>]*>([\s\S]*?)<\/select>/g)];
-      expect(select?.[1]).toBeDefined();
-      expect(select![1]).not.toContain('value="FILM_IN_PRODUCTION"');
-      expect(select![1]).toContain('value="MAKER_PO_READY"');
+      // No generic select for the held order: nothing to skip with (B-M2 holds trivially).
+      expect([...html.matchAll(/<select[^>]*name="to"[^>]*>/g)]).toHaveLength(0);
+      expect(html).not.toContain('value="FILM_IN_PRODUCTION"');
     });
   });
 
@@ -519,30 +525,46 @@ describe('① 次にやること: the step, the owner and the reason a role cann
     });
   });
 
-  // B-M1: the maker PO screen does not list an order in a hold or review and
-  // the API refuses resuming into the maker chain, so the step is to ask the
-  // representative — never a /maker-po link.
+  // B-M1: the maker PO screen does not list an order in a hold or review, so
+  // the step is never a /maker-po link. UI batch D: the hold release and the
+  // cancellation review resolution are the representative's dedicated
+  // operations on /orders (the server resumes the origin, maker chain
+  // included); CHANGE_REVIEW keeps the generic restart transition.
   const MAKER_CHAIN_LEFT = ['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED'] as const;
+  const EXCEPTION_STEP = {
+    ON_HOLD: {
+      text: '代表者が理由を記録して保留を解除する（保留にする前の状態に戻ります）。',
+      owner: '代表者', operation: 'film_order:release_hold'
+    },
+    CANCELLATION_REVIEW: {
+      text: '代表者が理由を記録して取消レビューを処理する（再開するか、取消で終了するか）。',
+      owner: '代表者', operation: 'film_order:resolve_cancellation_review'
+    },
+    CHANGE_REVIEW: {
+      text: '再開する状態を選んで、状態を進める。',
+      owner: '担当者・代表者', operation: 'film_order:transition'
+    }
+  } as const;
   describe.each(FILM_SUPPLY_ORDER_EXCEPTION_STATES)('%s left from the maker chain (B-M1)', (exception) => {
-    it.each(MAKER_CHAIN_LEFT)('after %s: ask the representative, no maker PO screen link', (left) => {
+    it.each(MAKER_CHAIN_LEFT)('after %s: the dedicated step on /orders, no maker PO screen link', (left) => {
       const action = nextActionForOrder(order(exception, { lastNormalStatus: left }), workspace(), 'staff');
-      expect(action.text).toBe(
-        `中断前の「${label(left)}」へはどの画面からも戻せません。保留・見直しをどう解除するかを管理者（代表者）に確認してください。`
-      );
+      expect(action.text).toBe(EXCEPTION_STEP[exception].text);
+      expect(action.owner).toBe(EXCEPTION_STEP[exception].owner);
       expect(action.screens).toEqual(['/orders']);
-      expect(action.screens).not.toContain('/maker-po');
       expect(action.text).not.toContain('メーカー発注画面');
     });
 
-    it.each([
-      ['admin', null],
-      ['staff', null],
-      ['viewer', '閲覧権限のため操作できません。']
-    ] as const)('%s: the same wording; only the viewer is refused', (role, refusal) => {
+    it.each(['admin', 'staff', 'viewer'] as const)('%s: the same wording; the refusal follows the operation\'s matrix', (role) => {
+      const operation = EXCEPTION_STEP[exception].operation;
       for (const left of MAKER_CHAIN_LEFT) {
         const action = nextActionForOrder(order(exception, { lastNormalStatus: left }), workspace(), role);
-        expect(action, `${role} ${left}`).toMatchObject({ screens: ['/orders'], operation: 'film_order:transition', refusal });
-        expect(action.text, `${role} ${left}`).toContain('管理者（代表者）に確認してください。');
+        expect(action, `${role} ${left}`).toMatchObject({
+          screens: ['/orders'], operation, refusal: operationRefusal(role, operation)
+        });
+      }
+      // Independent of the helper: only the representative releases a hold or resolves a review.
+      if (exception !== 'CHANGE_REVIEW') {
+        expect(nextActionForOrder(order(exception), workspace(), role).refusal === null).toBe(role === 'admin');
       }
     });
   });
@@ -562,7 +584,14 @@ describe('① 次にやること: the step, the owner and the reason a role cann
 
   it('exception, terminal and withheld states', () => {
     expect(nextActionForOrder(order('ON_HOLD'), workspace(), 'staff')).toMatchObject({
+      text: '代表者が理由を記録して保留を解除する（保留にする前の状態に戻ります）。', screens: ['/orders'],
+      refusal: 'この操作は代表者が行います。'
+    });
+    expect(nextActionForOrder(order('CHANGE_REVIEW'), workspace(), 'staff')).toMatchObject({
       text: '再開する状態を選んで、状態を進める。', screens: ['/orders'], refusal: null
+    });
+    expect(nextActionForOrder(order('CANCELLED'), workspace(), 'admin')).toEqual({
+      text: 'この発注は取消で終了しています。これ以上の作業はありません。', owner: null, screens: [], operation: null, refusal: null
     });
     expect(nextActionForOrder(order('FILM_RECEIPT_ASSUMED_NO_ISSUE'), workspace(), 'admin')).toEqual({
       text: 'この発注は完了しています。', owner: null, screens: [], operation: null, refusal: null
@@ -612,13 +641,14 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
     FILM_SHIPPED: ['FILM_DELIVERED', ...EX],
     FILM_DELIVERED: EX,
     FILM_RECEIPT_ASSUMED_NO_ISSUE: [],
-    // B-M2: left before MAKER_PO_ACCEPTED, so no state past it (製造中・出荷済み・納品済み).
-    ON_HOLD: ['APPROVAL_PENDING', 'DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY',
-      'DUAL_APPROVED', 'MAKER_PO_READY'],
+    // UI batch D: the API refuses every generic target from a hold or a
+    // cancellation review (core needs the origin only the dedicated endpoints
+    // read), so the select offers nothing there.
+    ON_HOLD: [],
     CHANGE_REVIEW: ['APPROVAL_PENDING', 'ARTWORK_RECEIVED', 'PROOF_READY'],
-    CANCELLATION_REVIEW: ['APPROVAL_PENDING', 'DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY',
-      'DUAL_APPROVED', 'MAKER_PO_READY']
+    CANCELLATION_REVIEW: []
   };
+  const DEDICATED_EXIT = ['ON_HOLD', 'CANCELLATION_REVIEW'];
 
   it.each(ALL_STATES)('%s: exactly the expected targets, each allowed by core; only maker-chain / terminal / maker-skipping jumps left out', (state) => {
     const set = transitionChoicesFor(state, label, 'APPROVAL_PENDING');
@@ -630,6 +660,15 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
       // Japanese label only — no 「（DRAFT）」-style code next to it.
       expect(choice.label).toBe(label(choice.value));
       expect(choice.label).not.toContain(choice.value);
+    }
+    if (DEDICATED_EXIT.includes(state)) {
+      // Why nothing is offered, checked against core directly: without the
+      // origin no target is allowed (the generic endpoint never passes one).
+      for (const to of filmSupplyOrderTransitions(state)) {
+        expect(transitionFilmSupplyOrder(state, to).ok, `${state}→${to}`).toBe(false);
+      }
+      expect(set.emptyReason).toBe(state === 'ON_HOLD' ? HOLD_RELEASE_NOTICE : CANCELLATION_REVIEW_NOTICE);
+      return;
     }
     const offered = new Set(set.choices.map((choice) => choice.value));
     const leftOut = filmSupplyOrderTransitions(state).filter((to) => !offered.has(to));
@@ -663,39 +702,36 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
     }
   );
 
-  it('an exception resumes into the state it left first; later states sit apart under 先の段階へ進める（注意）', () => {
-    const set = transitionChoicesFor('ON_HOLD', label, 'FILM_SHIPPED');
-    expect(set.choices[0]).toEqual({ value: 'FILM_SHIPPED', label: label('FILM_SHIPPED'), group: RESUME_GROUP_LABEL });
-    expect(set.choices.filter((choice) => choice.group === SKIP_AHEAD_GROUP_LABEL).map((choice) => choice.value))
-      .toEqual(['FILM_DELIVERED']);
-    expect(set.choices.filter((choice) => choice.group === RESUME_GROUP_LABEL)).toHaveLength(9);
-    expect(set.choices.map((choice) => choice.value)).not.toContain('MAKER_PO_ACCEPTED');
-    expect(set.resumeNotice).toBeNull();
-    // Unknown left state: nothing is called ahead, and (B-M2) nothing past the maker acceptance is offered.
-    const unknown = transitionChoicesFor('ON_HOLD', label, null).choices;
-    expect(unknown.every((choice) => choice.group === RESUME_GROUP_LABEL)).toBe(true);
-    expect(unknown.map((choice) => choice.value))
-      .toEqual(['DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']);
+  it('CHANGE_REVIEW resumes into the state it left first; later restart targets sit apart under 先の段階へ進める（注意）', () => {
     expect(transitionChoicesFor('CHANGE_REVIEW', label, 'PROOF_READY').choices.map((choice) => choice.value))
       .toEqual(['PROOF_READY', 'ARTWORK_RECEIVED', 'APPROVAL_PENDING']);
+    const set = transitionChoicesFor('CHANGE_REVIEW', label, 'ARTWORK_RECEIVED');
+    expect(set.choices[0]).toEqual({ value: 'ARTWORK_RECEIVED', label: label('ARTWORK_RECEIVED'), group: RESUME_GROUP_LABEL });
+    expect(set.choices.filter((choice) => choice.group === SKIP_AHEAD_GROUP_LABEL).map((choice) => choice.value))
+      .toEqual(['PROOF_READY', 'APPROVAL_PENDING']);
+    // Unknown left state: nothing is called ahead.
+    expect(transitionChoicesFor('CHANGE_REVIEW', label, null).choices.every((choice) => choice.group === RESUME_GROUP_LABEL)).toBe(true);
+    expect(set.resumeNotice).toBeNull();
   });
 
-  it('a hold left from the maker chain: a notice to ask the representative, earlier states to resume (M1, B-M1, B-M2)', () => {
-    const set = transitionChoicesFor('ON_HOLD', label, 'MAKER_PO_SENT_MANUALLY');
-    expect(set.resumeNotice).toBe(
-      `中断前の「${label('MAKER_PO_SENT_MANUALLY')}」へはどの画面からも戻せません。保留・見直しをどう解除するかを管理者（代表者）に確認してください。`
-    );
-    expect(set.resumeNotice).not.toContain('メーカー発注画面');
-    expect(set.choices.filter((choice) => choice.group === RESUME_GROUP_LABEL).map((choice) => choice.value))
-      .toEqual(['DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']);
-    // B-M2: left before the acceptance, so no jump into production (it would skip 受入).
-    expect(set.choices.filter((choice) => choice.group === SKIP_AHEAD_GROUP_LABEL)).toEqual([]);
-    // Left at the acceptance itself: production onward skips no maker step and stays a 注意 jump.
-    const accepted = transitionChoicesFor('ON_HOLD', label, 'MAKER_PO_ACCEPTED');
-    expect(accepted.choices.filter((choice) => choice.group === SKIP_AHEAD_GROUP_LABEL).map((choice) => choice.value))
-      .toEqual(['FILM_IN_PRODUCTION', 'FILM_SHIPPED', 'FILM_DELIVERED']);
-    expect(accepted.resumeNotice).toContain('管理者（代表者）に確認してください。');
-    expect(transitionChoicesFor('ON_HOLD', label, 'APPROVAL_PENDING').resumeNotice).toBeNull();
+  it('a hold or a cancellation review, from any left state (maker chain included): no generic target, the dedicated form named (UI batch D)', () => {
+    for (const left of [...FILM_SUPPLY_ORDER_STATES, null]) {
+      expect(transitionChoicesFor('ON_HOLD', label, left)).toEqual({
+        choices: [], makerChainNotice: false, hint: null, resumeNotice: null, emptyReason: HOLD_RELEASE_NOTICE
+      });
+      expect(transitionChoicesFor('CANCELLATION_REVIEW', label, left)).toEqual({
+        choices: [], makerChainNotice: false, hint: null, resumeNotice: null, emptyReason: CANCELLATION_REVIEW_NOTICE
+      });
+    }
+    // The old 「どの画面からも戻せません」 notice is gone: the release resumes the maker-chain origin on the server.
+    expect(HOLD_RELEASE_NOTICE).toContain('保留にする前の状態にシステムが戻します');
+    expect(HOLD_RELEASE_NOTICE).not.toContain('メーカー発注画面');
+  });
+
+  it('CANCELLED (取消終了) offers nothing, with its own reason', () => {
+    expect(transitionChoicesFor('CANCELLED', label)).toMatchObject({
+      choices: [], emptyReason: 'この発注は取消で終了しています（キャンセル終了）。これ以上進める先はありません。'
+    });
   });
 
   it('B-M2 (api-probes.txt): ON_HOLD left at APPROVED_FOR_MANUAL_SEND never offers FILM_IN_PRODUCTION', () => {
@@ -703,7 +739,8 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
     expect(values).not.toContain('FILM_IN_PRODUCTION');
     expect(values).not.toContain('FILM_SHIPPED');
     expect(values).not.toContain('FILM_DELIVERED');
-    expect(values).toContain('MAKER_PO_READY');
+    // UI batch D: nothing at all — the representative's release resumes the origin on the server.
+    expect(values).toEqual([]);
   });
 
   describe('B-M2: every exception state × every left state, checked against core directly', () => {
@@ -728,6 +765,11 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
       const leftBeforeAcceptance = leftAt < ACCEPTED_AT; // includes unknown / null
       const set = transitionChoicesFor(exception, label, left);
       const values = set.choices.map((choice) => choice.value);
+      if (exception !== 'CHANGE_REVIEW') {
+        // UI batch D: left only through the dedicated admin endpoint — nothing here can skip.
+        expect(values).toEqual([]);
+        return;
+      }
       const expected = filmSupplyOrderTransitions(exception).filter((to) =>
         !MAKER_CHAIN.includes(to)
         && to !== TERMINAL
@@ -736,7 +778,7 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
       for (const choice of set.choices) {
         const index = CHAIN.indexOf(choice.value);
         if (leftBeforeAcceptance) expect(index, `${exception} ${left}→${choice.value}`).toBeLessThanOrEqual(ACCEPTED_AT);
-        expect(transitionFilmSupplyOrder(exception, choice.value as FilmSupplyOrderState).ok).toBe(true);
+        expect(transitionFilmSupplyOrder(exception, choice.value as FilmSupplyOrderState, null).ok).toBe(true);
         // Past the left state is a jump (注意); the rest resumes.
         expect(choice.group, `${exception} ${left}→${choice.value}`)
           .toBe(leftAt >= 0 && index > leftAt ? SKIP_AHEAD_GROUP_LABEL : RESUME_GROUP_LABEL);
@@ -749,13 +791,12 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
       }
     });
 
-    it('the jumps that skip no maker step remain under 先の段階へ進める（注意）', () => {
-      const skip = (left: string) => transitionChoicesFor('CANCELLATION_REVIEW', label, left).choices
+    it('the CHANGE_REVIEW restart jumps (all before the maker chain) remain under 先の段階へ進める（注意）', () => {
+      const skip = (left: string) => transitionChoicesFor('CHANGE_REVIEW', label, left).choices
         .filter((choice) => choice.group === SKIP_AHEAD_GROUP_LABEL).map((choice) => choice.value);
-      expect(skip('FILM_IN_PRODUCTION')).toEqual(['FILM_SHIPPED', 'FILM_DELIVERED']);
-      expect(skip('FILM_SHIPPED')).toEqual(['FILM_DELIVERED']);
-      expect(skip('PROOF_READY')).toEqual(['APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']);
-      expect(skip('DRAFT')).toEqual(['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']);
+      expect(skip('DRAFT')).toEqual(['ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']);
+      expect(skip('PROOF_READY')).toEqual(['APPROVAL_PENDING']);
+      expect(skip('FILM_SHIPPED')).toEqual([]);
     });
   });
 
@@ -988,8 +1029,7 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
     expect(selects.map(([, inner]) => optionValues(inner!))).toEqual([
       ['', 'ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW'], // FSO-READY
       ['', 'ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW'], // FSO-SEND
-      ['', 'APPROVAL_PENDING', 'DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', // FSO-HOLD
-        'DUAL_APPROVED', 'MAKER_PO_READY'], // B-M2: nothing past the maker acceptance
+      // FSO-HOLD: no generic select — the representative's release form instead (UI batch D).
       ['', 'SEVEN_PO_VERIFIED', 'ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW'], // FSO-DRAFT
       ['', 'ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW'] // FSO-DELIV
     ]);
@@ -998,10 +1038,13 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
       expect(inner).toMatch(/^<option value="">（進める先を選ぶ）<\/option>/);
       expect(inner).not.toMatch(/selected/);
     }
-    expect(html).toContain(`<optgroup label="${SKIP_AHEAD_GROUP_LABEL}">`);
     expect(html).toContain('受領確認は下の「受領確認（問題なしとみなす）」で記録します。');
-    expect(html).toContain(`<optgroup label="${RESUME_GROUP_LABEL}"><option value="APPROVAL_PENDING">${label('APPROVAL_PENDING')}</option>`);
+    expect(html).not.toContain(`<optgroup label="${RESUME_GROUP_LABEL}">`);
+    expect(html).toContain(HOLD_RELEASE_NOTICE);
+    expect(html).toContain('保留を解除する（代表者のみ）');
     expect(html).toContain(`<optgroup label="${EXCEPTION_GROUP_LABEL}">`);
+    // A hold is offered with its reason field (the API's HOLD_REASON_REQUIRED).
+    expect(html).toContain('name="holdReason"');
     expect(html).toContain('次はメーカー発注画面の操作で進みます。');
     expect(html).toContain('この発注は完了しています。進める先はありません。');
     expect(html).toContain('メーカー発注画面を開く');

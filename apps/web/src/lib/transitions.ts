@@ -1,4 +1,5 @@
 import {
+  FILM_ORDER_CANCELLATION_STATE,
   FILM_SUPPLY_ORDER_EXCEPTION_STATES,
   FILM_SUPPLY_ORDER_STATES,
   FILM_SUPPLY_ORDER_TERMINAL_STATE,
@@ -29,20 +30,19 @@ export const SKIP_AHEAD_GROUP_LABEL = '先の段階へ進める（注意）';
 export const MAKER_CHAIN_NOTICE = '次はメーカー発注画面の操作で進みます';
 
 /**
- * The order left a maker-chain state (送信確認待ち など) for a hold or review.
- * The generic transition endpoint never targets those states (422
- * MAKER_CHAIN_TRANSITION_FORBIDDEN), and the maker PO screen does not list an
- * order in a hold or review (MAKER_PO_ORDER_STATES), so no screen can take it
- * back there today (REVIEW.md B-M1). Say so, and name the one step that works:
- * ask the representative how the hold is to be released.
+ * ON_HOLD and CANCELLATION_REVIEW are left only through their own admin-only
+ * endpoints (hold-release / cancellation-review-resolve, reason required). The
+ * generic transition endpoint refuses every target from them: core
+ * transitionFilmSupplyOrder needs the exception origin, which only those
+ * endpoints read, and CANCELLATION_REVIEW answers 422
+ * CANCELLATION_REVIEW_RESOLUTION_REQUIRED. The resume target is the state the
+ * order left, chosen by the server — the screen never names one.
  */
-export function makerChainResumeNotice(
-  lastNormalStatus: string | null,
-  label: (key: string) => string
-): string | null {
-  if (lastNormalStatus === null || !isFilmOrderMakerChainState(lastNormalStatus)) return null;
-  return `中断前の「${label(lastNormalStatus)}」へはどの画面からも戻せません。保留・見直しをどう解除するかを管理者（代表者）に確認してください。`;
-}
+export const HOLD_RELEASE_NOTICE =
+  '保留の解除は下の「保留を解除する（代表者のみ）」で行います。再開する状態は、保留にする前の状態にシステムが戻します。';
+export const CANCELLATION_REVIEW_NOTICE =
+  '取消レビューは下の「取消レビューを処理する（代表者のみ）」で、再開するか取消で終了するかを決めます。';
+export const CANCELLED_ORDER_NOTICE = 'この発注は取消で終了しています（キャンセル終了）。これ以上進める先はありません。';
 
 export interface TransitionChoiceSet {
   choices: Choice[];
@@ -67,11 +67,21 @@ export function transitionChoicesFor(
   label: (key: string) => string,
   lastNormalStatus: string | null = null
 ): TransitionChoiceSet {
+  if (status === FILM_ORDER_CANCELLATION_STATE) {
+    return { choices: [], makerChainNotice: false, hint: null, resumeNotice: null, emptyReason: CANCELLED_ORDER_NOTICE };
+  }
   if (!isFilmSupplyOrderState(status)) {
     return { choices: [], makerChainNotice: false, hint: null, resumeNotice: null, emptyReason: 'この状態からの進め方は画面に表示できません。' };
   }
   if (status === FILM_SUPPLY_ORDER_TERMINAL_STATE) {
     return { choices: [], makerChainNotice: false, hint: null, resumeNotice: null, emptyReason: 'この発注は完了しています。進める先はありません。' };
+  }
+
+  if (status === 'ON_HOLD') {
+    return { choices: [], makerChainNotice: false, hint: null, resumeNotice: null, emptyReason: HOLD_RELEASE_NOTICE };
+  }
+  if (status === 'CANCELLATION_REVIEW') {
+    return { choices: [], makerChainNotice: false, hint: null, resumeNotice: null, emptyReason: CANCELLATION_REVIEW_NOTICE };
   }
 
   const all = filmSupplyOrderTransitions(status);
@@ -104,7 +114,7 @@ export function transitionChoicesFor(
       choices: [...resume.map((to) => choice(to, RESUME_GROUP_LABEL)), ...skip.map((to) => choice(to, SKIP_AHEAD_GROUP_LABEL))],
       makerChainNotice: false,
       hint: null,
-      resumeNotice: makerChainResumeNotice(lastNormalStatus, label),
+      resumeNotice: null,
       emptyReason: offeredHere.length === 0 ? '再開できる状態がありません。' : null
     };
   }

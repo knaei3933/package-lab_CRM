@@ -263,7 +263,74 @@ export async function transitionFilmSupplyOrderAction(_prev: ActionState | null,
   const to = field(formData, 'to');
   if (orderId.length === 0) return { ok: false, message: 'フィルム発注が選択されていません。' };
   if (to.length === 0) return { ok: false, message: '遷移先の状態を選択してください。' };
+  // The API requires a reason to put an order on hold (HOLD_REASON_REQUIRED);
+  // the other targets take none, so the field is sent only for ON_HOLD.
+  if (to === 'ON_HOLD') {
+    const holdReason = reasonField(formData, 'holdReason', '保留にする理由');
+    if (!holdReason.ok) return holdReason.state;
+    return post(`/api/film-supply-orders/${encodeURIComponent(orderId)}/transitions`, { to, holdReason: holdReason.text });
+  }
   return post(`/api/film-supply-orders/${encodeURIComponent(orderId)}/transitions`, { to });
+}
+
+/**
+ * A required reason. Only emptiness is checked here: the API counts its
+ * 1000-character limit after its own normalisation (control characters and
+ * runs of spaces removed), so a length rule here could refuse a reason the API
+ * accepts. An over-long reason gets the API's own message, shown verbatim.
+ */
+function reasonField(
+  formData: FormData,
+  key: string,
+  label: string
+): { ok: true; text: string } | { ok: false; state: ActionState } {
+  const text = field(formData, key);
+  if (text.length === 0) return { ok: false, state: { ok: false, message: `${label}は必須です。` } };
+  return { ok: true, text };
+}
+
+/**
+ * Hold release (admin only, reason required). The API resumes the order in
+ * the state it left — read from its own hold audit row. resumeStatus is sent
+ * only when the operator picked one, which the form offers for a legacy hold
+ * whose origin is not on record (the API answers HOLD_ORIGIN_UNKNOWN without
+ * it, and refuses any value that differs from a recorded origin).
+ */
+export async function releaseFilmOrderHoldAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const orderId = field(formData, 'orderId');
+  if (orderId.length === 0) return { ok: false, message: 'フィルム発注が選択されていません。' };
+  const reason = reasonField(formData, 'reason', '保留解除の理由');
+  if (!reason.ok) return reason.state;
+  const resumeStatus = optionalField(formData, 'resumeStatus');
+  return post(`/api/film-supply-orders/${encodeURIComponent(orderId)}/hold-release`, {
+    reason: reason.text,
+    ...(resumeStatus ? { resumeStatus } : {})
+  });
+}
+
+/**
+ * Cancellation review resolution (admin only, reason required): resume (the
+ * API returns the order to the state it left) or cancel (取消終了, terminal).
+ */
+export async function resolveCancellationReviewAction(
+  _prev: ActionState | null,
+  formData: FormData
+): Promise<ActionState> {
+  const orderId = field(formData, 'orderId');
+  const outcome = field(formData, 'outcome');
+  if (orderId.length === 0) return { ok: false, message: 'フィルム発注が選択されていません。' };
+  if (outcome !== 'resume' && outcome !== 'cancel') {
+    return { ok: false, message: '処理（再開する／取消で終了する）を選択してください。' };
+  }
+  const reason = reasonField(formData, 'reason', '取消レビューの処理理由');
+  if (!reason.ok) return reason.state;
+  // Legacy review without a recorded origin: the resume target the operator picked (resume only).
+  const resumeStatus = outcome === 'resume' ? optionalField(formData, 'resumeStatus') : undefined;
+  return post(`/api/film-supply-orders/${encodeURIComponent(orderId)}/cancellation-review-resolve`, {
+    outcome,
+    reason: reason.text,
+    ...(resumeStatus ? { resumeStatus } : {})
+  });
 }
 
 export async function assumeFilmReceiptAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {

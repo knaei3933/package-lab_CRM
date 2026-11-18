@@ -515,10 +515,11 @@ describe('2-④ maker-po stages: status × (pending check, events) → done / cu
 // ---------------------------------------------------------------------------
 
 describe('2-⑤ status tone table', () => {
-  it('maps all 17 core film order states — none missing, none extra', () => {
+  it('maps all 17 core film order states and CANCELLED (取消終了) — none missing, none extra', () => {
     const core = [...FILM_SUPPLY_ORDER_STATES, ...FILM_SUPPLY_ORDER_EXCEPTION_STATES].sort();
     expect(core).toHaveLength(17);
-    expect(Object.keys(FILM_ORDER_STATUS_TONES).sort()).toEqual(core);
+    // UI batch D: a cancellation review resolved as cancel ends the order in CANCELLED (core FILM_ORDER_CANCELLATION_STATE).
+    expect(Object.keys(FILM_ORDER_STATUS_TONES).sort()).toEqual([...core, 'CANCELLED'].sort());
   });
 
   it('maps every maker PO status: the web label keys and the core vocabulary', () => {
