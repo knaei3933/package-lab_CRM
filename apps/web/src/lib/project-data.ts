@@ -782,7 +782,7 @@ export async function loadWorkspace(
       })
       .map((order) => order.id);
   const makerPaperCleanup = closedOrderIds.length > 0
-    ? await (await import('./maker-po-data')).loadMakerPaperCleanup(projectId, closedOrderIds)
+    ? await (await import('./maker-po-data.js')).loadMakerPaperCleanup(projectId, closedOrderIds)
     : {};
 
   return {
