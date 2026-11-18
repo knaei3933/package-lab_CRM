@@ -33,7 +33,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
 const { loadWorkspace, officialRegistrationText, sevenPurchaseOrderChoiceLabel } = await import(
   '../apps/web/src/lib/project-data.js'
 );
-const { HIDDEN_BY_ROLE_LABEL } = await import('../apps/web/src/lib/redaction.js');
+const { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } = await import('../apps/web/src/lib/redaction.js');
 const { formatTimestamp } = await import('../apps/web/src/lib/vocabulary.js');
 const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
 const { default: DeliveriesPage } = await import('../apps/web/src/app/deliveries/page.js');
@@ -212,10 +212,10 @@ describe('M2 + M1: セブン発注書 registration is told apart from hidden, pe
         officialRegisteredAt: null, officiallyRegistered: true, officialRegistrationHidden: true, poNumberHidden: true
       });
       expect(officialRegistrationText(registered)).toBe('公式登録済み（登録日は閲覧権限なし）');
-      expect(sevenPurchaseOrderChoiceLabel(registered)).toBe('発注番号 閲覧権限なし・ID 01a1ec53…（公式登録済み）');
+      expect(sevenPurchaseOrderChoiceLabel(registered)).toBe('発注番号 閲覧権限なし・ID …902de940（公式登録済み）');
       expect(unregistered).toMatchObject({ officialRegisteredAt: null, officiallyRegistered: false, officialRegistrationHidden: true });
       expect(officialRegistrationText(unregistered)).toBe(HIDDEN_BY_ROLE_LABEL);
-      expect(sevenPurchaseOrderChoiceLabel(unregistered)).toBe('発注番号 閲覧権限なし・ID 01a1ec53…（登録状況 閲覧権限なし）');
+      expect(sevenPurchaseOrderChoiceLabel(unregistered)).toBe('発注番号 閲覧権限なし・ID …902de941（登録状況 閲覧権限なし）');
       for (const po of workspace.sevenPurchaseOrders) {
         expect(RECORD_TIMES).not.toContain(po.officialRegisteredAt);
         expect(sevenPurchaseOrderChoiceLabel(po)).not.toContain('未登録');
@@ -338,7 +338,7 @@ describe('rendered screens per role (display only — the forms and permissions 
     serveAs(role);
     const html = await renderPage(MakerPoPage);
     expect(html).not.toContain('（閲覧権限なし）（未登録）');
-    expect(html).toContain(role === 'admin' ? 'SC-REG-1（公式登録済み）' : '発注番号 閲覧権限なし・ID 01a1ec53…（公式登録済み）');
+    expect(html).toContain(role === 'admin' ? 'SC-REG-1（公式登録済み）' : '発注番号 閲覧権限なし・ID …902de940（公式登録済み）');
   });
 });
 
@@ -407,6 +407,49 @@ describe('auth route handlers (L1, L5)', () => {
     const unreachable = await login((async () => { throw new TypeError('connect ECONNREFUSED'); }) as typeof fetch);
     expect(unreachable.status).toBe(502);
     expect(unreachable.headers.getSetCookie()).toEqual([]);
+  });
+});
+
+describe('review of f81a5e5: distinct PO labels and the surviving mutants', () => {
+  it('two hidden POs made in the same ~65 s (same uuidv7 time prefix) get different labels', () => {
+    // Same first 13 characters (the 48-bit millisecond time and version nibble),
+    // as uuidv7 ids made a few seconds apart have; only the random tail differs.
+    const base = {
+      poNumber: '', poNumberHidden: true, officialRegisteredAt: null, officiallyRegistered: false,
+      verificationStatus: null, reviewPending: false, officialRegistrationHidden: true, verificationHidden: true
+    };
+    const first = { ...base, id: '01a1ec53-af67-75da-a932-e03a11111111' };
+    const second = { ...base, id: '01a1ec53-af67-7f00-8c11-5b9d22222222' };
+    expect(first.id.slice(0, 8)).toBe(second.id.slice(0, 8));
+    const firstLabel = sevenPurchaseOrderChoiceLabel(first);
+    const secondLabel = sevenPurchaseOrderChoiceLabel(second);
+    expect(firstLabel).not.toBe(secondLabel);
+    expect(firstLabel).toBe('発注番号 閲覧権限なし・ID …11111111（登録状況 閲覧権限なし）');
+    expect(secondLabel).toBe('発注番号 閲覧権限なし・ID …22222222（登録状況 閲覧権限なし）');
+  });
+
+  it.each(ROLES)('deliveries (%s): the 数量・回次・納品日 cells read 閲覧権限なし when withheld, never 未記録 or 「—」', async (role) => {
+    serveAs(role);
+    const html = await renderPage(DeliveriesPage);
+    const rowStart = html.lastIndexOf('<tr', html.indexOf(DELIVERY_ID));
+    const row = html.slice(rowStart, html.indexOf('</tr>', rowStart));
+    const cells = [...row.matchAll(/<td[^>]*>(.*?)<\/td>/g)].map((match) => match[1]);
+    // Columns: 種別, 発注, 数量, 回次, 納品日, …
+    const [quantity, sequenceCell, deliveredAt] = cells.slice(2, 5);
+    if (role === 'admin') {
+      expect([quantity, sequenceCell, deliveredAt]).toEqual(['10.000 rolls', '1', '2026/11/18 08:00 JST']);
+    } else {
+      expect([quantity, sequenceCell, deliveredAt]).toEqual([HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_LABEL]);
+      expect(row).not.toContain('未記録');
+    }
+  });
+
+  it.each(ROLES)('orders (%s): the filling note says 準備状態: 閲覧権限なし when readiness is withheld, never a default state', async (role) => {
+    serveAs(role);
+    const html = await renderPage(OrdersPage);
+    const note = /（準備状態: (.*?)）/.exec(html.replaceAll('<!-- -->', ''))?.[1];
+    expect(note).toBe(role === 'admin' ? 'PENDING_VERIFICATION' : HIDDEN_BY_ROLE_SHORT);
+    expect(note).not.toBe('MISSING_DATA');
   });
 });
 

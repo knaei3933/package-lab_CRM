@@ -102,14 +102,16 @@ export interface SevenPurchaseOrderView {
 
 /**
  * UI batch A follow-up (M1): the select label of a セブン化学発注書. A withheld
- * PO number is named as withheld and the short id keeps the choices apart; the
+ * PO number is named as withheld and the short id keeps the choices apart — its
+ * last 8 characters, because a uuidv7's leading characters are its creation
+ * time and POs made within ~65 seconds share them; the
  * registration part says what is known — 公式登録済み (date visible, or the
  * registration action seen), 未登録 only when the API shows the PO unregistered,
  * and 閲覧権限なし when the role may not read it. Never 「（閲覧権限なし）（未登録）」.
  */
 export function sevenPurchaseOrderChoiceLabel(po: SevenPurchaseOrderView): string {
   const number = po.poNumberHidden
-    ? `発注番号 ${HIDDEN_BY_ROLE_SHORT}・ID ${po.id.slice(0, 8)}…`
+    ? `発注番号 ${HIDDEN_BY_ROLE_SHORT}・ID …${po.id.slice(-8)}`
     : po.poNumber;
   const registration = po.officiallyRegistered
     ? '公式登録済み'
