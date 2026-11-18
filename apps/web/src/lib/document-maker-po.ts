@@ -1,6 +1,7 @@
 // Pure helpers only: imported by a client component, so no server-only imports (api.ts, maker-po-data.ts values).
 import type { Choice } from './types';
 import type { MakerPoViewRow } from './maker-po-data';
+import { shortId } from './short-id';
 
 /** Document types that are about one maker purchase order (API intake: makerPurchaseOrderId). */
 export const MAKER_PO_BOUND_DOCUMENT_TYPES: readonly string[] = ['acceptance_evidence', 'send_evidence'];
@@ -27,7 +28,7 @@ export function toMakerPoChoices(
       choices.push({
         value: row.id,
         filmSupplyOrderId: order.id,
-        label: `${order.code} / ${row.id.slice(0, 8)}（${statusLabels[row.status] ?? row.status}）`
+        label: `${order.code} / ${shortId(row.id)}（${statusLabels[row.status] ?? row.status}）`
       });
     }
   }

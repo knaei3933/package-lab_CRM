@@ -9,4 +9,6 @@ export interface Choice {
   label: string;
   /** G6: the stored EML's own Message-ID, when the server could extract one. */
   autoEvidenceIdentifier?: string | null;
+  /** UI batch B: rendered inside <optgroup label={group}> after the ungrouped choices. */
+  group?: string;
 }

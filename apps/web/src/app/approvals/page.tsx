@@ -2,6 +2,9 @@ import type { Metadata } from 'next';
 import { ActionForm } from '../../components/ActionForm';
 import { ApprovalDecisionForm } from '../../components/ApprovalDecisionForm';
 import { OffsetDateTimeField } from '../../components/OffsetDateTimeField';
+import { ProjectProgress } from '../../components/ProjectProgress';
+import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
+import { TechDetails } from '../../components/TechDetails';
 import { SelectField, TextField } from '../../components/fields';
 import {
   recordArtworkApprovalAction,
@@ -11,13 +14,21 @@ import {
 import { loadSessionUser, readSelectedProjectId } from '../../lib/api';
 import { callApi } from '../../lib/api';
 import { asiaTokyoDatetimeLocalNow } from '../../lib/datetime';
-import { labelLookup, loadApprovalGate, loadWorkspace } from '../../lib/project-data';
+import { canRoleOperate, operationRefusal } from '../../lib/permissions';
+import {
+  filmOrderChoiceLabel,
+  labelLookup,
+  loadApprovalGate,
+  loadWorkspace,
+  NO_PROJECT_SELECTED_MESSAGE
+} from '../../lib/project-data';
+import { shortId } from '../../lib/short-id';
 import type {
   ApprovalGateView,
   DesignApprovalGateView,
   PendingManualVerificationView
 } from '../../lib/project-data';
-import { badgeStyle, cardStyle, infoBoxStyle, monoStyle, noteStyle, tableStyle, tdStyle, thStyle } from '../../lib/ui';
+import { badgeStyle, cardStyle, infoBoxStyle, noteStyle, tableStyle, tdStyle, thStyle } from '../../lib/ui';
 import {
   APPROVAL_DECISION_LABELS,
   EVIDENCE_SOURCE_LABELS,
@@ -26,7 +37,7 @@ import {
   VERIFICATION_STATUS_LABELS
 } from '../../lib/vocabulary';
 import type { Choice } from '../../lib/types';
-import { codeWithStatus, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
+import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
 
 export const dynamic = 'force-dynamic';
 
@@ -50,11 +61,13 @@ export const metadata: Metadata = { title: '承認' };
 export default async function ApprovalsPage() {
   const projectId = await readSelectedProjectId();
   if (!projectId) {
-    return <div style={infoBoxStyle}>案件が選択されていません。上部の「案件の選択」で案件IDを入力してください。</div>;
+    return <div style={infoBoxStyle}>{NO_PROJECT_SELECTED_MESSAGE}</div>;
   }
 
   const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
-  const isAdmin = (user?.role ?? 'viewer') === 'admin';
+  const role = user?.role ?? null;
+  // UI batch B (④): the representative-only manual verification, through the shared helper.
+  const canVerifyEvidence = canRoleOperate(role, 'artwork_approval:verify_evidence');
   const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
   const organizationLabel = labelLookup(workspace.labels, 'approvalOrganizations');
 
@@ -66,7 +79,7 @@ export default async function ApprovalsPage() {
   }
 
   const orderCode = (orderId: string) =>
-    workspace.filmOrders.find((order) => order.id === orderId)?.code ?? orderId;
+    workspace.filmOrders.find((order) => order.id === orderId)?.code ?? `発注 ${shortId(orderId)}`;
 
   /** 원본 증빙: the stored document a pending verification points at. */
   const evidenceLabel = (versionId: string | null): string => {
@@ -79,7 +92,7 @@ export default async function ApprovalsPage() {
         }）`;
       }
     }
-    return `書類バージョン ${versionId.slice(0, 8)}…`;
+    return `書類バージョン ${shortId(versionId)}`;
   };
 
   const evidenceAutoIdentifiers = new Map<string, string>();
@@ -104,7 +117,7 @@ export default async function ApprovalsPage() {
         autoEvidenceIdentifier: evidenceAutoIdentifiers.get(version.id) ?? null,
         label: `${document.filename}（版${version.versionNumber}／確認状態 ${
           VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus
-        }／ID ${version.id.slice(0, 8)}…）`
+        }／ID ${shortId(version.id)}）`
       })));
 
   const proofChoices: Choice[] = workspace.documents
@@ -113,15 +126,17 @@ export default async function ApprovalsPage() {
       value: version.id,
       label: `${document.filmSupplyOrderId ? orderCode(document.filmSupplyOrderId) : '発注未紐付け'}／${
         document.designKey ?? 'デザイン未指定'
-      }／${document.filename}（版${version.versionNumber}／ID ${version.id.slice(0, 8)}…）`
+      }／${document.filename}（版${version.versionNumber}／ID ${shortId(version.id)}）`
     })));
 
   return (
     <section style={{ display: 'grid', gap: 24 }}>
       <header>
         <h1 style={{ fontSize: 26, margin: '0 0 4px' }}>承認（校了のダブル承認）</h1>
+        <ProjectProgress workspace={workspace} role={role} currentPath="/approvals" />
+        <ViewerPageNotice role={role} />
         <p style={noteStyle}>
-          顧客とセブン化学の両組織の承認でダブル承認（校了）になります。承認は必ず証跡（approval_evidence）の
+          顧客とセブン化学の両組織の承認でダブル承認（校了）になります。承認は必ず承認証跡の
           書類バージョンを引用して記録します。どちらの組織が先でも構いません。
         </p>
         {workspace.error ? <div style={infoBoxStyle}>{workspace.error}</div> : null}
@@ -176,7 +191,7 @@ export default async function ApprovalsPage() {
                 </table>
               ) : (
                 <div style={infoBoxStyle}>
-                  承認ゲート（/api/film-supply-orders/:id/approval-gate）の取得に失敗しました。
+                  この発注の承認の状況を取得できませんでした。
                 </div>
               )}
 
@@ -187,7 +202,7 @@ export default async function ApprovalsPage() {
                     <li key={revision.id}>
                       デザイン {revision.designKey} ／ 版{revision.revisionNo} ／ 登録 {formatTimestamp(revision.createdAt)}
                       {revision.invalidatedApprovals ? <span style={noteStyle}>（既存の承認を無効化）</span> : null}
-                      ／ 版ID <span style={monoStyle}>{revision.id}</span>
+                      <TechDetails context="版ID">{revision.id}</TechDetails>
                     </li>
                   ))}
                 </ul>
@@ -196,7 +211,8 @@ export default async function ApprovalsPage() {
               {gate && gate.pendingManualVerifications.length > 0 ? (
                 <PendingVerificationSection
                   pending={gate.pendingManualVerifications}
-                  isAdmin={isAdmin}
+                  role={role}
+                  canVerify={canVerifyEvidence}
                   evidenceLabel={evidenceLabel}
                   organizationText={organizationLabel}
                 />
@@ -210,19 +226,21 @@ export default async function ApprovalsPage() {
                         <h3 style={{ fontSize: 16, margin: '0 0 4px' }}>
                           承認を記録する：デザイン {design.designKey}（版{design.currentRevisionNo}）
                         </h3>
-                        <p style={noteStyle}>
-                          必要な証跡：この発注とデザイン「{design.designKey}」に紐付けた承認証跡（approval_evidence）の
-                          書類バージョン。両組織が同じ版を引用できますが、承認証跡識別子（承認メッセージのMessage-IDや
-                          署名ブロックのハッシュ）は組織ごとに固有の値を入力してください。
-                        </p>
-                        <ApprovalDecisionForm
-                          action={recordArtworkApprovalAction}
-                          revisionId={design.currentRevisionId}
-                          designKey={design.designKey}
-                          evidenceChoices={approvalEvidenceChoices(orderId, design.designKey)}
-                          evidenceSourceChoices={evidenceSourceChoices()}
-                          defaultEventTime={nowInputValue()}
-                        />
+                        <RoleGate role={role} operation="artwork_approval:record" label="承認の記録">
+                          <p style={noteStyle}>
+                            必要な証跡：この発注とデザイン「{design.designKey}」に紐付けた承認証跡の
+                            書類バージョン。両組織が同じ版を引用できますが、承認証跡識別子（承認メッセージのMessage-IDや
+                            署名ブロックのハッシュ）は組織ごとに固有の値を入力してください。
+                          </p>
+                          <ApprovalDecisionForm
+                            action={recordArtworkApprovalAction}
+                            revisionId={design.currentRevisionId}
+                            designKey={design.designKey}
+                            evidenceChoices={approvalEvidenceChoices(orderId, design.designKey)}
+                            evidenceSourceChoices={evidenceSourceChoices()}
+                            defaultEventTime={nowInputValue()}
+                          />
+                        </RoleGate>
                       </div>
                     ))
                 : null}
@@ -233,37 +251,39 @@ export default async function ApprovalsPage() {
 
       <div style={cardStyle}>
         <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>校正ゲラの版を登録する</h2>
-        <p style={noteStyle}>
-          発注が「セブン化学発注書確認済」以降の状態のとき、proof 書類のバージョンを版として登録できます。
-          新しい版を登録すると、そのデザインの既存の承認は無効になり承認待ちに戻ります。
-        </p>
-        <ActionForm action={registerArtworkRevisionAction} submitLabel="版を登録する">
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-            <SelectField
-              name="orderId"
-              label="フィルム発注"
-              required
-              width={300}
-              choices={workspace.filmOrders.map((order) => ({
-                value: order.id,
-                label: codeWithStatus(order.code, order.statusHidden ? null : stateLabel(order.status))
-              }))}
-            />
-            <TextField name="designKey" label="デザインキー" required width={180} hint="例：T-35" />
-            <SelectField
-              name="fileDocumentVersionId"
-              label="版ファイル（proofのバージョン）"
-              required
-              width={420}
-              choices={proofChoices}
-            />
-            <TextField name="lotMarking" label="ロット表記（任意）" width={180} />
-            <TextField name="note" label="備考（任意）" width={220} />
-          </div>
-        </ActionForm>
-        {proofChoices.length === 0 ? (
-          <p style={noteStyle}>proof 書類がまだありません。文書画面から校正ゲラをアップロードしてください。</p>
-        ) : null}
+        <RoleGate role={role} operation="artwork_revision:create" label="版の登録">
+          <p style={noteStyle}>
+            発注が「{stateLabel('SEVEN_PO_VERIFIED')}」以降の状態のとき、校正ゲラの書類のバージョンを版として登録できます。
+            新しい版を登録すると、そのデザインの既存の承認は無効になり承認待ちに戻ります。
+          </p>
+          <ActionForm action={registerArtworkRevisionAction} submitLabel="版を登録する">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+              <SelectField
+                name="orderId"
+                label="フィルム発注"
+                required
+                width={300}
+                choices={workspace.filmOrders.map((order) => ({
+                  value: order.id,
+                  label: filmOrderChoiceLabel(order, stateLabel)
+                }))}
+              />
+              <TextField name="designKey" label="デザインキー" required width={180} hint="例：T-35" />
+              <SelectField
+                name="fileDocumentVersionId"
+                label="版ファイル（校正ゲラのバージョン）"
+                required
+                width={420}
+                choices={proofChoices}
+              />
+              <TextField name="lotMarking" label="ロット表記（任意）" width={180} />
+              <TextField name="note" label="備考（任意）" width={220} />
+            </div>
+          </ActionForm>
+          {proofChoices.length === 0 ? (
+            <p style={noteStyle}>校正ゲラの書類がまだありません。文書画面から校正ゲラをアップロードしてください。</p>
+          ) : null}
+        </RoleGate>
       </div>
 
       <div style={cardStyle}>
@@ -309,7 +329,10 @@ export default async function ApprovalsPage() {
                         {EVIDENCE_SOURCE_LABELS[event.evidenceSource as keyof typeof EVIDENCE_SOURCE_LABELS]
                           ?? event.evidenceSource}
                       </td>
-                      <td style={monoStyle}>{event.evidenceDocumentVersionId}</td>
+                      <td style={tdStyle}>
+                        {evidenceLabel(event.evidenceDocumentVersionId === '—' ? null : event.evidenceDocumentVersionId)}
+                        <TechDetails context="ID">{event.evidenceDocumentVersionId}</TechDetails>
+                      </td>
                       <td style={tdStyle}>{event.eventTime ? formatTimestamp(event.eventTime) : '未記録'}</td>
                     </>
                   )}
@@ -334,7 +357,7 @@ function organizationStateText(state: DesignApprovalGateView['customer']): strin
       ? '手動確認で却下（二重承認に算入されません）'
       : '手動確認待ち（証跡識別子未確認）';
   }
-  if (state.revoked) return '取消済み（REVOKE）';
+  if (state.revoked) return '取消済み';
   if (state.invalidatedByNewerRevision) return '新しい版で無効化';
   if (state.latestDecision === 'REVOKE') return '取消済み';
   return '未承認';
@@ -354,12 +377,14 @@ const VERIFICATION_RESULT_CHOICES: Choice[] = [
  */
 function PendingVerificationSection({
   pending,
-  isAdmin,
+  role,
+  canVerify,
   evidenceLabel,
   organizationText
 }: {
   pending: PendingManualVerificationView[];
-  isAdmin: boolean;
+  role: string | null;
+  canVerify: boolean;
   evidenceLabel: (versionId: string | null) => string;
   organizationText: (key: string) => string;
 }) {
@@ -380,9 +405,11 @@ function PendingVerificationSection({
             {entry.revisionNo}）は手動確認待ちです。
             <div style={noteStyle}>
               原本証跡（원본 증빙）: {evidenceLabel(entry.evidenceDocumentVersionId)}
-              <div style={monoStyle}>証跡バージョンID: {entry.evidenceDocumentVersionId ?? '—'}</div>
-              <div style={monoStyle}>承認証跡識別子: {entry.evidenceIdentifier ?? '—'}</div>
-              <div style={monoStyle}>版ハッシュ（approved_file_sha256）: {entry.approvedFileSha256}</div>
+              <TechDetails context="ID・識別子">
+                <p>証跡バージョンID: {entry.evidenceDocumentVersionId ?? '—'}</p>
+                <p>承認証跡識別子: {entry.evidenceIdentifier ?? '—'}</p>
+                <p>版ハッシュ（approved_file_sha256）: {entry.approvedFileSha256}</p>
+              </TechDetails>
               교정본（確認対象の校正）: デザイン {entry.designKey} ／ 版{entry.revisionNo} ／{' '}
               {formatTimestamp(entry.eventTime)} 承認（記録 {formatTimestamp(entry.recordedAt)}）
               {entry.manualVerification ? (
@@ -393,7 +420,7 @@ function PendingVerificationSection({
               ) : null}
             </div>
           </div>
-          {isAdmin ? (
+          {canVerify ? (
             <ActionForm
               action={verifyEvidenceManualAction}
               submitLabel="手動確認を記録する"
@@ -419,8 +446,8 @@ function PendingVerificationSection({
               </div>
             </ActionForm>
           ) : (
-            <p style={noteStyle}>
-              次のアクション: 代表者による原本証跡の確認を待ちます（担当者・閲覧者は確認を記録できません）。
+            <p className="role-notice">
+              次のアクション: 代表者による原本証跡の確認を待ちます。{operationRefusal(role, 'artwork_approval:verify_evidence', '手動確認の記録')}
             </p>
           )}
         </div>

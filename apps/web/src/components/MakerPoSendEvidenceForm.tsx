@@ -180,7 +180,7 @@ export function MakerPoSendEvidenceForm({
       </div>
       <p style={noteStyle}>
         原本をここで渡す場合は、下の「送信証跡の書類バージョン」は「（選択なし）」のままで構いません
-        （APIが send_evidence 書類として保存して検証します）。Thunderbirdの送信済みフォルダから
+        （送信証跡の書類として保存して検証します）。Thunderbirdの送信済みフォルダから
         書き出した .eml を選ぶと、このフォームが件名の先頭に発注コードを挿入して送信します。
       </p>
 

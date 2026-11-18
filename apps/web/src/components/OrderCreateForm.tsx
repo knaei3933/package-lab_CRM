@@ -99,7 +99,7 @@ export function OrderCreateForm({
             ))}
           </select>
           <span style={noteStyle}>
-            ドラフトの間だけ変更できます。ここでの記録は入金確認ではありません —
+            発注が下書きの間だけ変更できます。ここでの記録は入金確認ではありません —
             入金の確認は別の手動ステップです。
           </span>
         </label>

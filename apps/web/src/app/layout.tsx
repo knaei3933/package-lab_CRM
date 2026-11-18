@@ -1,16 +1,14 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
-import { ActionForm } from '../components/ActionForm';
 import { LogoutButton } from '../components/LogoutButton';
 import { NavLinks } from '../components/NavLinks';
-import { SelectField, TextField } from '../components/fields';
+import { ProjectPicker } from '../components/ProjectPicker';
 import { cookies } from 'next/headers';
 import { loadSessionUser, readSelectedProjectId } from '../lib/api';
 import { decodeDisplayNameCookie, DISPLAY_NAME_COOKIE, operatorName, roleLabel } from '../lib/session-display';
 import { loadSelectableProjects } from '../lib/project-data';
 import type { ProjectSummary } from '../lib/project-data';
-import { monoStyle } from '../lib/ui';
 import { selectProjectAction } from './actions';
 import './globals.css';
 
@@ -84,30 +82,8 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             {user ? (
               <>
                 <NavLinks items={navItems} />
-                <ActionForm
-                  action={selectProjectAction}
-                  submitLabel="案件を切り替える"
-                  hint="一覧から案件を選ぶと、その案件の発注・文書・承認・納品を表示します。一覧にない案件は下の直接入力を使ってください（案件IDはUUID）。"
-                >
-                  <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-end', gap: 12 }}>
-                    <SelectField
-                      name="projectId"
-                      label="案件の選択（案件ID）"
-                      includeBlank
-                      blankLabel="（選択なし — 下の直接入力を使う）"
-                      defaultValue={projectId ?? ''}
-                      choices={projectChoices}
-                      width={420}
-                    />
-                    <TextField
-                      name="directProjectId"
-                      label="案件IDを直接入力（一覧にない案件）"
-                      placeholder="UUIDを貼り付け"
-                      width={340}
-                    />
-                    {projectId ? <span style={monoStyle}>現在の案件ID: {projectId}</span> : null}
-                  </div>
-                </ActionForm>
+                {/* UI batch B (②): one compact line; the id input is under 「詳細」. */}
+                <ProjectPicker action={selectProjectAction} choices={projectChoices} currentProjectId={projectId} />
               </>
             ) : null}
           </div>

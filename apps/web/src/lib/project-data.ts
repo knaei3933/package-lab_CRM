@@ -1,5 +1,10 @@
+import { FILM_SUPPLY_ORDER_STATES, FILM_SUPPLY_ORDER_TERMINAL_STATE } from '@kanei/core';
+import type { FilmSupplyOrderState, Operation } from '@kanei/core';
 import { callApi } from './api';
-import { displayText, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT, isFieldHiddenByRole, isStateWithheld } from './redaction';
+import { operationRefusal } from './permissions';
+import { shortId } from './short-id';
+import { makerChainResumeNotice } from './transitions';
+import { codeWithStatus, displayText, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT, isFieldHiddenByRole, isStateWithheld } from './redaction';
 import { formatTimestamp } from './vocabulary';
 
 /**
@@ -66,6 +71,12 @@ export interface FilmSupplyOrderView {
   detailsHidden: boolean;
   /** UI batch A: the API withheld the status (viewer); never shown as 下書き. */
   statusHidden: boolean;
+  /**
+   * UI batch B: the latest normal (non-exception) state the order was seen in —
+   * for an order on hold or under review, the state it left. Null when the
+   * role may not read the states.
+   */
+  lastNormalStatus: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -111,7 +122,7 @@ export interface SevenPurchaseOrderView {
  */
 export function sevenPurchaseOrderChoiceLabel(po: SevenPurchaseOrderView): string {
   const number = po.poNumberHidden
-    ? `発注番号 ${HIDDEN_BY_ROLE_SHORT}・ID …${po.id.slice(-8)}`
+    ? `発注番号 ${HIDDEN_BY_ROLE_SHORT}・ID ${shortId(po.id)}`
     : po.poNumber;
   const registration = po.officiallyRegistered
     ? '公式登録済み'
@@ -356,7 +367,14 @@ export function labelLookup(
 async function loadProject(projectId: string): Promise<{ project: ProjectView | null; error: string | null }> {
   const result = await callApi<ProjectView>(`/api/projects/${encodeURIComponent(projectId)}`);
   if (!result.ok || !result.data) {
-    return { project: null, error: result.error ?? `案件が取得できませんでした（${result.status}）。` };
+    const reason = result.error ?? `案件が取得できませんでした（${result.status}）。`;
+    // UI batch B (②): a remembered project the API no longer opens (404 等)
+    // says what to do next; the API's own wording stays first, unchanged.
+    // A lost session (401) is not a project problem: ask for a new login.
+    const hint = result.status === 401
+      ? RELOGIN_HINT
+      : result.status >= 400 && result.status < 500 ? RESELECT_PROJECT_HINT : null;
+    return { project: null, error: hint ? `${reason} ${hint}` : reason };
   }
   return {
     project: {
@@ -471,14 +489,25 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
         // absence marks a role-shaped answer (viewer: no state; staff: trimmed).
         detailsHidden: isFieldHiddenByRole(event, 'lineCount'),
         statusHidden: isStateWithheld(event),
+        lastNormalStatus: isStateWithheld(event) ? null : normalStatusOrNull(text(after, 'status')),
         createdAt: event.occurredAt,
         updatedAt: event.occurredAt
       });
-    } else if (event.action === 'FILM_SUPPLY_ORDER_TRANSITIONED') {
+    } else if (
+      event.action === 'FILM_SUPPLY_ORDER_TRANSITIONED'
+      // UI batch B: the 受領確認 (receipt assumption) moves the order into the
+      // terminal state through its own action, recorded on the same entity.
+      || event.action === 'FILM_RECEIPT_ASSUMPTION_RECORDED'
+    ) {
       const current = filmOrders.get(event.entityId);
       if (current) {
         current.status = requiredText(state(event.afterState), 'status', current.status);
         current.statusHidden = isStateWithheld(event);
+        if (!current.statusHidden) {
+          current.lastNormalStatus = normalStatusOrNull(current.status)
+            ?? normalStatusOrNull(text(state(event.beforeState), 'status'))
+            ?? current.lastNormalStatus;
+        }
         current.updatedAt = event.occurredAt;
       }
     }
@@ -855,4 +884,334 @@ function toOrganizationState(value: unknown, organization: string): Organization
     pendingEvidenceIdentifier: bool(record, 'pendingEvidenceIdentifier'),
     manualVerification: toManualVerification(record.manualVerification)
   };
+}
+
+// ---------------------------------------------------------------------------
+// UI batch B (①): the project progress stepper and 「次にやること」. Pure
+// functions over the already loaded Workspace — no extra API read.
+// ---------------------------------------------------------------------------
+
+/** Shown on every operator screen while no project is selected. */
+export const NO_PROJECT_SELECTED_MESSAGE = '案件が選択されていません。画面上部の「案件」から選んでください。';
+
+/** Appended to the API's refusal when the remembered project cannot be opened. */
+export const RESELECT_PROJECT_HINT = '上部の「案件」から選び直してください。';
+
+/** Appended instead when the API answered 401 (the session is gone). */
+export const RELOGIN_HINT = 'ログインし直してください。';
+
+/** Where the role may not read the film order states (viewer). */
+export const STATUS_HIDDEN_NOTICE = 'この役割では発注の状態は表示されません（閲覧権限なし）';
+
+function normalStatusOrNull(status: string | null): string | null {
+  return status !== null && (FILM_SUPPLY_ORDER_STATES as readonly string[]).includes(status) ? status : null;
+}
+
+/**
+ * The order's status when the role may read it, else null. A withheld status
+ * keeps the data layer's 'DRAFT' placeholder in `status`; every status branch
+ * on the screens reads this helper so that placeholder is never taken as 下書き.
+ */
+export function knownStatus(order: Pick<FilmSupplyOrderView, 'status' | 'statusHidden'>): string | null {
+  return order.statusHidden ? null : order.status;
+}
+
+/** 「code（状態）」 of a film order for selects and headings. */
+export function filmOrderChoiceLabel(
+  order: Pick<FilmSupplyOrderView, 'code' | 'status' | 'statusHidden'>,
+  stateLabel: (key: string) => string
+): string {
+  const status = knownStatus(order);
+  return codeWithStatus(order.code, status === null ? null : stateLabel(status));
+}
+
+/** The eight steps of one film order, in business order. */
+export const PROGRESS_STEPS = [
+  '発注書確認',
+  'デザイン受領',
+  '校正・校了',
+  '発注書・代表承認',
+  'メーカーへ送信',
+  '受入確認',
+  '生産・出荷',
+  '納品・受領'
+] as const;
+
+/**
+ * The current step of each state (index into PROGRESS_STEPS). The terminal
+ * state is past the last step (every step done); the exception states have no
+ * current step of their own — the step they interrupted comes from
+ * lastNormalStatus.
+ */
+export const STATUS_PROGRESS_STEP: Readonly<Record<FilmSupplyOrderState, number | null>> = {
+  DRAFT: 0,
+  SEVEN_PO_VERIFIED: 1,
+  ARTWORK_RECEIVED: 2,
+  PROOF_READY: 2,
+  APPROVAL_PENDING: 2,
+  DUAL_APPROVED: 3,
+  MAKER_PO_READY: 3,
+  APPROVED_FOR_MANUAL_SEND: 4,
+  MAKER_PO_SENT_MANUALLY: 5,
+  MAKER_PO_ACCEPTED: 6,
+  FILM_IN_PRODUCTION: 6,
+  FILM_SHIPPED: 6,
+  FILM_DELIVERED: 7,
+  FILM_RECEIPT_ASSUMED_NO_ISSUE: 8,
+  ON_HOLD: null,
+  CHANGE_REVIEW: null,
+  CANCELLATION_REVIEW: null
+};
+
+export type ProgressStepMark = 'done' | 'current' | 'interrupted' | 'upcoming' | 'unmarked';
+
+export interface OrderProgress {
+  /** hidden: the role may not read the status; unknown: a status the table does not name. */
+  phase: 'hidden' | 'unknown' | 'active' | 'exception' | 'complete';
+  status: string | null;
+  currentStep: number | null;
+  interruptedStep: number | null;
+  marks: ProgressStepMark[];
+}
+
+function stepOf(status: string): number | null | undefined {
+  return (STATUS_PROGRESS_STEP as Readonly<Record<string, number | null>>)[status];
+}
+
+function marksUpTo(step: number, at: ProgressStepMark): ProgressStepMark[] {
+  return PROGRESS_STEPS.map((_, index) => (index < step ? 'done' : index === step ? at : 'upcoming'));
+}
+
+export function orderProgress(
+  order: Pick<FilmSupplyOrderView, 'status' | 'statusHidden' | 'lastNormalStatus'>
+): OrderProgress {
+  const status = knownStatus(order);
+  const unmarked = PROGRESS_STEPS.map((): ProgressStepMark => 'unmarked');
+  if (status === null) {
+    return { phase: 'hidden', status: null, currentStep: null, interruptedStep: null, marks: unmarked };
+  }
+  const step = stepOf(status);
+  if (step === undefined) {
+    return { phase: 'unknown', status, currentStep: null, interruptedStep: null, marks: unmarked };
+  }
+  if (step === null) {
+    const left = order.lastNormalStatus ? stepOf(order.lastNormalStatus) : null;
+    const interrupted = typeof left === 'number' && left < PROGRESS_STEPS.length ? left : null;
+    return {
+      phase: 'exception',
+      status,
+      currentStep: null,
+      interruptedStep: interrupted,
+      marks: interrupted === null
+        ? PROGRESS_STEPS.map((): ProgressStepMark => 'upcoming')
+        : marksUpTo(interrupted, 'interrupted')
+    };
+  }
+  if (step >= PROGRESS_STEPS.length) {
+    return {
+      phase: 'complete',
+      status,
+      currentStep: null,
+      interruptedStep: null,
+      marks: PROGRESS_STEPS.map((): ProgressStepMark => 'done')
+    };
+  }
+  return { phase: 'active', status, currentStep: step, interruptedStep: null, marks: marksUpTo(step, 'current') };
+}
+
+/** Orders split for the stepper: in progress, completed (folded), and status withheld. */
+export function groupOrdersForProgress(orders: FilmSupplyOrderView[]): {
+  active: FilmSupplyOrderView[];
+  completed: FilmSupplyOrderView[];
+  hidden: FilmSupplyOrderView[];
+} {
+  const hidden = orders.filter((order) => knownStatus(order) === null);
+  const completed = orders.filter((order) => knownStatus(order) === FILM_SUPPLY_ORDER_TERMINAL_STATE);
+  const active = orders.filter((order) => {
+    const status = knownStatus(order);
+    return status !== null && status !== FILM_SUPPLY_ORDER_TERMINAL_STATE;
+  });
+  return { active, completed, hidden };
+}
+
+export type ScreenPath = '/orders' | '/documents' | '/approvals' | '/maker-po' | '/deliveries';
+
+/** The screen names the 「○○画面を開く」 links use (same order as the menu). */
+export const SCREEN_NAMES: Readonly<Record<ScreenPath, string>> = {
+  '/orders': '発注',
+  '/documents': '文書',
+  '/approvals': '承認',
+  '/maker-po': 'メーカー発注',
+  '/deliveries': '納品確認'
+};
+
+export const OWNER_STAFF_AND_ADMIN = '担当者・代表者';
+export const OWNER_ADMIN = '代表者';
+
+export interface NextActionView {
+  /** One sentence: what to do next. */
+  text: string;
+  /** Who does it, or null when nothing is left to do. */
+  owner: string | null;
+  /** Where it is done (first = main screen). */
+  screens: ScreenPath[];
+  operation: Operation | null;
+  /** Why the signed-in role cannot do it (display only; the API decides). */
+  refusal: string | null;
+}
+
+type NextActionWorkspace = Pick<Workspace, 'labels' | 'sevenPurchaseOrders' | 'revisions'>
+  & Partial<Pick<Workspace, 'revisionsWithheld'>>;
+
+function nextAction(
+  text: string,
+  owner: string,
+  screens: ScreenPath[],
+  operation: Operation,
+  role: string | null | undefined
+): NextActionView {
+  return { text, owner, screens, operation, refusal: operationRefusal(role, operation) };
+}
+
+function draftNextAction(
+  order: FilmSupplyOrderView,
+  workspace: NextActionWorkspace,
+  advance: (to: string) => string,
+  label: (key: string) => string,
+  role: string | null | undefined
+): NextActionView {
+  const both = OWNER_STAFF_AND_ADMIN;
+  const general = nextAction(
+    `セブン化学発注書の公式登録と真性行チェックリストを済ませ、${advance('SEVEN_PO_VERIFIED')}。`,
+    both, ['/orders'], 'film_order:transition', role
+  );
+  // Staff and viewer do not read the order's PO link: say the general step.
+  if (order.detailsHidden) return general;
+  if (!order.sevenPurchaseOrderId) {
+    return nextAction(
+      `この発注はセブン化学発注書に紐付いていないため、「${label('SEVEN_PO_VERIFIED')}」へ進められません。発注書を選んでフィルム発注を作成してください。`,
+      both, ['/orders'], 'film_order:create', role
+    );
+  }
+  const po = workspace.sevenPurchaseOrders.find((candidate) => candidate.id === order.sevenPurchaseOrderId);
+  if (!po) return general;
+  const name = po.poNumberHidden ? 'セブン化学発注書' : `セブン化学発注書（${po.poNumber}）`;
+  if (!po.officiallyRegistered && !po.officialRegistrationHidden) {
+    return nextAction(`${name}の公式登録日を記録する。`, both, ['/orders'], 'seven_po:register', role);
+  }
+  if (!po.verificationHidden && po.verificationStatus !== 'verified') {
+    return nextAction(`${name}の真性行チェックリストを記録し、確認済みにする。`, both, ['/orders'], 'seven_po:verify', role);
+  }
+  if (po.officiallyRegistered && po.verificationStatus === 'verified') {
+    return nextAction(`${advance('SEVEN_PO_VERIFIED')}。`, both, ['/orders'], 'film_order:transition', role);
+  }
+  return general;
+}
+
+/** 「次にやること」 of one film order for the signed-in role. */
+export function nextActionForOrder(
+  order: FilmSupplyOrderView,
+  workspace: NextActionWorkspace,
+  role: string | null | undefined
+): NextActionView {
+  const label = labelLookup(workspace.labels, 'filmSupplyOrderStates');
+  const advance = (to: string) => `状態を「${label(to)}」へ進める`;
+  const both = OWNER_STAFF_AND_ADMIN;
+  const status = knownStatus(order);
+  if (status === null) {
+    return {
+      text: '発注の状態が閲覧権限なしのため、次の作業は表示できません。',
+      owner: null,
+      screens: [],
+      operation: null,
+      refusal: operationRefusal(role, 'film_order:transition')
+    };
+  }
+  switch (status) {
+    case 'DRAFT':
+      return draftNextAction(order, workspace, advance, label, role);
+    case 'SEVEN_PO_VERIFIED':
+      return nextAction(
+        `デザイン入稿データを文書画面で登録し、${advance('ARTWORK_RECEIVED')}。`,
+        both, ['/documents', '/orders'], 'document:create', role
+      );
+    case 'ARTWORK_RECEIVED':
+      if (workspace.revisions.some((revision) => revision.filmSupplyOrderId === order.id)) {
+        return nextAction(`${advance('PROOF_READY')}。`, both, ['/orders'], 'film_order:transition', role);
+      }
+      // Revisions exist whose order link the role may not read: one of them may
+      // be this order's, so never claim the proof is still missing.
+      return (workspace.revisionsWithheld ?? 0) > 0
+        ? nextAction(
+          `校正ゲラの版が承認画面に登録されていることを確かめて、${advance('PROOF_READY')}。`,
+          both, ['/approvals', '/orders'], 'film_order:transition', role
+        )
+        : nextAction(
+          `校正ゲラの版を承認画面で登録し、${advance('PROOF_READY')}。`,
+          both, ['/approvals', '/orders'], 'artwork_revision:create', role
+        );
+    case 'PROOF_READY':
+      return nextAction(`${advance('APPROVAL_PENDING')}。`, both, ['/orders'], 'film_order:transition', role);
+    case 'APPROVAL_PENDING':
+      return nextAction(
+        `顧客とセブン化学の承認（校了）を承認画面で記録する。両方そろうと自動で「${label('DUAL_APPROVED')}」になります。`,
+        both, ['/approvals'], 'artwork_approval:record', role
+      );
+    case 'DUAL_APPROVED':
+      return nextAction(`${advance('MAKER_PO_READY')}。`, both, ['/orders'], 'film_order:transition', role);
+    case 'MAKER_PO_READY':
+      return nextAction('メーカー発注書を作成し、代表承認を記録する。', OWNER_ADMIN, ['/maker-po'], 'maker_po:create', role);
+    case 'APPROVED_FOR_MANUAL_SEND':
+      return nextAction(
+        'メーカーへの送信を記録する（送信済みメールの原本EMLを使います）。',
+        both, ['/maker-po'], 'maker_po:send_evidence', role
+      );
+    case 'MAKER_PO_SENT_MANUALLY':
+      return nextAction(
+        'メーカーの受入を記録する（担当者が仮の記録、代表者が最終確認）。',
+        both, ['/maker-po'], 'maker_po:accept_provisional', role
+      );
+    case 'MAKER_PO_ACCEPTED':
+      return nextAction(`${advance('FILM_IN_PRODUCTION')}。`, both, ['/orders'], 'film_order:transition', role);
+    case 'FILM_IN_PRODUCTION':
+      return nextAction(`出荷されたら、${advance('FILM_SHIPPED')}。`, both, ['/orders'], 'film_order:transition', role);
+    case 'FILM_SHIPPED':
+      return nextAction(
+        `納品を記録し、${advance('FILM_DELIVERED')}。`,
+        both, ['/deliveries', '/orders'], 'film_delivery:create', role
+      );
+    case 'FILM_DELIVERED':
+      return nextAction(
+        '受領確認（問題なしとみなす）を記録するか、受領証跡を引用して納品を確認する。',
+        both, ['/orders', '/deliveries'], 'film_order:assume_receipt', role
+      );
+    case FILM_SUPPLY_ORDER_TERMINAL_STATE:
+      return { text: 'この発注は完了しています。', owner: null, screens: [], operation: null, refusal: null };
+    case 'ON_HOLD':
+    case 'CHANGE_REVIEW':
+    case 'CANCELLATION_REVIEW': {
+      const notice = makerChainResumeNotice(order.lastNormalStatus, label);
+      return notice
+        ? nextAction(notice, both, ['/maker-po', '/orders'], 'film_order:transition', role)
+        : nextAction('再開する状態を選んで、状態を進める。', both, ['/orders'], 'film_order:transition', role);
+    }
+    default:
+      return {
+        text: `この状態（${label(status)}）の次の作業は画面に表示できません。`,
+        owner: null,
+        screens: [],
+        operation: null,
+        refusal: null
+      };
+  }
+}
+
+/** 「次にやること」 of a project without a film order yet. */
+export function nextActionWithoutOrders(
+  workspace: Pick<Workspace, 'sevenPurchaseOrders'>,
+  role: string | null | undefined
+): NextActionView {
+  return workspace.sevenPurchaseOrders.length === 0
+    ? nextAction('セブン化学発注書を登録する。', OWNER_STAFF_AND_ADMIN, ['/orders'], 'seven_po:create', role)
+    : nextAction('フィルム発注を作成する。', OWNER_STAFF_AND_ADMIN, ['/orders'], 'film_order:create', role);
 }

@@ -1,6 +1,9 @@
 import type { Metadata } from 'next';
 import { ActionForm } from '../../components/ActionForm';
 import { OrderCreateForm } from '../../components/OrderCreateForm';
+import { ProjectProgress } from '../../components/ProjectProgress';
+import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
+import { TechDetails } from '../../components/TechDetails';
 import { CheckboxField, SelectField, TextField } from '../../components/fields';
 import {
   assumeFilmReceiptAction,
@@ -12,15 +15,23 @@ import {
   updateFilmPaymentTermsAction,
   verifySevenPurchaseOrderAction
 } from '../actions';
-import { readSelectedProjectId } from '../../lib/api';
+import { loadSessionUser, readSelectedProjectId } from '../../lib/api';
 import { loadPaymentGate, PAYMENT_TERMS_LABELS } from '../../lib/maker-po-data';
-import { labelLookup, loadWorkspace, officialRegistrationText, sevenPurchaseOrderChoiceLabel } from '../../lib/project-data';
+import { canRoleOperate } from '../../lib/permissions';
+import {
+  knownStatus,
+  labelLookup,
+  loadWorkspace,
+  NO_PROJECT_SELECTED_MESSAGE,
+  officialRegistrationText,
+  sevenPurchaseOrderChoiceLabel
+} from '../../lib/project-data';
 import type { FilmSupplyOrderView } from '../../lib/project-data';
+import { MAKER_CHAIN_NOTICE, transitionChoicesFor } from '../../lib/transitions';
 import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
 import {
   cardStyle,
   infoBoxStyle,
-  monoStyle,
   noteStyle,
   tableStyle,
   tdStyle,
@@ -54,24 +65,18 @@ const PAYMENT_TERMS_CHOICES = [
   { value: 'undetermined', label: PAYMENT_TERMS_LABELS.undetermined! }
 ];
 
-interface TransitionChoice {
-  value: string;
-  label: string;
-}
-
 export default async function OrdersPage() {
   const projectId = await readSelectedProjectId();
   if (!projectId) {
-    return <div style={infoBoxStyle}>案件が選択されていません。上部の「案件の選択」で案件IDを入力してください。</div>;
+    return <div style={infoBoxStyle}>{NO_PROJECT_SELECTED_MESSAGE}</div>;
   }
 
-  const workspace = await loadWorkspace(projectId);
+  const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
+  const role = user?.role ?? null;
   const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
   const readinessLabel = labelLookup(workspace.labels, 'commissionReadinessStates');
-  const transitionChoices: TransitionChoice[] = (workspace.labels?.filmSupplyOrderStates ?? []).map((entry) => ({
-    value: entry.key,
-    label: `${entry.label}（${entry.key}）`
-  }));
+  // UI batch B (④): the 操作 column only when the role has a form to show in it.
+  const showOrderOperations = canRoleOperate(role, 'film_order:transition');
   const poLabelById = new Map(workspace.sevenPurchaseOrders.map((po) => [po.id, po.poNumber]));
   const poChoices = workspace.sevenPurchaseOrders.map((po) => ({
     value: po.id,
@@ -83,7 +88,7 @@ export default async function OrdersPage() {
   // form always shows the recorded value instead of guessing from history.
   // A withheld status (viewer) is not a draft: the 'DRAFT' value there is only
   // the data layer's placeholder, so no payment-gate read is made for it.
-  const draftOrders = workspace.filmOrders.filter((order) => !order.statusHidden && order.status === 'DRAFT');
+  const draftOrders = workspace.filmOrders.filter((order) => knownStatus(order) === 'DRAFT');
   const paymentGates = await Promise.all(draftOrders.map((order) => loadPaymentGate(order.id)));
   const paymentGateByOrderId = new Map<string, Awaited<ReturnType<typeof loadPaymentGate>>>();
   for (const [index, order] of draftOrders.entries()) {
@@ -94,12 +99,14 @@ export default async function OrdersPage() {
     <section style={{ display: 'grid', gap: 24 }}>
       <header>
         <h1 style={{ fontSize: 26, margin: '0 0 4px' }}>案件（発注）一覧／作成</h1>
+        <ProjectProgress workspace={workspace} role={role} currentPath="/orders" />
+        <ViewerPageNotice role={role} />
         {workspace.project ? (
           <p style={noteStyle}>
             案件 {workspace.project.code}（{workspace.project.name}）／ ルート {workspace.project.route}
           </p>
         ) : (
-          <p style={noteStyle}>案件ID: <span style={monoStyle}>{projectId}</span></p>
+          <TechDetails context="案件ID">{projectId}</TechDetails>
         )}
         {workspace.error ? <div style={infoBoxStyle}>{workspace.error}</div> : null}
       </header>
@@ -108,13 +115,13 @@ export default async function OrdersPage() {
         orders={workspace.sevenPurchaseOrders}
         poChoices={poChoices}
         verificationLabel={VERIFICATION_STATUS_LABELS}
+        role={role}
       />
 
       <div style={cardStyle}>
         <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>フィルム発注 一覧</h2>
         <p style={noteStyle}>
-          状態のラベルは API（/api/status-labels）の共通定義です。行の操作で状態を進め、受領確認（問題なしとみなす）は
-          FILM_DELIVERED でのみ記録できます。
+          行の操作で状態を進めます。受領確認（問題なしとみなす）は「{stateLabel('FILM_DELIVERED')}」の発注でだけ記録できます。
         </p>
         {workspace.filmOrders.length === 0 ? (
           <p style={noteStyle}>フィルム発注はまだありません。</p>
@@ -128,58 +135,62 @@ export default async function OrdersPage() {
                 <th style={thStyle}>明細</th>
                 <th style={thStyle}>作成</th>
                 <th style={thStyle}>更新</th>
-                <th style={thStyle}>操作</th>
+                {showOrderOperations ? <th style={thStyle}>操作</th> : null}
               </tr>
             </thead>
             <tbody>
-              {workspace.filmOrders.map((order) => (
-                <tr key={order.id}>
-                  <td style={tdStyle}>
-                    {order.code}
-                    <div style={monoStyle}>{order.id}</div>
-                  </td>
-                  <td style={tdStyle}>{order.statusHidden ? HIDDEN_BY_ROLE_LABEL : stateLabel(order.status)}</td>
-                  <td style={tdStyle}>
-                    {order.sevenPurchaseOrderId
-                      ? poLabelById.get(order.sevenPurchaseOrderId) ?? '紐付けあり'
-                      : order.detailsHidden
-                        ? HIDDEN_BY_ROLE_LABEL
-                        : '—'}
-                  </td>
-                  <td style={tdStyle}>
-                    <OrderLinesCell order={order} />
-                  </td>
-                  <td style={tdStyle}>{formatTimestamp(order.createdAt)}</td>
-                  <td style={tdStyle}>{formatTimestamp(order.updatedAt)}</td>
-                  <td style={{ ...tdStyle, minWidth: 260 }}>
-                    <ActionForm
-                      action={transitionFilmSupplyOrderAction}
-                      submitLabel="状態を進める"
-                      hint="遷移はAPIの状態遷移表に従います。許可されていない遷移はAPIが拒否します。"
-                    >
-                      <input type="hidden" readOnly name="orderId" value={order.id} />
-                      <SelectField name="to" label="遷移先の状態" required width={280} choices={transitionChoices} />
-                    </ActionForm>
-                    {!order.statusHidden && order.status === 'DRAFT' ? (
-                      <PaymentTermsCell order={order} gate={paymentGateByOrderId.get(order.id) ?? null} />
+              {workspace.filmOrders.map((order) => {
+                const status = knownStatus(order);
+                return (
+                  <tr key={order.id}>
+                    <td style={tdStyle}>
+                      {order.code}
+                      <TechDetails context="ID">{order.id}</TechDetails>
+                    </td>
+                    <td style={tdStyle}>{status === null ? HIDDEN_BY_ROLE_LABEL : stateLabel(status)}</td>
+                    <td style={tdStyle}>
+                      {order.sevenPurchaseOrderId
+                        ? poLabelById.get(order.sevenPurchaseOrderId) ?? '紐付けあり'
+                        : order.detailsHidden
+                          ? HIDDEN_BY_ROLE_LABEL
+                          : '—'}
+                    </td>
+                    <td style={tdStyle}>
+                      <OrderLinesCell order={order} />
+                    </td>
+                    <td style={tdStyle}>{formatTimestamp(order.createdAt)}</td>
+                    <td style={tdStyle}>{formatTimestamp(order.updatedAt)}</td>
+                    {showOrderOperations ? (
+                      <td style={{ ...tdStyle, minWidth: 260 }}>
+                        {status === null ? null : (
+                          <TransitionCell order={order} status={status} stateLabel={stateLabel} />
+                        )}
+                        {status === 'DRAFT' ? (
+                          <RoleGate role={role} operation="film_order:update_payment_terms" label="決済条件の記録">
+                            <PaymentTermsCell order={order} gate={paymentGateByOrderId.get(order.id) ?? null} />
+                          </RoleGate>
+                        ) : null}
+                        {status === 'FILM_DELIVERED' ? (
+                          <RoleGate role={role} operation="film_order:assume_receipt" label="受領確認の記録">
+                            <details style={{ marginTop: 8 }}>
+                              <summary style={{ fontSize: 13, cursor: 'pointer' }}>受領確認（問題なしとみなす）</summary>
+                              <ActionForm
+                                action={assumeFilmReceiptAction}
+                                submitLabel="受領確認を記録する"
+                                hint={`証跡の代わりに問題なしとみなす記録です。メモは必須で、状態は「${stateLabel('FILM_RECEIPT_ASSUMED_NO_ISSUE')}」になります。`}
+                              >
+                                <input type="hidden" readOnly name="orderId" value={order.id} />
+                                <TextField name="note" label="確認メモ" required width={280} />
+                                <CheckboxField name="acknowledgeNoEvidence" label="証跡なしで問題なしとみなすことに同意します" />
+                              </ActionForm>
+                            </details>
+                          </RoleGate>
+                        ) : null}
+                      </td>
                     ) : null}
-                    {!order.statusHidden && order.status === 'FILM_DELIVERED' ? (
-                      <details style={{ marginTop: 8 }}>
-                        <summary style={{ fontSize: 13, cursor: 'pointer' }}>受領確認（問題なしとみなす）</summary>
-                        <ActionForm
-                          action={assumeFilmReceiptAction}
-                          submitLabel="受領確認を記録する"
-                          hint="証跡の代わりに問題なしとみなす記録です。メモは必須で、状態は FILM_RECEIPT_ASSUMED_NO_ISSUE になります。"
-                        >
-                          <input type="hidden" readOnly name="orderId" value={order.id} />
-                          <TextField name="note" label="確認メモ" required width={280} />
-                          <CheckboxField name="acknowledgeNoEvidence" label="証跡なしで問題なしとみなすことに同意します" />
-                        </ActionForm>
-                      </details>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
@@ -187,14 +198,16 @@ export default async function OrdersPage() {
 
       <div style={cardStyle}>
         <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>フィルム発注を作成する</h2>
-        <p style={noteStyle}>明細の単位はフィルム商材の単位（ロール／メートル／枚）です。</p>
-        <OrderCreateForm
-          action={createFilmSupplyOrderAction}
-          orderKind="film"
-          unitChoices={unitChoices('film')}
-          sevenPurchaseOrderChoices={poChoices}
-          paymentTermsChoices={PAYMENT_TERMS_CHOICES}
-        />
+        <RoleGate role={role} operation="film_order:create" label="フィルム発注の作成">
+          <p style={noteStyle}>明細の単位はフィルム商材の単位（ロール／メートル／枚）です。</p>
+          <OrderCreateForm
+            action={createFilmSupplyOrderAction}
+            orderKind="film"
+            unitChoices={unitChoices('film')}
+            sevenPurchaseOrderChoices={poChoices}
+            paymentTermsChoices={PAYMENT_TERMS_CHOICES}
+          />
+        </RoleGate>
       </div>
 
       <div style={cardStyle}>
@@ -221,14 +234,15 @@ export default async function OrdersPage() {
                 <tr key={order.id}>
                   <td style={tdStyle}>
                     {order.code}
-                    <div style={monoStyle}>{order.id}</div>
+                    <TechDetails context="ID">{order.id}</TechDetails>
                   </td>
                   <td style={tdStyle}>
                     {order.lines.length === 0 && order.detailsHidden ? HIDDEN_BY_ROLE_LABEL : null}
                     {order.lines.map((line) => (
                       <div key={line.id}>
                         {line.lineNumber}. {line.description} ／ {line.orderedQuantity}
-                        {unitLabel(line.unit)} ／ 明細ID <span style={monoStyle}>{line.id}</span>
+                        {unitLabel(line.unit)}
+                        <TechDetails context="明細ID">{line.id}</TechDetails>
                       </div>
                     ))}
                   </td>
@@ -239,9 +253,56 @@ export default async function OrdersPage() {
           </table>
         )}
         <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '16px 0' }} />
-        <OrderCreateForm action={createFillingOrderAction} orderKind="filling" unitChoices={unitChoices('filling')} />
+        <RoleGate role={role} operation="filling_order:create" label="充填発注の作成">
+          <OrderCreateForm action={createFillingOrderAction} orderKind="filling" unitChoices={unitChoices('filling')} />
+        </RoleGate>
       </div>
     </section>
+  );
+}
+
+/**
+ * UI batch B (③): the transition form offers only the targets the generic
+ * transition endpoint can accept from this state (core state machine, minus
+ * the maker chain and the 受領確認 terminal state), with an empty first choice
+ * so nothing is pre-selected. The API still decides every request.
+ */
+function TransitionCell({
+  order,
+  status,
+  stateLabel
+}: {
+  order: FilmSupplyOrderView;
+  status: string;
+  stateLabel: (key: string) => string;
+}) {
+  const set = transitionChoicesFor(status, stateLabel, order.lastNormalStatus);
+  return (
+    <>
+      {set.makerChainNotice ? <p style={noteStyle}>{MAKER_CHAIN_NOTICE}。</p> : null}
+      {set.resumeNotice ? <p className="role-notice">{set.resumeNotice}</p> : null}
+      {set.choices.length === 0 ? (
+        <p style={noteStyle}>{set.emptyReason}</p>
+      ) : (
+        <ActionForm
+          action={transitionFilmSupplyOrderAction}
+          submitLabel="状態を進める"
+          hint="条件がそろっていない場合は、理由がここに表示されます。"
+        >
+          <input type="hidden" readOnly name="orderId" value={order.id} />
+          <SelectField
+            name="to"
+            label="進める先の状態"
+            required
+            includeBlank
+            blankLabel="（進める先を選ぶ）"
+            width={280}
+            choices={set.choices}
+            hint={set.hint ?? undefined}
+          />
+        </ActionForm>
+      )}
+    </>
   );
 }
 
@@ -286,7 +347,7 @@ function PaymentTermsCell({
       <ActionForm
         action={updateFilmPaymentTermsAction}
         submitLabel="決済条件を記録する"
-        hint="決済条件は発注ドラフト（DRAFT）の間だけ記録できます。ここでの記録は入金確認（検証）ではありません。入金の確認は別の手動ステップです。"
+        hint="決済条件は発注が下書きの間だけ記録できます。ここでの記録は入金確認（検証）ではありません。入金の確認は別の手動ステップです。"
       >
         <input type="hidden" readOnly name="orderId" value={order.id} />
         <SelectField name="paymentTerms" label="決済条件" required width={280} choices={PAYMENT_TERMS_CHOICES} />
@@ -298,12 +359,16 @@ function PaymentTermsCell({
 function SevenPurchaseOrderSection({
   orders,
   poChoices,
-  verificationLabel
+  verificationLabel,
+  role
 }: {
   orders: Awaited<ReturnType<typeof loadWorkspace>>['sevenPurchaseOrders'];
   poChoices: Array<{ value: string; label: string }>;
   verificationLabel: Record<string, string>;
+  role: string | null;
 }) {
+  // UI batch B (④): the 操作 column only for a role with a form to put in it.
+  const showOperations = canRoleOperate(role, 'seven_po:register') || canRoleOperate(role, 'seven_po:verify');
   return (
     <div style={cardStyle}>
       <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>セブン化学発注書</h2>
@@ -321,7 +386,7 @@ function SevenPurchaseOrderSection({
               <th style={thStyle}>発注番号</th>
               <th style={thStyle}>公式登録</th>
               <th style={thStyle}>真性確認</th>
-              <th style={thStyle}>操作</th>
+              {showOperations ? <th style={thStyle}>操作</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -329,7 +394,7 @@ function SevenPurchaseOrderSection({
               <tr key={po.id}>
                 <td style={tdStyle}>
                   {po.poNumber}
-                  <div style={monoStyle}>{po.id}</div>
+                  <TechDetails context="ID">{po.id}</TechDetails>
                 </td>
                 <td style={tdStyle}>
                   {officialRegistrationText(po)}
@@ -342,47 +407,53 @@ function SevenPurchaseOrderSection({
                       : '未記録'}
                   {po.reviewPending ? <div style={noteStyle}>確認中（不一致レビュー）</div> : null}
                 </td>
-                <td style={{ ...tdStyle, minWidth: 280 }}>
-                  {po.officiallyRegistered ? null : (
-                    <details style={{ marginBottom: 8 }}>
-                      <summary style={{ fontSize: 13, cursor: 'pointer' }}>公式登録日を記録する</summary>
-                      <ActionForm action={registerSevenPurchaseOrderAction} submitLabel="公式登録する">
-                        <input type="hidden" readOnly name="poId" value={po.id} />
-                        <TextField name="officialRegisteredAt" label="公式登録日" type="date" required width={200} />
-                      </ActionForm>
-                    </details>
-                  )}
-                  <details>
-                    <summary style={{ fontSize: 13, cursor: 'pointer' }}>真性行チェックリストを記録する</summary>
-                    <ActionForm
-                      action={verifySevenPurchaseOrderAction}
-                      submitLabel="チェックリストを記録する"
-                      hint="人は必須の記録項目をすべて埋めてください。見積と一致していない場合は「相違あり・確認中」になり、前提ゲートは閉じたままです。"
-                    >
-                      <input type="hidden" readOnly name="poId" value={po.id} />
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                        <CheckboxField name="issuerNameRecorded" label="発行者名を確認した" />
-                        <TextField name="issuerName" label="発行者名" width={180} />
-                        <CheckboxField name="documentNumberRecorded" label="文書番号を確認した" />
-                        <TextField name="documentNumber" label="文書番号" width={160} />
-                        <CheckboxField name="issueDateRecorded" label="発行日を確認した" />
-                        <TextField name="issueDate" label="発行日" type="date" width={170} />
-                        <CheckboxField name="sendingChannelRecorded" label="送信経路を確認した" />
-                        <TextField name="sendingChannel" label="送信経路" width={180} />
-                        <CheckboxField name="pastTransactionCompared" label="過去取引と突合した" />
-                        <TextField name="pastTransactionNote" label="突合メモ" width={180} />
-                        <CheckboxField name="quoteCompared" label="見積と突合した" />
-                        <SelectField name="quoteMatchesPo" label="突合結果" required choices={QUOTE_MATCH_CHOICES} width={220} />
-                        <TextField name="quoteComparisonNote" label="突合メモ" width={180} />
-                        <TextField name="tamperHints" label="改ざん疑いのメモ（任意・参考記録）" width={220} />
-                        <CheckboxField name="uncertain" label="確認が不確かだった" />
-                        <CheckboxField name="confirmationReplyRecorded" label="確認の返信を記録した（不確かな場合必須）" />
-                        <TextField name="confirmationReplyNote" label="返信メモ" width={180} />
-                        <TextField name="verificationNote" label="検証メモ" width={220} />
-                      </div>
-                    </ActionForm>
-                  </details>
-                </td>
+                {showOperations ? (
+                  <td style={{ ...tdStyle, minWidth: 280 }}>
+                    {po.officiallyRegistered ? null : (
+                      <RoleGate role={role} operation="seven_po:register" label="公式登録日の記録">
+                        <details style={{ marginBottom: 8 }}>
+                          <summary style={{ fontSize: 13, cursor: 'pointer' }}>公式登録日を記録する</summary>
+                          <ActionForm action={registerSevenPurchaseOrderAction} submitLabel="公式登録する">
+                            <input type="hidden" readOnly name="poId" value={po.id} />
+                            <TextField name="officialRegisteredAt" label="公式登録日" type="date" required width={200} />
+                          </ActionForm>
+                        </details>
+                      </RoleGate>
+                    )}
+                    <RoleGate role={role} operation="seven_po:verify" label="チェックリストの記録">
+                      <details>
+                        <summary style={{ fontSize: 13, cursor: 'pointer' }}>真性行チェックリストを記録する</summary>
+                        <ActionForm
+                          action={verifySevenPurchaseOrderAction}
+                          submitLabel="チェックリストを記録する"
+                          hint="人は必須の記録項目をすべて埋めてください。見積と一致していない場合は「相違あり・確認中」になり、前提ゲートは閉じたままです。"
+                        >
+                          <input type="hidden" readOnly name="poId" value={po.id} />
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                            <CheckboxField name="issuerNameRecorded" label="発行者名を確認した" />
+                            <TextField name="issuerName" label="発行者名" width={180} />
+                            <CheckboxField name="documentNumberRecorded" label="文書番号を確認した" />
+                            <TextField name="documentNumber" label="文書番号" width={160} />
+                            <CheckboxField name="issueDateRecorded" label="発行日を確認した" />
+                            <TextField name="issueDate" label="発行日" type="date" width={170} />
+                            <CheckboxField name="sendingChannelRecorded" label="送信経路を確認した" />
+                            <TextField name="sendingChannel" label="送信経路" width={180} />
+                            <CheckboxField name="pastTransactionCompared" label="過去取引と突合した" />
+                            <TextField name="pastTransactionNote" label="突合メモ" width={180} />
+                            <CheckboxField name="quoteCompared" label="見積と突合した" />
+                            <SelectField name="quoteMatchesPo" label="突合結果" required choices={QUOTE_MATCH_CHOICES} width={220} />
+                            <TextField name="quoteComparisonNote" label="突合メモ" width={180} />
+                            <TextField name="tamperHints" label="改ざん疑いのメモ（任意・参考記録）" width={220} />
+                            <CheckboxField name="uncertain" label="確認が不確かだった" />
+                            <CheckboxField name="confirmationReplyRecorded" label="確認の返信を記録した（不確かな場合必須）" />
+                            <TextField name="confirmationReplyNote" label="返信メモ" width={180} />
+                            <TextField name="verificationNote" label="検証メモ" width={220} />
+                          </div>
+                        </ActionForm>
+                      </details>
+                    </RoleGate>
+                  </td>
+                ) : null}
               </tr>
             ))}
           </tbody>
@@ -391,16 +462,18 @@ function SevenPurchaseOrderSection({
 
       <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '16px 0' }} />
       <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>セブン化学発注書を登録する</h3>
-      <ActionForm
-        action={createSevenPurchaseOrderAction}
-        submitLabel="発注書を登録する"
-        hint="発注番号は紙の発注書の番号です。公式登録日は後から「公式登録日を記録する」でも入力できます。"
-      >
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-          <TextField name="poNumber" label="発注番号" required width={240} />
-          <TextField name="officialRegisteredAt" label="公式登録日（任意）" type="date" width={200} />
-        </div>
-      </ActionForm>
+      <RoleGate role={role} operation="seven_po:create" label="発注書の登録">
+        <ActionForm
+          action={createSevenPurchaseOrderAction}
+          submitLabel="発注書を登録する"
+          hint="発注番号は紙の発注書の番号です。公式登録日は後から「公式登録日を記録する」でも入力できます。"
+        >
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+            <TextField name="poNumber" label="発注番号" required width={240} />
+            <TextField name="officialRegisteredAt" label="公式登録日（任意）" type="date" width={200} />
+          </div>
+        </ActionForm>
+      </RoleGate>
       {poChoices.length === 0 ? null : (
         <p style={noteStyle}>登録済み: {poChoices.length}件</p>
       )}

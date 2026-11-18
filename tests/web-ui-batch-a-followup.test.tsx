@@ -268,14 +268,21 @@ describe('rendered screens per role (display only — the forms and permissions 
     const html = await renderPage(OrdersPage);
     expect(html).not.toContain('（閲覧権限なし）（未登録）');
     // The form is offered only for the PO not known to be registered (unchanged
-    // rule: hidden registration state does not hide the form — see M3).
-    expect(html.match(/>公式登録日を記録する<\/summary>/g)).toHaveLength(1);
+    // rule: hidden registration state does not hide the form — see M3). UI batch
+    // B: a viewer is offered no write form at all (the API refuses it anyway).
+    expect(html.match(/>公式登録日を記録する<\/summary>/g) ?? []).toHaveLength(role === 'viewer' ? 0 : 1);
     if (role === 'admin') {
       expect(html).toContain('SC-NEW-2（未登録）');
       expect(html).toContain('2026/11/16 09:00 JST');
     } else {
       expect(html).toContain('公式登録済み（登録日は閲覧権限なし）');
-      expect(html).toContain('（登録状況 閲覧権限なし）');
+      // UI batch B: the viewer gets no create form, so no PO select to label.
+      if (role === 'viewer') {
+        expect(html).not.toContain('（登録状況 閲覧権限なし）');
+        expect(html).toContain('フィルム発注の作成は、閲覧権限のため操作できません。');
+      } else {
+        expect(html).toContain('（登録状況 閲覧権限なし）');
+      }
       expect(html).not.toContain('SC-REG-1');
     }
   });
@@ -338,7 +345,13 @@ describe('rendered screens per role (display only — the forms and permissions 
     serveAs(role);
     const html = await renderPage(MakerPoPage);
     expect(html).not.toContain('（閲覧権限なし）（未登録）');
-    expect(html).toContain(role === 'admin' ? 'SC-REG-1（公式登録済み）' : '発注番号 閲覧権限なし・ID …902de940（公式登録済み）');
+    if (role === 'viewer') {
+      // UI batch B: the viewer is not offered the create form that holds this select.
+      expect(html).not.toContain('…902de940');
+      expect(html).toContain('フィルム発注の作成は、閲覧権限のため操作できません。');
+    } else {
+      expect(html).toContain(role === 'admin' ? 'SC-REG-1（公式登録済み）' : '発注番号 閲覧権限なし・ID …902de940（公式登録済み）');
+    }
   });
 });
 

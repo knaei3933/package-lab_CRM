@@ -123,7 +123,7 @@ export function DocumentUploadForm({
           </select>
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>書類の形式（contentType）<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
+          <span style={{ fontSize: 13 }}>書類の形式<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
           <select
             name="contentType"
             value={contentType}
@@ -161,8 +161,8 @@ export function DocumentUploadForm({
         ) : null}
       </div>
       <p style={noteStyle}>
-        選んだファイルはブラウザ内でBase64に変換してAPIへ送ります（contentBase64）。同じ内容の再送は同じ版として扱われます。
-        書類種別が「送信証跡（send_evidence）」のときは、送信済みメールの原本（.eml／メール原文 EML）を選んでください。
+        選んだファイルは、この画面からそのままサーバーへ送ります（事前の保存は不要です）。同じ内容の再送は同じ版として扱われます。
+        書類種別が「送信証跡」のときは、送信済みメールの原本（.eml／メール原文 EML）を選んでください。
         PDFやスクリーンショット、メモでは送信は「確認済み」になりません。
       </p>
 

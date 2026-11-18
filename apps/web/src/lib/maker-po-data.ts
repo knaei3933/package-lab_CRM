@@ -1,6 +1,6 @@
 import { callApi } from './api';
 import { isFilmOrderPastMakerAcceptance } from '@kanei/core';
-import { loadWorkspace } from './project-data';
+import { knownStatus, loadWorkspace } from './project-data';
 import type { AuditEventView, FilmSupplyOrderView, Workspace } from './project-data';
 
 /**
@@ -157,10 +157,11 @@ export const MAKER_PO_EVENT_TYPE_LABELS: Readonly<Record<string, string>> = {
   MAKER_CANCELLATION_ACKNOWLEDGED: '取り消し承認（メーカー取消確認）'
 };
 
+/** UI batch B (⑤): Japanese only; the stored values stay prepaid / on_delivery / undetermined. */
 export const PAYMENT_TERMS_LABELS: Readonly<Record<string, string>> = {
-  prepaid: '前払い（prepaid）',
-  on_delivery: '搬入時払い（on_delivery）',
-  undetermined: '未確定（undetermined）'
+  prepaid: '前払い',
+  on_delivery: '搬入時払い',
+  undetermined: '未確定'
 };
 
 /**
@@ -209,7 +210,11 @@ export async function loadPaymentGate(orderId: string): Promise<PaymentGateView 
 /** Loads the maker-PO board for one project, order by order. */
 export async function loadMakerPoBoard(projectId: string): Promise<MakerPoBoard> {
   const workspace = await loadWorkspace(projectId);
-  const targets = workspace.filmOrders.filter((order) => MAKER_PO_ORDER_STATES.includes(order.status));
+  // UI batch B: a withheld status (its 'DRAFT' placeholder) never selects an order.
+  const targets = workspace.filmOrders.filter((order) => {
+    const status = knownStatus(order);
+    return status !== null && MAKER_PO_ORDER_STATES.includes(status);
+  });
   const boards = await Promise.all(targets.map(async (order) => {
     const [listResult, gateResult] = await Promise.all([
       callApi<{ makerPurchaseOrders: MakerPoViewRow[] }>(

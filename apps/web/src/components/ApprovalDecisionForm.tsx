@@ -47,7 +47,7 @@ export function ApprovalDecisionForm({
   if (evidenceChoices.length === 0) {
     return (
       <p style={noteStyle}>
-        このデザインに使える承認証跡（approval_evidence）のバージョンがまだありません。文書画面から
+        このデザインに使える承認証跡のバージョンがまだありません。文書画面から
         「{designKey}」に紐付けた承認証跡をアップロードしてください。
       </p>
     );

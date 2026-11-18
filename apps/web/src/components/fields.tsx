@@ -65,6 +65,32 @@ export function TextField({
   );
 }
 
+/**
+ * UI batch B: ungrouped choices first, then one <optgroup> per group label in
+ * the order the groups first appear (e.g. 例外（保留・見直し）).
+ */
+function choiceOptions(choices: Choice[]) {
+  const option = (choice: Choice) => (
+    <option key={choice.value} value={choice.value}>
+      {choice.label}
+    </option>
+  );
+  const groups: string[] = [];
+  for (const choice of choices) {
+    if (choice.group && !groups.includes(choice.group)) groups.push(choice.group);
+  }
+  return (
+    <>
+      {choices.filter((choice) => !choice.group).map(option)}
+      {groups.map((group) => (
+        <optgroup key={group} label={group}>
+          {choices.filter((choice) => choice.group === group).map(option)}
+        </optgroup>
+      ))}
+    </>
+  );
+}
+
 export function SelectField({
   name,
   label,
@@ -97,11 +123,7 @@ export function SelectField({
         {/* M8-UI3 FIX 1: a choice list is always server-assembled, so a read
             that came back empty-handed must render an empty selector rather
             than throw `choices.map is not a function` inside the client form. */}
-        {(Array.isArray(choices) ? choices : []).map((choice) => (
-          <option key={choice.value} value={choice.value}>
-            {choice.label}
-          </option>
-        ))}
+        {choiceOptions(Array.isArray(choices) ? choices : [])}
       </select>
     </LabelWrapper>
   );

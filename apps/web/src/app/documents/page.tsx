@@ -1,11 +1,16 @@
 import type { Metadata } from 'next';
 import { ActionForm } from '../../components/ActionForm';
 import { DocumentUploadForm } from '../../components/DocumentUploadForm';
+import { ProjectProgress } from '../../components/ProjectProgress';
+import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
+import { TechDetails } from '../../components/TechDetails';
 import { SelectField, TextField } from '../../components/fields';
 import { uploadDocumentAction, verifyDocumentAction } from '../actions';
-import { readSelectedProjectId } from '../../lib/api';
+import { loadSessionUser, readSelectedProjectId } from '../../lib/api';
 import { loadMakerPoChoices } from '../../lib/document-maker-po-server';
-import { labelLookup, loadWorkspace } from '../../lib/project-data';
+import { canRoleOperate } from '../../lib/permissions';
+import { filmOrderChoiceLabel, labelLookup, loadWorkspace, NO_PROJECT_SELECTED_MESSAGE } from '../../lib/project-data';
+import { shortId } from '../../lib/short-id';
 import {
   cardStyle,
   infoBoxStyle,
@@ -24,7 +29,7 @@ import {
   issuerEntityChoices,
   VERIFICATION_STATUS_LABELS
 } from '../../lib/vocabulary';
-import { codeWithStatus, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
+import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,10 +45,13 @@ export const metadata: Metadata = { title: '文書' };
 export default async function DocumentsPage() {
   const projectId = await readSelectedProjectId();
   if (!projectId) {
-    return <div style={infoBoxStyle}>案件が選択されていません。上部の「案件の選択」で案件IDを入力してください。</div>;
+    return <div style={infoBoxStyle}>{NO_PROJECT_SELECTED_MESSAGE}</div>;
   }
 
-  const workspace = await loadWorkspace(projectId);
+  const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
+  const role = user?.role ?? null;
+  // UI batch B (④): the 確認 column only for a role that may record it.
+  const showVerifyColumn = canRoleOperate(role, 'document:verify');
   const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
   const poLabelById = new Map(workspace.sevenPurchaseOrders.map((po) => [po.id, po.poNumber]));
 
@@ -58,6 +66,8 @@ export default async function DocumentsPage() {
     <section style={{ display: 'grid', gap: 24 }}>
       <header>
         <h1 style={{ fontSize: 26, margin: '0 0 4px' }}>文書</h1>
+        <ProjectProgress workspace={workspace} role={role} currentPath="/documents" />
+        <ViewerPageNotice role={role} />
         <p style={noteStyle}>
           発注書・見積書・校正ゲラ・各種証跡を案件に登録し、人の確認（確認済み／相違あり）を記録します。
           承認と納品確認で引用するのは、ここで登録した書類のバージョンです。
@@ -67,22 +77,24 @@ export default async function DocumentsPage() {
 
       <div style={cardStyle}>
         <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>書類をアップロードする</h2>
-        <p style={noteStyle}>
-          セブン化学発注書（seven_po）は先行発注参照として記録される場合があります。正式書類（校正ゲラ・各種証跡）は、
-          セブン発注書の公式登録と真性確認がすんでいる必要があります。
-        </p>
-        <DocumentUploadForm
-          action={uploadDocumentAction}
-          documentTypeChoices={documentTypeChoices()}
-          issuerEntityChoices={issuerEntityChoices()}
-          contentTypeChoices={contentTypeChoices()}
-          sevenPurchaseOrderChoices={workspace.sevenPurchaseOrders.map((po) => ({ value: po.id, label: po.poNumber }))}
-          makerPurchaseOrderChoices={makerPurchaseOrderChoices}
-          filmSupplyOrderChoices={workspace.filmOrders.map((order) => ({
-            value: order.id,
-            label: codeWithStatus(order.code, order.statusHidden ? null : stateLabel(order.status))
-          }))}
-        />
+        <RoleGate role={role} operation="document:create" label="書類のアップロード">
+          <p style={noteStyle}>
+            セブン化学発注書は先行発注参照として記録される場合があります。正式書類（校正ゲラ・各種証跡）は、
+            セブン発注書の公式登録と真性確認がすんでいる必要があります。
+          </p>
+          <DocumentUploadForm
+            action={uploadDocumentAction}
+            documentTypeChoices={documentTypeChoices()}
+            issuerEntityChoices={issuerEntityChoices()}
+            contentTypeChoices={contentTypeChoices()}
+            sevenPurchaseOrderChoices={workspace.sevenPurchaseOrders.map((po) => ({ value: po.id, label: po.poNumber }))}
+            makerPurchaseOrderChoices={makerPurchaseOrderChoices}
+            filmSupplyOrderChoices={workspace.filmOrders.map((order) => ({
+              value: order.id,
+              label: filmOrderChoiceLabel(order, stateLabel)
+            }))}
+          />
+        </RoleGate>
       </div>
 
       <div style={cardStyle}>
@@ -102,7 +114,7 @@ export default async function DocumentsPage() {
                 <th style={thStyle}>紐付け</th>
                 <th style={thStyle}>検証状態</th>
                 <th style={thStyle}>登録</th>
-                <th style={thStyle}>確認を記録する</th>
+                {showVerifyColumn ? <th style={thStyle}>確認を記録する</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -113,7 +125,7 @@ export default async function DocumentsPage() {
                       ? HIDDEN_BY_ROLE_LABEL
                       : DOCUMENT_TYPE_LABELS[document.documentType as keyof typeof DOCUMENT_TYPE_LABELS]
                         ?? document.documentType}
-                    <div style={monoStyle}>{document.id}</div>
+                    <TechDetails context="ID">{document.id}</TechDetails>
                   </td>
                   <td style={tdStyle}>
                     {document.detailsHidden
@@ -134,19 +146,20 @@ export default async function DocumentsPage() {
                       </summary>
                       {document.versions.map((version) => (
                         <div key={version.id} style={monoStyle}>
-                          版{version.versionNumber}／{version.sha256.slice(0, 12)}…／ID {version.id}
+                          版{version.versionNumber}／{version.sha256.slice(0, 12)}…
+                          <TechDetails context="版ID">{version.id}</TechDetails>
                         </div>
                       ))}
                     </details>
                   </td>
                   <td style={tdStyle}>
                     {document.sevenPurchaseOrderId ? (
-                      <div>セブン発注書: {poLabelById.get(document.sevenPurchaseOrderId) ?? document.sevenPurchaseOrderId}</div>
+                      <div>セブン発注書: {poLabelById.get(document.sevenPurchaseOrderId) ?? shortId(document.sevenPurchaseOrderId)}</div>
                     ) : null}
                     {document.filmSupplyOrderId ? (
                       <div>
                         フィルム発注: {workspace.filmOrders.find((order) => order.id === document.filmSupplyOrderId)?.code
-                          ?? document.filmSupplyOrderId}
+                          ?? shortId(document.filmSupplyOrderId)}
                         {document.designKey ? <div>デザインキー: {document.designKey}</div> : null}
                       </div>
                     ) : null}
@@ -163,17 +176,19 @@ export default async function DocumentsPage() {
                     {document.verificationNote ? <div style={noteStyle}>{document.verificationNote}</div> : null}
                   </td>
                   <td style={tdStyle}>{formatTimestamp(document.createdAt)}</td>
-                  <td style={{ ...tdStyle, minWidth: 240 }}>
-                    <ActionForm
-                      action={verifyDocumentAction}
-                      submitLabel="確認を記録する"
-                      hint="確認結果は書類ごとに上書き記録されます（実施者と日時も記録されます）。"
-                    >
-                      <input type="hidden" readOnly name="documentId" value={document.id} />
-                      <SelectField name="verificationStatus" label="確認結果" required choices={verificationChoices} width={180} />
-                      <TextField name="verificationNote" label="確認メモ" width={220} />
-                    </ActionForm>
-                  </td>
+                  {showVerifyColumn ? (
+                    <td style={{ ...tdStyle, minWidth: 240 }}>
+                      <ActionForm
+                        action={verifyDocumentAction}
+                        submitLabel="確認を記録する"
+                        hint="確認結果は書類ごとに上書き記録されます（実施者と日時も記録されます）。"
+                      >
+                        <input type="hidden" readOnly name="documentId" value={document.id} />
+                        <SelectField name="verificationStatus" label="確認結果" required choices={verificationChoices} width={180} />
+                        <TextField name="verificationNote" label="確認メモ" width={220} />
+                      </ActionForm>
+                    </td>
+                  ) : null}
                 </tr>
               ))}
             </tbody>

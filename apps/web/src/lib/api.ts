@@ -1,4 +1,5 @@
 import { cookies } from 'next/headers';
+import { cache } from 'react';
 
 /**
  * M6 operator UI: the only place apps/web talks to the API. Every call is a
@@ -96,7 +97,11 @@ export interface SessionUser {
   assignedProjectIds?: string[];
 }
 
-export async function loadSessionUser(): Promise<SessionUser | null> {
+/**
+ * UI batch B: memoised per server request (React cache), so the layout and the
+ * screen share one GET /api/me instead of asking twice for the same session.
+ */
+export const loadSessionUser = cache(async (): Promise<SessionUser | null> => {
   const result = await callApi<SessionUser>('/api/me');
   return result.ok && result.data ? result.data : null;
-}
+});
