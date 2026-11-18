@@ -360,3 +360,67 @@ describe('seventh recheck approval verification race guard', () => {
     expect(row?.status).toBe('ON_HOLD');
   });
 });
+
+describe('eighth recheck verification gate race', () => {
+  it('does not promote after a queued REVOKE', async () => {
+    const revisionRow = await db.select({ sha256: documentVersions.sha256 })
+      .from(artworkRevisions)
+      .innerJoin(documentVersions, sql`document_versions.id = ${artworkRevisions.fileDocumentVersionId}`)
+      .where(sql`${artworkRevisions.id} = ${revisionId}`);
+    const sha256 = revisionRow[0]?.sha256 ?? 'c'.repeat(64);
+    const now = new Date();
+    const pendingId = uuidv7();
+    const sevenId = uuidv7();
+    const revokeId = uuidv7();
+    await db.insert(artworkApprovalEvents).values([
+      {
+        id: pendingId, artworkRevisionId: revisionId, organization: 'customer' as const,
+        decision: 'APPROVE' as const, approvedFileSha256: sha256, recordedAt: now, eventTime: now,
+        evidenceDocumentVersionId: emlVersionId, evidenceIdentifier: MESSAGE_ID,
+        evidenceIdentifierStatus: 'pending_manual_verification' as const,
+        evidenceSource: 'email' as const, recordedByUserId: adminId
+      },
+      {
+        id: sevenId, artworkRevisionId: revisionId, organization: 'seven' as const,
+        decision: 'APPROVE' as const, approvedFileSha256: sha256, recordedAt: now, eventTime: now,
+        evidenceDocumentVersionId: emlVersionId, evidenceIdentifier: MESSAGE_ID,
+        evidenceIdentifierStatus: 'verified_in_document' as const,
+        evidenceSource: 'email' as const, recordedByUserId: adminId
+      }
+    ]);
+
+    const originalTransaction = db.transaction.bind(db);
+    let injectRevoke = true;
+    (db as unknown as { transaction: unknown }).transaction = async (
+      callback: Parameters<typeof originalTransaction>[0],
+      ...rest: unknown[]
+    ) => {
+      if (injectRevoke) {
+        injectRevoke = false;
+        await db.insert(artworkApprovalEvents).values({
+          id: revokeId, artworkRevisionId: revisionId, organization: 'customer' as const,
+          decision: 'REVOKE' as const, eventTime: now,
+          evidenceDocumentVersionId: emlVersionId, evidenceIdentifier: MESSAGE_ID,
+          evidenceIdentifierStatus: 'verified_in_document' as const,
+          evidenceSource: 'email' as const, approvedFileSha256: sha256,
+          recordedAt: new Date(now.getTime() + 1), recordedByUserId: adminId
+        });
+      }
+      return originalTransaction(callback, ...rest as []);
+    };
+    let verification;
+    try {
+      verification = await postAs(adminToken, `/api/artwork-approval-events/${pendingId}/verification`, {
+        result: 'confirmed', verifierName: '代表', verifiedAt: new Date().toISOString(), reasonNote: 'race loser'
+      });
+    } finally {
+      (db as unknown as { transaction: unknown }).transaction = originalTransaction;
+    }
+    expect(verification?.status).toBe(201);
+    expect(verification?.body).toMatchObject({ dualApproved: false });
+    const [row] = await db.select().from(filmSupplyOrders).where(sql`id = ${orderId}`);
+    // This test file reuses an order whose earlier race left it frozen; the
+    // invariant under test is that the queued REVOKE prevents DUAL_APPROVED.
+    expect(row?.status).not.toBe('DUAL_APPROVED');
+  });
+});

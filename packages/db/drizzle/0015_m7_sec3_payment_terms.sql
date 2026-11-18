@@ -55,17 +55,25 @@ BEGIN
     RAISE EXCEPTION 'payment_terms constraint definition drift: expected %, found %', expected_constraint_definition, named_constraint_definition;
   END IF;
 
-  -- A functionally identical manually named CHECK is accepted, but never
-  -- duplicated. Any other foreign CHECK on this column remains untouched.
+  -- Only a validated CHECK on payment_terms that explicitly permits NULL and
+  -- the exact three-value membership expression can stand in for the canonical
+  -- constraint. A broad/NOT IN/NOT VALID CHECK is drift, not an equivalent.
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint con
     WHERE con.conrelid = '"public"."film_supply_orders"'::regclass
       AND contype = 'c'
+      AND convalidated
+      AND EXISTS (
+        SELECT 1
+        FROM unnest(con.conkey) AS column_id
+        JOIN pg_attribute attr
+          ON attr.attrelid = con.conrelid
+         AND attr.attnum = column_id
+        WHERE attr.attname = 'payment_terms'
+      )
       AND pg_get_constraintdef(con.oid) ILIKE '%payment_terms%'
-      AND pg_get_constraintdef(con.oid) ILIKE '%is null%'
-      AND pg_get_constraintdef(con.oid) ILIKE '%prepaid%'
-      AND pg_get_constraintdef(con.oid) ILIKE '%on_delivery%'
-      AND pg_get_constraintdef(con.oid) ILIKE '%undetermined%'
+      AND pg_get_constraintdef(con.oid) ILIKE '%payment_terms%is%null%'
+      AND pg_get_constraintdef(con.oid) ILIKE '%payment_terms%any%(array[%''prepaid''::text, ''on_delivery''::text, ''undetermined''::text]%)%'
   ) THEN
     ALTER TABLE "film_supply_orders"
       ADD CONSTRAINT "film_supply_orders_payment_terms_vocabulary"

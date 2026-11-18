@@ -431,6 +431,20 @@ function parseRequiredDate(value: unknown): { ok: true; date: Date } | { ok: fal
   return Number.isNaN(date.getTime()) ? { ok: false } : { ok: true, date };
 }
 
+function parseStrictRequiredDate(value: unknown): { ok: true; date: Date } | { ok: false } {
+  if (!isIsoDateWithOffset(value)) return { ok: false };
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return { ok: false };
+  // Date accepts calendar overflows (Feb 30 becomes Mar 2). Round-trip UTC
+  // fields reject those silently shifted values.
+  const [calendar] = value.split('T');
+  const [year, month, day] = calendar!.split('-').map(Number);
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month || date.getUTCDate() !== day) {
+    return { ok: false };
+  }
+  return { ok: true, date };
+}
+
 function optionalText(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
@@ -476,7 +490,11 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         code: 'FILM_ORDER_LOCK_CONFLICT'
       }, 409);
     }
-    throw error;
+    // Hono's default handler does not run after an onError rethrow with the
+    // node-server adapter; logging here restores observability and preserves a
+    // stable JSON body without leaking stack or SQL details.
+    console.error(error);
+    return context.json({ error: 'サーバーエラーが発生しました', code: 'INTERNAL_ERROR' }, 500);
   });
 
   app.get('/api/health', (context) => context.json({ status: 'ok', app: 'api', port: 3081 }));
@@ -584,7 +602,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       updatedAt: now
     };
 
-    await db.transaction(async (tx) => {
+    const outcome = await db.transaction(async (tx) => {
       await tx.insert(projects).values(project);
       await recordAuditEvent(tx, {
         projectId,
@@ -2013,6 +2031,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const deliveryId = context.req.param('deliveryId');
+    if (!isUuid(deliveryId)) {
+      return context.json({
+        error: '経路パラメータ（deliveryId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const target = await loadDeliveryConfirmationTarget(kind, deliveryId);
     if (!target || target.orderDeletedAt) return context.json({ error: '納品行が見つかりません' }, 404);
@@ -2984,6 +3008,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const preOrderId = context.req.param('preOrderId');
+    if (!isUuid(preOrderId)) {
+      return context.json({
+        error: '経路パラメータ（preOrderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [reference] = await db.select().from(preOrderReferences).where(eq(preOrderReferences.id, preOrderId)).limit(1);
     if (!reference) return context.json({ error: '先行発注参照が見つかりません' }, 404);
@@ -3449,7 +3479,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       .limit(1);
     if (activeMakerPaper) {
       return context.json({
-        error: '有効なメーカー発注書がある間は新しい原稿版を登録できません。既存発注書を取り消すか、受入まで完了してください',
+        error: '有効なメーカー発注書がある間は新しい原稿版を登録できません。既存の発注書を取り消してから原稿を変更してください',
         code: 'MAKER_PO_ACTIVE_ARTWORK_REVISION_BLOCKED',
         makerPurchaseOrderId: activeMakerPaper.id
       }, 409);
@@ -3475,6 +3505,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const designKey = body.designKey.trim();
     if (typeof body?.fileDocumentVersionId !== 'string' || body.fileDocumentVersionId.length === 0) {
       return context.json({ error: '版ファイルの指定が必要です', code: 'FILE_DOCUMENT_VERSION_REQUIRED' }, 422);
+    }
+    if (!isUuid(body.fileDocumentVersionId)) {
+      return context.json({ error: '版ファイルIDが不正です', code: 'FILE_DOCUMENT_VERSION_INVALID' }, 422);
     }
     if (body?.revisionNo !== undefined
       && (typeof body.revisionNo !== 'number' || !Number.isInteger(body.revisionNo) || body.revisionNo <= 0)) {
@@ -3645,6 +3678,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!sourceCheck.ok) return context.json({ error: sourceCheck.message, code: sourceCheck.code }, 422);
     if (typeof body?.evidenceDocumentVersionId !== 'string' || body.evidenceDocumentVersionId.length === 0) {
       return context.json({ error: '承認証跡の書類バージョンが必要です', code: 'EVIDENCE_DOCUMENT_VERSION_REQUIRED' }, 422);
+    }
+    if (!isUuid(body.evidenceDocumentVersionId)) {
+      return context.json({ error: '承認証跡の書類バージョンIDが不正です', code: 'EVIDENCE_DOCUMENT_VERSION_INVALID' }, 422);
     }
 
     const eventTime = parseRequiredDate(body?.eventTime);
@@ -3818,16 +3854,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       recordedAt: now,
       supersedesEventId
     };
-    const gateAfter = deriveOrderApprovalGate(
-      approvalContext.revisions,
-      [...approvalContext.events, approvalEvent],
-      approvalContext.verifications
-    );
-    const advancesToDualApproved = decisionCheck.value === 'APPROVE'
-      && shouldAdvanceToDualApproved(gateAfter, order.status);
-
     try {
     let recordedOrderStatus: FilmOrderStatus = order.status;
+    let gateAfter = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events, approvalContext.verifications);
     await db.transaction(async (tx) => {
       // The order lock closes the side-channel race: an admin hold/CR/CANCELLED
       // transition and this approval serialize before either writes. A frozen
@@ -3838,6 +3867,18 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       if (!lockedOrder || lockedOrder.deletedAt) throw new MakerPoStateConflict();
       if (String(lockedOrder.status) === 'CANCELLED') throw new MakerPoStateConflict();
       const lockedStatus: FilmOrderStatus = lockedOrder.status;
+      // Medium-C: the promotion is judged only from the append-only log and the
+      // order state read after this transaction owns the row lock. A REVOKE or
+      // other transition that committed while this request waited cannot be
+      // promoted over.
+      const lockedApprovalContext = await loadApprovalContext(order.id, tx);
+      gateAfter = deriveOrderApprovalGate(
+        lockedApprovalContext.revisions,
+        [...lockedApprovalContext.events, approvalEvent],
+        lockedApprovalContext.verifications
+      );
+      const advancesToDualApproved = decisionCheck.value === 'APPROVE'
+        && shouldAdvanceToDualApproved(gateAfter, lockedStatus);
       await tx.insert(artworkApprovalEvents).values(approvalEvent);
       await recordAuditEvent(tx, {
         projectId: order.projectId,
@@ -4011,7 +4052,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         code: 'VERIFIER_NAME_REQUIRED'
       }, 422);
     }
-    const verifiedAt = parseRequiredDate(body?.verifiedAt);
+    const verifiedAt = parseStrictRequiredDate(body?.verifiedAt);
     if (!verifiedAt.ok) {
       return context.json({
         error: '検証日時（verifiedAt）が必要です',
@@ -4081,21 +4122,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       recordedAt: now
     };
 
-    // The gate is recomputed with the new verification appended, exactly like
-    // the approval endpoint recomputes it with the new event appended: a
-    // 'confirmed' verification closes the dual approval only if it really is
-    // the last word on that approval event.
-    const gateAfter = deriveOrderApprovalGate(
-      approvalContext.revisions,
-      approvalContext.events,
-      [...approvalContext.verifications, verification]
-    );
-    const advancesToDualApproved = resultCheck.value === 'confirmed'
-      && shouldAdvanceToDualApproved(gateAfter, order.status);
-
     try {
     let recordedOrderStatus: FilmOrderStatus = order.status;
-    await db.transaction(async (tx) => {
+    let gateAfter = deriveOrderApprovalGate(
+      approvalContext.revisions,
+      approvalContext.events,
+      approvalContext.verifications
+    );
+    const outcome = await db.transaction(async (tx) => {
       // Serialize with hold/release and review resolution. As above, a frozen
       // order can receive the verification fact but cannot be advanced by it.
       const [lockedOrder] = await tx.select().from(filmSupplyOrders)
@@ -4103,7 +4137,28 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       if (!lockedOrder || lockedOrder.deletedAt) throw new MakerPoStateConflict();
       if (String(lockedOrder.status) === 'CANCELLED') throw new MakerPoStateConflict();
       const lockedStatus: FilmOrderStatus = lockedOrder.status;
+      // Low-2: a rejected first record remains correctable by confirmation, but
+      // a queued record must never follow a final confirmed assertion.
+      const [racingVerification] = await tx.select({ result: evidenceManualVerifications.result })
+        .from(evidenceManualVerifications)
+        .where(eq(evidenceManualVerifications.approvalEventId, target.id))
+        .limit(1)
+        .for('share');
+      if (racingVerification?.result === 'confirmed') {
+        return { kind: 'duplicateVerification' as const };
+      }
       await tx.insert(evidenceManualVerifications).values(verification);
+      // Medium-C: the promotion gate is recomputed from rows visible only after
+      // the row lock. A confirmation queued behind a REVOKE cannot complete a
+      // dual approval that no longer exists.
+      const lockedApprovalContext = await loadApprovalContext(order.id, tx);
+      gateAfter = deriveOrderApprovalGate(
+        lockedApprovalContext.revisions,
+        lockedApprovalContext.events,
+        lockedApprovalContext.verifications
+      );
+      const advancesToDualApproved = resultCheck.value === 'confirmed'
+        && shouldAdvanceToDualApproved(gateAfter, lockedStatus);
       await recordAuditEvent(tx, {
         projectId: order.projectId,
         id: uuidv7(now),
@@ -4158,6 +4213,13 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const targetDesign = gateAfter.designs.find((design) =>
       design.currentRevisionId === target.artworkRevisionId);
     const targetState = targetDesign ? targetDesign[target.organization] : null;
+
+    if (outcome?.kind === 'duplicateVerification') {
+      return context.json({
+        error: 'この承認イベントはすでに手動確認が記録されています。訂正は組織の承認取消（REVOKE）として記録してください',
+        code: 'EVIDENCE_ALREADY_VERIFIED'
+      }, 422);
+    }
 
     return context.json({
       verification,
@@ -4612,7 +4674,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         }).from(makerPurchaseOrders).where(and(
           eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
           isNull(makerPurchaseOrders.deletedAt)
-        )).limit(1).for('update');
+        ))
+          .orderBy(sql`case when ${makerPurchaseOrders.status} = 'CANCELLED' then 1 else 0 end`)
+          .limit(1)
+          .for('update');
         if (activeMakerPo && activeMakerPo.status !== 'CANCELLED') {
           return {
             kind: 'activePaper' as const,
@@ -5412,7 +5477,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         code: 'VERIFIER_NAME_REQUIRED'
       }, 422);
     }
-    const verifiedAt = parseRequiredDate(body?.verifiedAt);
+    const verifiedAt = parseStrictRequiredDate(body?.verifiedAt);
     if (!verifiedAt.ok) {
       return context.json({ error: '検証日時（verifiedAt）が必要です', code: 'VERIFIED_AT_REQUIRED' }, 422);
     }
@@ -5882,8 +5947,15 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       }, 422);
     }
     const acknowledgementNote = noteCheck.text;
-    const acknowledgedAt = parseOptionalDate(body?.acknowledgedAt);
-    if (!acknowledgedAt.ok) return context.json({ error: '承認日時が不正です', code: 'INVALID_DATE' }, 422);
+    const acknowledgedAt = body?.acknowledgedAt === undefined || body?.acknowledgedAt === null
+      ? { ok: true as const, date: null as Date | null }
+      : parseStrictRequiredDate(body?.acknowledgedAt);
+    if (!acknowledgedAt.ok) {
+      return context.json({
+        error: '承認日時（acknowledgedAt）はオフセット付きISO-8601で指定してください',
+        code: 'MAKER_CANCELLATION_ACK_TIME_FORMAT_INVALID'
+      }, 422);
+    }
     if (acknowledgedAt.date !== null && !isIsoDateWithOffset(body?.acknowledgedAt)) {
       return context.json({
         error: '承認日時（acknowledgedAt）はオフセット付きISO-8601で指定してください',
@@ -6085,7 +6157,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         // audit behind. The representative-owned frozen/closed states are never
         // mirrored, and another live paper blocks reopening the ordering step.
         const recoveryOrder = lockedOrder!;
-        if (!isFrozenFilmOrderStatus(recoveryOrder.status)) {
+        if (provenSend && !isFrozenFilmOrderStatus(recoveryOrder.status)) {
           const canReopenMakerStep = (
             recoveryOrder.status === 'APPROVED_FOR_MANUAL_SEND' ||
             recoveryOrder.status === 'MAKER_PO_SENT_MANUALLY' ||

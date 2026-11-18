@@ -10,6 +10,7 @@ import {
   auditEvents,
   createDatabase,
   documents,
+  evidenceManualVerifications,
   filmSupplyOrders,
   projectAssignments,
   projects,
@@ -36,6 +37,7 @@ const projectIdA = uuidv7();
 const projectIdB = uuidv7();
 
 let staffToken = '';
+let adminToken = '';
 let app: ReturnType<typeof createApp>;
 
 let uniqueCounter = 0;
@@ -364,7 +366,26 @@ beforeAll(async () => {
     });
     return token;
   })();
+  adminToken = await (async () => {
+    const { token, tokenHash } = issueToken();
+    await db.insert(sessions).values({
+      id: uuidv7(),
+      userId: adminId,
+      tokenHash,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000)
+    });
+    return token;
+  })();
 });
+
+async function postAdmin<T = unknown>(url: string, body: unknown) {
+  const response = await app.request(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...cookieHeader(adminToken) },
+    body: JSON.stringify(body)
+  });
+  return { status: response.status, body: (await response.json()) as T };
+}
 
 afterAll(async () => {
   await pool.end();
@@ -881,14 +902,153 @@ describe('seventh recheck approval order-state races', () => {
   });
 
   it('blocks a new artwork revision while a live maker paper exists', async () => {
-    const order = await createApprovalReadyOrder(projectIdA, 'M5BLOCK');
-    const registered = await registerDesignRevision(order, projectIdA, 'label-front');
-    const evidence = await uploadApprovalEvidence(order, projectIdA, 'label-front', 'customer_generated');
-    const customer = await recordApproval(registered.revision.id, {
-      organization: 'customer',
-      evidenceDocumentVersionId: evidence.version.id
+    const base = await createApprovalReadyOrder(projectIdA, 'M5BLOCK');
+    const flow = await reachDualApproval(base, projectIdA, 'label-front', 'customer', 'seven');
+    expect(flow.secondApproval.dualApproved).toBe(true);
+    expect((await postJson(`/api/film-supply-orders/${base.orderId}/transitions`, {
+      to: 'MAKER_PO_READY'
+    })).status).toBe(200);
+    const created = await postAdmin(`/api/film-supply-orders/${base.orderId}/maker-purchase-orders`, {
+      recipientAddress: 'maker@example.test'
     });
-    expect(customer.status).toBe(201);
-    void order;
+    expect(created.status).toBe(201);
+    const registered = await uploadBoundDocument(projectIdA, {
+      documentType: 'proof',
+      issuerEntity: 'kanei',
+      sevenPurchaseOrderId: base.poId,
+      filmSupplyOrderId: base.orderId,
+      designKey: 'label-front'
+    });
+    const blocked = await postJson(`/api/film-supply-orders/${base.orderId}/artwork-revisions`, {
+      designKey: 'label-front',
+      fileDocumentVersionId: registered.version.id
+    });
+    expect(blocked.status).toBe(409);
+    expect(blocked.body).toMatchObject({ code: 'MAKER_PO_ACTIVE_ARTWORK_REVISION_BLOCKED' });
+    const [row] = await db.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, base.orderId)).limit(1);
+    expect(row?.status).toBe('MAKER_PO_READY');
+    expect(await db.select().from(artworkRevisions)
+      .where(eq(artworkRevisions.filmSupplyOrderId, base.orderId))).toHaveLength(1);
   });
 });
+  it('does not promote a queued approval after a concurrent REVOKE', async () => {
+    const base = await createApprovalReadyOrder(projectIdA, `M4REV${Date.now().toString(36)}`);
+    const registered = await registerDesignRevision(base, projectIdA, 'label-front');
+    const customerEvidence = await uploadApprovalEvidence(base, projectIdA, 'label-front', 'customer_generated');
+    expect((await recordApproval(registered.revision.id, {
+      organization: 'customer',
+      evidenceDocumentVersionId: customerEvidence.version.id
+    })).status).toBe(201);
+
+    const sevenEvidence = await uploadApprovalEvidence(base, projectIdA, 'label-front', 'seven');
+    const originalTransaction = db.transaction.bind(db);
+    let injectRevoke = true;
+    (db as unknown as { transaction: unknown }).transaction = async (
+      callback: Parameters<typeof originalTransaction>[0],
+      ...rest: unknown[]
+    ) => {
+      if (injectRevoke) {
+        injectRevoke = false;
+        await recordApproval(registered.revision.id, {
+          organization: 'seven',
+          decision: 'REVOKE',
+          evidenceDocumentVersionId: sevenEvidence.version.id,
+          eventTime: '2026-11-18T09:00:00.000Z'
+        });
+      }
+      return originalTransaction(callback, ...rest as []);
+    };
+    let approval;
+    try {
+      approval = await recordApproval(registered.revision.id, {
+        organization: 'seven',
+        evidenceDocumentVersionId: sevenEvidence.version.id
+      });
+    } finally {
+      (db as unknown as { transaction: unknown }).transaction = originalTransaction;
+    }
+
+    expect(approval?.status).toBe(201);
+    expect(approval?.body).toMatchObject({
+      dualApproved: false,
+      orderStatus: 'APPROVAL_PENDING'
+    });
+    const [row] = await db.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, base.orderId)).limit(1);
+    expect(row?.status).toBe('APPROVAL_PENDING');
+    const transitions = await db.select().from(auditEvents).where(and(
+      eq(auditEvents.entityType, 'film_supply_order'),
+      eq(auditEvents.entityId, base.orderId),
+      sql`${auditEvents.afterState} ->> 'status' = 'DUAL_APPROVED'`
+    ));
+    expect(transitions).toHaveLength(0);
+  });
+
+  it('rejects any queued second verification and non-UUID new paths/bodies', async () => {
+    const base = await createApprovalReadyOrder(projectIdA, `M4VER${Date.now().toString(36)}`);
+    const registered = await registerDesignRevision(base, projectIdA, 'label-front');
+    const binaryEvidence = await uploadBoundDocument(projectIdA, {
+      documentType: 'approval_evidence',
+      issuerEntity: 'customer_generated',
+      sevenPurchaseOrderId: base.poId,
+      filmSupplyOrderId: base.orderId,
+      designKey: 'label-front',
+      contentType: 'application/pdf',
+      contentBase64: Buffer.from('%PDF-verification pending\n').toString('base64')
+    });
+    const approval = await recordApproval(registered.revision.id, {
+      organization: 'customer',
+      evidenceDocumentVersionId: binaryEvidence.version.id
+    });
+    expect(approval.status).toBe(201);
+    const [approvalEvent] = await db.select().from(artworkApprovalEvents)
+      .where(eq(artworkApprovalEvents.artworkRevisionId, registered.revision.id));
+    expect(approvalEvent?.evidenceIdentifierStatus).toBe('pending_manual_verification');
+
+    const originalTransaction = db.transaction.bind(db);
+    let injectVerification = true;
+    (db as unknown as { transaction: unknown }).transaction = async (
+      callback: Parameters<typeof originalTransaction>[0],
+      ...rest: unknown[]
+    ) => {
+      if (injectVerification) {
+        injectVerification = false;
+        await db.insert(evidenceManualVerifications).values({
+          id: uuidv7(), approvalEventId: approvalEvent!.id, artworkRevisionId: registered.revision.id,
+          evidenceDocumentVersionId: binaryEvidence.version.id, approvedFileSha256: approvalEvent!.approvedFileSha256,
+          result: 'confirmed', verifierName: '先行確認', verifiedAt: new Date(), reasonNote: 'race winner',
+          recordedByUserId: adminId, recordedAt: new Date()
+        });
+      }
+      return originalTransaction(callback, ...rest as []);
+    };
+    let second;
+    try {
+      second = await postAdmin(`/api/artwork-approval-events/${approvalEvent!.id}/verification`, {
+        result: 'rejected', verifierName: '合成代表者', verifiedAt: new Date().toISOString(), reasonNote: 'racing loser'
+      });
+    } finally {
+      (db as unknown as { transaction: unknown }).transaction = originalTransaction;
+    }
+    expect(second?.status).toBe(422);
+    expect(second?.body).toMatchObject({ code: 'EVIDENCE_ALREADY_VERIFIED' });
+    expect(await db.select().from(evidenceManualVerifications)
+      .where(eq(evidenceManualVerifications.approvalEventId, approvalEvent!.id))).toHaveLength(1);
+
+    const badPaths = await Promise.all([
+      postAdmin('/api/film-deliveries/not-a-uuid/confirmation', {}),
+      postAdmin('/api/filling-deliveries/not-a-uuid/confirmation', {}),
+      postAdmin('/api/pre-order-references/not-a-uuid/promote-official', {})
+    ]);
+    expect(badPaths.map((response) => response.status)).toEqual([400, 400, 400]);
+    expect(badPaths.map((response) => (response.body as { code: string }).code))
+      .toEqual(['INVALID_PATH_PARAMETER', 'INVALID_PATH_PARAMETER', 'INVALID_PATH_PARAMETER']);
+
+    const badApprovalBody = await postAdmin(`/api/artwork-revisions/${registered.revision.id}/approvals`, {
+      organization: 'seven', decision: 'APPROVE', evidenceSource: 'email',
+      evidenceDocumentVersionId: 'not-a-uuid', eventTime: new Date().toISOString()
+    });
+    expect(badApprovalBody.status).toBe(422);
+    expect(badApprovalBody.body).toMatchObject({ code: 'EVIDENCE_DOCUMENT_VERSION_INVALID' });
+  });

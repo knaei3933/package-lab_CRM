@@ -1583,4 +1583,87 @@ describe('seventh recheck server hardening', () => {
     expect(tooLong.status).toBe(422);
     expect(tooLong.body).toMatchObject({ code: 'HOLD_REASON_TOO_LONG', error: '保留理由（holdReason）は1000文字以下で入力してください' });
   });
+
+  it('logs unexpected errors and returns a JSON 500 contract', async () => {
+    const originalTransaction = db.transaction.bind(db);
+    (db as unknown as { transaction: unknown }).transaction = async () => {
+      throw new Error('unexpected operational failure');
+    };
+    let created;
+    try {
+      created = await postAs(adminToken, '/api/projects', {
+        route: 'F1',
+        code: `INTERNAL-${nextTag()}`,
+        name: 'unexpected error probe',
+        endCustomerAccountId: customerAccountId,
+        sevenAccountId: sevenAccountId,
+        makerAccountId: makerAccountId
+      });
+    } finally {
+      (db as unknown as { transaction: unknown }).transaction = originalTransaction;
+    }
+    expect(created?.status).toBe(500);
+    expect(created?.body).toMatchObject({ code: 'INTERNAL_ERROR' });
+  });
+});
+
+describe('eighth recheck server regressions', () => {
+  it('never rewinds the order for a record-only post-delivery acknowledgement', async () => {
+    // A pending paper was cancelled internally; its replacement was then proven
+    // sent and cancelled with an acknowledgement outstanding.
+    const pendingChain = await reachMakerPoReady(`R8A-${nextTag()}`);
+    const pendingPoId = ((await createMakerPo(pendingChain.orderId)).body as { id: string }).id;
+    expect((await approveMakerPo(pendingPoId)).status).toBe(200);
+    const pending = await sendHeaderCleanEml(pendingPoId, pendingChain.orderCode, { kind: 'none', artworkBytes: pendingChain.artworkBytes });
+    expect((pending.body as { verificationStatus: string }).verificationStatus).toBe('PENDING_MANUAL_VERIFICATION');
+    expect((await cancelMakerPo(pendingPoId, 'obsolete pending paper')).status).toBe(200);
+    expect((await orderRow(pendingChain.orderId))?.status).toBe('MAKER_PO_READY');
+
+    const provenPoId = ((await createMakerPo(pendingChain.orderId)).body as { id: string }).id;
+    expect((await approveMakerPo(provenPoId)).status).toBe(200);
+    await sendVerifiedEml(provenPoId, pendingChain.orderCode, pendingChain.artworkBytes);
+    expect((await cancelMakerPo(provenPoId, 'proven-send correction')).status).toBe(200);
+    expect((await orderRow(pendingChain.orderId))?.status).toBe('MAKER_PO_SENT_MANUALLY');
+
+    const transitionAuditsBefore = (await auditByAction('FILM_SUPPLY_ORDER_TRANSITIONED', [pendingChain.orderId]))
+      .filter((row) => (row.requestMetadata as { operation?: string }).operation === 'maker_po:cancellation_acknowledgement');
+    const postDelivery = await postAs(adminToken, `/api/maker-purchase-orders/${pendingPoId}/cancellation-acknowledgement`, {
+      note: 'after cancellation, the maker reported receipt',
+      acknowledgedAt: new Date().toISOString()
+    });
+
+    expect(postDelivery.status).toBe(201);
+    expect(postDelivery.body).toMatchObject({
+      acknowledgementKind: 'POST_DELIVERY_CONFIRMATION',
+      replacementPaperLive: false
+    });
+    expect((await orderRow(pendingChain.orderId))?.status).toBe('MAKER_PO_SENT_MANUALLY');
+    const transitionAuditsAfter = (await auditByAction('FILM_SUPPLY_ORDER_TRANSITIONED', [pendingChain.orderId]))
+      .filter((row) => (row.requestMetadata as { operation?: string }).operation === 'maker_po:cancellation_acknowledgement');
+    expect(transitionAuditsAfter).toHaveLength(transitionAuditsBefore.length);
+    const creationGate = await createMakerPo(pendingChain.orderId);
+    expect(creationGate.status).toBe(422);
+    expect((creationGate.body as { code: string }).code).toBe('MAKER_PO_CANCELLATION_ACK_REQUIRED');
+  });
+
+  it('rejects lenient manual verification and acknowledgement dates', async () => {
+    const chain = await reachMakerPoReady(`R8DATE-${nextTag()}`);
+    const poId = ((await createMakerPo(chain.orderId)).body as { id: string }).id;
+    expect((await approveMakerPo(poId)).status).toBe(200);
+    const pending = await sendHeaderCleanEml(poId, chain.orderCode, { kind: 'none', artworkBytes: chain.artworkBytes });
+    const pendingBody = pending.body as { verificationStatus: string; event: { id: string } };
+    const badVerifiedAt = await postAs(adminToken, `/api/maker-po-events/${pendingBody.event.id}/send-manual-verification`, {
+      result: 'confirmed', verifierName: '合成代表者', verifiedAt: '2026-02-30T10:00:00.000Z', reasonNote: 'invalid calendar'
+    });
+    expect(badVerifiedAt.status).toBe(422);
+    expect(await db.select().from(makerPoSendManualVerifications)
+      .where(eq(makerPoSendManualVerifications.makerPoEventId, pendingBody.event.id))).toHaveLength(0);
+
+    expect((await cancelMakerPo(poId, 'date contract check')).status).toBe(200);
+    const badAcknowledgedAt = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, {
+      note: 'post delivery', acknowledgedAt: '2026-02-30T10:00:00.000Z'
+    });
+    expect(badAcknowledgedAt.status).toBe(422);
+    expect((await poEvents(poId)).filter((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED')).toHaveLength(0);
+  });
 });
