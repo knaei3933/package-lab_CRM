@@ -1,9 +1,13 @@
+import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { LoginForm } from '../components/LoginForm';
 import { apiBaseUrl, loadSessionUser } from '../lib/api';
 import { cardStyle, noteStyle } from '../lib/ui';
 
 export const dynamic = 'force-dynamic';
+
+/** UI batch A: per-screen tab title (layout template adds 「｜KANEI CRM」). */
+export const metadata: Metadata = { title: 'ログイン' };
 
 /**
  * Criterion 1: the login screen. A logged-in operator is sent straight to the

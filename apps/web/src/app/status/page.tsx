@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import { cookies } from 'next/headers';
 
 /**
@@ -8,6 +9,9 @@ import { cookies } from 'next/headers';
  * so instead of inventing labels.
  */
 export const dynamic = 'force-dynamic';
+
+/** UI batch A: per-screen tab title (layout template adds 「｜KANEI CRM」). */
+export const metadata: Metadata = { title: '状態表示' };
 
 const SESSION_COOKIE = 'kanei_mvp_session';
 const apiBaseUrl = process.env.KANEI_API_BASE_URL ?? 'http://127.0.0.1:3081';
@@ -33,13 +37,13 @@ const sectionTitles: Array<{ heading: string; note: string; key: keyof StatusLab
   { heading: '手数料計算の準備状態', note: '納品証跡がそろって初めて手数料計算が可能になります', key: 'commissionReadinessStates' }
 ];
 
-const cardStyle = { border: '1px solid #d8dfeb', borderRadius: 8, padding: 16 } as const;
+const cardStyle = { border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: 16 } as const;
 const rowStyle = {
   display: 'flex',
   justifyContent: 'space-between',
   gap: 16,
   padding: '8px 0',
-  borderBottom: '1px solid #eef1f6'
+  borderBottom: '1px solid var(--line)'
 } as const;
 
 async function loadStatusLabels(): Promise<
@@ -70,12 +74,12 @@ export default async function StatusPage() {
   return (
     <section>
       <h1 style={{ fontSize: 28, marginBottom: 8 }}>ステータス一覧（日本語表記）</h1>
-      <p style={{ color: '#526173' }}>
+      <p style={{ color: 'var(--ink-sub)' }}>
         F1案件で使う状態の日本語ラベル一覧です。ラベルはAPI（/api/status-labels）から取得した共通定義をそのまま表示しています。
       </p>
 
       {!labels.ok && (
-        <p style={{ marginTop: 24, padding: 16, border: '1px solid #e4b9b9', borderRadius: 8, color: '#8a3b3b' }}>
+        <p style={{ marginTop: 24, padding: 16, border: '1px solid var(--danger)', borderRadius: 'var(--radius)', background: 'var(--danger-tint)', color: 'var(--danger)' }}>
           {labels.message}
         </p>
       )}
@@ -85,11 +89,11 @@ export default async function StatusPage() {
           {sectionTitles.map((section) => (
             <div key={section.key} style={cardStyle}>
               <h2 style={{ margin: 0, fontSize: 20 }}>{section.heading}</h2>
-              <p style={{ margin: '4px 0 12px', color: '#526173', fontSize: 14 }}>{section.note}</p>
+              <p style={{ margin: '4px 0 12px', color: 'var(--ink-sub)', fontSize: 14 }}>{section.note}</p>
               <div>
                 {labels.payload[section.key].map((entry) => (
                   <div key={entry.key} style={rowStyle}>
-                    <code style={{ color: '#526173' }}>{entry.key}</code>
+                    <code style={{ color: 'var(--ink-sub)' }}>{entry.key}</code>
                     <span>{entry.label}</span>
                   </div>
                 ))}

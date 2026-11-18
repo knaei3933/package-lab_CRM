@@ -1,4 +1,5 @@
 import { callApi } from './api';
+import { displayText, isFieldHiddenByRole, isStateWithheld } from './redaction';
 
 /**
  * M6 operator UI data assembly.
@@ -60,6 +61,10 @@ export interface FilmSupplyOrderView {
   sevenPurchaseOrderId: string | null;
   lineCount: number;
   lines: OrderLineView[];
+  /** UI batch A: the API withheld this order's recorded details from the role. */
+  detailsHidden: boolean;
+  /** UI batch A: the API withheld the status (viewer); never shown as 下書き. */
+  statusHidden: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -69,6 +74,8 @@ export interface FillingOrderView {
   code: string;
   lineCount: number;
   lines: OrderLineView[];
+  /** UI batch A: the API withheld this order's recorded details from the role. */
+  detailsHidden: boolean;
   createdAt: string;
 }
 
@@ -78,6 +85,10 @@ export interface SevenPurchaseOrderView {
   officialRegisteredAt: string | null;
   verificationStatus: string | null;
   reviewPending: boolean;
+  /** UI batch A: the registration date exists but is withheld from the role. */
+  officialRegistrationHidden: boolean;
+  /** UI batch A: a checklist was recorded but its result is withheld from the role. */
+  verificationHidden: boolean;
 }
 
 export interface DocumentVersionView {
@@ -100,6 +111,10 @@ export interface DocumentView {
   sevenPurchaseOrderId: string | null;
   filmSupplyOrderId: string | null;
   designKey: string | null;
+  /** UI batch A: type, issuer and links were withheld from the role (staff/viewer). */
+  detailsHidden: boolean;
+  /** UI batch A: the verification result was withheld from the role (viewer). */
+  verificationHidden: boolean;
   createdAt: string;
   updatedAt: string;
   versions: DocumentVersionView[];
@@ -303,7 +318,7 @@ function readLines(events: AuditEventView[], orderKey: string): Map<string, Orde
     const line: OrderLineView = {
       id: event.entityId,
       lineNumber: numeric(after, 'lineNumber') ?? 0,
-      description: requiredText(after, 'description', '（説明未記録）'),
+      description: displayText(event, 'description', '（説明未記録）'),
       orderedQuantity: requiredText(after, 'orderedQuantity', '—'),
       unit: requiredText(after, 'unit', '—')
     };
@@ -380,11 +395,15 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
     if (event.action === 'FILM_SUPPLY_ORDER_CREATED') {
       filmOrders.set(event.entityId, {
         id: event.entityId,
-        code: requiredText(after, 'code', '（コード未記録）'),
+        code: displayText(event, 'code', '（コード未記録）'),
         status: requiredText(after, 'status', 'DRAFT'),
         sevenPurchaseOrderId: text(after, 'sevenPurchaseOrderId'),
         lineCount: numeric(after, 'lineCount') ?? 0,
         lines: [],
+        // lineCount is on every full answer and off the staff allowlist, so its
+        // absence marks a role-shaped answer (viewer: no state; staff: trimmed).
+        detailsHidden: isFieldHiddenByRole(event, 'lineCount'),
+        statusHidden: isStateWithheld(event),
         createdAt: event.occurredAt,
         updatedAt: event.occurredAt
       });
@@ -392,6 +411,7 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
       const current = filmOrders.get(event.entityId);
       if (current) {
         current.status = requiredText(state(event.afterState), 'status', current.status);
+        current.statusHidden = isStateWithheld(event);
         current.updatedAt = event.occurredAt;
       }
     }
@@ -411,9 +431,12 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
     const after = state(event.afterState);
     fillingOrders.set(event.entityId, {
       id: event.entityId,
-      code: requiredText(after, 'code', '（コード未記録）'),
+      code: displayText(event, 'code', '（コード未記録）'),
       lineCount: numeric(after, 'lineCount') ?? 0,
       lines: [],
+      // lineCount is on every full answer and off the staff allowlist, so its
+        // absence marks a role-shaped answer (viewer: no state; staff: trimmed).
+        detailsHidden: isFieldHiddenByRole(event, 'lineCount'),
       createdAt: event.occurredAt
     });
   }
@@ -431,19 +454,25 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
     if (event.action === 'SEVEN_PO_CREATED') {
       sevenPurchaseOrders.set(event.entityId, {
         id: event.entityId,
-        poNumber: requiredText(after, 'poNumber', '（発注番号未記録）'),
+        poNumber: displayText(event, 'poNumber', '（発注番号未記録）'),
         officialRegisteredAt: text(after, 'officialRegisteredAt'),
         verificationStatus: null,
-        reviewPending: false
+        reviewPending: false,
+        officialRegistrationHidden: isFieldHiddenByRole(event, 'officialRegisteredAt'),
+        verificationHidden: false
       });
     } else if (event.action === 'SEVEN_PO_OFFICIALLY_REGISTERED') {
       const current = sevenPurchaseOrders.get(event.entityId);
-      if (current) current.officialRegisteredAt = text(after, 'officialRegisteredAt') ?? event.occurredAt;
+      if (current) {
+        current.officialRegisteredAt = text(after, 'officialRegisteredAt') ?? event.occurredAt;
+        current.officialRegistrationHidden = false;
+      }
     } else if (event.action === 'SEVEN_PO_VERIFICATION_RECORDED') {
       const current = sevenPurchaseOrders.get(event.entityId);
       if (current) {
         current.verificationStatus = text(after, 'verificationStatus');
         current.reviewPending = bool(after, 'reviewPending');
+        current.verificationHidden = isFieldHiddenByRole(event, 'verificationStatus');
       }
     }
   }
@@ -457,13 +486,16 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
         id: event.entityId,
         documentType: requiredText(after, 'documentType', 'unknown'),
         issuerEntity: requiredText(after, 'issuerEntity', 'unknown'),
-        filename: requiredText(after, 'originalFilename', '（ファイル名未記録）'),
+        filename: displayText(event, 'originalFilename', '（ファイル名未記録）'),
         note: text(after, 'note'),
         verificationStatus: requiredText(after, 'verificationStatus', 'unverified'),
         verificationNote: text(after, 'verificationNote'),
         sevenPurchaseOrderId: text(after, 'sevenPurchaseOrderId'),
         filmSupplyOrderId: text(after, 'filmSupplyOrderId'),
         designKey: text(after, 'designKey'),
+        // documentType is on every full answer and off the staff allowlist.
+        detailsHidden: isFieldHiddenByRole(event, 'documentType'),
+        verificationHidden: isFieldHiddenByRole(event, 'verificationStatus'),
         createdAt: event.occurredAt,
         updatedAt: event.occurredAt,
         versions: []
@@ -473,6 +505,7 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
       if (current) {
         current.verificationStatus = requiredText(after, 'verificationStatus', current.verificationStatus);
         current.verificationNote = text(after, 'verificationNote');
+        current.verificationHidden = isFieldHiddenByRole(event, 'verificationStatus');
         current.updatedAt = event.occurredAt;
       }
     }
@@ -505,7 +538,7 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
     revisions.push({
       id: event.entityId,
       filmSupplyOrderId: orderId,
-      designKey: requiredText(after, 'designKey', '（デザイン未記録）'),
+      designKey: displayText(event, 'designKey', '（デザイン未記録）'),
       revisionNo: numeric(after, 'revisionNo') ?? 1,
       fileDocumentVersionId: requiredText(after, 'fileDocumentVersionId', '—'),
       note: text(after, 'note'),

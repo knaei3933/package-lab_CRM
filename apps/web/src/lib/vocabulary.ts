@@ -157,18 +157,27 @@ export function evidenceSourceChoices(): Array<{ value: string; label: string }>
   return APPROVAL_EVIDENCE_SOURCES.map((value) => ({ value, label: EVIDENCE_SOURCE_LABELS[value] }));
 }
 
-const JP_DATETIME_OPTIONS: Intl.DateTimeFormatOptions = {
+/**
+ * UI batch A (P1-5): every displayed timestamp is rendered in Japan time with
+ * an explicit 「JST」 suffix, independent of the server process TZ. A UTC host
+ * (the planned NAS) would otherwise shift every list and history 9 hours.
+ */
+export const DISPLAY_TIME_ZONE = 'Asia/Tokyo';
+
+const JP_DATETIME_FORMAT = new Intl.DateTimeFormat('ja-JP', {
+  timeZone: DISPLAY_TIME_ZONE,
   year: 'numeric',
   month: '2-digit',
   day: '2-digit',
   hour: '2-digit',
-  minute: '2-digit'
-};
+  minute: '2-digit',
+  hourCycle: 'h23'
+});
 
-/** Renders an API timestamp as a short Japanese datetime (or a dash). */
+/** Renders an API timestamp as a short Japanese datetime in JST (or a dash). */
 export function formatTimestamp(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat('ja-JP', JP_DATETIME_OPTIONS).format(date);
+  return `${JP_DATETIME_FORMAT.format(date)} JST`;
 }

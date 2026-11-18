@@ -3,15 +3,21 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { ActionForm } from '../components/ActionForm';
 import { LogoutButton } from '../components/LogoutButton';
+import { NavLinks } from '../components/NavLinks';
 import { SelectField, TextField } from '../components/fields';
+import { cookies } from 'next/headers';
 import { loadSessionUser, readSelectedProjectId } from '../lib/api';
+import { decodeDisplayNameCookie, DISPLAY_NAME_COOKIE, operatorName, roleLabel } from '../lib/session-display';
 import { loadSelectableProjects } from '../lib/project-data';
 import type { ProjectSummary } from '../lib/project-data';
-import { monoStyle, navStyle } from '../lib/ui';
+import { monoStyle } from '../lib/ui';
 import { selectProjectAction } from './actions';
+import './globals.css';
 
+// UI batch A: each screen sets its own title (tabs stay distinguishable); the
+// template adds the product name.
 export const metadata: Metadata = {
-  title: 'KANEI CRM オペレーター画面',
+  title: { default: 'KANEI CRM オペレーター画面', template: '%s｜KANEI CRM' },
   description: 'F1フィルム商材の発注から納品確認までをブラウザで行う最小オペレーターUI'
 };
 
@@ -26,6 +32,9 @@ const navItems = [
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const user = await loadSessionUser();
+  const rememberedName = user
+    ? decodeDisplayNameCookie((await cookies()).get(DISPLAY_NAME_COOKIE)?.value, user.id)
+    : null;
   const projectId = await readSelectedProjectId();
   // M8-UI3: the selector lists the projects this operator may open, so the id
   // no longer has to be pasted by hand. The API narrows the list by role.
@@ -46,11 +55,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   // so genuine mismatches inside the page tree still surface.
   return (
     <html lang="ja" suppressHydrationWarning>
-      <body
-        suppressHydrationWarning
-        style={{ fontFamily: 'system-ui, sans-serif', margin: 0, color: '#172033', background: '#f7f9fc' }}
-      >
-        <header style={{ borderBottom: '1px solid #d8dfeb', background: '#ffffff' }}>
+      <body suppressHydrationWarning>
+        <a className="skip-link" href="#main">本文へ移動</a>
+        <header style={{ borderBottom: '1px solid var(--line)', background: 'var(--surface)' }}>
           <div style={{ maxWidth: 1100, margin: '0 auto', padding: '12px 24px', display: 'grid', gap: 10 }}>
             <div
               style={{
@@ -61,16 +68,14 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
                 gap: 12
               }}
             >
-              <Link href="/" style={{ fontSize: 18, color: '#172033', textDecoration: 'none', fontWeight: 600 }}>
+              <Link href="/" style={{ fontSize: 18, color: 'var(--ink)', textDecoration: 'none', fontWeight: 700 }}>
                 KANEI CRM オペレーター画面（F1）
               </Link>
               {user ? (
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 13 }}>
                   <span>
-                    {user.displayName ?? user.id}
-                    <span style={{ color: '#526173' }}>
-                      （{user.role === 'admin' ? '代表者' : user.role === 'staff' ? '担当者' : '閲覧者'}）
-                    </span>
+                    {operatorName(user, rememberedName)}
+                    <span style={{ color: 'var(--ink-sub)' }}>（{roleLabel(user.role)}）</span>
                   </span>
                   <LogoutButton />
                 </div>
@@ -78,13 +83,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             </div>
             {user ? (
               <>
-                <nav style={navStyle}>
-                  {navItems.map((item) => (
-                    <Link key={item.href} href={item.href} style={{ color: '#1d4ed8', fontSize: 14 }}>
-                      {item.label}
-                    </Link>
-                  ))}
-                </nav>
+                <NavLinks items={navItems} />
                 <ActionForm
                   action={selectProjectAction}
                   submitLabel="案件を切り替える"
@@ -113,7 +112,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             ) : null}
           </div>
         </header>
-        <main style={{ maxWidth: 1100, margin: '32px auto', padding: '0 24px 64px', display: 'grid', gap: 24 }}>
+        <main id="main" tabIndex={-1} style={{ maxWidth: 1100, margin: '32px auto', padding: '0 24px 64px', display: 'grid', gap: 24 }}>
           {children}
         </main>
       </body>

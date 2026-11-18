@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import { ActionForm } from '../../components/ActionForm';
 import { ApprovalDecisionForm } from '../../components/ApprovalDecisionForm';
 import { OffsetDateTimeField } from '../../components/OffsetDateTimeField';
@@ -25,8 +26,12 @@ import {
   VERIFICATION_STATUS_LABELS
 } from '../../lib/vocabulary';
 import type { Choice } from '../../lib/types';
+import { codeWithStatus } from '../../lib/redaction';
 
 export const dynamic = 'force-dynamic';
+
+/** UI batch A: per-screen tab title (layout template adds 「｜KANEI CRM」). */
+export const metadata: Metadata = { title: '承認' };
 
 /**
  * Criterion 5: 承認（アートワークのダブル承認）. The pending designs of every
@@ -199,7 +204,7 @@ export default async function ApprovalsPage() {
                 ? gate.designs
                     .filter((design) => !design.dualApproved)
                     .map((design) => (
-                      <div key={design.designKey} style={{ marginTop: 16, borderTop: '1px solid #eef1f6', paddingTop: 12 }}>
+                      <div key={design.designKey} style={{ marginTop: 16, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
                         <h3 style={{ fontSize: 16, margin: '0 0 4px' }}>
                           承認を記録する：デザイン {design.designKey}（版{design.currentRevisionNo}）
                         </h3>
@@ -239,7 +244,7 @@ export default async function ApprovalsPage() {
               width={300}
               choices={workspace.filmOrders.map((order) => ({
                 value: order.id,
-                label: `${order.code}（${stateLabel(order.status)}）`
+                label: codeWithStatus(order.code, order.statusHidden ? null : stateLabel(order.status))
               }))}
             />
             <TextField name="designKey" label="デザインキー" required width={180} hint="例：T-35" />
@@ -341,7 +346,7 @@ function PendingVerificationSection({
   organizationText: (key: string) => string;
 }) {
   return (
-    <div style={{ marginTop: 16, borderTop: '1px solid #eef1f6', paddingTop: 12 }}>
+    <div style={{ marginTop: 16, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
       <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>
         承認証跡の手動確認（PDF・画像の識別子確認）— {pending.length}件
       </h3>
@@ -351,7 +356,7 @@ function PendingVerificationSection({
       </p>
       {pending.map((entry) => (
         <div key={entry.approvalEventId} style={{ marginBottom: 16 }}>
-          <div style={{ ...infoBoxStyle, borderColor: '#e4d3b9', color: '#8a6a3b' }}>
+          <div style={{ ...infoBoxStyle, borderColor: 'var(--warn)', color: 'var(--warn)', background: 'var(--warn-tint)' }}>
             <span style={badgeStyle}>手動確認待ち</span>{' '}
             <strong>{organizationText(entry.organization)}</strong> の承認（デザイン {entry.designKey}／版
             {entry.revisionNo}）は手動確認待ちです。

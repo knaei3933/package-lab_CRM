@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import { ActionForm } from '../../components/ActionForm';
 import { DocumentUploadForm } from '../../components/DocumentUploadForm';
 import { SelectField, TextField } from '../../components/fields';
@@ -23,8 +24,12 @@ import {
   issuerEntityChoices,
   VERIFICATION_STATUS_LABELS
 } from '../../lib/vocabulary';
+import { codeWithStatus, HIDDEN_BY_ROLE_LABEL } from '../../lib/redaction';
 
 export const dynamic = 'force-dynamic';
+
+/** UI batch A: per-screen tab title (layout template adds 「｜KANEI CRM」). */
+export const metadata: Metadata = { title: '文書' };
 
 /**
  * Criterion 4: 文書. Upload posts contentBase64 (read in the browser) to
@@ -75,7 +80,7 @@ export default async function DocumentsPage() {
           makerPurchaseOrderChoices={makerPurchaseOrderChoices}
           filmSupplyOrderChoices={workspace.filmOrders.map((order) => ({
             value: order.id,
-            label: `${order.code}（${stateLabel(order.status)}）`
+            label: codeWithStatus(order.code, order.statusHidden ? null : stateLabel(order.status))
           }))}
         />
       </div>
@@ -104,13 +109,17 @@ export default async function DocumentsPage() {
               {workspace.documents.map((document) => (
                 <tr key={document.id}>
                   <td style={tdStyle}>
-                    {DOCUMENT_TYPE_LABELS[document.documentType as keyof typeof DOCUMENT_TYPE_LABELS]
-                      ?? document.documentType}
+                    {document.detailsHidden
+                      ? HIDDEN_BY_ROLE_LABEL
+                      : DOCUMENT_TYPE_LABELS[document.documentType as keyof typeof DOCUMENT_TYPE_LABELS]
+                        ?? document.documentType}
                     <div style={monoStyle}>{document.id}</div>
                   </td>
                   <td style={tdStyle}>
-                    {ISSUER_ENTITY_LABELS[document.issuerEntity as keyof typeof ISSUER_ENTITY_LABELS]
-                      ?? document.issuerEntity}
+                    {document.detailsHidden
+                      ? HIDDEN_BY_ROLE_LABEL
+                      : ISSUER_ENTITY_LABELS[document.issuerEntity as keyof typeof ISSUER_ENTITY_LABELS]
+                        ?? document.issuerEntity}
                   </td>
                   <td style={tdStyle}>
                     {document.filename}
@@ -135,10 +144,16 @@ export default async function DocumentsPage() {
                         {document.designKey ? <div>デザインキー: {document.designKey}</div> : null}
                       </div>
                     ) : null}
-                    {!document.sevenPurchaseOrderId && !document.filmSupplyOrderId ? '—' : null}
+                    {!document.sevenPurchaseOrderId && !document.filmSupplyOrderId
+                      ? document.detailsHidden
+                        ? HIDDEN_BY_ROLE_LABEL
+                        : '—'
+                      : null}
                   </td>
                   <td style={tdStyle}>
-                    {VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus}
+                    {document.verificationHidden
+                      ? HIDDEN_BY_ROLE_LABEL
+                      : VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus}
                     {document.verificationNote ? <div style={noteStyle}>{document.verificationNote}</div> : null}
                   </td>
                   <td style={tdStyle}>{formatTimestamp(document.createdAt)}</td>

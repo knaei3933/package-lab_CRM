@@ -50,9 +50,9 @@ export function OffsetDateTimeField({
         value={mounted ? datetimeLocalToIso(localValue) ?? '' : ''}
       />
       <label style={{ display: 'grid', gap: 2, minWidth: 220 }}>
-        <span style={{ fontSize: 13, color: '#172033' }}>
+        <span style={{ fontSize: 13, color: 'var(--ink)' }}>
           {label}
-          {required ? <span style={{ color: '#b91c1c' }}>（必須）</span> : null}
+          {required ? <span style={{ color: 'var(--danger)' }}>（必須）</span> : null}
         </span>
         <input
           name={`${name}Local`}

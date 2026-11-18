@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import { ActionForm } from '../../components/ActionForm';
 import { OrderCreateForm } from '../../components/OrderCreateForm';
 import { CheckboxField, SelectField, TextField } from '../../components/fields';
@@ -15,6 +16,7 @@ import { readSelectedProjectId } from '../../lib/api';
 import { loadPaymentGate, PAYMENT_TERMS_LABELS } from '../../lib/maker-po-data';
 import { labelLookup, loadWorkspace } from '../../lib/project-data';
 import type { FilmSupplyOrderView } from '../../lib/project-data';
+import { HIDDEN_BY_ROLE_LABEL } from '../../lib/redaction';
 import {
   cardStyle,
   infoBoxStyle,
@@ -27,6 +29,9 @@ import {
 import { formatTimestamp, unitChoices, unitLabel, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary';
 
 export const dynamic = 'force-dynamic';
+
+/** UI batch A: per-screen tab title (layout template adds 「｜KANEI CRM」). */
+export const metadata: Metadata = { title: '案件（発注）一覧／作成' };
 
 /**
  * Criterion 3: 案件（発注）一覧／作成. Film supply orders are listed with the
@@ -131,9 +136,13 @@ export default async function OrdersPage() {
                     {order.code}
                     <div style={monoStyle}>{order.id}</div>
                   </td>
-                  <td style={tdStyle}>{stateLabel(order.status)}</td>
+                  <td style={tdStyle}>{order.statusHidden ? HIDDEN_BY_ROLE_LABEL : stateLabel(order.status)}</td>
                   <td style={tdStyle}>
-                    {order.sevenPurchaseOrderId ? poLabelById.get(order.sevenPurchaseOrderId) ?? '紐付けあり' : '—'}
+                    {order.sevenPurchaseOrderId
+                      ? poLabelById.get(order.sevenPurchaseOrderId) ?? '紐付けあり'
+                      : order.detailsHidden
+                        ? HIDDEN_BY_ROLE_LABEL
+                        : '—'}
                   </td>
                   <td style={tdStyle}>
                     <OrderLinesCell order={order} />
@@ -149,10 +158,10 @@ export default async function OrdersPage() {
                       <input type="hidden" readOnly name="orderId" value={order.id} />
                       <SelectField name="to" label="遷移先の状態" required width={280} choices={transitionChoices} />
                     </ActionForm>
-                    {order.status === 'DRAFT' ? (
+                    {!order.statusHidden && order.status === 'DRAFT' ? (
                       <PaymentTermsCell order={order} gate={paymentGateByOrderId.get(order.id) ?? null} />
                     ) : null}
-                    {order.status === 'FILM_DELIVERED' ? (
+                    {!order.statusHidden && order.status === 'FILM_DELIVERED' ? (
                       <details style={{ marginTop: 8 }}>
                         <summary style={{ fontSize: 13, cursor: 'pointer' }}>受領確認（問題なしとみなす）</summary>
                         <ActionForm
@@ -211,6 +220,7 @@ export default async function OrdersPage() {
                     <div style={monoStyle}>{order.id}</div>
                   </td>
                   <td style={tdStyle}>
+                    {order.lines.length === 0 && order.detailsHidden ? HIDDEN_BY_ROLE_LABEL : null}
                     {order.lines.map((line) => (
                       <div key={line.id}>
                         {line.lineNumber}. {line.description} ／ {line.orderedQuantity}
@@ -224,7 +234,7 @@ export default async function OrdersPage() {
             </tbody>
           </table>
         )}
-        <hr style={{ border: 'none', borderTop: '1px solid #eef1f6', margin: '16px 0' }} />
+        <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '16px 0' }} />
         <OrderCreateForm action={createFillingOrderAction} orderKind="filling" unitChoices={unitChoices('filling')} />
       </div>
     </section>
@@ -233,7 +243,8 @@ export default async function OrdersPage() {
 
 function OrderLinesCell({ order }: { order: FilmSupplyOrderView }) {
   if (order.lines.length === 0) {
-    return <span>{order.lineCount > 0 ? `${order.lineCount}行` : '—'}</span>;
+    if (order.lineCount > 0) return <span>{`${order.lineCount}行`}</span>;
+    return <span>{order.detailsHidden ? HIDDEN_BY_ROLE_LABEL : '—'}</span>;
   }
   return (
     <div>
@@ -316,11 +327,19 @@ function SevenPurchaseOrderSection({
                   {po.poNumber}
                   <div style={monoStyle}>{po.id}</div>
                 </td>
-                <td style={tdStyle}>{po.officialRegisteredAt ? formatTimestamp(po.officialRegisteredAt) : '未登録'}</td>
+                <td style={tdStyle}>
+                  {po.officialRegisteredAt
+                    ? formatTimestamp(po.officialRegisteredAt)
+                    : po.officialRegistrationHidden
+                      ? HIDDEN_BY_ROLE_LABEL
+                      : '未登録'}
+                </td>
                 <td style={tdStyle}>
                   {po.verificationStatus
                     ? verificationLabel[po.verificationStatus] ?? po.verificationStatus
-                    : '未記録'}
+                    : po.verificationHidden
+                      ? HIDDEN_BY_ROLE_LABEL
+                      : '未記録'}
                   {po.reviewPending ? <div style={noteStyle}>確認中（不一致レビュー）</div> : null}
                 </td>
                 <td style={{ ...tdStyle, minWidth: 280 }}>
@@ -370,7 +389,7 @@ function SevenPurchaseOrderSection({
         </table>
       )}
 
-      <hr style={{ border: 'none', borderTop: '1px solid #eef1f6', margin: '16px 0' }} />
+      <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '16px 0' }} />
       <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>セブン化学発注書を登録する</h3>
       <ActionForm
         action={createSevenPurchaseOrderAction}

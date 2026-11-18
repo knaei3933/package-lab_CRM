@@ -45,7 +45,7 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices }: Delive
       <input type="hidden" readOnly name="kind" value={kind} />
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
         <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>発注<span style={{ color: '#b91c1c' }}>（必須）</span></span>
+          <span style={{ fontSize: 13 }}>発注<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
           <select
             name="orderId"
             value={orderId}
@@ -63,7 +63,7 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices }: Delive
           </select>
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>明細<span style={{ color: '#b91c1c' }}>（必須）</span></span>
+          <span style={{ fontSize: 13 }}>明細<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
           <select
             name="lineId"
             value={lineId}
@@ -80,11 +80,11 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices }: Delive
           </select>
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>納品数量<span style={{ color: '#b91c1c' }}>（必須）</span></span>
+          <span style={{ fontSize: 13 }}>納品数量<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
           <input name="deliveredQuantity" inputMode="decimal" required style={{ ...inputStyle, width: 140 }} />
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>単位<span style={{ color: '#b91c1c' }}>（必須）</span></span>
+          <span style={{ fontSize: 13 }}>単位<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
           <select name="unit" value={unit} onChange={(event) => setUnit(event.target.value)} style={{ ...inputStyle, width: 140 }}>
             {unitChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>

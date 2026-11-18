@@ -1,0 +1,169 @@
+/*
+ * UI batch A: design tokens for the operator screens (UI_AUDIT_AND_PLAN §3.2).
+ * Direction 「現場の帳簿」 in its restrained variant (CEO decision: keep the
+ * current pale blue-grey paper, indigo as the one primary colour). Screens
+ * still use inline styles; lib/ui.ts and the layout read these variables so
+ * later batches can move the remaining inline values over one at a time.
+ */
+:root {
+  --ink: #1f2933;
+  --ink-sub: #52606d;
+  --paper: #f7f9fc;
+  --surface: #ffffff;
+  --surface-sub: #f2f5f9;
+  --line: #d9dde3;
+  --line-strong: #b6bec9;
+  --primary: #1f4e79;
+  --primary-hover: #173b5c;
+  --primary-tint: #e8eef5;
+  --ok: #2f6f4e;
+  --ok-tint: #eaf3ee;
+  --warn: #8a5a00;
+  --warn-tint: #f8f1e3;
+  --danger: #a32626;
+  --danger-tint: #f9eaea;
+
+  --font-sans: 'Yu Gothic UI', 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', Meiryo, system-ui, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+
+  --text-xs: 12px;
+  --text-sm: 14px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 24px;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --radius: 6px;
+  --focus-ring: 2px solid var(--primary);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: 1.7;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+table {
+  font-variant-numeric: tabular-nums;
+}
+
+a {
+  color: var(--primary);
+}
+
+a:hover {
+  color: var(--primary-hover);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+/* Keyboard focus is always visible, on every control and link. */
+:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+summary {
+  cursor: pointer;
+}
+
+/* The skip link moves focus to <main tabindex=-1>; no ring around the whole page. */
+main:focus-visible {
+  outline: none;
+}
+
+a,
+button,
+input,
+select,
+textarea,
+summary {
+  touch-action: manipulation;
+}
+
+h1,
+h2,
+h3 {
+  text-wrap: pretty;
+}
+
+/* Skip link: hidden until focused from the keyboard. */
+.skip-link {
+  position: absolute;
+  left: var(--space-4);
+  top: -48px;
+  z-index: 10;
+  padding: var(--space-2) var(--space-3);
+  background: var(--primary);
+  color: var(--surface);
+  border-radius: var(--radius);
+}
+
+.skip-link:focus {
+  top: var(--space-2);
+  color: var(--surface);
+}
+
+/* Header navigation: the current screen is marked by weight and an ink bar,
+   not by colour alone (aria-current="page" is set on the same link). */
+.app-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-5);
+  border-top: 1px solid var(--line);
+  padding-top: var(--space-2);
+}
+
+.app-nav a {
+  display: inline-block;
+  padding: var(--space-1) 0 6px;
+  font-size: var(--text-sm);
+  color: var(--ink-sub);
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+
+.app-nav a:hover {
+  color: var(--primary);
+  border-bottom-color: var(--line-strong);
+}
+
+.app-nav a[aria-current='page'] {
+  color: var(--primary);
+  font-weight: 700;
+  border-bottom-color: var(--primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

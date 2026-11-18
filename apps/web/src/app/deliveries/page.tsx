@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import { ActionForm } from '../../components/ActionForm';
 import { DeliveryRecordForm } from '../../components/DeliveryRecordForm';
 import { SelectField, TextField } from '../../components/fields';
@@ -18,6 +19,9 @@ import {
 import { formatTimestamp, READINESS_BLOCKING_LABELS, unitChoices, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary';
 
 export const dynamic = 'force-dynamic';
+
+/** UI batch A: per-screen tab title (layout template adds 「｜KANEI CRM」). */
+export const metadata: Metadata = { title: '納品確認・手数料準備' };
 
 /**
  * Criterion 6: 納品確認・手数料準備. Deliveries are listed with their
@@ -177,7 +181,7 @@ export default async function DeliveriesPage() {
                   <td style={tdStyle}>{delivery.deliverySequence}</td>
                   <td style={tdStyle}>{formatTimestamp(delivery.deliveredAt)}</td>
                   <td style={tdStyle}>
-                    <span style={{ ...badgeStyle, borderColor: delivery.confirmed ? '#166534' : '#b45309', color: delivery.confirmed ? '#166534' : '#b45309' }}>
+                    <span style={{ ...badgeStyle, borderColor: delivery.confirmed ? 'var(--ok)' : 'var(--warn)', color: delivery.confirmed ? 'var(--ok)' : 'var(--warn)' }}>
                       {confirmationLabel(delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION')}
                     </span>
                   </td>
@@ -230,7 +234,7 @@ export default async function DeliveriesPage() {
           orders={filmOrderOptions}
           unitChoices={unitChoices('film')}
         />
-        <hr style={{ border: 'none', borderTop: '1px solid #eef1f6', margin: '16px 0' }} />
+        <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '16px 0' }} />
         <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>充填製品納品</h3>
         <DeliveryRecordForm
           action={recordDeliveryAction}

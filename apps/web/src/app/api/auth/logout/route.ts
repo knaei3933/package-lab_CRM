@@ -1,4 +1,5 @@
 import { apiBaseUrl, SESSION_COOKIE } from '../../../../lib/api';
+import { DISPLAY_NAME_COOKIE } from '../../../../lib/session-display';
 
 /**
  * Same-origin logout relay: forwards the session cookie to the API's
@@ -42,5 +43,6 @@ export async function POST(request: Request): Promise<Response> {
       `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`
     );
   }
+  response.headers.append('set-cookie', `${DISPLAY_NAME_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
   return response;
 }

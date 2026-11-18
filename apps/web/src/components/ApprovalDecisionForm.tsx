@@ -59,7 +59,7 @@ export function ApprovalDecisionForm({
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>
-            承認証跡の書類バージョン<span style={{ color: '#b91c1c' }}>（必須・両組織で同じ版を引用します）</span>
+            承認証跡の書類バージョン<span style={{ color: 'var(--danger)' }}>（必須・両組織で同じ版を引用します）</span>
           </span>
           <select
             name="evidenceDocumentVersionId"
@@ -81,7 +81,7 @@ export function ApprovalDecisionForm({
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>
-            承認証跡識別子<span style={{ color: '#b91c1c' }}>（必須・組織ごとに固有）</span>
+            承認証跡識別子<span style={{ color: 'var(--danger)' }}>（必須・組織ごとに固有）</span>
           </span>
           <input
             name="evidenceIdentifier"
@@ -97,7 +97,7 @@ export function ApprovalDecisionForm({
           />
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>証跡の入手経路<span style={{ color: '#b91c1c' }}>（必須）</span></span>
+          <span style={{ fontSize: 13 }}>証跡の入手経路<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
           <select name="evidenceSource" required style={{ ...inputStyle, width: 220 }}>
             {evidenceSourceChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>

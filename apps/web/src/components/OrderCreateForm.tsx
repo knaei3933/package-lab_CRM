@@ -55,7 +55,7 @@ export function OrderCreateForm({
       <input type="hidden" readOnly name="lines" value={serialized} />
       <label style={{ display: 'grid', gap: 4 }}>
         <span style={{ fontSize: 13 }}>
-          発注コード<span style={{ color: '#b91c1c' }}>（必須）</span>
+          発注コード<span style={{ color: 'var(--danger)' }}>（必須）</span>
         </span>
         <input
           name="code"
@@ -89,7 +89,7 @@ export function OrderCreateForm({
       {paymentTermsChoices && paymentTermsChoices.length > 0 ? (
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>
-            決済条件（G6）<span style={{ color: '#b91c1c' }}>（必須）</span>
+            決済条件（G6）<span style={{ color: 'var(--danger)' }}>（必須）</span>
           </span>
           <select name="paymentTerms" defaultValue="undetermined" style={{ ...inputStyle, width: 340 }}>
             {paymentTermsChoices.map((choice) => (

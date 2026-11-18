@@ -20,9 +20,9 @@ interface FieldProps {
 function LabelWrapper({ label, required, hint, children }: FieldProps & { children: ReactNode }) {
   return (
     <label style={{ display: 'grid', gap: 2, minWidth: 220 }}>
-      <span style={{ fontSize: 13, color: '#172033' }}>
+      <span style={{ fontSize: 13, color: 'var(--ink)' }}>
         {label}
-        {required ? <span style={{ color: '#b91c1c' }}>（必須）</span> : null}
+        {required ? <span style={{ color: 'var(--danger)' }}>（必須）</span> : null}
       </span>
       {children}
       {hint ? <span style={noteStyle}>{hint}</span> : null}

@@ -103,7 +103,7 @@ export function DocumentUploadForm({
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
         <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>書類種別<span style={{ color: '#b91c1c' }}>（必須）</span></span>
+          <span style={{ fontSize: 13 }}>書類種別<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
           <select name="documentType" required value={documentType} onChange={(event) => setDocumentType(event.target.value)} style={{ ...inputStyle, width: 260 }}>
             {documentTypeChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
@@ -113,7 +113,7 @@ export function DocumentUploadForm({
           </select>
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>発行主体<span style={{ color: '#b91c1c' }}>（必須）</span></span>
+          <span style={{ fontSize: 13 }}>発行主体<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
           <select name="issuerEntity" required style={{ ...inputStyle, width: 220 }}>
             {issuerEntityChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
@@ -123,7 +123,7 @@ export function DocumentUploadForm({
           </select>
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>書類の形式（contentType）<span style={{ color: '#b91c1c' }}>（必須）</span></span>
+          <span style={{ fontSize: 13 }}>書類の形式（contentType）<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
           <select
             name="contentType"
             value={contentType}
@@ -141,11 +141,11 @@ export function DocumentUploadForm({
 
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
         <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>ファイル<span style={{ color: '#b91c1c' }}>（必須）</span></span>
+          <span style={{ fontSize: 13 }}>ファイル<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
           <input ref={fileInput} type="file" accept={ACCEPT_ATTRIBUTE} onChange={onFileChange} style={inputStyle} />
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>ファイル名（書類の表示名）<span style={{ color: '#b91c1c' }}>（必須）</span></span>
+          <span style={{ fontSize: 13 }}>ファイル名（書類の表示名）<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
           <input
             name="filename"
             value={filename}

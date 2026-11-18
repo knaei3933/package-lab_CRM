@@ -1,4 +1,5 @@
-import { apiBaseUrl } from '../../../../lib/api';
+import { apiBaseUrl, SESSION_COOKIE } from '../../../../lib/api';
+import { DISPLAY_NAME_COOKIE, encodeDisplayNameCookie, sessionCookieAttributes } from '../../../../lib/session-display';
 
 /**
  * Same-origin login relay (criterion 1). The browser posts its credentials to
@@ -37,6 +38,24 @@ export async function POST(request: Request): Promise<Response> {
   });
   for (const cookie of upstream.headers.getSetCookie()) {
     response.headers.append('set-cookie', cookie);
+  }
+  // UI batch A: remember the operator's name for the header (display only —
+  // GET /api/me answers no name). Bound to the user id the API returned.
+  if (upstream.ok) {
+    let answer: { id?: unknown; displayName?: unknown } | null = null;
+    try {
+      answer = JSON.parse(payload) as { id?: unknown; displayName?: unknown };
+    } catch {
+      answer = null;
+    }
+    const remembered = encodeDisplayNameCookie(answer?.id, answer?.displayName || body?.username);
+    const sessionCookie = upstream.headers.getSetCookie().find((cookie) => cookie.startsWith(`${SESSION_COOKIE}=`));
+    if (remembered && sessionCookie) {
+      response.headers.append(
+        'set-cookie',
+        `${DISPLAY_NAME_COOKIE}=${remembered}; Path=/; HttpOnly; SameSite=Lax${sessionCookieAttributes(sessionCookie)}`
+      );
+    }
   }
   return response;
 }

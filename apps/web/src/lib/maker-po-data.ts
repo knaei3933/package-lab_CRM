@@ -173,8 +173,8 @@ export function nextActionForStatus(status: string, role: string): string {
     case 'DRAFT':
     case 'SNAPSHOT_VOIDED':
       return admin
-        ? '次のアクション：大代表承認（G6の決済条件が確定している場合のみ記録できます）'
-        : '次のアクション：代表者による大代表承認を待ちます（担当者は承認できません）';
+        ? '次のアクション：代表承認（G6の決済条件が確定している場合のみ記録できます）'
+        : '次のアクション：代表者による代表承認を待ちます（担当者は承認できません）';
     case 'APPROVED_FOR_MANUAL_SEND':
       return '次のアクション：送信済みメールの原本（.eml）を送信証跡として手動送信を記録する';
     case 'SEND_UNVERIFIED':

@@ -1,3 +1,4 @@
+import type { Metadata } from 'next';
 import { ActionForm } from '../../components/ActionForm';
 import { MakerPoSendEvidenceForm } from '../../components/MakerPoSendEvidenceForm';
 import { OrderCreateForm } from '../../components/OrderCreateForm';
@@ -60,13 +61,17 @@ import {
   updatePaymentTermsAction,
   verifyMakerPoSendAction
 } from './actions';
+import { codeWithStatus } from '../../lib/redaction';
 
 export const dynamic = 'force-dynamic';
+
+/** UI batch A: per-screen tab title (layout template adds 「｜KANEI CRM」). */
+export const metadata: Metadata = { title: 'メーカー発注' };
 
 /**
  * M8-OPERATOR S5: メーカー発注オペレーション画面.
  *
- * Screens over the real API: (1) 発注書の作成と一覧, (2) 大代表承認 with the
+ * Screens over the real API: (1) 発注書の作成と一覧, (2) 代表承認 with the
  * G6 payment-gate state, (3) 手動送信記録（原本のEMLをその場で登録できる）, (3′)
  * 送信の手動確認（PENDING_MANUAL_VERIFICATION の代表者確認）, (4) メーカー受入記録
  * split into the provisional staff record and the admin final confirmation, and
@@ -212,7 +217,7 @@ function MakerPoCreateSection({
 }) {
   const orderChoices: Choice[] = readyOrders.map((entry) => ({
     value: entry.order.id,
-    label: `${entry.order.code}（${stateLabel(entry.order.status)}）`
+    label: codeWithStatus(entry.order.code, entry.order.statusHidden ? null : stateLabel(entry.order.status))
   }));
 
   return (
@@ -288,12 +293,12 @@ function MakerPoOrderSection({
   return (
     <div style={cardStyle}>
       <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>
-        フィルム発注 {entry.order.code}（{stateLabel(entry.order.status)}）
+        フィルム発注 {codeWithStatus(entry.order.code, entry.order.statusHidden ? null : stateLabel(entry.order.status))}
         {pastAcceptance ? <span style={noteStyle}> ／ メーカー発注の紙は受入済み（履歴は下に表示）</span> : null}
       </h2>
 
       {/* G6 payment gate: 決済条件の状態 and the block reason, always visible. */}
-      <div style={{ ...infoBoxStyle, borderColor: gate?.gate.satisfied ? '#b9d8bc' : '#e4b9b9', color: gate?.gate.satisfied ? '#166534' : '#8a3b3b' }}>
+      <div style={{ ...infoBoxStyle, borderColor: gate?.gate.satisfied ? 'var(--ok)' : 'var(--danger)', color: gate?.gate.satisfied ? 'var(--ok)' : 'var(--danger)', background: gate?.gate.satisfied ? 'var(--ok-tint)' : 'var(--danger-tint)' }}>
         <strong>決済条件（G6）の状態: </strong>
         {gate ? (
           <>
@@ -387,7 +392,7 @@ function MakerPoOrderSection({
         <MakerPoHistoryBlock list={list} />
       ) : (
         <>
-          {/* Screen 2: 大代表承認 */}
+          {/* Screen 2: 代表承認 */}
           <MakerPoApprovalBlock entry={entry} isAdmin={isAdmin} role={role} />
 
           {/* Screens 3 and 4, plus the admin cancellation work (M8-UI2) */}
@@ -425,7 +430,7 @@ async function MakerPoHistoryBlock({ list }: { list: MakerPoViewRow[] }) {
   const details = await Promise.all(list.map((po) => loadMakerPoDetail(po.id)));
 
   return (
-    <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
+    <div style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
       <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>メーカー発注の履歴（発注書・代表承認・送信・受入）</h3>
       <p style={noteStyle}>
         受入済みのため、これ以上の承認・送信・受入の記録操作は表示しません。以下は記録の履歴です。
@@ -504,8 +509,8 @@ function MakerPoApprovalBlock({ entry, isAdmin, role }: { entry: OrderMakerPoBoa
   const gateBlocks = gate !== null && !gate.gate.satisfied;
 
   return (
-    <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
-      <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>② 大代表承認（代表者のみ）</h3>
+    <div style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
+      <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>② 代表承認（代表者のみ）</h3>
       <p style={noteStyle}>
         承認は凍結されたスナップショットのダイジェストに対して行われます。ブロック理由:
         {gateBlocks ? ' G6未満（決済条件が未確定）' : ''}
@@ -573,7 +578,7 @@ async function MakerPoWorkBlocks({
       {detail.error ? <div style={infoBoxStyle}>{detail.error}</div> : null}
 
       {po.status === 'APPROVED_FOR_MANUAL_SEND' ? (
-        <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
+        <div style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
           <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>③ 手動送信記録（担当者・代表者が記録）</h3>
           <p style={noteStyle}>
             送信はシステムの外（メール）で行うので、ここでは証跡を記録します。宛先は発注書の宛先住所と一致が必要です。
@@ -637,7 +642,7 @@ async function MakerPoWorkBlocks({
       ) : null}
 
       {isAdmin && po.status === 'CANCELLED' && verifiedSend && acknowledgementRecorded ? (
-        <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
+        <div style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
           <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>取り消し承認（メーカー取消確認）: 記録済み</h3>
           <p style={noteStyle}>
             送信ずみの発注書の取消に対する取り消し承認は記録済みです。次のアクション:
@@ -663,7 +668,7 @@ function MakerPoManualVerificationBlock({ poId, events }: { poId: string; events
   }));
 
   return (
-    <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
+    <div style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
       <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>③′ 送信の手動確認（代表者のみ）</h3>
       <p style={noteStyle}>
         自動検証（eml_header_check）が断定できなかった送信記録です。原本のEMLと発注内容を見比べて、
@@ -741,9 +746,9 @@ function MakerPoManualVerificationBlock({ poId, events }: { poId: string; events
  */
 function MakerPoCancelBlock({ po, verifiedSend }: { po: MakerPoViewRow; verifiedSend: boolean }) {
   return (
-    <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
+    <div style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
       <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>発注書の取り消し（代表者のみ）</h3>
-      <div style={{ ...infoBoxStyle, borderColor: verifiedSend ? '#e4b9b9' : '#b9d8bc', color: verifiedSend ? '#8a3b3b' : '#166534' }}>
+      <div style={{ ...infoBoxStyle, borderColor: verifiedSend ? 'var(--danger)' : 'var(--ok)', color: verifiedSend ? 'var(--danger)' : 'var(--ok)', background: verifiedSend ? 'var(--danger-tint)' : 'var(--ok-tint)' }}>
         <strong>この発注書の送信状態: </strong>
         {verifiedSend
           ? '送信ずみ（送信証跡が確認されています）。取り消すと生産手順の再開には「取り消し承認（メーカー取消確認）」が必要です。'
@@ -779,7 +784,7 @@ function MakerPoCancellationAcknowledgementBlock({
   orderEvidenceChoices: Choice[];
 }) {
   return (
-    <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
+    <div style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
       <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>取り消し承認を記録する（メーカー取消確認・代表者のみ）</h3>
       <p style={noteStyle}>
         この発注書は送信ずみのまま取り消されています。発注先（メーカー）が取り消しを受け入れたことを代表者が確認して
@@ -825,7 +830,7 @@ function MakerPoAcceptanceBlock({
   const provisionalRecords: MakerPoEventRow[] = events.filter((event) => event.provisional === true);
 
   return (
-    <div style={{ borderTop: '1px solid #eef1f6', marginTop: 16, paddingTop: 12 }}>
+    <div style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
       <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>④ メーカー受入記録</h3>
       <p style={noteStyle}>
         受入は二段階です。まず担当者が「受入記録（仮）」を書き、そのあと代表者が受領証跡を検証して
