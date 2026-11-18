@@ -508,10 +508,17 @@ describe('① 次にやること: the step, the owner and the reason a role cann
     });
     expect(nextActionForOrder(order('DRAFT', { sevenPurchaseOrderId: null }), workspace(), 'admin').text)
       .toContain('セブン化学発注書に紐付いていないため');
-    // Staff do not read the order's PO link: the general step, never a guess.
+    // Staff do not read the order's PO link: never a guess. UI batch E (F-05, T2):
+    // with every visible PO registered and verified, the step is the transition
+    // and the one cause left — never 「公式登録と真性行チェックリストを済ませ」 again.
     const general = nextActionForOrder(order('DRAFT', { detailsHidden: true, sevenPurchaseOrderId: null }), workspace(), 'staff');
     expect(general).toMatchObject({ operation: 'film_order:transition', refusal: null });
-    expect(general.text).toBe(`セブン化学発注書の公式登録と真性行チェックリストを済ませ、状態を「${label('SEVEN_PO_VERIFIED')}」へ進める。`);
+    expect(general.text).toBe(
+      `状態を「${label('SEVEN_PO_VERIFIED')}」へ進める。進められないときは、この発注がセブン化学発注書に紐付いていません（紐付けは作成のときだけ選べます。発注画面の「フィルム発注を作成する」で発注書を選んで作り直し、この発注は「${label('CANCELLATION_REVIEW')}」から取消で終了してください）。`
+    );
+    // A PO still to register or verify: the general step stays.
+    const pending = nextActionForOrder(order('DRAFT', { detailsHidden: true, sevenPurchaseOrderId: null }), workspace([{ ...po, verificationStatus: null }]), 'staff');
+    expect(pending.text).toBe(`セブン化学発注書の公式登録と真性行チェックリストを済ませ、状態を「${label('SEVEN_PO_VERIFIED')}」へ進める。`);
   });
 
   it('ARTWORK_RECEIVED: asks for the proof revision, but never claims it missing when revisions are withheld (L8)', () => {

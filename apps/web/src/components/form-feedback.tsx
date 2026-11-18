@@ -5,9 +5,9 @@ import { createContext, startTransition, useContext, useEffect, useId, useMemo, 
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
 import { ConfirmDialog } from './ConfirmDialog';
 import type { ConfirmSummaryItem } from './ConfirmDialog';
-import { summaryValueText } from '../lib/confirm-summary';
-import type { SummaryControl } from '../lib/confirm-summary';
-import { DATE_TEXT_INVALID_MESSAGE, parseDateText } from '../lib/date-input';
+import { summaryFieldsFor, summaryValueText } from '../lib/confirm-summary';
+import type { SummaryCondition, SummaryControl } from '../lib/confirm-summary';
+import { DATE_TEXT_INVALID_MESSAGE, dateTextForDisplay, parseDateText } from '../lib/date-input';
 import { displayActionMessage, resolveActionFieldError } from '../lib/form-messages';
 import {
   createSubmitGate,
@@ -68,6 +68,17 @@ export interface ConfirmOptions {
   tone?: FormTone | undefined;
   /** Field names whose current values the dialog lists (select → option text, checkbox → はい). */
   summaryFields?: string[] | undefined;
+  /**
+   * UI batch E (F-08, F-11): fixed rows the dialog lists before the field rows —
+   * the facts the decision rests on that are not form fields (発注コード・宛先・
+   * 金額・保留の理由…). Computed by the server page; display only.
+   */
+  facts?: ConfirmSummaryItem[] | undefined;
+  /**
+   * UI batch E (F-18): a summary field listed only while another control holds
+   * one of the given values (e.g. holdReason only when 「進める先」 is ON_HOLD).
+   */
+  summaryWhen?: Record<string, SummaryCondition> | undefined;
 }
 
 interface FormFeedbackValue {
@@ -203,8 +214,21 @@ function summaryControl(form: HTMLFormElement, name: string): SummaryControl {
     return { kind: 'select', value: item.value, selectedText: item.selectedOptions[0]?.textContent ?? '' };
   }
   if (item instanceof HTMLInputElement && item.type === 'checkbox') return { kind: 'checkbox', checked: item.checked };
+  // UI batch E (F-15): a date field posts YYYY-MM-DD; the dialog reads it back as typed (2026/11/18).
+  if (item instanceof HTMLInputElement && item.dataset.dateText !== undefined) {
+    return { kind: 'text', value: dateTextForDisplay(item.value.trim()) };
+  }
   if (item instanceof HTMLInputElement || item instanceof HTMLTextAreaElement) return { kind: 'text', value: item.value };
   return { kind: 'missing' };
+}
+
+/** The current value of a named control ('' when absent; the checked one of a group). */
+function controlValue(form: HTMLFormElement, name: string): string {
+  const item = form.elements.namedItem(name);
+  if (item instanceof RadioNodeList) return item.value;
+  if (item instanceof HTMLInputElement && item.type === 'checkbox') return item.checked ? item.value : '';
+  if (item instanceof HTMLInputElement || item instanceof HTMLSelectElement || item instanceof HTMLTextAreaElement) return item.value;
+  return '';
 }
 
 function summaryLabel(form: HTMLFormElement, name: string): string {
@@ -356,7 +380,13 @@ export function resolverFromOptions(options: ConfirmOptions | undefined, fallbac
   if (!options) return undefined;
   return (form) => ({
     options,
-    summary: summaryFromFields(form, options.summaryFields ?? []),
+    summary: [
+      ...(options.facts ?? []),
+      ...summaryFromFields(
+        form,
+        summaryFieldsFor(options.summaryFields ?? [], options.summaryWhen, (name) => controlValue(form, name))
+      )
+    ],
     confirmLabel: options.confirmLabel ?? fallbackLabel
   });
 }

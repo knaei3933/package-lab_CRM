@@ -6,8 +6,8 @@ import type { FormAction } from './ActionForm';
 import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, resolverFromOptions, SubmitLock } from './form-feedback';
 import type { ConfirmOptions } from './form-feedback';
 import type { Choice } from '../lib/types';
-import { isMakerPoBoundDocumentType } from '../lib/document-maker-po';
-import type { MakerPoChoice } from '../lib/document-maker-po';
+import { defaultSevenPoId, isMakerPoBoundDocumentType, requiresSevenPo } from '../lib/document-maker-po';
+import type { MakerPoChoice, SevenPoChoice } from '../lib/document-maker-po';
 import { FILE_FIELD } from '../lib/form-messages';
 import { FILE_READ_FAILED_MESSAGE, FILE_READING_MESSAGE, fileReadIssue } from '../lib/form-validation';
 import type { FileReadState } from '../lib/form-validation';
@@ -18,7 +18,7 @@ interface DocumentUploadFormProps {
   documentTypeChoices: Choice[];
   issuerEntityChoices: Choice[];
   contentTypeChoices: Choice[];
-  sevenPurchaseOrderChoices: Choice[];
+  sevenPurchaseOrderChoices: SevenPoChoice[];
   filmSupplyOrderChoices: Choice[];
   makerPurchaseOrderChoices?: MakerPoChoice[];
   /** UI batch C: optional confirmation before the upload. */
@@ -79,6 +79,17 @@ export function DocumentUploadForm({
   const [designKey, setDesignKey] = useState('');
   const [documentType, setDocumentType] = useState(documentTypeChoices[0]?.value ?? '');
   const [filmSupplyOrderId, setFilmSupplyOrderId] = useState('');
+  // UI batch E (F-07): the PO link is required for the official artifacts, and
+  // preselected when the project has exactly one ready PO.
+  const poDefault = defaultSevenPoId(sevenPurchaseOrderChoices);
+  const [sevenPurchaseOrderId, setSevenPurchaseOrderId] = useState(() => (requiresSevenPo(documentType) ? poDefault : ''));
+  const poRequired = requiresSevenPo(documentType);
+
+  /** A type that needs the PO link fills the one ready PO in, unless one is already chosen. */
+  function onDocumentTypeChange(next: string): void {
+    setDocumentType(next);
+    if (requiresSevenPo(next) && sevenPurchaseOrderId === '') setSevenPurchaseOrderId(poDefault);
+  }
   const showMakerPo = isMakerPoBoundDocumentType(documentType);
   const makerPoOptions = makerPurchaseOrderChoices.filter((choice) => choice.filmSupplyOrderId === filmSupplyOrderId);
   const [readState, setReadState] = useState<FileReadState>('idle');
@@ -166,7 +177,7 @@ export function DocumentUploadForm({
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
         <label className="field" style={fieldLabel(260)}>
           <span style={{ fontSize: 13 }}>書類種別<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
-          <select name="documentType" required value={documentType} onChange={(event) => setDocumentType(event.target.value)} style={wide(260)}>
+          <select name="documentType" required value={documentType} onChange={(event) => onDocumentTypeChange(event.target.value)} style={wide(260)}>
             {documentTypeChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
                 {choice.label}
@@ -264,17 +275,41 @@ export function DocumentUploadForm({
       </p>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-        <label className="field" style={fieldLabel(300)}>
-          <span style={{ fontSize: 13 }}>セブン化学発注書の紐付け（任意）</span>
-          <select name="sevenPurchaseOrderId" style={wide(300)}>
-            <option value="">紐付けない</option>
-            {sevenPurchaseOrderChoices.map((choice) => (
-              <option key={choice.value} value={choice.value}>
-                {choice.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <FieldFeedback name="sevenPurchaseOrderId" hasHint>
+          {(poFeedback) => (
+            <div className="field" style={fieldLabel(300)}>
+              <label style={labelOnly}>
+                <span style={{ fontSize: 13 }}>
+                  セブン化学発注書の紐付け
+                  {poRequired ? <span style={{ color: 'var(--danger)' }}>（必須）</span> : '（任意）'}
+                </span>
+                <select
+                  name="sevenPurchaseOrderId"
+                  value={sevenPurchaseOrderId}
+                  required={poRequired}
+                  onChange={(event) => setSevenPurchaseOrderId(event.target.value)}
+                  aria-describedby={poFeedback.describedBy}
+                  aria-invalid={poFeedback.invalid}
+                  data-feedback-label="セブン化学発注書の紐付け"
+                  style={wide(300)}
+                >
+                  <option value="">{poRequired ? '（発注書を選ぶ）' : '紐付けない'}</option>
+                  {sevenPurchaseOrderChoices.map((choice) => (
+                    <option key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <FieldError id={poFeedback.errorId} message={poFeedback.error} />
+              <span id={poFeedback.hintId} style={noteStyle}>
+                {poRequired
+                  ? '校正ゲラ・承認証跡・送信証跡・受領証跡は、確認済み（公式登録と真性行チェックリスト済み）の発注書に紐付けて登録します。'
+                  : '発注書・見積書は紐付けなしでも登録できます。'}
+              </span>
+            </div>
+          )}
+        </FieldFeedback>
         <label className="field" style={fieldLabel(300)}>
           <span style={{ fontSize: 13 }}>フィルム発注の紐付け（任意）</span>
           <select name="filmSupplyOrderId" value={filmSupplyOrderId} onChange={(event) => setFilmSupplyOrderId(event.target.value)} style={wide(300)}>

@@ -3,7 +3,10 @@ import { LEGACY_HOLD_RELEASE_TARGETS } from '@kanei/core';
 import { ActionForm } from '../../components/ActionForm';
 import { ChoiceDisclosure, ChoiceToneActionForm } from '../../components/ChoiceDrivenForm';
 import { OrderCreateForm } from '../../components/OrderCreateForm';
+import { RepresentativeQueuePanel } from '../../components/RepresentativeQueue';
+import { loadRepresentativeQueue } from '../../lib/representative-queue';
 import { ProjectProgress } from '../../components/ProjectProgress';
+import { ProjectUnavailable } from '../../components/ProjectUnavailable';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
 import { TechDetails } from '../../components/TechDetails';
 import { DataTable } from '../../components/DataTable';
@@ -17,6 +20,7 @@ import {
   registerSevenPurchaseOrderAction,
   releaseFilmOrderHoldAction,
   resolveCancellationReviewAction,
+  selectProjectAction,
   transitionFilmSupplyOrderAction,
   updateFilmPaymentTermsAction,
   verifySevenPurchaseOrderAction
@@ -27,14 +31,18 @@ import { canRoleOperate } from '../../lib/permissions';
 import {
   knownStatus,
   labelLookup,
+  loadSelectableProjects,
   loadWorkspace,
   makerCleanupRecords,
   NO_PROJECT_SELECTED_MESSAGE,
   officialRegistrationText,
   sevenPurchaseOrderChoiceLabel,
+  UNLINKED_ORDER_REMEDY,
   uncancellableLivePapers
 } from '../../lib/project-data';
-import type { FilmSupplyOrderView } from '../../lib/project-data';
+import type { FilmSupplyOrderView, Workspace } from '../../lib/project-data';
+import { holdReleaseFacts, holdSummaryText } from '../../lib/decision-facts';
+import { EVIDENCE_GAP_SUFFIX, EVIDENCE_NOTE_FIELD, evidenceGapsFor } from '../../lib/transition-evidence';
 import type { MakerPaperCleanupSummary } from '../../lib/maker-po-data';
 import { MAKER_CHAIN_NOTICE, transitionChoicesFor } from '../../lib/transitions';
 import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
@@ -70,10 +78,30 @@ const PAYMENT_TERMS_CHOICES = [
 export default async function OrdersPage() {
   const projectId = await readSelectedProjectId();
   if (!projectId) {
-    return <div style={infoBoxStyle}>{NO_PROJECT_SELECTED_MESSAGE}</div>;
+    // UI batch E (F-23): the first screen after login — the representative sees
+    // what waits for them across projects before choosing one.
+    const firstUser = await loadSessionUser();
+    const queue = firstUser?.role === 'admin' ? await loadRepresentativeQueue(await loadSelectableProjects()) : null;
+    return (
+      <section style={{ display: 'grid', gap: 24 }}>
+        <div style={infoBoxStyle}>{NO_PROJECT_SELECTED_MESSAGE}</div>
+        {queue ? (
+          <div style={cardStyle}>
+            <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>代表者の対応待ち（全案件）</h2>
+            <RepresentativeQueuePanel queue={queue} selectAction={selectProjectAction} currentProjectId={null} />
+          </div>
+        ) : null}
+      </section>
+    );
   }
 
   const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
+  // UI batch E (F-23): the other projects' waiting decisions (this project's are in 「次にやること」 below).
+  const representativeQueue = user?.role === 'admin' && !workspace.projectRefused
+    ? await loadRepresentativeQueue((await loadSelectableProjects()).filter((project) => project.id !== projectId))
+    : null;
+  // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
+  if (workspace.projectRefused) return <ProjectUnavailable title="案件（発注）一覧／作成" reason={workspace.error} />;
   const role = user?.role ?? null;
   const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
   const readinessLabel = labelLookup(workspace.labels, 'commissionReadinessStates');
@@ -111,6 +139,12 @@ export default async function OrdersPage() {
           <TechDetails context="案件ID">{projectId}</TechDetails>
         )}
         {workspace.error ? <div style={infoBoxStyle}>{workspace.error}</div> : null}
+        {representativeQueue && representativeQueue.tasks.length > 0 ? (
+          <details className="progress-completed" style={{ marginTop: 12 }}>
+            <summary>ほかの案件の代表者の対応待ち（{representativeQueue.tasks.length}件）</summary>
+            <RepresentativeQueuePanel queue={representativeQueue} selectAction={selectProjectAction} currentProjectId={projectId} />
+          </details>
+        ) : null}
       </header>
 
       <SevenPurchaseOrderSection
@@ -153,13 +187,20 @@ export default async function OrdersPage() {
                       {status === null
                         ? <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} />
                         : <StatusBadge domain="filmOrder" status={status} label={stateLabel(status)} />}
+                      {status === 'ON_HOLD' && order.hold ? <div style={noteStyle}>{holdSummaryText(order.hold)}</div> : null}
                     </td>
                     <td style={tdStyle}>
                       {order.sevenPurchaseOrderId
                         ? poLabelById.get(order.sevenPurchaseOrderId) ?? '紐付けあり'
                         : order.detailsHidden
                           ? HIDDEN_BY_ROLE_LABEL
-                          : '—'}
+                          : '紐付けなし'}
+                      {/* UI batch E (F-05): an unlinked draft cannot leave DRAFT — say what to do. */}
+                      {!order.sevenPurchaseOrderId && !order.detailsHidden && status === 'DRAFT' ? (
+                        <p className="role-notice">
+                          {`この発注は「${stateLabel('SEVEN_PO_VERIFIED')}」へ進められません。${UNLINKED_ORDER_REMEDY(stateLabel)}。`}
+                        </p>
+                      ) : null}
                     </td>
                     <td style={tdStyle}>
                       <OrderLinesCell order={order} />
@@ -175,6 +216,7 @@ export default async function OrdersPage() {
                             stateLabel={stateLabel}
                             role={role}
                             makerCleanup={workspace.makerPaperCleanup?.[order.id]}
+                            workspace={workspace}
                           />
                         )}
                         {status === 'DRAFT' ? (
@@ -198,7 +240,8 @@ export default async function OrdersPage() {
                               >
                                 <input type="hidden" readOnly name="orderId" value={order.id} />
                                 <TextField name="note" label="確認メモ" required width={280} />
-                                <CheckboxField name="acknowledgeNoEvidence" label="証跡なしで問題なしとみなすことに同意します" />
+                                {/* UI batch E (F-17): required here, so an unticked box stops before the dialog. */}
+                                <CheckboxField name="acknowledgeNoEvidence" label="証跡なしで問題なしとみなすことに同意します" required />
                               </ActionForm>
                             </details>
                           </RoleGate>
@@ -289,7 +332,8 @@ function TransitionCell({
   status,
   stateLabel,
   role,
-  makerCleanup
+  makerCleanup,
+  workspace
 }: {
   order: FilmSupplyOrderView;
   status: string;
@@ -297,9 +341,18 @@ function TransitionCell({
   role: string | null;
   /** Medium-3: the maker paper left on a cancelled or frozen order (absent: not read). */
   makerCleanup: MakerPaperCleanupSummary | undefined;
+  workspace: Pick<Workspace, 'documents' | 'revisions' | 'revisionsWithheld' | 'deliveries'>;
 }) {
   const set = transitionChoicesFor(status, stateLabel, order.lastNormalStatus, makerCleanup?.state ?? 'unknown');
   const offersHold = set.choices.some((choice) => choice.value === 'ON_HOLD');
+  // UI batch E (F-06): targets whose evidence the workspace shows missing — warned, never blocked.
+  const gaps = evidenceGapsFor(order, workspace, set.choices.map((choice) => choice.value));
+  const gapTargets = gaps.map((gap) => gap.target);
+  const summaryFields = [
+    'to',
+    ...(offersHold ? ['holdReason'] : []),
+    ...(gaps.length > 0 ? [EVIDENCE_NOTE_FIELD] : [])
+  ];
   return (
     <>
       {set.makerChainNotice ? <p style={noteStyle}>{MAKER_CHAIN_NOTICE}。</p> : null}
@@ -314,7 +367,12 @@ function TransitionCell({
           confirm={{
             title: '発注の状態を変更しますか？',
             body: `状態を変更します。発注 ${order.code} の状態を、選んだ「進める先の状態」に変更し、変更は履歴に記録されます（記録は消えません）。`,
-            summaryFields: offersHold ? ['to', 'holdReason'] : ['to']
+            summaryFields,
+            // UI batch E (F-18): each reason row only for the target it belongs to.
+            summaryWhen: {
+              holdReason: { field: 'to', values: ['ON_HOLD'] },
+              [EVIDENCE_NOTE_FIELD]: { field: 'to', values: gapTargets }
+            }
           }}
         >
           <input type="hidden" readOnly name="orderId" value={order.id} />
@@ -347,6 +405,27 @@ function TransitionCell({
               />
             </ChoiceDisclosure>
           ) : null}
+          {gaps.length > 0 ? (
+            <ChoiceDisclosure
+              selectName="to"
+              value={gapTargets}
+              fieldName={EVIDENCE_NOTE_FIELD}
+              summary={`証跡がないまま進める場合（${gaps.map((gap) => `「${stateLabel(gap.target)}」`).join('・')}）`}
+            >
+              {gaps.map((gap) => (
+                <p key={gap.target} className="role-notice">
+                  {`注意（「${stateLabel(gap.target)}」）: ${gap.message}${EVIDENCE_GAP_SUFFIX}`}
+                </p>
+              ))}
+              <TextareaField
+                name={EVIDENCE_NOTE_FIELD}
+                label="証跡がないまま進める理由（この選択のときは必須）"
+                hint="確認のための入力です。今は履歴には保存されません。証跡があとから届く場合は、その予定を書いてください。"
+                rows={2}
+                width={280}
+              />
+            </ChoiceDisclosure>
+          ) : null}
         </ActionForm>
       )}
       {status === 'ON_HOLD' ? <HoldReleaseForm order={order} role={role} stateLabel={stateLabel} /> : null}
@@ -372,7 +451,7 @@ function LegacyResumeField({ stateLabel, hint }: { stateLabel: (key: string) => 
       <summary style={{ fontSize: 13, cursor: 'pointer' }}>前の状態が記録されていない古い発注の場合</summary>
       <SelectField
         name="resumeStatus"
-        label="再開する状態（APIが「再開する状態の指定が必要」と返したときだけ選ぶ）"
+        label="再開する状態（「再開する状態の指定が必要です」と表示されたときだけ選びます）"
         includeBlank
         blankLabel="（選ばない：記録された前の状態に戻す）"
         width={280}
@@ -410,14 +489,16 @@ function HoldReleaseForm({
             title: '保留を解除しますか？',
             body: `発注 ${order.code} の保留を解除し、原則として保留にする前の状態に戻します（保留中にメーカー発注書がすべて取り消された場合は「${stateLabel('MAKER_PO_READY')}」に戻ります）。解除の理由と結果は履歴に記録されます（記録は消えません）。`,
             tone: 'primary',
+            facts: holdReleaseFacts(order),
             summaryFields: ['reason', 'resumeStatus']
           }}
         >
           <input type="hidden" readOnly name="orderId" value={order.id} />
+          {order.hold ? <p style={noteStyle}>{holdSummaryText(order.hold)}</p> : null}
           <TextareaField name="reason" label="保留解除の理由" required rows={2} width={280} />
           <LegacyResumeField
             stateLabel={stateLabel}
-            hint="保留前の状態が記録から分からない場合だけ選んでください。記録がある場合に違う状態を選ぶと、APIが拒否します。"
+            hint="保留前の状態が記録から分からない場合だけ選んでください。記録と違う状態を選ぶと、解除は記録されません。"
           />
         </ActionForm>
       </details>

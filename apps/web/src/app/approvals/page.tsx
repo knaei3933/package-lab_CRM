@@ -3,6 +3,7 @@ import { ActionForm } from '../../components/ActionForm';
 import { ApprovalDecisionForm } from '../../components/ApprovalDecisionForm';
 import { OffsetDateTimeField } from '../../components/OffsetDateTimeField';
 import { ProjectProgress } from '../../components/ProjectProgress';
+import { ProjectUnavailable } from '../../components/ProjectUnavailable';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
@@ -72,6 +73,8 @@ export default async function ApprovalsPage() {
   }
 
   const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
+  // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
+  if (workspace.projectRefused) return <ProjectUnavailable title="承認（校了のダブル承認）" reason={workspace.error} />;
   const role = user?.role ?? null;
   // UI batch B (④): the representative-only manual verification, through the shared helper.
   const canVerifyEvidence = canRoleOperate(role, 'artwork_approval:verify_evidence');
@@ -243,9 +246,10 @@ export default async function ApprovalsPage() {
                         </h3>
                         <RoleGate role={role} operation="artwork_approval:record" label="承認の記録">
                           <p style={noteStyle}>
-                            必要な証跡：この発注とデザイン「{design.designKey}」に紐付けた承認証跡の
-                            書類バージョン。両組織が同じ版を引用できますが、承認証跡識別子（承認メッセージのMessage-IDや
-                            署名ブロックのハッシュ）は組織ごとに固有の値を入力してください。
+                            必要な証跡：この発注とデザイン「{design.designKey}」に紐付けた承認証跡の書類バージョン。
+                            顧客の承認には顧客の承認証跡（発行主体「顧客作成」）、セブン化学の承認にはセブン化学の承認証跡
+                            （発行主体「セブン化学」）を、組織ごとに別の書類として登録して引用してください。
+                            承認証跡識別子（承認メールのMessage-IDなど）も組織ごとに違う値になります。
                           </p>
                           <ApprovalDecisionForm
                             action={recordArtworkApprovalAction}
@@ -284,7 +288,7 @@ export default async function ApprovalsPage() {
           {revisionTargets.unread.length > 0 ? (
             <p style={noteStyle}>
               {`${revisionTargets.unread.map((order) => order.code).join('、')}: メーカー発注書の状態を確認できませんでした。`
-                + '取り消されていないメーカー発注書がある場合、登録はAPIが拒否します。'}
+                + '取り消されていないメーカー発注書がある場合、版は登録されません（理由が表示されます）。'}
             </p>
           ) : null}
           <ActionForm action={registerArtworkRevisionAction} submitLabel="版を登録する">

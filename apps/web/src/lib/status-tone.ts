@@ -101,3 +101,18 @@ export function statusTone(domain: StatusDomain, status: string | null | undefin
   const tones = DOMAIN_TONES[domain];
   return Object.prototype.hasOwnProperty.call(tones, status) ? tones[status]! : 'neutral';
 }
+
+/**
+ * UI batch E (F-16): a status whose symbol differs from its tone's. 保留中 is
+ * stopped (blocked colour) but not refused or ended, so it reads ‖ (paused)
+ * instead of the ✕ that キャンセル終了 and the reviews carry.
+ */
+const STATUS_SYMBOL_OVERRIDES: Readonly<Partial<Record<StatusDomain, Readonly<Record<string, string>>>>> = {
+  filmOrder: { ON_HOLD: '‖' }
+};
+
+/** The written symbol of one status badge: the tone's, unless the status has its own. */
+export function statusSymbol(domain: StatusDomain | undefined, status: string | null | undefined, tone: StatusTone): string {
+  const override = domain && status ? STATUS_SYMBOL_OVERRIDES[domain]?.[status] : undefined;
+  return override ?? TONE_SYMBOLS[tone];
+}

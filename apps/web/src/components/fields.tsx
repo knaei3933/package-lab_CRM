@@ -169,7 +169,6 @@ export function DateTextField({
         type="text"
         inputMode="numeric"
         autoComplete="off"
-        placeholder="2026/11/18"
         pattern="\d{4}-\d{2}-\d{2}"
         defaultValue={defaultValue}
         required={required}

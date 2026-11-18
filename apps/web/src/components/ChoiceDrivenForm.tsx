@@ -23,8 +23,8 @@ export function ChoiceDisclosure({
 }: {
   /** The select whose choice the field belongs to. */
   selectName: string;
-  /** The choice that needs the field. */
-  value: string;
+  /** The choice that needs the field (UI batch E: or several choices). */
+  value: string | readonly string[];
   /** The posted name of the field inside. */
   fieldName: string;
   summary: ReactNode;
@@ -41,7 +41,8 @@ export function ChoiceDisclosure({
     const field = () => details.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(`[name="${fieldName}"]`);
     const sync = () => {
       const select = form.elements.namedItem(selectName);
-      const chosen = select instanceof HTMLSelectElement && select.value === value;
+      const values: readonly string[] = typeof value === 'string' ? [value] : value;
+      const chosen = select instanceof HTMLSelectElement && values.includes(select.value);
       const control = field();
       if (control) control.required = chosen;
       if (chosen) details.open = true;
@@ -58,7 +59,9 @@ export function ChoiceDisclosure({
       form.removeEventListener('change', onChange);
       form.removeEventListener('reset', onReset);
     };
-  }, [selectName, value, fieldName]);
+    // A new array per render must not re-run the effect: key it by its contents.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectName, typeof value === 'string' ? value : value.join('\u0000'), fieldName]);
 
   useEffect(() => {
     const details = ref.current;

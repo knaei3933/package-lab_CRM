@@ -271,14 +271,14 @@ export function MakerPoSendEvidenceForm({
         ) : null}
       </div>
       <p style={noteStyle}>
-        原本をここで渡す場合は、下の「送信証跡の書類バージョン」は「（選択なし）」のままで構いません
-        （送信証跡の書類として保存して検証します）。Thunderbirdの送信済みフォルダから
-        書き出した .eml を選ぶと、このフォームが件名の先頭に発注コードを挿入して送信します。
+        {'原本をここで渡す場合は、下の「送信証跡の書類バージョン」は「（選択なし）」のままで構いません'
+          + '（送信証跡の書類として保存して確認します）。メールソフトの送信済みフォルダから書き出した .eml を選んでください。'
+          + 'この画面からメールは送信されません。メーカーへ送るメールの件名は、先頭に発注コードを付けます（下の例）。'}
       </p>
 
       {orderCode ? (
         <div style={noteStyle}>
-          送信するEMLの件名（先頭の発注コードは自動挿入されます）:
+          メーカーへ送るメールの件名（例。先頭に発注コードを付けます）:
           <div data-testid="maker-po-subject-preview" style={monoStyle} translate="no">
             {makerPoMailSubject(orderCode, selectedSubject ?? undefined)}
           </div>

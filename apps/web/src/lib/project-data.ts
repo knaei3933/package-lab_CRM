@@ -9,7 +9,7 @@ import { callApi } from './api';
 import { operationRefusal } from './permissions';
 import { shortId } from './short-id';
 import { codeWithStatus, displayText, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT, isFieldHiddenByRole, isStateWithheld } from './redaction';
-import { formatTimestamp } from './vocabulary';
+import { formatDateOrTimestamp } from './vocabulary';
 import type { MakerPaperCleanupSummary } from './maker-po-data';
 
 /**
@@ -82,8 +82,22 @@ export interface FilmSupplyOrderView {
    * role may not read the states.
    */
   lastNormalStatus: string | null;
+  /**
+   * UI batch E (F-11): the hold the order is in (null when not on hold, or the
+   * hold record was not seen) — the reason, who put it on hold and when, so the
+   * representative deciding the release can read why. The reason is withheld
+   * from staff by the API (reasonHidden).
+   */
+  hold?: FilmOrderHoldView | null | undefined;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface FilmOrderHoldView {
+  reason: string | null;
+  reasonHidden: boolean;
+  actorName: string | null;
+  at: string;
 }
 
 export interface FillingOrderView {
@@ -143,7 +157,7 @@ export function sevenPurchaseOrderChoiceLabel(po: SevenPurchaseOrderView): strin
  * 「閲覧権限なし」 when the role cannot tell; 未登録 only when shown unregistered.
  */
 export function officialRegistrationText(po: SevenPurchaseOrderView): string {
-  if (po.officialRegisteredAt) return formatTimestamp(po.officialRegisteredAt);
+  if (po.officialRegisteredAt) return formatDateOrTimestamp(po.officialRegisteredAt);
   if (po.officiallyRegistered) {
     return po.officialRegistrationHidden
       ? `公式登録済み（登録日は${HIDDEN_BY_ROLE_SHORT}）`
@@ -329,6 +343,12 @@ export interface Workspace {
    * screens then never say there is nothing left to do.
    */
   makerPaperCleanup?: Record<string, MakerPaperCleanupSummary> | undefined;
+  /**
+   * UI batch E (F-12): the selected project could not be opened (deleted, or
+   * not assigned to this operator). The screens then show only how to choose
+   * a project — no forms that would post into it.
+   */
+  projectRefused?: boolean | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -385,7 +405,7 @@ export function labelLookup(
   return (key: string) => map.get(key) ?? key;
 }
 
-async function loadProject(projectId: string): Promise<{ project: ProjectView | null; error: string | null }> {
+async function loadProject(projectId: string): Promise<{ project: ProjectView | null; error: string | null; refused?: boolean }> {
   const result = await callApi<ProjectView>(`/api/projects/${encodeURIComponent(projectId)}`);
   if (!result.ok || !result.data) {
     const reason = result.error ?? `案件が取得できませんでした（${result.status}）。`;
@@ -395,7 +415,12 @@ async function loadProject(projectId: string): Promise<{ project: ProjectView | 
     const hint = result.status === 401
       ? RELOGIN_HINT
       : result.status >= 400 && result.status < 500 ? RESELECT_PROJECT_HINT : null;
-    return { project: null, error: hint ? `${reason} ${hint}` : reason };
+    return {
+      project: null,
+      error: hint ? `${reason} ${hint}` : reason,
+      // UI batch E (F-12): the remembered project is gone or not this operator's (4xx, not a lost session).
+      refused: result.status >= 400 && result.status < 500 && result.status !== 401
+    };
   }
   return {
     project: {
@@ -533,6 +558,17 @@ export async function loadWorkspace(
       if (current) {
         current.status = requiredText(state(event.afterState), 'status', current.status);
         current.statusHidden = isStateWithheld(event);
+        // UI batch E (F-11): the latest move into ON_HOLD carries the reason; any later move ends it.
+        current.hold = current.statusHidden
+          ? null
+          : current.status === 'ON_HOLD'
+            ? {
+              reason: text(state(event.afterState), 'holdReason'),
+              reasonHidden: isFieldHiddenByRole(event, 'holdReason'),
+              actorName: event.actor?.displayName ?? null,
+              at: event.occurredAt
+            }
+            : null;
         if (!current.statusHidden) {
           current.lastNormalStatus = normalStatusOrNull(current.status)
             ?? normalStatusOrNull(text(state(event.beforeState), 'status'))
@@ -788,6 +824,7 @@ export async function loadWorkspace(
   return {
     error: firstError,
     project: projectResult.project,
+    projectRefused: projectResult.refused === true,
     labels: labelResult.labels,
     makerPaperCleanup,
     filmOrders: [...filmOrders.values()],
@@ -955,6 +992,9 @@ export const RESELECT_PROJECT_HINT = '上部の「案件」から選び直して
 export const RELOGIN_HINT = 'ログインし直してください。';
 
 /** Where the role may not read the film order states (viewer). */
+/** UI batch E (F-12): the selected project cannot be opened — the one thing to do next. */
+export const PROJECT_UNAVAILABLE_MESSAGE = '選択中の案件を開けません。画面上部の「案件」から案件を選んでください。';
+
 export const STATUS_HIDDEN_NOTICE = 'この役割では発注の状態は表示されません（閲覧権限なし）';
 
 function normalStatusOrNull(status: string | null): string | null {
@@ -1193,6 +1233,14 @@ function nextAction(
   return { text, owner, screens, operation, refusal: operationRefusal(role, operation) };
 }
 
+/**
+ * UI batch E (F-05): what to do with a film order created without its セブン化学
+ * 発注書. The link is chosen only at creation (no endpoint adds it later), so the
+ * order is made again with the PO and the old one is ended.
+ */
+export const UNLINKED_ORDER_REMEDY = (label: (key: string) => string): string =>
+  `紐付けは作成のときだけ選べます。発注画面の「フィルム発注を作成する」で発注書を選んで作り直し、この発注は「${label('CANCELLATION_REVIEW')}」から取消で終了してください`;
+
 function draftNextAction(
   order: FilmSupplyOrderView,
   workspace: NextActionWorkspace,
@@ -1205,11 +1253,25 @@ function draftNextAction(
     `セブン化学発注書の公式登録と真性行チェックリストを済ませ、${advance('SEVEN_PO_VERIFIED')}。`,
     both, ['/orders'], 'film_order:transition', role
   );
-  // Staff and viewer do not read the order's PO link: say the general step.
-  if (order.detailsHidden) return general;
+  // Staff and viewer do not read the order's PO link. UI batch E (F-05, T2):
+  // when every PO the role can see is already registered and verified, the
+  // general step would ask again for work that is done — so say the transition
+  // and the one cause left (the order has no PO link), the same cause the
+  // representative reads.
+  if (order.detailsHidden) {
+    const pos = workspace.sevenPurchaseOrders;
+    const allReady = pos.length > 0
+      && pos.every((po) => po.officiallyRegistered && po.verificationStatus === 'verified' && !po.reviewPending);
+    return allReady
+      ? nextAction(
+        `${advance('SEVEN_PO_VERIFIED')}。進められないときは、この発注がセブン化学発注書に紐付いていません（${UNLINKED_ORDER_REMEDY(label)}）。`,
+        both, ['/orders'], 'film_order:transition', role
+      )
+      : general;
+  }
   if (!order.sevenPurchaseOrderId) {
     return nextAction(
-      `この発注はセブン化学発注書に紐付いていないため、「${label('SEVEN_PO_VERIFIED')}」へ進められません。発注書を選んでフィルム発注を作成してください。`,
+      `この発注はセブン化学発注書に紐付いていないため、「${label('SEVEN_PO_VERIFIED')}」へ進められません。${UNLINKED_ORDER_REMEDY(label)}。`,
       both, ['/orders'], 'film_order:create', role
     );
   }
@@ -1287,9 +1349,11 @@ export function nextActionForOrder(
         both, ['/maker-po'], 'maker_po:send_evidence', role
       );
     case 'MAKER_PO_SENT_MANUALLY':
+      // UI batch E (F-10): the final confirmation waits for a checked 受領証跡 —
+      // say so to the staff member who records the provisional one.
       return nextAction(
-        'メーカーの受入を記録する（担当者が仮の記録、代表者が最終確認）。',
-        both, ['/maker-po'], 'maker_po:accept_provisional', role
+        'メーカーの受入を記録する（担当者が仮の記録と受領証跡の登録、代表者が受領証跡を確認して最終確認）。',
+        both, ['/maker-po', '/documents'], 'maker_po:accept_provisional', role
       );
     case 'MAKER_PO_ACCEPTED':
       return nextAction(`${advance('FILM_IN_PRODUCTION')}。`, both, ['/orders'], 'film_order:transition', role);
@@ -1315,8 +1379,10 @@ export function nextActionForOrder(
     // MAKER_PO_READY, not at the maker step it left (server hold-release).
     case 'ON_HOLD': {
       const cleanup = workspace.makerPaperCleanup?.[order.id];
+      // UI batch E (F-11): the representative reads why the order was held.
+      const why = order.hold?.reason ? `保留の理由は「${order.hold.reason}」です。` : '';
       return nextAction(
-        `代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「${label('MAKER_PO_READY')}」に戻ります）。${frozenCleanupLine(cleanup)}`,
+        `${why}代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「${label('MAKER_PO_READY')}」に戻ります）。${frozenCleanupLine(cleanup)}`,
         OWNER_ADMIN, cleanup?.state === 'cleanup' ? ['/orders', '/maker-po'] : ['/orders'], 'film_order:release_hold', role
       );
     }

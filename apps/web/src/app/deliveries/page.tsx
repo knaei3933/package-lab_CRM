@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { ActionForm } from '../../components/ActionForm';
 import { DeliveryRecordForm } from '../../components/DeliveryRecordForm';
 import { ProjectProgress } from '../../components/ProjectProgress';
+import { ProjectUnavailable } from '../../components/ProjectUnavailable';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
@@ -37,6 +38,8 @@ export default async function DeliveriesPage() {
   }
 
   const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
+  // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
+  if (workspace.projectRefused) return <ProjectUnavailable title="納品確認・手数料準備" reason={workspace.error} />;
   const role = user?.role ?? null;
   // UI batch B (④): the 確認 column only for a role that may record it.
   const showConfirmColumn = canRoleOperate(role, 'delivery_confirmation:record');

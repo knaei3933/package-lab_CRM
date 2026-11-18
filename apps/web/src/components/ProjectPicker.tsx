@@ -28,6 +28,11 @@ export function ProjectPicker({
 }) {
   const [state, formAction, pending] = useActionState(action, null);
   const [intent] = useState(createProjectPickerIntent);
+  // UI batch E (F-12): a remembered project the list does not offer (deleted or
+  // unassigned) would show as （選択なし） with no reason — say so.
+  const listChoices = Array.isArray(choices) ? choices : [];
+  const currentMissing = Boolean(currentProjectId) && listChoices.length > 0
+    && !listChoices.some((choice) => choice.value === currentProjectId);
 
   // B-M3: the switch remounts the select (key below), which drops focus to the
   // body. After a switch submitted here succeeds, focus goes to the page's
@@ -92,6 +97,9 @@ export function ProjectPicker({
         <button type="submit" className="project-picker-submit" aria-disabled={pending || undefined}>
           {pending ? '切り替え中…' : '切り替え'}
         </button>
+        {currentMissing && !state ? (
+          <span className="project-picker-error">選択中の案件は一覧にありません。選び直してください。</span>
+        ) : null}
         {/* Always present so assistive tech hears the result when it appears. */}
         <span role="status" className={state && !state.ok ? 'project-picker-error' : 'project-picker-ok'}>
           {state?.message ?? ''}

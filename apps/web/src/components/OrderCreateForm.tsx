@@ -187,23 +187,43 @@ export function OrderCreateForm({
         )}
       </FieldFeedback>
 
-      {sevenPurchaseOrderChoices && sevenPurchaseOrderChoices.length > 0 ? (
-        <label className="field" style={{ display: 'grid', gap: 4, maxWidth: '100%' }}>
-          <span style={{ fontSize: 13 }}>セブン化学発注書の紐付け（任意）</span>
-          <select
-            name="sevenPurchaseOrderId"
-            value={sevenPurchaseOrderId}
-            onChange={(event) => setSevenPurchaseOrderId(event.target.value)}
-            style={{ ...inputStyle, width: '100%', maxWidth: 340 }}
-          >
-            <option value="">紐付けない</option>
-            {sevenPurchaseOrderChoices.map((choice) => (
-              <option key={choice.value} value={choice.value}>
-                {choice.label}
-              </option>
-            ))}
-          </select>
-        </label>
+      {sevenPurchaseOrderChoices ? (
+        // UI batch E (F-05): required for a film order. An order made without its
+        // PO can never leave 下書き, and the link cannot be added afterwards.
+        <FieldFeedback name="sevenPurchaseOrderId" hasHint>
+          {(poFeedback) => (
+            <div className="field" style={{ display: 'grid', gap: 4, maxWidth: '100%' }}>
+              <label className="field-label">
+                <span style={{ fontSize: 13 }}>
+                  セブン化学発注書<span style={{ color: 'var(--danger)' }}>（必須）</span>
+                </span>
+                <select
+                  name="sevenPurchaseOrderId"
+                  value={sevenPurchaseOrderId}
+                  required
+                  onChange={(event) => setSevenPurchaseOrderId(event.target.value)}
+                  aria-describedby={poFeedback.describedBy}
+                  aria-invalid={poFeedback.invalid}
+                  data-feedback-label="セブン化学発注書"
+                  style={{ ...inputStyle, width: '100%', maxWidth: 340 }}
+                >
+                  <option value="">{sevenPurchaseOrderChoices.length > 0 ? '（発注書を選ぶ）' : '（登録済みの発注書がありません）'}</option>
+                  {sevenPurchaseOrderChoices.map((choice) => (
+                    <option key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <FieldError id={poFeedback.errorId} message={poFeedback.error} />
+              <span id={poFeedback.hintId} style={noteStyle}>
+                {sevenPurchaseOrderChoices.length > 0
+                  ? '紐付けはここでしか選べません（あとから付け替えられません）。状態を進めるには、選んだ発注書の公式登録と真性行チェックリスト（確認済み）が必要です。'
+                  : '先に「セブン化学発注書を登録する」で紙の発注書を登録してください。'}
+              </span>
+            </div>
+          )}
+        </FieldFeedback>
       ) : null}
 
       {paymentTermsChoices && paymentTermsChoices.length > 0 ? (

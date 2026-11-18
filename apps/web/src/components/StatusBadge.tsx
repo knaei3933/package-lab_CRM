@@ -1,5 +1,5 @@
 import { HIDDEN_BY_ROLE_LABEL } from '../lib/redaction';
-import { statusTone, TONE_SYMBOLS } from '../lib/status-tone';
+import { statusSymbol, statusTone } from '../lib/status-tone';
 import type { StatusDomain, StatusTone } from '../lib/status-tone';
 
 /**
@@ -26,7 +26,7 @@ export function StatusBadge({
   const text = label ?? (resolved === 'hidden' ? HIDDEN_BY_ROLE_LABEL : status ?? '');
   return (
     <span className={`status-badge status-badge--${resolved}`}>
-      <span className="status-badge-mark" aria-hidden="true">{TONE_SYMBOLS[resolved]}</span>
+      <span className="status-badge-mark" aria-hidden="true">{statusSymbol(domain, status, resolved)}</span>
       {text}
     </span>
   );

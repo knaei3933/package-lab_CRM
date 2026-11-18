@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { ActionForm } from '../../components/ActionForm';
 import { DocumentUploadForm } from '../../components/DocumentUploadForm';
 import { ProjectProgress } from '../../components/ProjectProgress';
+import { ProjectUnavailable } from '../../components/ProjectUnavailable';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
@@ -11,7 +12,15 @@ import { uploadDocumentAction, verifyDocumentAction } from '../actions';
 import { loadSessionUser, readSelectedProjectId } from '../../lib/api';
 import { loadMakerPoChoices } from '../../lib/document-maker-po-server';
 import { canRoleOperate } from '../../lib/permissions';
-import { filmOrderChoiceLabel, labelLookup, loadWorkspace, NO_PROJECT_SELECTED_MESSAGE } from '../../lib/project-data';
+import {
+  filmOrderChoiceLabel,
+  labelLookup,
+  loadWorkspace,
+  NO_PROJECT_SELECTED_MESSAGE,
+  sevenPurchaseOrderChoiceLabel
+} from '../../lib/project-data';
+import type { SevenPurchaseOrderView } from '../../lib/project-data';
+import type { SevenPoChoice } from '../../lib/document-maker-po';
 import { shortId } from '../../lib/short-id';
 import { cardStyle, infoBoxStyle, monoStyle, noteStyle, tdStyle, thStyle } from '../../lib/ui';
 import {
@@ -36,6 +45,23 @@ export const metadata: Metadata = { title: '文書' };
  * audit history of the selected project, and the verify control calls
  * POST /api/documents/:id/verify with verificationStatus verified/mismatch.
  */
+/**
+ * UI batch E (F-07): the upload form's PO choices — named the way the orders
+ * screen names them, and tagged ready when the PO opens the official-artifact
+ * gate (registered, verified, no review pending). A PO that is not ready says
+ * so in its label instead of failing after the upload.
+ */
+function sevenPoUploadChoices(orders: readonly SevenPurchaseOrderView[]): SevenPoChoice[] {
+  return orders.map((po) => {
+    const ready = po.officiallyRegistered && po.verificationStatus === 'verified' && !po.reviewPending;
+    return {
+      value: po.id,
+      ready,
+      label: ready ? sevenPurchaseOrderChoiceLabel(po) : `${sevenPurchaseOrderChoiceLabel(po)} 真性確認がまだです`
+    };
+  });
+}
+
 export default async function DocumentsPage() {
   const projectId = await readSelectedProjectId();
   if (!projectId) {
@@ -43,6 +69,8 @@ export default async function DocumentsPage() {
   }
 
   const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
+  // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
+  if (workspace.projectRefused) return <ProjectUnavailable title="文書" reason={workspace.error} />;
   const role = user?.role ?? null;
   // UI batch B (④): the 確認 column only for a role that may record it.
   const showVerifyColumn = canRoleOperate(role, 'document:verify');
@@ -81,7 +109,7 @@ export default async function DocumentsPage() {
             documentTypeChoices={documentTypeChoices()}
             issuerEntityChoices={issuerEntityChoices()}
             contentTypeChoices={contentTypeChoices()}
-            sevenPurchaseOrderChoices={workspace.sevenPurchaseOrders.map((po) => ({ value: po.id, label: po.poNumber }))}
+            sevenPurchaseOrderChoices={sevenPoUploadChoices(workspace.sevenPurchaseOrders)}
             makerPurchaseOrderChoices={makerPurchaseOrderChoices}
             filmSupplyOrderChoices={workspace.filmOrders.map((order) => ({
               value: order.id,
@@ -176,6 +204,10 @@ export default async function DocumentsPage() {
                         />
                       )}
                     {document.verificationNote ? <div style={noteStyle}>{document.verificationNote}</div> : null}
+                    {/* UI batch E (F-19): the send itself is confirmed on the maker PO screen, not here. */}
+                    {document.documentType === 'send_evidence' && !document.verificationHidden && document.verificationStatus === 'unverified' ? (
+                      <div style={noteStyle}>送信が確認済みかどうかは、メーカー発注画面の「送信の記録」に表示されます（この欄は書類そのものの確認です）。</div>
+                    ) : null}
                   </td>
                   <td style={tdStyle}>{formatTimestamp(document.createdAt)}</td>
                   {showVerifyColumn ? (

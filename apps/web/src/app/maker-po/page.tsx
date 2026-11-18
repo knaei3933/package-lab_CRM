@@ -4,6 +4,7 @@ import { MakerPoSendEvidenceForm } from '../../components/MakerPoSendEvidenceFor
 import { OrderCreateForm } from '../../components/OrderCreateForm';
 import { OffsetDateTimeField } from '../../components/OffsetDateTimeField';
 import { ProjectProgress } from '../../components/ProjectProgress';
+import { ProjectUnavailable } from '../../components/ProjectUnavailable';
 import { DataTable } from '../../components/DataTable';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
 import { StatusBadge } from '../../components/StatusBadge';
@@ -68,11 +69,13 @@ import {
   STATUS_HIDDEN_NOTICE
 } from '../../lib/project-data';
 import { canRoleOperate, normalizeRole, operationRefusal } from '../../lib/permissions';
+import { ceoApprovalFacts } from '../../lib/decision-facts';
 import { shortId } from '../../lib/short-id';
 import { roleLabel } from '../../lib/session-display';
 import { cardStyle, infoBoxStyle, monoStyle, noteStyle, tdStyle, thStyle } from '../../lib/ui';
 import {
   DOCUMENT_TYPE_LABELS,
+  formatMoney,
   formatTimestamp,
   MAKER_PO_EVENT_VERIFICATION_LABELS,
   MAKER_PO_MANUAL_VERIFICATION_RESULT_LABELS,
@@ -115,6 +118,14 @@ export const metadata: Metadata = { title: 'メーカー発注' };
  * amount never receives one to render.
  */
 
+/** UI batch E (F-15): the currencies a maker paper is written in (JPY first, the usual one). */
+const CURRENCY_CHOICES = [
+  { value: 'JPY', label: '日本円（JPY）' },
+  { value: 'USD', label: '米ドル（USD）' },
+  { value: 'CNY', label: '人民元（CNY）' },
+  { value: 'KRW', label: '韓国ウォン（KRW）' }
+];
+
 const PAYMENT_TERMS_CHOICES: Choice[] = [
   { value: 'prepaid', label: PAYMENT_TERMS_LABELS.prepaid! },
   { value: 'on_delivery', label: PAYMENT_TERMS_LABELS.on_delivery! },
@@ -130,6 +141,8 @@ export default async function MakerPoPage() {
   }
 
   const [user, board] = await Promise.all([loadSessionUser(), loadMakerPoBoard(projectId)]);
+  // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
+  if (board.workspace.projectRefused) return <ProjectUnavailable title="メーカー発注（発注書・承認・送信・受入）" reason={board.workspace.error} />;
   const role = user?.role ?? null;
   // UI batch B (④): display-only role checks; representative-only work reads
   // the shared permission helper (canRoleOperate) below, exactly as before.
@@ -192,7 +205,20 @@ export default async function MakerPoPage() {
   const readyCards = cards.filter((card) => knownStatus(card.entry.order) === MAKER_PO_READY);
   // Low-7 (f): the API refuses a new paper while a proven send was cancelled
   // without its 取り消し承認, so such an order is not offered for creation.
-  const readyOrders = readyCards.filter((card) => !acknowledgementBlocksCreation(judged(card.papers))).map((card) => card.entry);
+  // UI batch E (F-21): an order that already has a live paper (anything but 取消)
+  // is not offered again — the API refuses a second one (MAKER_PO_ALREADY_EXISTS).
+  const hasLivePaper = (card: (typeof readyCards)[number]) =>
+    card.entry.makerPoError === null && card.entry.makerPurchaseOrders.some((po) => po.status !== 'CANCELLED');
+  const readyOrders = readyCards
+    .filter((card) => !acknowledgementBlocksCreation(judged(card.papers)) && !hasLivePaper(card))
+    .map((card) => card.entry);
+  const alreadyCreatedOrders = readyCards.filter(hasLivePaper).map((card) => card.entry);
+  // UI batch E (F-15): the maker's address of the latest paper on this project, as the default 宛先.
+  const defaultRecipientAddress = cards
+    .flatMap((card) => card.entry.makerPurchaseOrders)
+    .map((po) => ({ at: po.createdAt ?? '', address: po.snapshot?.recipient?.address ?? po.recipientAddress ?? null }))
+    .filter((row): row is { at: string; address: string } => typeof row.address === 'string' && row.address.length > 0)
+    .sort((a, b) => (a.at < b.at ? 1 : -1))[0]?.address;
   const acknowledgementBlockedOrders = readyCards
     .filter((card) => acknowledgementBlocksCreation(judged(card.papers)))
     .map((card) => card.entry);
@@ -217,6 +243,8 @@ export default async function MakerPoPage() {
 
       <MakerPoCreateSection
         readyOrders={readyOrders}
+        alreadyCreatedOrders={alreadyCreatedOrders}
+        defaultRecipientAddress={defaultRecipientAddress}
         acknowledgementBlockedOrders={acknowledgementBlockedOrders}
         boardOrderCount={cards.length}
         isAdmin={isAdmin}
@@ -297,6 +325,8 @@ export default async function MakerPoPage() {
 
 function MakerPoCreateSection({
   readyOrders,
+  alreadyCreatedOrders,
+  defaultRecipientAddress,
   acknowledgementBlockedOrders,
   boardOrderCount,
   isAdmin,
@@ -305,6 +335,10 @@ function MakerPoCreateSection({
   statusHiddenOrders
 }: {
   readyOrders: OrderMakerPoBoard[];
+  /** UI batch E (F-21): orders at MAKER_PO_READY that already carry a live paper. */
+  alreadyCreatedOrders: OrderMakerPoBoard[];
+  /** UI batch E (F-15): the latest paper's maker address on this project (the 宛先 default). */
+  defaultRecipientAddress: string | undefined;
   /** Low-7 (f): orders at MAKER_PO_READY whose cancelled, sent paper still owes the 取り消し承認. */
   acknowledgementBlockedOrders: OrderMakerPoBoard[];
   /** Orders on the maker board (MAKER_PO_READY or a later maker/production state). */
@@ -319,6 +353,12 @@ function MakerPoCreateSection({
     label: filmOrderChoiceLabel(entry.order, stateLabel)
   }));
   const title = <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>① 発注書の作成（メーカー発注書の作成）</h2>;
+  const createdNote = alreadyCreatedOrders.length > 0 ? (
+    <p style={noteStyle}>
+      {`${alreadyCreatedOrders.map((entry) => entry.order.code).join('、')}: メーカー発注書は作成済みです。`
+        + '次の手順は下のその発注に表示されます（作り直すときは、先にその発注書を取り消します）。'}
+    </p>
+  ) : null;
   const blockedNote = acknowledgementBlockedOrders.length > 0 ? (
     <p style={noteStyle}>
       {`${acknowledgementBlockedOrders.map((entry) => entry.order.code).join('、')}: 送信ずみのまま取り消した発注書の`
@@ -333,8 +373,9 @@ function MakerPoCreateSection({
     return (
       <div style={cardStyle}>
         {title}
+        {createdNote}
         {blockedNote}
-        {blockedNote ? null : statusHiddenOrders > 0 ? (
+        {blockedNote || createdNote ? null : statusHiddenOrders > 0 ? (
           <p style={noteStyle}>{STATUS_HIDDEN_NOTICE}。作成できる発注があるかどうかは表示できません。</p>
         ) : boardOrderCount > 0 ? (
           <p style={noteStyle}>作成待ちの発注はありません。作成済みの発注書は下の各発注に表示されます。</p>
@@ -356,6 +397,7 @@ function MakerPoCreateSection({
         校正のダブル承認が完了して「{stateLabel(MAKER_PO_READY)}」になった発注の紙を凍結し、メーカー発注書を作ります。
         作成は代表者だけです（担当者・閲覧者は作成できません）。
       </p>
+      {createdNote}
       {blockedNote}
       <RoleGate role={role} operation="maker_po:create" label="メーカー発注書の作成">
         <ActionForm
@@ -364,7 +406,7 @@ function MakerPoCreateSection({
           hint="宛先住所はメーカーへの送り先です。金額は代表者のみ入力できます（担当者の画面には金額欄がありません）。"
           confirm={{
             title: 'メーカー発注書を作成しますか？',
-            body: '宛先と内容がスナップショットとして凍結されます。凍結した内容は変えられないため、直すときはこの発注書を取り消して作り直します。',
+            body: '宛先と内容（明細・金額）をこの時点の内容で確定します。確定した内容は変えられないため、直すときはこの発注書を取り消して作り直します。',
             tone: 'primary',
             summaryFields: isAdmin
               ? ['orderId', 'recipientAddress', 'currency', 'totalAmount']
@@ -374,11 +416,18 @@ function MakerPoCreateSection({
         >
           <div className="form-row">
             <SelectField name="orderId" label="対象のフィルム発注" required choices={orderChoices} width={420} />
-            <TextField name="recipientAddress" label="宛先住所（メーカーの送り先）" required width={320} />
+            <TextField
+              name="recipientAddress"
+              label="宛先住所（メーカーの送り先）"
+              required
+              width={320}
+              defaultValue={defaultRecipientAddress}
+              hint={defaultRecipientAddress ? 'この案件の前回のメーカー発注書の宛先を入れています。違う場合は書き換えてください。' : undefined}
+            />
             {isAdmin ? (
               <>
-                <TextField name="currency" label="通貨（例 JPY）" width={140} />
-                <TextField name="totalAmount" label="金額（例 480000）" width={180} />
+                <SelectField name="currency" label="通貨" width={160} defaultValue="JPY" choices={CURRENCY_CHOICES} />
+                <TextField name="totalAmount" label="金額（税込・数字のみ）" width={180} hint="例 480000（¥・カンマは不要です）" />
               </>
             ) : null}
           </div>
@@ -732,7 +781,7 @@ function MakerPoOrderSection({
               <th scope="col" style={thStyle}>状態</th>
               <th scope="col" style={thStyle}>発注コード</th>
               {isAdmin ? <th scope="col" style={thStyle}>金額</th> : null}
-              {isAdmin ? <th scope="col" style={thStyle}>宛先／ダイジェスト</th> : null}
+              {isAdmin ? <th scope="col" style={thStyle}>宛先</th> : null}
               {!isAdmin ? <th scope="col" style={thStyle}>宛先</th> : null}
               <th scope="col" style={thStyle}>代表承認</th>
               <th scope="col" style={thStyle}>更新</th>
@@ -757,14 +806,15 @@ function MakerPoOrderSection({
                 {isAdmin ? (
                   <td style={tdStyle}>
                     {po.snapshot?.amounts
-                      ? `${po.snapshot.amounts.currency} ${po.snapshot.amounts.totalAmount}`
+                      ? formatMoney(po.snapshot.amounts.currency, po.snapshot.amounts.totalAmount)
                       : '—'}
                   </td>
                 ) : null}
                 {isAdmin ? (
                   <td style={tdStyle}>
                     <div>{po.snapshot?.recipient?.address ?? po.recipientAddress ?? '—'}</div>
-                    <div style={monoStyle}>{po.snapshotSha256 ? `${po.snapshotSha256.slice(0, 16)}…` : '—'}</div>
+                    {/* UI batch E (F-14): the digest is a system value — under 「詳細」. */}
+                    {po.snapshotSha256 ? <TechDetails context="作成時の内容のハッシュ">{po.snapshotSha256}</TechDetails> : null}
                   </td>
                 ) : (
                   <td style={tdStyle}>{po.recipientAddress ?? '—'}</td>
@@ -1014,15 +1064,18 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
   if (pending.length === 0) return null;
   const gate = entry.paymentGate;
   const gateBlocks = gate !== null && !gate.gate.satisfied;
+  const voided = pending.some((po) => po.status === 'SNAPSHOT_VOIDED');
+  const blocks = [
+    gateBlocks ? '決済条件が未確定です（発注画面で決済条件を記録してください）' : null,
+    voided ? '作成時の内容が無効になっています（もう一度承認が必要です）' : null
+  ].filter((part): part is string => part !== null);
 
   return (
     <div className="stage-block" style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
       <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>② 代表承認（代表者のみ）</h3>
       <p style={noteStyle}>
-        承認は凍結されたスナップショットのダイジェストに対して行われます。ブロック理由:
-        {gateBlocks ? ' G6未満（決済条件が未確定）' : ''}
-        {pending.some((po) => po.status === 'SNAPSHOT_VOIDED') ? ' スナップショット失効（再承認が必要）' : ''}
-        {!gateBlocks ? ' なし（前提を満たしています）' : ''}
+        作成したときの内容（宛先・明細・金額）に対して承認します。
+        {blocks.length > 0 ? `承認できない理由: ${blocks.join('。')}。` : '承認の前提はそろっています。'}
       </p>
       {pending.map((po) => (
         <div key={po.id} style={{ marginBottom: 12 }}>
@@ -1030,11 +1083,12 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
             <ActionForm
               action={approveMakerPoAction}
               submitLabel="代表承認を記録する"
-              hint="決済条件が未確定のまま実行すると、APIが G6 のブロック理由を返します。"
+              hint="決済条件が未確定のときは、承認は記録されず、理由がここに表示されます。"
               confirm={{
                 title: '代表承認を記録しますか？',
-                body: `メーカー発注書 ${shortId(po.id)} を承認します。承認するとスナップショットのダイジェストに対して代表承認が記録され、送信記録へ進みます。`,
-                tone: 'primary'
+                body: `メーカー発注書（${po.snapshot?.order?.code ?? po.orderCode ?? entry.order.code}）を、下の内容で承認します。承認すると送信の記録へ進み、承認は取り消せません。内容を直すときは、承認せずにこの発注書を取り消して作り直します。`,
+                tone: 'primary',
+                facts: ceoApprovalFacts(po, entry.order.code, gate?.paymentTerms ?? null)
               }}
               successHint="次の手順: ③ 送信の記録（送信済みメールの原本 .eml を登録します）"
             >
@@ -1100,7 +1154,7 @@ function MakerPoWorkBlocks({
           <RoleGate role={role} operation="maker_po:send_evidence" label="送信の記録">
             <p style={noteStyle}>
               送信はシステムの外（メール）で行うので、ここでは証跡を記録します。宛先は発注書の宛先住所と一致が必要です。
-              送信証跡は Thunderbirdの送信済みフォルダから書き出した原本のEML（.eml）です。PDFやスクリーンショット、
+              送信証跡は、メールソフトの送信済みフォルダから書き出した原本のEML（.eml）です。PDFやスクリーンショット、
               メモでは送信は「確認済み」になりません。
             </p>
             <MakerPoSendEvidenceForm
@@ -1499,6 +1553,32 @@ function MakerPoPostDeliveryConfirmationBlock({
   );
 }
 
+/** UI batch E (F-22): 「受入日時 2026/11/19 14:00 JST（記録 2026/11/19 14:05 JST）」. */
+function provisionalRecordText(event: MakerPoEventRow): string {
+  const accepted = event.sentAt ? formatTimestamp(event.sentAt) : '未入力';
+  return `メーカー受入の日時: ${accepted}（記録した日時: ${formatTimestamp(event.recordedAt)}）`;
+}
+
+/**
+ * UI batch E (F-10): the final confirmation needs a 受領証跡 bound to this paper
+ * and checked 確認済み. The sentence names who can do each part for this role
+ * (display only; the API decides).
+ */
+function finalAcceptancePrerequisite(role: string | null, provisionalCount: number): string {
+  const upload = canRoleOperate(role, 'document:create');
+  const verify = canRoleOperate(role, 'document:verify');
+  const head = provisionalCount > 0
+    ? '仮の受入記録はあります。最終受入確認の前に、受領証跡（メーカーの受入・検収を示す書類）が必要です。'
+    : '最終受入確認には、受領証跡（メーカーの受入・検収を示す書類）が必要です。';
+  if (upload && verify) {
+    return `${head}「文書」画面で、書類種別「受領証跡」としてこの発注とこのメーカー発注書に紐付けてアップロードし、確認済みにしてください。そのあと、ここで最終受入確認を記録します（代表者）。`;
+  }
+  if (upload) {
+    return `${head}「文書」画面で、書類種別「受領証跡」としてこの発注とこのメーカー発注書に紐付けてアップロードしてください。確認済みにする記録と最終受入確認は代表者が行います。`;
+  }
+  return `${head}受領証跡の登録・確認と最終受入確認は、担当者と代表者が行います。`;
+}
+
 function MakerPoAcceptanceBlock({
   po,
   role,
@@ -1523,14 +1603,22 @@ function MakerPoAcceptanceBlock({
       </p>
       <p style={noteStyle}>
         仮の受入記録: {provisionalCount}件
-        {provisionalCount > 0 ? (
-          <span style={monoStyle}>
-            {' '}（{provisionalRecords.map((event) => formatTimestamp(event.recordedAt)).join('、')}）
-          </span>
-        ) : (
-          ' ／ 次のアクション: 担当者が受入記録（仮）を記録してください。'
-        )}
+        {provisionalCount > 0 ? null : ' ／ 次のアクション: 担当者が受入記録（仮）を記録してください。'}
       </p>
+      {provisionalCount > 0 ? (
+        // UI batch E (F-22): the maker's acceptance time (as entered, or 未入力) and
+        // the time the record was written are two different things.
+        <ul style={{ ...noteStyle, margin: 0, paddingLeft: 20 }}>
+          {provisionalRecords.map((event) => (
+            <li key={event.id}>{provisionalRecordText(event)}</li>
+          ))}
+        </ul>
+      ) : null}
+      {acceptanceEvidenceChoices.length === 0 ? (
+        // UI batch E (F-10): what the final confirmation waits for, said to every
+        // role — the staff member who can upload the evidence included.
+        <p className="role-notice">{finalAcceptancePrerequisite(role, provisionalCount)}</p>
+      ) : null}
 
       <RoleGate role={role} operation="maker_po:accept_provisional" label="受入記録（仮）">
         <details style={{ marginBottom: 12 }} open={provisionalCount === 0}>
@@ -1553,13 +1641,9 @@ function MakerPoAcceptanceBlock({
       </RoleGate>
 
       {canAcceptFinal ? (
-        acceptanceEvidenceChoices.length === 0 ? (
-          <p style={noteStyle}>
-            最終受入確認のブロック理由: 受領証跡の書類バージョンがありません。
-            次のアクション: 「文書」画面で受領証跡をアップロードし、確認済みにしてください。
-          </p>
-        ) : (
-          <details>
+        acceptanceEvidenceChoices.length === 0 ? null : (
+          // UI batch E (F-21): this is the current step once the evidence exists — open.
+          <details open>
             <summary style={{ fontSize: 13 }}>最終受入確認を記録する（代表者のみ）</summary>
             <ActionForm
               action={recordFinalAcceptanceAction}

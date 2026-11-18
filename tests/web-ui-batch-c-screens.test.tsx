@@ -790,7 +790,8 @@ describe('2-⑤ status badges on the screens', () => {
     serveAs('admin');
     const html = await renderPage(OrdersPage);
     expect(html).toContain('<td style="border:1px solid var(--line);padding:6px 8px;vertical-align:top" class="status-cell"><span class="status-badge status-badge--active"><span class="status-badge-mark" aria-hidden="true">●</span>下書き</span>');
-    expect(html).toContain('status-badge--blocked"><span class="status-badge-mark" aria-hidden="true">✕</span>保留中');
+    // UI batch E (F-16): 保留中 keeps the blocked colour but reads ‖ (paused), not the ✕ of キャンセル終了.
+    expect(html).toContain('status-badge--blocked"><span class="status-badge-mark" aria-hidden="true">‖</span>保留中');
   });
 
   it('orders (viewer): a withheld status is the hidden-tone badge', async () => {

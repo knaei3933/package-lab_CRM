@@ -174,10 +174,49 @@ const JP_DATETIME_FORMAT = new Intl.DateTimeFormat('ja-JP', {
   hourCycle: 'h23'
 });
 
+const JP_DATE_FORMAT = new Intl.DateTimeFormat('ja-JP', {
+  timeZone: DISPLAY_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit'
+});
+
+/**
+ * UI batch E (F-15): a value recorded from a date-only field (公式登録日). The
+ * form posts YYYY-MM-DD, which is stored as midnight UTC — 09:00 JST, a time
+ * nobody entered. Such an instant (midnight UTC or midnight JST) reads as the
+ * date alone; any other instant keeps its JST time.
+ */
+export function formatDateOrTimestamp(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  const utcMidnight = date.getUTCHours() === 0 && date.getUTCMinutes() === 0 && date.getUTCSeconds() === 0 && date.getUTCMilliseconds() === 0;
+  const jstMidnight = date.getUTCHours() === 15 && date.getUTCMinutes() === 0 && date.getUTCSeconds() === 0 && date.getUTCMilliseconds() === 0;
+  return utcMidnight || jstMidnight ? JP_DATE_FORMAT.format(date) : formatTimestamp(value);
+}
+
 /** Renders an API timestamp as a short Japanese datetime in JST (or a dash). */
 export function formatTimestamp(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0) return '—';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return `${JP_DATETIME_FORMAT.format(date)} JST`;
+}
+
+/**
+ * UI batch E (F-15): an amount as people write it — 「¥480,000」 for JPY,
+ * 「USD 1,234.50」 style grouping for another ISO code. A value that is not a
+ * plain decimal is shown as recorded (never reinterpreted), and the currency
+ * code is kept when Intl does not know it.
+ */
+export function formatMoney(currency: string | null | undefined, amount: string | null | undefined): string {
+  const raw = (amount ?? '').trim();
+  const code = (currency ?? '').trim().toUpperCase();
+  if (raw.length === 0) return '—';
+  if (!/^-?\d+(\.\d+)?$/.test(raw)) return code ? `${code} ${raw}` : raw;
+  const [whole, fraction] = raw.split('.') as [string, string | undefined];
+  const grouped = `${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${fraction !== undefined ? `.${fraction}` : ''}`;
+  if (code === 'JPY' || code === '') return code === 'JPY' ? `¥${grouped}` : grouped;
+  return `${code} ${grouped}`;
 }

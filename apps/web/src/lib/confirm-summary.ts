@@ -31,6 +31,29 @@ export type SummaryControl =
   | { kind: 'checkbox'; checked: boolean }
   | { kind: 'text'; value: string };
 
+/** UI batch E (F-18): list a summary field only while `field` holds one of `values`. */
+export interface SummaryCondition {
+  field: string;
+  values: string[];
+}
+
+/**
+ * The summary fields a dialog lists for the current form values: a field with
+ * a condition is dropped unless the named control holds one of its values
+ * (「保留にする理由」 only when 「保留中」 is the chosen target).
+ */
+export function summaryFieldsFor(
+  fields: readonly string[],
+  when: Readonly<Record<string, SummaryCondition>> | undefined,
+  valueOf: (name: string) => string
+): string[] {
+  if (!when) return [...fields];
+  return fields.filter((name) => {
+    const condition = when[name];
+    return condition === undefined || condition.values.includes(valueOf(condition.field));
+  });
+}
+
 const EXPLICIT_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 /**

@@ -22,7 +22,10 @@ describe('evidence form accessibility and G3 subject action', () => {
     );
     expect(html).toContain('FSO-1 製造先発注書');
     expect(html).toContain('name="contentBase64"');
-    expect(html).toContain('先頭の発注コードは自動挿入されます');
+    // UI batch E (F-14): the subject is a template for the manual mail — the form sends nothing.
+    expect(html).toContain('メーカーへ送るメールの件名（例。先頭に発注コードを付けます）');
+    expect(html).toContain('この画面からメールは送信されません。');
+    expect(html).not.toContain('Thunderbird');
   });
 
   it('links one shared G6 guidance to both the version select and identifier input', () => {

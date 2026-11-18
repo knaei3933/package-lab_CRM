@@ -42,6 +42,14 @@ export const ACTION_MESSAGE_FIELDS: readonly ActionMessageField[] = [
   { message: '発注番号を入力してください。', match: 'exact', field: 'poNumber', source: 'actions' },
   { message: '公式登録日を入力してください。', match: 'exact', field: 'officialRegisteredAt', source: 'actions' },
   { message: '発注コードを入力してください。', match: 'exact', field: 'code', source: 'actions' },
+  // UI batch E (F-05, F-07): the PO link a film order and an official artifact need.
+  { message: 'セブン化学発注書を選択してください。', match: 'exact', field: 'sevenPurchaseOrderId', source: 'actions' },
+  {
+    message: 'セブン化学発注書を選択してください（校正ゲラ・各種証跡では必須です）。',
+    match: 'exact',
+    field: 'sevenPurchaseOrderId',
+    source: 'actions'
+  },
   { message: 'の明細を1行以上入力してください。', match: 'suffix', field: lineField(0, 'description'), source: 'actions' },
   { message: 'の明細の説明が入力されていません。', match: 'suffix', field: lineField(0, 'description'), source: 'actions' },
   { message: 'の明細の数量は正の数で入力してください。', match: 'suffix', field: lineField(0, 'quantity'), source: 'actions' },

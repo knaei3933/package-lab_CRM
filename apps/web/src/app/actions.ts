@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
-import { FILM_UNITS, FILLING_UNITS } from '@kanei/core';
+import { FILM_UNITS, FILLING_UNITS, OFFICIAL_ARTIFACT_DOCUMENT_TYPES } from '@kanei/core';
 import { callApi, PROJECT_COOKIE, readSelectedProjectId } from '../lib/api';
 import { offsetDateTimeField } from '../lib/datetime';
 import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL } from '../lib/maker-po-data';
@@ -215,8 +215,11 @@ export async function createFilmSupplyOrderAction(_prev: ActionState | null, for
   const lines = parseLines(field(formData, 'lines'), FILM_UNITS, 'フィルム発注');
   if (!lines.ok) return { ok: false, message: lines.message };
   const body: Record<string, unknown> = { code, lines: lines.lines };
+  // UI batch E (F-05): a film order without its PO can never leave DRAFT and the
+  // link cannot be added later, so the screen requires it (the API still decides).
   const sevenPurchaseOrderId = optionalField(formData, 'sevenPurchaseOrderId');
-  if (sevenPurchaseOrderId) body.sevenPurchaseOrderId = sevenPurchaseOrderId;
+  if (!sevenPurchaseOrderId) return { ok: false, message: 'セブン化学発注書を選択してください。' };
+  body.sevenPurchaseOrderId = sevenPurchaseOrderId;
   // M8-OPER2 FIX 1: the G6 transaction terms are chosen at creation. Omitted
   // means the API's default (undetermined — the term that keeps G6 closed).
   const paymentTerms = field(formData, 'paymentTerms');
@@ -381,6 +384,9 @@ export async function assumeFilmReceiptAction(_prev: ActionState | null, formDat
 // Documents (M2/M3/M4): intake and human verification.
 // ---------------------------------------------------------------------------
 
+/** UI batch E (F-07): the document types the API registers only with a verified PO link. */
+const PO_REQUIRED_DOCUMENT_TYPES: readonly string[] = OFFICIAL_ARTIFACT_DOCUMENT_TYPES;
+
 export async function uploadDocumentAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
   const projectId = await requireProjectId();
   if (!isProjectId(projectId)) return projectId;
@@ -399,6 +405,11 @@ export async function uploadDocumentAction(_prev: ActionState | null, formData: 
     contentType: field(formData, 'contentType')
   };
   const sevenPurchaseOrderId = optionalField(formData, 'sevenPurchaseOrderId');
+  // UI batch E (F-07): the API refuses an official artifact without a verified
+  // PO link (SEVEN_PO_REQUIRED); say so on the field before the upload is sent.
+  if (!sevenPurchaseOrderId && PO_REQUIRED_DOCUMENT_TYPES.includes(String(body.documentType))) {
+    return { ok: false, message: 'セブン化学発注書を選択してください（校正ゲラ・各種証跡では必須です）。' };
+  }
   if (sevenPurchaseOrderId) body.sevenPurchaseOrderId = sevenPurchaseOrderId;
   const filmSupplyOrderId = optionalField(formData, 'filmSupplyOrderId');
   if (filmSupplyOrderId) body.filmSupplyOrderId = filmSupplyOrderId;

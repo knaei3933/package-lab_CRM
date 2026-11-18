@@ -195,7 +195,8 @@ describe('M2 + M1: セブン発注書 registration is told apart from hidden, pe
     expect(registered).toMatchObject({
       officialRegisteredAt: REGISTERED_AT, officiallyRegistered: true, officialRegistrationHidden: false, poNumberHidden: false
     });
-    expect(officialRegistrationText(registered)).toBe('2026/11/16 09:00 JST');
+    // UI batch E (F-15, T4): a date-only registration reads as the date alone (no 09:00 nobody entered).
+    expect(officialRegistrationText(registered)).toBe('2026/11/16');
     expect(sevenPurchaseOrderChoiceLabel(registered)).toBe('SC-REG-1（公式登録済み）');
     expect(unregistered).toMatchObject({ officialRegisteredAt: null, officiallyRegistered: false, officialRegistrationHidden: false });
     expect(officialRegistrationText(unregistered)).toBe('未登録');
@@ -305,7 +306,9 @@ describe('rendered screens per role (display only — the forms and permissions 
     expect(html.match(/>公式登録日を記録する<\/summary>/g) ?? []).toHaveLength(role === 'viewer' ? 0 : 1);
     if (role === 'admin') {
       expect(html).toContain('SC-NEW-2（未登録）');
-      expect(html).toContain('2026/11/16 09:00 JST');
+      // UI batch E (F-15, T4): the date-only registration shows no invented time.
+      expect(html).toContain('>2026/11/16</td>');
+      expect(html).not.toContain('2026/11/16 09:00 JST');
     } else {
       expect(html).toContain('公式登録済み（登録日は閲覧権限なし）');
       // UI batch B: the viewer gets no create form, so no PO select to label.

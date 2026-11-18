@@ -59,8 +59,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
         <header className="app-header">
           <div className="app-header-inner">
             <div className="app-header-top">
+              {/* UI batch E (F-13): on a phone the sub-title folds away so the user line fits beside it. */}
               <Link href="/" className="app-brand">
-                KANEI CRM オペレーター画面（F1）
+                KANEI CRM<span className="app-brand-sub"> オペレーター画面（F1）</span>
               </Link>
               {user ? (
                 <div className="app-user">
