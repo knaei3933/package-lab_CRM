@@ -128,16 +128,16 @@ export function makerPoMailSubject(orderCode: string, subject = '製造先発注
 /**
  * Token-boundary order-code match with M9 case normalization. Code constituents
  * are ASCII letters, digits and hyphens, so FSO-1 never matches FSO-10,
- * FSO-1_2 or FSO-1.5.
+ * FSO-1_2, FSO-1.5 or FSO-1。
  */
 export function hasOrderCodeToken(subject: string, orderCode: string): boolean {
   const normalizedCode = orderCode.trim().toUpperCase();
   if (normalizedCode.length === 0) return false;
   const haystack = subject.toUpperCase();
-  // A dot/underscore can be an external separator but never extends a token;
-  // hyphen can be an internal code constituent. All three block a partial match.
+  // Dot, underscore and full-width period consistently block a partial match;
+  // hyphen can be an internal code constituent.
   const isCodeNeighbor = (character: string | undefined): boolean =>
-    character !== undefined && /[A-Za-z0-9_.-]/.test(character);
+    character !== undefined && /[A-Za-z0-9_.\u3002-]/.test(character);
   let index = haystack.indexOf(normalizedCode);
   while (index >= 0) {
     const before = index === 0 ? undefined : haystack[index - 1];

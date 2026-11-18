@@ -44,6 +44,7 @@ describe('maker PO manual-send EML defaults', () => {
     expect(hasOrderCodeToken('FSO-0010 依頼', 'FSO-001')).toBe(false);
     expect(hasOrderCodeToken('FSO-001_2 依頼', 'FSO-001')).toBe(false);
     expect(hasOrderCodeToken('FSO-001.5 依頼', 'FSO-001')).toBe(false);
+    expect(hasOrderCodeToken('FSO-001。依頼', 'FSO-001')).toBe(false);
     const edited = insertMakerPoMailSubject(
       'From: staff@example.test\r\nSubject:  製造依頼\r\n\r\nbody',
       'FSO-001'

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { inflateRawSync } from 'node:zlib';
+import { inflateRawSync, inflateSync } from 'node:zlib';
 
 /**
  * M8-HARDEN FIX C1: the send evidence of a maker purchase order is the
@@ -367,97 +367,325 @@ function decodePdfLiteralString(raw: string): string {
 /** Turns PDF text-operator content into searchable text (ASCII/Latin-1 range). */
 function extractPdfContentText(content: string): string {
   const chunks: string[] = [];
-  const literal = /\(((?:\\.|[^\\)])*)\)\s*(?:Tj|TJ|'|")/g;
-  for (let match = literal.exec(content); match !== null; match = literal.exec(content)) {
-    chunks.push(decodePdfLiteralString(match[1] ?? ''));
-  }
-
-  // A TJ array can split one visible identifier across kerning-adjusted strings.
-  const arrays = /\[((?:\((?:\\.|[^\\)])*\)|[^\]])*)\]\s*TJ/g;
-  for (let array = arrays.exec(content); array !== null; array = arrays.exec(content)) {
-    const inner = array[1] ?? '';
-    let value = '';
-    const strings = /\(((?:\\.|[^\\)])*)\)/g;
-    for (let part = strings.exec(inner); part !== null; part = strings.exec(inner)) {
-      value += decodePdfLiteralString(part[1] ?? '');
+  // Content streams are small and controlled. Walk literals explicitly instead
+  // of a stateful global regex: this also captures strings split across a TJ
+  // array and avoids any ambiguity about regex lastIndex between calls.
+  let cursor = 0;
+  for (;;) {
+    const open = content.indexOf('(', cursor);
+    if (open < 0) break;
+    let index = open + 1;
+    let escaped = false;
+    let close = -1;
+    while (index < content.length) {
+      const character = content[index]!;
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === ')') {
+        close = index;
+        break;
+      }
+      index += 1;
     }
-    chunks.push(value);
+    if (close < 0) break;
+    const literal = decodePdfLiteralString(content.slice(open + 1, close));
+    chunks.push(literal);
+    cursor = close + 1;
   }
 
-  const hex = /<([0-9A-Fa-f\s]+)>\s*Tj/g;
-  for (let match = hex.exec(content); match !== null; match = hex.exec(content)) {
-    chunks.push(Buffer.from((match[1] ?? '').replace(/\s+/g, ''), 'hex').toString('latin1'));
+  let hexCursor = 0;
+  for (;;) {
+    const open = content.indexOf('<', hexCursor);
+    const close = open < 0 ? -1 : content.indexOf('>', open + 1);
+    if (open < 0 || close < 0) break;
+    const remainder = content.slice(close + 1).match(/^[ \t\r\n]*Tj/);
+    if (remainder !== null) {
+      chunks.push(Buffer.from(content.slice(open + 1, close).replace(/\s+/g, ''), 'hex').toString('latin1'));
+    }
+    hexCursor = close + 1;
   }
   return chunks.join('\n');
 }
 
-/**
- * G7: reads the text layer of the small internal PDFs used for automatic
- * checks. Compressed content streams are inflated; an image-only scan yields an
- * empty string and deliberately stays on its existing manual-verification path.
- */
-/** The fail-closed classification of one PDF content stream. */
-export type PdfTextLayerState = 'text' | 'scan' | 'indeterminate';
+/** The fail-closed classification of one PDF page's referenced Contents. */
+export type PdfTextLayerState = 'text' | 'scan' | 'ocr' | 'indeterminate';
 export interface PdfTextLayerPage {
   state: PdfTextLayerState;
   text: string;
 }
 
+interface ParsedPdfObject {
+  id: number;
+  /** The object dictionary, without the trailing `stream` keyword. */
+  header: string;
+  stream: Buffer | null;
+}
+
+type PdfObjectMap = Map<number, ParsedPdfObject>;
+type PdfObjectParse = { valid: true; objects: PdfObjectMap } | { valid: false };
+
+function parsePdfObjects(bytes: Buffer): PdfObjectParse {
+  const latin = bytes.toString('latin1');
+  const objects: PdfObjectMap = new Map();
+  const objectPattern = /(?:^|[\r\n\t\f\v ])(\d+)\s+(\d+)\s+obj(?=[\s/<[])/g;
+  let cursor = 0;
+  for (;;) {
+    objectPattern.lastIndex = cursor;
+    const match = objectPattern.exec(latin);
+    if (match === null) break;
+    const id = Number.parseInt(match[1] ?? '', 10);
+    if (!Number.isInteger(id) || id <= 0 || objects.has(id)) return { valid: false };
+    const objectStart = match.index + match[0].length;
+    const objectEnd = latin.indexOf('endobj', objectStart);
+    if (objectEnd < 0) return { valid: false };
+
+    const streamStart = latin.indexOf('stream', objectStart);
+    const hasStream = streamStart >= 0 && streamStart < objectEnd;
+    if (!hasStream) {
+      objects.set(id, { id, header: latin.slice(objectStart, objectEnd), stream: null });
+      cursor = objectEnd + 'endobj'.length;
+      continue;
+    }
+
+    let dataStart = streamStart + 'stream'.length;
+    if (latin[dataStart] === '\r') dataStart += 1;
+    if (latin[dataStart] === '\n') dataStart += 1;
+    const dataEnd = latin.indexOf('endstream', dataStart);
+    if (dataEnd < 0 || dataEnd > objectEnd) return { valid: false };
+    const endObject = latin.indexOf('endobj', dataEnd);
+    if (endObject !== objectEnd) return { valid: false };
+    objects.set(id, {
+      id,
+      header: latin.slice(objectStart, streamStart),
+      stream: Buffer.from(latin.slice(dataStart, dataEnd), 'latin1')
+    });
+    cursor = endObject + 'endobj'.length;
+  }
+  return objects.size > 0 ? { valid: true, objects } : { valid: false };
+}
+
+function findDictionaryValue(dictionary: string, key: string): { start: number; value: string } | null {
+  const keyPattern = new RegExp(`/${key}(?![A-Za-z0-9_])`);
+  const match = keyPattern.exec(dictionary);
+  if (match === null) return null;
+  let cursor = match.index + match[0].length;
+  while (cursor < dictionary.length && /\s/.test(dictionary[cursor] ?? '')) cursor += 1;
+  if (dictionary[cursor] !== '<') {
+    // Bound the direct value (for example `3 0 R`) before the next `/Key`.
+    // This prevents a later nested resource reference from being mistaken for
+    // an indirect /Contents or /Resources object reference.
+    const nextKey = dictionary.indexOf('/', cursor + 1);
+    const end = nextKey < 0 ? dictionary.length : nextKey;
+    return { start: cursor, value: dictionary.slice(cursor, end) };
+  }
+  const open = cursor;
+  let depth = 0;
+  for (let index = open; index < dictionary.length; index += 1) {
+    if (dictionary.startsWith('<<', index)) {
+      depth += 1;
+      index += 1;
+    } else if (dictionary.startsWith('>>', index)) {
+      depth -= 1;
+      if (depth === 0) {
+        return { start: open, value: dictionary.slice(open, index + 2) };
+      }
+      index += 1;
+    }
+  }
+  return null;
+}
+
+function indirectRefs(value: string): Array<{ id: number }> {
+  const refs: Array<{ id: number }> = [];
+  const pattern = /(\d+)\s+\d+\s+R/g;
+  for (let match = pattern.exec(value); match !== null; match = pattern.exec(value)) {
+    refs.push({ id: Number.parseInt(match[1] ?? '', 10) });
+  }
+  return refs;
+}
+
+function decodePdfStream(object: ParsedPdfObject): { state: 'text' | 'indeterminate'; text: string } {
+  const filters = object.header.match(/\/[A-Za-z][A-Za-z0-9]+Decode\b/g) ?? [];
+  if (filters.some((filter) => filter !== '/FlateDecode')) {
+    return { state: 'indeterminate', text: '' };
+  }
+  const data = object.stream;
+  if (data === null) return { state: 'indeterminate', text: '' };
+  if (filters.length === 0) {
+    return { state: 'text', text: data.toString('latin1') };
+  }
+  if (filters.length > 1) return { state: 'indeterminate', text: '' };
+  // Standard PDF FlateDecode uses zlib framing. Some producers emit a bare raw
+  // DEFLATE payload; that is accepted only after the standard framing fails.
+  try {
+    const text = inflateSync(data).toString('latin1');
+    return { state: 'text', text };
+  } catch {
+    try {
+      return { state: 'text', text: inflateRawSync(data).toString('latin1') };
+    } catch {
+      return { state: 'indeterminate', text: '' };
+    }
+  }
+}
+
+type ResourceResolution =
+  | { valid: true; dictionary: string | null }
+  | { valid: false };
+
+function resolvePageResources(pageHeader: string, objects: PdfObjectMap): ResourceResolution {
+  let source = pageHeader;
+  const visited = new Set<string>();
+  for (;;) {
+    const resources = findDictionaryValue(source, 'Resources');
+    if (resources !== null) {
+      const trimmedValue = resources.value.trimStart();
+      if (trimmedValue.startsWith('<<')) {
+        // findDictionaryValue already returned the balanced inline dictionary.
+        // Its nested /Font 4 0 R references are not a /Resources object ref.
+        return { valid: true, dictionary: resources.value };
+      }
+      const refs = indirectRefs(trimmedValue);
+      if (refs.length !== 1) return { valid: false };
+      const resourceObject = objects.get(refs[0]!.id);
+      if (resourceObject === undefined || resourceObject.stream !== null) return { valid: false };
+      const dictionary = findDictionaryValue(resourceObject.header, 'Resources');
+      if (dictionary === null || !dictionary.value.includes('<<')) return { valid: false };
+      return { valid: true, dictionary: dictionary.value };
+    }
+
+    const parent = findDictionaryValue(source, 'Parent');
+    if (parent === null) return { valid: true, dictionary: null };
+    const refs = indirectRefs(parent.value);
+    if (refs.length !== 1) return { valid: false };
+    const parentKey = String(refs[0]!.id);
+    if (visited.has(parentKey)) return { valid: false };
+    visited.add(parentKey);
+    const parentObject = objects.get(refs[0]!.id);
+    if (parentObject === undefined || parentObject.stream !== null) return { valid: false };
+    source = parentObject.header;
+  }
+}
+
+function resourceMap(resources: string | null, group: 'Font' | 'XObject'): Map<string, number> {
+  const map = new Map<string, number>();
+  if (resources === null) return map;
+  const groupDictionary = findDictionaryValue(resources, group);
+  if (groupDictionary === null || !groupDictionary.value.includes('<<')) return map;
+  const open = groupDictionary.value.indexOf('<<');
+  let depth = 0;
+  let end = -1;
+  for (let index = open; index < groupDictionary.value.length; index += 1) {
+    if (groupDictionary.value.startsWith('<<', index)) {
+      depth += 1;
+      index += 1;
+    } else if (groupDictionary.value.startsWith('>>', index)) {
+      depth -= 1;
+      if (depth === 0) {
+        end = index + 2;
+        break;
+      }
+      index += 1;
+    }
+  }
+  if (end < 0) return map;
+  const names = groupDictionary.value.slice(open, end);
+  const pattern = /\/([^\s/<>\[\]()]+)\s+(\d+)\s+\d+\s+R/g;
+  for (let match = pattern.exec(names); match !== null; match = pattern.exec(names)) {
+    const name = match[1];
+    const id = Number.parseInt(match[2] ?? '', 10);
+    if (name && Number.isInteger(id)) map.set(name, id);
+  }
+  return map;
+}
+
+function parsePageContents(pageHeader: string, objects: PdfObjectMap): Array<string> | null {
+  const value = findDictionaryValue(pageHeader, 'Contents');
+  if (value === null) return null;
+  const refs = indirectRefs(value.value);
+  if (refs.length === 0) return null;
+  const parts: string[] = [];
+  for (const ref of refs) {
+    const object = objects.get(ref.id);
+    if (object === undefined || object.stream === null) return null;
+    const decoded = decodePdfStream(object);
+    if (decoded.state === 'indeterminate') return null;
+    parts.push(decoded.text);
+  }
+  return parts;
+}
+
 /**
- * G5/G7: classify only streams that actually contain text operators as text.
- * Font and ToUnicode CMap streams are auxiliary data and have no Tj/TJ; when a
- * text content stream exists they are ignored. If no text stream exists, a
- * decodable non-text page is a scan and needs a human. Any unsupported filter
- * remains indeterminate, even beside a valid stream: we never infer its safety.
+ * G5/G7: classify only the streams a page's /Contents actually references.
+ * Unreferenced FontFile/CMap/hidden-text streams cannot authenticate a page.
+ * A text page over an image, or transparent text (3 Tr), is an OCR layer and
+ * stays with a human. Missing objects/resources or undecodable referenced
+ * content is indeterminate.
  */
 export function inspectPdfTextLayers(bytes: Buffer): PdfTextLayerPage[] {
   if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') return [];
+  const parsedObjects = parsePdfObjects(bytes);
+  if (!parsedObjects.valid) return [{ state: 'indeterminate', text: '' }];
+
+  const pageIds = [...parsedObjects.objects.values()]
+    .filter((object) => /\/Type\s*\/Page(?![A-Za-z0-9_])/.test(object.header))
+    .map((object) => object.id)
+    .sort((a, b) => a - b);
+  if (pageIds.length === 0) return [{ state: 'indeterminate', text: '' }];
   const pages: PdfTextLayerPage[] = [];
-  let cursor = 0;
-  const streamToken = Buffer.from('stream', 'latin1');
-  const endToken = Buffer.from('endstream', 'latin1');
-  while (cursor < bytes.length) {
-    const start = bytes.indexOf(streamToken, cursor);
-    if (start < 0) break;
-    let bodyStart = start + streamToken.length;
-    if (bytes[bodyStart] === 0x0d) bodyStart += 1;
-    if (bytes[bodyStart] === 0x0a) bodyStart += 1;
-    const end = bytes.indexOf(endToken, bodyStart);
-    if (end < 0) break;
-    const stream = bytes.subarray(bodyStart, end);
-    const dictionary = bytes.subarray(Math.max(0, start - 1024), start).toString('latin1');
-    const filterStart = dictionary.lastIndexOf('<<', Math.max(0, dictionary.length - 1));
-    const filterDictionary = filterStart >= 0 ? dictionary.slice(filterStart) : dictionary;
-    const hasFlate = filterDictionary.includes('/FlateDecode');
-    const hasOtherFilter = /\/(?:ASCIIHexDecode|ASCII85Decode|LZWDecode|RunLengthDecode|CCITTFaxDecode|DCTDecode|JPXDecode|JBIG2Decode)\b/.test(filterDictionary);
-    if (hasOtherFilter || (hasFlate && /\/FlateDecode[^>]*\/(?!FlateDecode\b)[A-Z][A-Za-z]+Decode/.test(filterDictionary))) {
-      pages.push({ state: 'indeterminate', text: '' });
-      cursor = end + endToken.length;
-      continue;
+  for (const pageId of pageIds) {
+    const page = parsedObjects.objects.get(pageId);
+    if (page === undefined || page.stream !== null) return [{ state: 'indeterminate', text: '' }];
+    const contentParts = parsePageContents(page.header, parsedObjects.objects);
+    if (contentParts === null) return [{ state: 'indeterminate', text: '' }];
+    const content = contentParts.join('\n');
+    const transparent = /(?:^|[\s>])3\s+Tr(?=\s|$)/.test(content);
+    const text = extractPdfContentText(content);
+    const usedFonts = [...content.matchAll(/\/([^\s/<>\[\]()]+)\s+(?:[\d.]+\s+)?Tf(?=\s|$)/g)]
+      .map((match) => match[1] ?? '');
+    const imageNames = [...content.matchAll(/\/([^\s/<>\[\]()]+)\s+Do(?=\s|$)/g)]
+      .map((match) => match[1] ?? '');
+
+    let resources: string | null = null;
+    if (usedFonts.length > 0 || imageNames.length > 0) {
+      const resolution = resolvePageResources(page.header, parsedObjects.objects);
+      if (!resolution.valid) return [{ state: 'indeterminate', text: '' }];
+      resources = resolution.dictionary;
     }
-    if (!hasFlate) {
-      const text = extractPdfContentText(stream.toString('latin1'));
-      pages.push({ state: text.trim().length > 0 ? 'text' : 'scan', text });
-      cursor = end + endToken.length;
-      continue;
+
+    if (usedFonts.length > 0) {
+      const fonts = resourceMap(resources, 'Font');
+      const validFonts = usedFonts.every((name) => {
+        const id = fonts.get(name);
+        const font = id === undefined ? undefined : parsedObjects.objects.get(id);
+        return font !== undefined && /\/Type\s*\/Font(?![A-Za-z0-9_])/.test(font.header);
+      });
+      if (!validFonts) return [{ state: 'indeterminate', text: '' }];
     }
-    let text = '';
-    try {
-      text = extractPdfContentText(inflateRawSync(stream).toString('latin1'));
-    } catch {
-      pages.push({ state: 'indeterminate', text: '' });
-      cursor = end + endToken.length;
-      continue;
+
+    let hasImage = false;
+    if (imageNames.length > 0) {
+      const xobjects = resourceMap(resources, 'XObject');
+      hasImage = imageNames.every((name) => {
+        const id = xobjects.get(name);
+        const xobject = id === undefined ? undefined : parsedObjects.objects.get(id);
+        return xobject !== undefined && xobject.stream !== null
+          && /\/Subtype\s*\/Image(?![A-Za-z0-9_])/.test(xobject.header);
+      });
+      if (!hasImage) return [{ state: 'indeterminate', text: '' }];
     }
-    pages.push({ state: text.trim().length > 0 ? 'text' : 'scan', text });
-    cursor = end + endToken.length;
+
+    if (transparent || (hasImage && text.trim().length > 0)) {
+      pages.push({ state: 'ocr', text });
+    } else if (text.trim().length > 0) {
+      pages.push({ state: 'text', text });
+    } else {
+      pages.push({ state: 'scan', text: '' });
+    }
   }
-  const indeterminate = pages.filter((page) => page.state === 'indeterminate');
-  if (indeterminate.length > 0) return indeterminate;
-  const text = pages.filter((page) => page.state === 'text');
-  if (text.length > 0) return text;
-  const scans = pages.filter((page) => page.state === 'scan');
-  return scans.length > 0 ? scans : [{ state: 'scan', text: '' }];
+  return pages;
 }
 
 /** Compatibility helper for callers that only need the supported text. */
@@ -517,16 +745,16 @@ export function normalizeMessageId(value: string | null | undefined): string | n
 /**
  * Normalized, token-boundary comparison shared by subject matching and G7.
  * Case is normalized. Code constituents are ASCII letters, digits and hyphens;
- * therefore FSO-1 never satisfies FSO-10, FSO-1_2 or FSO-1.5.
+ * therefore FSO-1 never satisfies FSO-10, FSO-1_2, FSO-1.5 or FSO-1。
  */
 export function hasNormalizedToken(text: string, token: string): boolean {
   const normalizedToken = token.trim().toUpperCase();
   if (normalizedToken.length === 0) return false;
   const haystack = text.toUpperCase();
-  // A dot/underscore can be an external separator but never extends a token;
-  // hyphen can be an internal code constituent. All three block a partial match.
+  // Dot, underscore and full-width period consistently block a partial match;
+  // hyphen can be an internal code constituent.
   const isCodeNeighbor = (character: string | undefined): boolean =>
-    character !== undefined && /[A-Za-z0-9_.-]/.test(character);
+    character !== undefined && /[A-Za-z0-9_.\u3002-]/.test(character);
   let index = haystack.indexOf(normalizedToken);
   while (index >= 0) {
     const before = index === 0 ? undefined : haystack[index - 1];
@@ -614,6 +842,8 @@ export type MakerPoAttachmentPendingCode =
   | 'SCAN_PDF_MANUAL_VERIFICATION_REQUIRED'
   // G5/P10: a stream using an unsupported filter must not be treated as a scan.
   | 'PDF_TEXT_LAYER_INDETERMINATE'
+  // OCR layers and transparent text can hide a different image below the words.
+  | 'PDF_OCR_TEXT_REQUIRES_HUMAN'
   // G7: the approved bytes match, but a readable text layer names another code.
   | 'EVIDENCE_CODE_MISMATCH';
 
@@ -703,6 +933,7 @@ const PENDING_MESSAGES: Record<MakerPoEmlPendingCode, string> = {
   attachment_link_only: '送信証跡に添付ファイルがなく、ダウンロードリンクのみが記載されているため、承認済み成果物との一致を確認できませんでした。ファイルを添付した原本のEMLを登録してください',
   SCAN_PDF_MANUAL_VERIFICATION_REQUIRED: 'スキャンPDFはハッシュが一致しても自動確認できません。人がPDF番号と件名を確認するまで承認待ちにします',
   PDF_TEXT_LAYER_INDETERMINATE: 'PDFテキスト層を安全に判定できないフィルターのため、自動確認を停止しました。人が原本を確認してください',
+  PDF_OCR_TEXT_REQUIRES_HUMAN: '画像の上に文字層または透明文字があるため、OCR層の可能性があります。人が原本PDFを確認してください',
   EVIDENCE_CODE_MISMATCH: 'コード不一致：件名の発注コードがPDFテキスト内の番号と一致しません。自動確認は禁止し、人が原本PDFとメール件名を確認する必要があります'
 };
 
@@ -869,6 +1100,7 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
       .flatMap((attachment) => inspectPdfTextLayers(attachment.bytes));
     const hasIndeterminateLayer = pdfPages.some((page) => page.state === 'indeterminate');
     const hasScanLayer = pdfPages.some((page) => page.state === 'scan');
+    const hasOcrLayer = pdfPages.some((page) => page.state === 'ocr');
     const textLayers = pdfPages.filter((page) => page.state === 'text');
     const requiredCodes = [...new Set([
       input.documentCode ?? input.subjectIdentifiers[0] ?? '',
@@ -886,6 +1118,10 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
       checks.push(check('code_consistency', 'failed', 'PDF text layer filter could not be decoded'));
       pendingCodes.push('PDF_TEXT_LAYER_INDETERMINATE');
     }
+    if (hasOcrLayer) {
+      checks.push(check('code_consistency', 'failed', 'transparent text or text over an image'));
+      pendingCodes.push('PDF_OCR_TEXT_REQUIRES_HUMAN');
+    }
     if (textLayers.length > 0 && mismatchedPages.length > 0) {
       checks.push(check(
         'code_consistency',
@@ -894,7 +1130,8 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
       ));
       pendingCodes.push('EVIDENCE_CODE_MISMATCH');
     }
-    if (pdfPages.length > 0 && !hasScanLayer && !hasIndeterminateLayer && textLayers.length > 0 && mismatchedPages.length === 0) {
+    if (pdfPages.length > 0 && !hasScanLayer && !hasIndeterminateLayer && !hasOcrLayer
+      && textLayers.length > 0 && mismatchedPages.length === 0) {
       checks.push(check('code_consistency', 'passed', requiredCodes.join(',')));
     }
     if (pdfPages.length === 0) {

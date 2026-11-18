@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { deflateRawSync } from 'node:zlib';
+import { deflateRawSync, deflateSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import {
   evaluateMakerPoEmlEvidence,
@@ -17,35 +17,122 @@ import {
 
 const ORDER_CODE = 'FSO-G7-0001';
 
+interface TestPdfObject {
+  id: number;
+  dict: string;
+  stream?: Buffer | undefined;
+}
+
+function buildPdf(objects: TestPdfObject[]): Buffer {
+  const chunks: Buffer[] = [Buffer.from('%PDF-1.4\n', 'latin1')];
+  for (const object of objects) {
+    chunks.push(Buffer.from(`${object.id} 0 obj ${object.dict}`, 'latin1'));
+    if (object.stream !== undefined) {
+      chunks.push(
+        Buffer.from(`\nstream\n`, 'latin1'),
+        object.stream,
+        Buffer.from(`\nendstream\n`, 'latin1')
+      );
+    }
+    chunks.push(Buffer.from('endobj\n', 'latin1'));
+  }
+  chunks.push(Buffer.from('%%EOF\n', 'latin1'));
+  return Buffer.concat(chunks);
+}
+
+function textPageObjects(input: {
+  contentsId: number;
+  contents: Buffer;
+  contentsDict?: string;
+  fontObjectId?: number;
+  firstPageId?: number;
+}): TestPdfObject[] {
+  const fontObjectId = input.fontObjectId ?? 100;
+  const firstPageId = input.firstPageId ?? 101;
+  return [
+    {
+      id: 1,
+      dict: '<< /Length 6 >>',
+      stream: Buffer.from([0x00, 0x01, 0xca, 0xfe, 0x00, 0x10])
+    },
+    {
+      id: 2,
+      dict: '<< /Length 58 >>',
+      stream: Buffer.from('/CIDSystemInfo << /Registry (Adobe) >>\nbeginbfchar\nendbfchar\n', 'latin1')
+    },
+    {
+      id: input.contentsId,
+      dict: input.contentsDict ?? `<< /Length ${input.contents.length} >>`,
+      stream: input.contents
+    },
+    {
+      id: fontObjectId,
+      dict: '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FontFile2 1 0 R /ToUnicode 2 0 R >>'
+    }
+  ];
+}
+
+function zlibTextPdf(text: string): Buffer {
+  const contents = Buffer.from(`BT /F1 12 Tf (${text}) Tj ET`, 'utf8');
+  const compressed = deflateSync(contents);
+  const objects = textPageObjects({
+    contentsId: 3,
+    contents: compressed,
+    contentsDict: `<< /Filter /FlateDecode /Length ${compressed.length} >>`
+  });
+  objects.push({
+    id: 101,
+    dict: '<< /Type /Page /Contents 3 0 R /Resources << /Font << /F1 100 0 R >> >> >>'
+  });
+  return buildPdf(objects);
+}
+
 function pdfWithText(text: string): Buffer {
-  const content = `BT (${text}) Tj ET`;
-  return Buffer.from(
-    [
-      '%PDF-1.4',
-      '1 0 obj << /Length ' + content.length + ' >>',
-      'stream',
-      content,
-      'endstream',
-      'endobj',
-      '%%EOF',
-      ''
-    ].join('\n'),
-    'utf8'
-  );
+  return zlibTextPdf(text);
+}
+
+function rawFlateFallbackPdf(text: string): Buffer {
+  const contents = Buffer.from(`BT /F1 12 Tf (${text}) Tj ET`, 'utf8');
+  const compressed = deflateRawSync(contents);
+  const objects = textPageObjects({
+    contentsId: 3,
+    contents: compressed,
+    contentsDict: `<< /Filter /FlateDecode /Length ${compressed.length} >>`
+  });
+  objects.push({
+    id: 101,
+    dict: '<< /Type /Page /Contents 3 0 R /Resources << /Font << /F1 100 0 R >> >> >>'
+  });
+  return buildPdf(objects);
 }
 
 function multiPagePdf(pages: string[]): Buffer {
-  const objects = pages.map((text, index) => {
-    const content = `BT (${text}) Tj ET`;
-    return [
-      `${index + 1} 0 obj << /Length ${content.length} >>`,
-      'stream',
-      content,
-      'endstream',
-      'endobj'
-    ].join('\n');
+  const objects: TestPdfObject[] = [
+    {
+      id: 1,
+      dict: '<< /Length 6 >>',
+      stream: Buffer.from([0x00, 0x01, 0xca, 0xfe, 0x00, 0x10])
+    },
+    {
+      id: 2,
+      dict: '<< /Length 58 >>',
+      stream: Buffer.from('/CIDSystemInfo << /Registry (Adobe) >>\nbeginbfchar\nendbfchar\n', 'latin1')
+    },
+    { id: 5, dict: '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /FontFile2 1 0 R /ToUnicode 2 0 R >>' }
+  ];
+  pages.forEach((text, index) => {
+    const contents = Buffer.from(`BT /F1 12 Tf (${text}) Tj ET`, 'utf8');
+    objects.push({
+      id: 10 + index,
+      dict: `<< /Length ${contents.length} >>`,
+      stream: contents
+    });
+    objects.push({
+      id: 20 + index,
+      dict: `<< /Type /Page /Contents ${10 + index} 0 R /Resources << /Font << /F1 5 0 R >> >> >>`
+    });
   });
-  return Buffer.from(['%PDF-1.4', ...objects, '%%EOF', ''].join('\n'), 'utf8');
+  return buildPdf(objects);
 }
 
 function mailWithPdf(pdf: Buffer, subject = `製造先発注書 ${ORDER_CODE}`): Buffer {
@@ -75,51 +162,41 @@ function mailWithPdf(pdf: Buffer, subject = `製造先発注書 ${ORDER_CODE}`):
 }
 
 function flatePdfWithFontAndCMap(): Buffer {
-  const content = `BT (${ORDER_CODE}) Tj ET`;
-  const compressedBody = deflateRawSync(Buffer.from(content, 'utf8'));
-  const font = Buffer.from([0x00, 0x01, 0xca, 0xfe, 0x00, 0x10]);
-  const cmap = Buffer.from('/CIDSystemInfo << /Registry (Adobe) >>\nbeginbfchar\nendbfchar\n', 'latin1');
-  return Buffer.concat([
-    Buffer.from('%PDF-1.4\n', 'latin1'),
-    Buffer.from([
-      '1 0 obj << /Length ' + font.length + ' >>',
-      'stream',
-      ''
-    ].join('\n'), 'latin1'),
-    font,
-    Buffer.from('\nendstream\nendobj\n', 'latin1'),
-    Buffer.from([
-      '2 0 obj << /Length ' + cmap.length + ' >>',
-      'stream',
-      ''
-    ].join('\n'), 'latin1'),
-    cmap,
-    Buffer.from('\nendstream\nendobj\n', 'latin1'),
-    Buffer.from([
-      '3 0 obj << /Filter /FlateDecode /Length ' + compressedBody.length + ' >>',
-      'stream',
-      ''
-    ].join('\n'), 'latin1'),
-    compressedBody,
-    Buffer.from('\nendstream\nendobj\n%%EOF\n', 'latin1')
-  ]);
+  return zlibTextPdf(`発注コード ${ORDER_CODE}`);
+}
+
+function scanPdf(input: {
+  hiddenText?: string;
+  transparentText?: boolean;
+  visibleText?: boolean;
+} = {}): Buffer {
+  const contentText = input.transparentText
+    ? `/Im0 Do BT 3 Tr (${ORDER_CODE}) Tj ET`
+    : input.visibleText
+      ? `/Im0 Do BT (${ORDER_CODE}) Tj ET`
+    : '/Im0 Do ET';
+  const contents = Buffer.from(`BT ${contentText} ET`, 'latin1');
+  const objects: TestPdfObject[] = [
+    {
+      id: 1,
+      dict: '<< /Subtype /Image /Filter /DCTDecode /Length 4 >>',
+      stream: Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+    },
+    { id: 2, dict: `<< /Length ${contents.length} >>`, stream: contents },
+    {
+      id: 101,
+      dict: '<< /Type /Page /Contents 2 0 R /Resources << /XObject << /Im0 1 0 R >> >> >>'
+    }
+  ];
+  if (input.hiddenText) {
+    const hidden = Buffer.from(`BT (${input.hiddenText}) Tj ET`, 'latin1');
+    objects.push({ id: 3, dict: `<< /Length ${hidden.length} >>`, stream: hidden });
+  }
+  return buildPdf(objects);
 }
 
 function imageOnlyScanPdf(): Buffer {
-  const content = 'BT /Im0 Do ET';
-  return Buffer.from(
-    [
-      '%PDF-1.4',
-      '1 0 obj << /Length ' + content.length + ' >>',
-      'stream',
-      content,
-      'endstream',
-      'endobj',
-      '%%EOF',
-      ''
-    ].join('\n'),
-    'utf8'
-  );
+  return scanPdf();
 }
 
 function evaluate(pdf: Buffer, subject?: string) {
@@ -179,6 +256,8 @@ describe('evidence identifier decisions G3/G6/G7', () => {
     expect(hasNormalizedToken('FSO-1.5', 'FSO-1')).toBe(false);
     expect(hasNormalizedToken('FSO-1-2', 'FSO-1')).toBe(false);
     expect(hasNormalizedToken('(FSO-1)', 'FSO-1')).toBe(true);
+    expect(hasNormalizedToken('FSO-1.', 'FSO-1')).toBe(false);
+    expect(hasNormalizedToken('FSO-1。', 'FSO-1')).toBe(false);
   });
 
   it('subject matching is normalized only at token boundaries', () => {
@@ -194,8 +273,18 @@ describe('evidence identifier decisions G3/G6/G7', () => {
     expect(parsed.eml.messageId).toBe(`<maker-po-${ORDER_CODE}@mail.kanei.example>`);
   });
 
-  it('G7 extracts an uncompressed PDF text layer for the cross-check', () => {
+  it('G7 extracts a zlib-wrapped PDF text layer for the cross-check', () => {
     expect(extractPdfText(pdfWithText(`発注コード ${ORDER_CODE}`))).toContain(ORDER_CODE);
+  });
+
+  it('G5 accepts standard zlib Flate content and keeps raw DEFLATE as fallback-only', () => {
+    const zlibPdf = zlibTextPdf(`発注コード ${ORDER_CODE}`);
+    expect(inspectPdfTextLayers(zlibPdf)).toMatchObject([{ state: 'text' }]);
+    expect(evaluate(zlibPdf)).toMatchObject({ verificationStatus: 'VERIFIED' });
+
+    const rawPdf = rawFlateFallbackPdf(`発注コード ${ORDER_CODE}`);
+    expect(inspectPdfTextLayers(rawPdf)).toMatchObject([{ state: 'text' }]);
+    expect(evaluate(rawPdf)).toMatchObject({ verificationStatus: 'VERIFIED' });
   });
 
   it('G5 ignores FontFile and ToUnicode auxiliary streams when a text page exists', () => {
@@ -216,6 +305,46 @@ describe('evidence identifier decisions G3/G6/G7', () => {
       verificationStatus: 'PENDING_MANUAL_VERIFICATION',
       pendingCode: 'SCAN_PDF_MANUAL_VERIFICATION_REQUIRED',
       pendingCodes: ['SCAN_PDF_MANUAL_VERIFICATION_REQUIRED']
+    });
+  });
+
+  it('P3c/P3f ignores an unreferenced hidden text stream beside an image scan', () => {
+    const pdf = scanPdf({ hiddenText: ORDER_CODE });
+    expect(inspectPdfTextLayers(pdf)).toMatchObject([{ state: 'scan', text: '' }]);
+    expect(evaluate(pdf)).toMatchObject({
+      verificationStatus: 'PENDING_MANUAL_VERIFICATION',
+      pendingCode: 'SCAN_PDF_MANUAL_VERIFICATION_REQUIRED',
+      pendingCodes: ['SCAN_PDF_MANUAL_VERIFICATION_REQUIRED']
+    });
+  });
+
+  it('P3f sends transparent image-page text to a human as an OCR layer', () => {
+    const pdf = scanPdf({ transparentText: true });
+    expect(inspectPdfTextLayers(pdf)).toMatchObject([{ state: 'ocr' }]);
+    expect(evaluate(pdf)).toMatchObject({
+      verificationStatus: 'PENDING_MANUAL_VERIFICATION',
+      pendingCode: 'PDF_OCR_TEXT_REQUIRES_HUMAN',
+      pendingCodes: ['PDF_OCR_TEXT_REQUIRES_HUMAN']
+    });
+  });
+
+  it('P3f sends visible text over an image to a human as an OCR layer', () => {
+    const pdf = scanPdf({ visibleText: true });
+    expect(inspectPdfTextLayers(pdf)).toMatchObject([{ state: 'ocr' }]);
+    expect(evaluate(pdf)).toMatchObject({
+      verificationStatus: 'PENDING_MANUAL_VERIFICATION',
+      pendingCode: 'PDF_OCR_TEXT_REQUIRES_HUMAN',
+      pendingCodes: ['PDF_OCR_TEXT_REQUIRES_HUMAN']
+    });
+  });
+
+  it('treats an unparsable page structure as indeterminate rather than authenticated', () => {
+    const pdf = buildPdf([{ id: 1, dict: '<< /Type /Page >>' }]);
+    expect(inspectPdfTextLayers(pdf)).toMatchObject([{ state: 'indeterminate', text: '' }]);
+    expect(evaluate(pdf)).toMatchObject({
+      verificationStatus: 'PENDING_MANUAL_VERIFICATION',
+      pendingCode: 'PDF_TEXT_LAYER_INDETERMINATE',
+      pendingCodes: ['PDF_TEXT_LAYER_INDETERMINATE']
     });
   });
 
@@ -254,6 +383,21 @@ describe('evidence identifier decisions G3/G6/G7', () => {
     });
   });
 
+  it('subject checking rejects ASCII and full-width terminal periods consistently', () => {
+    expect(hasNormalizedToken(`${ORDER_CODE}.`, ORDER_CODE)).toBe(false);
+    expect(hasNormalizedToken(`${ORDER_CODE}。`, ORDER_CODE)).toBe(false);
+    const result = evaluate(pdfWithText(ORDER_CODE), `${ORDER_CODE}。発注`);
+    expect(result).toMatchObject({
+      verificationStatus: 'PENDING_MANUAL_VERIFICATION',
+      pendingCode: 'EML_SUBJECT_IDENTIFIER_MISSING'
+    });
+    const checks = 'checks' in result ? result.checks : [];
+    expect(checks.find((check) => check.key === 'subject_identifier')).toMatchObject({
+      status: 'failed',
+      detail: expect.stringContaining('。')
+    });
+  });
+
   it('G7 blocks a text PDF whose printed number disagrees and names the mismatch', () => {
     const result = evaluate(pdfWithText('printed number 987654'));
     expect(result).toMatchObject({
@@ -268,8 +412,7 @@ describe('evidence identifier decisions G3/G6/G7', () => {
   });
 
   it('G5 requires human verification for an image-only scan even when hashes match', () => {
-    const scanned = Buffer.from('%PDF-1.4\nsingle page JPEG with no text stream\n%%EOF\n', 'utf8');
-    const result = evaluate(scanned);
+    const result = evaluate(imageOnlyScanPdf());
     expect(result).toMatchObject({
       verificationStatus: 'PENDING_MANUAL_VERIFICATION',
       pendingCode: 'SCAN_PDF_MANUAL_VERIFICATION_REQUIRED',
@@ -282,21 +425,12 @@ describe('evidence identifier decisions G3/G6/G7', () => {
     });
   });
 
-  it('G5/P10 treats an ASCIIHex text stream as indeterminate, never as a scan', () => {
+  it('G5/P10 treats a referenced ASCIIHex Contents stream as indeterminate, never as a scan', () => {
     const hidden = '48 65 6c 6c 6f';
-    const pdf = Buffer.from(
-      [
-        '%PDF-1.4',
-        '1 0 obj << /Filter /ASCIIHexDecode /Length ' + hidden.length + ' >>',
-        'stream',
-        hidden,
-        'endstream',
-        'endobj',
-        '%%EOF',
-        ''
-      ].join('\n'),
-      'utf8'
-    );
+    const pdf = buildPdf([
+      { id: 1, dict: `<< /Filter /ASCIIHexDecode /Length ${hidden.length} >>`, stream: Buffer.from(hidden, 'latin1') },
+      { id: 2, dict: '<< /Type /Page /Contents 1 0 R >>' }
+    ]);
     expect(inspectPdfTextLayers(pdf)[0]).toMatchObject({ state: 'indeterminate' });
     const result = evaluate(pdf);
     expect(result).toMatchObject({
@@ -332,7 +466,7 @@ describe('evidence identifier decisions G3/G6/G7', () => {
   });
 
   it('exposes every pending code when subject and scan both fail', () => {
-    const scanned = Buffer.from('%PDF-1.4\nsingle page JPEG with no text stream\n%%EOF\n', 'utf8');
+    const scanned = imageOnlyScanPdf();
     const bytes = mailWithPdf(scanned);
     const scannedHash = createHash('sha256').update(scanned).digest('hex');
     const result = evaluateMakerPoEmlEvidence({
