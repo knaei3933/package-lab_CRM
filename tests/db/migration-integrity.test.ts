@@ -66,6 +66,24 @@ async function enumValues(connectionString: string): Promise<string[]> {
   }
 }
 
+async function pgEnumValues(connectionString: string, typeName: string): Promise<string[]> {
+  const client = new pg.Client({ connectionString });
+  try {
+    await client.connect();
+    const result = await client.query(
+      `select e.enumlabel as value
+         from pg_enum e
+         join pg_type t on t.oid = e.enumtypid
+        where t.typname = $1
+        order by e.enumsortorder`,
+      [typeName]
+    );
+    return result.rows.map((row) => row.value as string);
+  } finally {
+    await client.end();
+  }
+}
+
 async function migrationRows(connectionString: string): Promise<Array<{ id: number; hash: string; created_at: string }>> {
   const client = new pg.Client({ connectionString });
   try {
@@ -211,6 +229,41 @@ describe('drizzle migration ordering and 0021', () => {
       const values = await enumValues(url);
       expect(values).toContain('CANCELLED');
       expect(values.indexOf('CANCELLED')).toBe(values.length - 1);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('recovers by rerunning after 0015 committed but a later migration failed', async () => {
+    const name = await createScratchDatabase('kanei_crm_mvp_migration_partial');
+    await readFile(path.join(tempRoot, 'scratch-dbs.txt'), 'utf8')
+      .catch(() => '')
+      .then((old) => writeFile(path.join(tempRoot, 'scratch-dbs.txt'), `${old}${name}\n`));
+    const url = await scratchUrl(name);
+    const pool = new Pool({ connectionString: url });
+    const staged = path.join(tempRoot, 'partial-run');
+    try {
+      await cp(path.resolve(process.cwd(), 'packages/db/drizzle'), staged, { recursive: true });
+      const failingFile = path.join(staged, '0017_m8_oper2_evidence_manual_verification.sql');
+      const original = await readFile(failingFile, 'utf8');
+      await writeFile(failingFile, `${original}\nSELECT 1 / 0;\n`);
+
+      await expect(migrate(drizzle(pool), { migrationsFolder: staged }))
+        .rejects.toMatchObject({ cause: { code: '22012' } });
+      expect(await migrationRows(url)).toHaveLength(15);
+      expect(await pgEnumValues(url, 'maker_po_event_type')).toEqual(expect.arrayContaining([
+        'MAKER_PO_ACCEPT_RECORDED_PROVISIONAL',
+        'MAKER_PO_CANCELLED',
+      ]));
+      expect(await pgEnumValues(url, 'maker_purchase_order_status')).toContain('CANCELLED');
+      expect(await pgEnumValues(url, 'maker_po_event_verification_status')).toContain('PENDING_MANUAL_VERIFICATION');
+
+      // 0015 already committed its two-phase transaction. The idempotent column
+      // and guarded constraint let the same pending migration replay safely.
+      await writeFile(failingFile, original);
+      await migrate(drizzle(pool), { migrationsFolder: staged });
+      expect(await migrationRows(url)).toHaveLength(22);
+      expect(await enumValues(url)).toContain('CANCELLED');
     } finally {
       await pool.end();
     }

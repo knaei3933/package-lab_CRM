@@ -20,6 +20,17 @@ npm run db:seed
 npm test
 ```
 
+### Migration troubleshooting
+
+`drizzle-kit migrate` may exit without printing the driver's underlying
+PostgreSQL error. If migration fails, read PostgreSQL logs (or rerun the same
+`DATABASE_URL` with a small Node script that calls Drizzle's migrator and prints
+`error.cause`). Never create a new database from production data. `0015` is safe
+to replay after a later migration commits its vocabulary but fails afterwards:
+its column add is idempotent and its payment-terms constraint is added only when
+missing. Scratch-DB recovery coverage is in
+`tests/db/migration-integrity.test.ts`.
+
 Composite credentials (local development/test only):
 
 | User | Role | Password |

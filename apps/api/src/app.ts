@@ -65,6 +65,7 @@ import {
   type EvidenceVerificationView,
   type DocumentType,
   type FilmSupplyOrderState,
+  type FilmOrderStatus,
   type IssuerEntity,
   type MakerPoEvidenceDocument,
   type MakerPoSnapshot,
@@ -192,6 +193,12 @@ function normalizeRequiredReason(
   return { ok: true, text: stored };
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' && UUID_PATTERN.test(value);
+}
+
 function filmSupplyOrderStateForValue(value: unknown): NormalFilmSupplyOrderState | undefined {
   if (typeof value !== 'string') return undefined;
   const index = (FILM_SUPPLY_ORDER_STATES as readonly string[]).indexOf(value);
@@ -257,6 +264,55 @@ async function recordAuditEvent(writer: AuditEventWriter, input: AuditEventInput
  * one of two simultaneous transition requests is ever effective.
  */
 class MakerPoStateConflict extends Error {}
+
+/**
+ * Progressive maker-PO work re-reads the film order under the transaction's
+ * row lock before its mirror. If the order was frozen or moved concurrently,
+ * the whole paper transition rolls back rather than leaving a progressive paper
+ * ahead of a stale/closed order.
+ */
+async function mirrorMakerPoFilmOrderTransition(
+  tx: MakerPoTxExecutor,
+  input: {
+    projectId: string;
+    actorUserId: string;
+    filmSupplyOrderId: string;
+    expectedStatus: FilmOrderStatus;
+    nextStatus: FilmOrderStatus;
+    operation: string;
+    reason: string;
+    occurredAt: Date;
+  }
+): Promise<boolean> {
+  const [lockedOrder] = await tx.select().from(filmSupplyOrders)
+    .where(eq(filmSupplyOrders.id, input.filmSupplyOrderId)).limit(1).for('update');
+  if (!lockedOrder || lockedOrder.deletedAt || String(lockedOrder.status) !== String(input.expectedStatus)) {
+    throw new MakerPoStateConflict();
+  }
+  if (isFrozenFilmOrderStatus(lockedOrder.status)) throw new MakerPoStateConflict();
+  if (!transitionFilmSupplyOrder(lockedOrder.status, input.nextStatus).ok) return false;
+
+  const mirrored = await tx.update(filmSupplyOrders)
+    .set({ status: input.nextStatus, updatedAt: input.occurredAt })
+    .where(and(
+      eq(filmSupplyOrders.id, lockedOrder.id),
+      eq(filmSupplyOrders.status, lockedOrder.status)
+    ))
+    .returning({ id: filmSupplyOrders.id });
+  if (mirrored.length === 0) throw new MakerPoStateConflict();
+  await recordAuditEvent(tx, {
+    projectId: input.projectId,
+    actorUserId: input.actorUserId,
+    action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+    entityType: 'film_supply_order',
+    entityId: lockedOrder.id,
+    beforeState: { status: lockedOrder.status },
+    afterState: { status: input.nextStatus },
+    occurredAt: input.occurredAt,
+    requestMetadata: { operation: input.operation, reason: input.reason }
+  });
+  return true;
+}
 
 /**
  * M8-HARDEN FIX B2: the create lost the one-active-maker-PO unique index
@@ -1333,8 +1389,28 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           : undefined;
 
         let targetState: NormalFilmSupplyOrderState;
+        let paperRecoveryToReady = false;
         if (originState) {
           targetState = originState;
+          if (
+            originState === 'APPROVED_FOR_MANUAL_SEND'
+            || originState === 'MAKER_PO_SENT_MANUALLY'
+            || originState === 'MAKER_PO_ACCEPTED'
+          ) {
+            const [activePaper] = await tx.select({ id: makerPurchaseOrders.id })
+              .from(makerPurchaseOrders)
+              .where(and(
+                eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
+                ne(makerPurchaseOrders.status, 'CANCELLED'),
+                isNull(makerPurchaseOrders.deletedAt)
+              ))
+              .limit(1)
+              .for('update');
+            if (!activePaper) {
+              targetState = 'MAKER_PO_READY';
+              paperRecoveryToReady = true;
+            }
+          }
           if (requestedResume !== undefined && requestedResume !== targetState) {
             throw new HoldReleaseTargetInvalid();
           }
@@ -1387,6 +1463,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
             operation: 'film_order:release_hold',
             reason,
             holdEventId,
+            ...(paperRecoveryToReady ? {
+              originState,
+              intendedReverseRecovery: 'no_active_maker_po_after_cleanup'
+            } : {}),
             ...(originState ? {} : { legacyResumeStatus: targetState })
           }
         });
@@ -1428,11 +1508,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'film_order:resolve_cancellation_review', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
     if (String(order.status) === 'CANCELLED') {
       return context.json({ error: 'すでに取消終了しています', code: 'FILM_ORDER_CANCELLED' }, 409);
     }
-    const decision = canPerform(toActor(user), 'film_order:resolve_cancellation_review', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
     if (order.status !== 'CANCELLATION_REVIEW') {
       return context.json({
@@ -1493,6 +1574,31 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         if (!resolution.ok) {
           throw new CancellationReviewResolutionInvalid(resolution.code, resolution.message);
         }
+        let resumeTarget = resolution.target;
+        let paperRecoveryToReady = false;
+        if (
+          origin !== undefined
+          && resolution.target === origin
+          && (
+            origin === 'APPROVED_FOR_MANUAL_SEND'
+            || origin === 'MAKER_PO_SENT_MANUALLY'
+            || origin === 'MAKER_PO_ACCEPTED'
+          )
+        ) {
+          const [activePaper] = await tx.select({ id: makerPurchaseOrders.id })
+            .from(makerPurchaseOrders)
+            .where(and(
+              eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
+              ne(makerPurchaseOrders.status, 'CANCELLED'),
+              isNull(makerPurchaseOrders.deletedAt)
+            ))
+            .limit(1)
+            .for('update');
+          if (!activePaper) {
+            resumeTarget = 'MAKER_PO_READY';
+            paperRecoveryToReady = true;
+          }
+        }
 
         if (origin === undefined && resolution.target !== 'CANCELLED'
           && (resolution.target === 'APPROVED_FOR_MANUAL_SEND'
@@ -1511,7 +1617,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           }
         }
 
-        const updatedRows = resolution.target === 'CANCELLED'
+        const updatedRows = resumeTarget === 'CANCELLED'
           ? await tx.update(filmSupplyOrders)
             .set({
               status: sql`'CANCELLED'::film_supply_order_status`,
@@ -1524,14 +1630,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
             ))
             .returning({ id: filmSupplyOrders.id })
           : await tx.update(filmSupplyOrders)
-            .set({ status: resolution.target, holdReason: null, updatedAt: now })
+            .set({ status: resumeTarget, holdReason: null, updatedAt: now })
             .where(and(
               eq(filmSupplyOrders.id, orderId),
               eq(filmSupplyOrders.status, 'CANCELLATION_REVIEW')
             ))
             .returning({ id: filmSupplyOrders.id });
         if (updatedRows.length === 0) throw new CancellationReviewStateConflict();
-        resolvedStatus = String(resolution.target);
+        resolvedStatus = String(resumeTarget);
         reviewEventId = reviewEvent?.id ?? null;
         await recordAuditEvent(tx, {
           projectId: order.projectId,
@@ -1548,6 +1654,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
             outcome,
             reason: reasonCheck.text,
             reviewEventId,
+            ...(paperRecoveryToReady ? {
+              intendedReverseRecovery: 'no_active_maker_po_after_cleanup'
+            } : {}),
             ...(origin ? { origin } : { legacyResumeStatus: resolution.target })
           }
         });
@@ -3162,7 +3271,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       createdAt: now
     };
 
-    await db.transaction(async (tx) => {
+    try {
+      await db.transaction(async (tx) => {
       // Re-read under lock: a concurrent cancellation/review transition must
       // win over the stale preflight status used above.
       const [lockedOrder] = await tx.select().from(filmSupplyOrders)
@@ -3200,7 +3310,13 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           requestMetadata: { operation: 'artwork_revision:create', reason: 'new_revision_invalidates_approvals', designKey }
         });
       }
-    });
+      });
+    } catch (error) {
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: '発注状態がすでに変わっています', code: 'FILM_ORDER_STATE_CHANGED' }, 409);
+      }
+      throw error;
+    }
 
     return context.json({ ...revision, status: statusAfter, invalidatedApprovals }, 201);
   });
@@ -4055,9 +4171,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         eventType: makerPoEvents.eventType,
         verificationStatus: makerPoEvents.verificationStatus
       }).from(makerPoEvents).where(eq(makerPoEvents.makerPurchaseOrderId, paper.id));
+      const [confirmedManualSend] = await db.select({ id: makerPoSendManualVerifications.id })
+        .from(makerPoSendManualVerifications)
+        .where(and(
+          eq(makerPoSendManualVerifications.makerPurchaseOrderId, paper.id),
+          eq(makerPoSendManualVerifications.result, 'confirmed')
+        ))
+        .limit(1);
       return {
         id: paper.id,
-        verifiedSend: events.some((event) =>
+        verifiedSend: confirmedManualSend !== undefined || events.some((event) =>
           event.eventType === 'SEND_EVIDENCE_REGISTERED' && event.verificationStatus === 'VERIFIED'),
         acknowledged: events.some((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED')
       };
@@ -4329,24 +4452,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
         // The film supply order chain mirrors the maker PO when the transition
         // is legal there; exception states (change review, hold) are left alone.
-        const [currentOrder] = await tx.select().from(filmSupplyOrders)
-          .where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
-        if (currentOrder && transitionFilmSupplyOrder(currentOrder.status, 'APPROVED_FOR_MANUAL_SEND').ok) {
-          await tx.update(filmSupplyOrders).set({ status: 'APPROVED_FOR_MANUAL_SEND', updatedAt: now })
-            .where(eq(filmSupplyOrders.id, currentOrder.id));
-          await recordAuditEvent(tx, {
-            projectId: order.projectId,
-            id: uuidv7(now),
-            actorUserId: user.id,
-            action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
-            entityType: 'film_supply_order',
-            entityId: currentOrder.id,
-            beforeState: { status: currentOrder.status },
-            afterState: { status: 'APPROVED_FOR_MANUAL_SEND' },
-            occurredAt: now,
-            requestMetadata: { operation: 'maker_po:ceo_approve', reason: 'maker_po_approved' }
-          });
-        }
+        await mirrorMakerPoFilmOrderTransition(tx, {
+          projectId: order.projectId,
+          actorUserId: user.id,
+          filmSupplyOrderId: po.filmSupplyOrderId,
+          expectedStatus: order.status,
+          nextStatus: 'APPROVED_FOR_MANUAL_SEND',
+          operation: 'maker_po:ceo_approve',
+          reason: 'maker_po_approved',
+          occurredAt: now
+        });
 
         return {
           purchaseOrder: buildMakerPoViewForRole(user.role, {
@@ -4722,24 +4837,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         });
 
         if (targetStatus === 'MAKER_PO_SENT_MANUALLY') {
-          const [currentOrder] = await tx.select().from(filmSupplyOrders)
-            .where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
-          if (currentOrder && transitionFilmSupplyOrder(currentOrder.status, 'MAKER_PO_SENT_MANUALLY').ok) {
-            await tx.update(filmSupplyOrders).set({ status: 'MAKER_PO_SENT_MANUALLY', updatedAt: now })
-              .where(eq(filmSupplyOrders.id, currentOrder.id));
-            await recordAuditEvent(tx, {
-              projectId: order.projectId,
-              id: uuidv7(now),
-              actorUserId: user.id,
-              action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
-              entityType: 'film_supply_order',
-              entityId: currentOrder.id,
-              beforeState: { status: currentOrder.status },
-              afterState: { status: 'MAKER_PO_SENT_MANUALLY' },
-              occurredAt: now,
-              requestMetadata: { operation: 'maker_po:send_evidence', reason: 'maker_po_sent' }
-            });
-          }
+          await mirrorMakerPoFilmOrderTransition(tx, {
+            projectId: order.projectId,
+            actorUserId: user.id,
+            filmSupplyOrderId: po.filmSupplyOrderId,
+            expectedStatus: order.status,
+            nextStatus: 'MAKER_PO_SENT_MANUALLY',
+            operation: 'maker_po:send_evidence',
+            reason: 'maker_po_sent',
+            occurredAt: now
+          });
         }
 
         return {
@@ -4987,27 +5094,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
               requestMetadata: { operation: 'maker_po:verify_send', makerPurchaseOrderId: po.id }
             });
 
-            const [currentOrder] = await tx.select().from(filmSupplyOrders)
-              .where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
-            if (currentOrder && transitionFilmSupplyOrder(currentOrder.status, 'MAKER_PO_SENT_MANUALLY').ok) {
-              await tx.update(filmSupplyOrders).set({ status: 'MAKER_PO_SENT_MANUALLY', updatedAt: now })
-                .where(eq(filmSupplyOrders.id, currentOrder.id));
-              await recordAuditEvent(tx, {
-                projectId: order.projectId,
-                id: uuidv7(now),
-                actorUserId: user.id,
-                action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
-                entityType: 'film_supply_order',
-                entityId: currentOrder.id,
-                beforeState: { status: currentOrder.status },
-                afterState: { status: 'MAKER_PO_SENT_MANUALLY' },
-                occurredAt: now,
-                requestMetadata: {
-                  operation: 'maker_po:verify_send',
-                  reason: 'send_manual_verification_confirmed'
-                }
-              });
-            }
+            await mirrorMakerPoFilmOrderTransition(tx, {
+              projectId: order.projectId,
+              actorUserId: user.id,
+              filmSupplyOrderId: po.filmSupplyOrderId,
+              expectedStatus: order.status,
+              nextStatus: 'MAKER_PO_SENT_MANUALLY',
+              operation: 'maker_po:verify_send',
+              reason: 'send_manual_verification_confirmed',
+              occurredAt: now
+            });
           }
         }
       }
@@ -5049,12 +5145,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!decision.allowed) return context.json({ error: '代表者のみ取り消せます' }, 403);
 
     const body = await context.req.json().catch(() => null) as any;
-    if (typeof body?.note !== 'string' || body.note.trim().length === 0) {
+    const noteCheck = normalizeRequiredReason(body?.note);
+    if (!noteCheck.ok) {
       return context.json({
-        error: '取消理由（note）は必須です。訂正・再発注の理由を記録してください',
-        code: 'MAKER_PO_CANCEL_REASON_REQUIRED'
+        error: noteCheck.tooLong
+          ? `取消理由（note）は${REASON_MAX_LENGTH}文字以下の可視文字で入力してください`
+          : '取消理由（note）は必須です。訂正・再発注の理由を記録してください',
+        code: noteCheck.tooLong ? 'MAKER_PO_CANCEL_REASON_TOO_LONG' : 'MAKER_PO_CANCEL_REASON_REQUIRED'
       }, 422);
     }
+    const cancelNote = noteCheck.text;
 
     const poStatus = validateMakerPoStatus(existing.status);
     if (!poStatus.ok) return context.json({ error: poStatus.message, code: poStatus.code }, 422);
@@ -5084,7 +5184,15 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
             eq(makerPoEvents.verificationStatus, 'VERIFIED')
           ))
           .limit(1);
-        const cancellation = classifyMakerPoCancellation({ verifiedSend: verifiedSend !== undefined });
+        const [confirmedManualSend] = await tx.select({ id: makerPoSendManualVerifications.id })
+          .from(makerPoSendManualVerifications)
+          .where(and(
+            eq(makerPoSendManualVerifications.makerPurchaseOrderId, poId),
+            eq(makerPoSendManualVerifications.result, 'confirmed')
+          ))
+          .limit(1);
+        const provenSend = verifiedSend !== undefined || confirmedManualSend !== undefined;
+        const cancellation = classifyMakerPoCancellation({ verifiedSend: provenSend });
 
         const updated = await tx.update(makerPurchaseOrders)
           .set({ status: 'CANCELLED' as const, updatedAt: now })
@@ -5112,7 +5220,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           beforeState: { status: poStatus.value },
           afterState: {
             status: 'CANCELLED',
-            note: body.note.trim(),
+            note: cancelNote,
             // FIX 2: which cancellation this was, and what it takes to replace
             // the paper. An internal cancel frees the order immediately; a
             // cancelled paper whose send was proven stays closed until the
@@ -5140,38 +5248,55 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           requestMetadata: { operation: 'maker_po:cancel' }
         });
 
-        // FIX B2 (c): freeing the slot re-opens the ordering step. The retired
-        // paper is what moved the order along the maker chain, so the order goes
-        // back to MAKER_PO_READY and a new maker PO can freeze for it. An order
-        // parked in an exception state (change review, hold) is left alone — its
-        // own flow decides where it resumes. FIX 2: when the cancelled paper had
-        // a proven send, the ordering step only really re-opens once the
-        // acknowledgement below is recorded — the create gate holds the line
-        // until then.
-        // Cleanup may run while an order is frozen, but the mirror itself only
-        // follows a legal forward transition on an unfrozen order. A closed or
-        // interrupted order remains exactly where its representative left it.
-        if (lockedOrder.status !== 'MAKER_PO_READY'
+        // FIX B2 (c): a live order is explicitly allowed to reverse from the
+        // maker-chain step back to the ordering step after its paper is retired.
+        // This intended backward recovery applies only when no other live paper
+        // remains. A proven/confirmed send stays gated until acknowledgement,
+        // while frozen and closed orders remain under their own recovery flows.
+        const makerChainReopenStates = [
+          'APPROVED_FOR_MANUAL_SEND',
+          'MAKER_PO_SENT_MANUALLY',
+          'MAKER_PO_ACCEPTED'
+        ] as const;
+        const [remainingLivePaper] = await tx.select({ id: makerPurchaseOrders.id })
+          .from(makerPurchaseOrders)
+          .where(and(
+            eq(makerPurchaseOrders.filmSupplyOrderId, lockedOrder.id),
+            ne(makerPurchaseOrders.id, poId),
+            ne(makerPurchaseOrders.status, 'CANCELLED'),
+            isNull(makerPurchaseOrders.deletedAt)
+          ))
+          .limit(1)
+          .for('update');
+        if (!cancellation.acknowledgementRequired
           && !isFrozenFilmOrderStatus(lockedOrder.status)
-          && transitionFilmSupplyOrder(lockedOrder.status, 'MAKER_PO_READY').ok) {
-          await tx.update(filmSupplyOrders)
+          && !remainingLivePaper
+          && (makerChainReopenStates as readonly string[]).includes(String(lockedOrder.status))) {
+          const reopened = await tx.update(filmSupplyOrders)
             .set({ status: 'MAKER_PO_READY', updatedAt: now })
-            .where(eq(filmSupplyOrders.id, lockedOrder.id));
-          await recordAuditEvent(tx, {
-            projectId: order.projectId,
-            id: uuidv7(now),
-            actorUserId: user.id,
-            action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
-            entityType: 'film_supply_order',
-            entityId: lockedOrder.id,
-            beforeState: { status: lockedOrder.status },
-            afterState: { status: 'MAKER_PO_READY' },
-            occurredAt: now,
-            requestMetadata: {
-              operation: 'maker_po:cancel',
-              reason: 'maker_po_cancelled_reopens_the_ordering_step'
-            }
-          });
+            .where(and(
+              eq(filmSupplyOrders.id, lockedOrder.id),
+              eq(filmSupplyOrders.status, lockedOrder.status)
+            ))
+            .returning({ id: filmSupplyOrders.id });
+          if (reopened.length > 0) {
+            await recordAuditEvent(tx, {
+              projectId: order.projectId,
+              id: uuidv7(now),
+              actorUserId: user.id,
+              action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+              entityType: 'film_supply_order',
+              entityId: lockedOrder.id,
+              beforeState: { status: lockedOrder.status },
+              afterState: { status: 'MAKER_PO_READY' },
+              occurredAt: now,
+              requestMetadata: {
+                operation: 'maker_po:cancel',
+                reason: 'maker_po_cancelled_reopens_the_ordering_step',
+                intendedReverseRecovery: true
+              }
+            });
+          }
         }
 
         return {
@@ -5230,20 +5355,35 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     // production step is the representative's decision, never staff work.
     const decision = canPerform(toActor(user), 'maker_po:cancel', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '代表者のみ承認を記録できます' }, 403);
+    const ackProjectId = order.projectId;
+    const ackFilmOrderId = order.id;
+    const ackActorUserId = user.id;
 
     const body = await context.req.json().catch(() => null) as any;
-    if (typeof body?.note !== 'string' || body.note.trim().length === 0) {
+    const noteCheck = normalizeRequiredReason(body?.note);
+    if (!noteCheck.ok) {
       return context.json({
-        error: '承認理由（note）は必須です。取り消しを確認した根拠を記録してください',
-        code: 'MAKER_CANCELLATION_ACK_REASON_REQUIRED'
+        error: noteCheck.tooLong
+          ? `承認理由（note）は${REASON_MAX_LENGTH}文字以下の可視文字で入力してください`
+          : '承認理由（note）は必須です。取り消しを確認した根拠を記録してください',
+        code: noteCheck.tooLong
+          ? 'MAKER_CANCELLATION_ACK_REASON_TOO_LONG'
+          : 'MAKER_CANCELLATION_ACK_REASON_REQUIRED'
       }, 422);
     }
+    const acknowledgementNote = noteCheck.text;
     const acknowledgedAt = parseOptionalDate(body?.acknowledgedAt);
     if (!acknowledgedAt.ok) return context.json({ error: '承認日時が不正です', code: 'INVALID_DATE' }, 422);
     const requestedEvidenceId = typeof body?.evidenceDocumentVersionId === 'string'
       && body.evidenceDocumentVersionId.length > 0
       ? body.evidenceDocumentVersionId as string
       : null;
+    if (requestedEvidenceId !== null && !isUuid(requestedEvidenceId)) {
+      return context.json({
+        error: '引用された承認証跡のドキュメントバージョンIDが不正です',
+        code: 'MAKER_CANCELLATION_ACK_EVIDENCE_INVALID'
+      }, 422);
+    }
     // An accept-evidence style record: the acknowledgement may cite the
     // document that proves the maker accepted the cancellation, and the cited
     // version must exist when it is named.
@@ -5254,6 +5394,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         return context.json({
           error: '引用された承認証跡のドキュメントバージョンが見つかりません',
           code: 'MAKER_CANCELLATION_ACK_EVIDENCE_NOT_FOUND'
+        }, 422);
+      }
+      if (evidenceDocument.projectId !== order.projectId
+        || evidenceDocument.filmSupplyOrderId !== order.id
+        || evidenceDocument.makerPurchaseOrderId !== poId) {
+        return context.json({
+          error: '承認証跡は同じプロジェクト・発注・メーカー発注書に紐づく必要があります',
+          code: 'MAKER_CANCELLATION_ACK_EVIDENCE_MISMATCH'
         }, 422);
       }
     }
@@ -5286,7 +5434,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         }).from(makerPoEvents).where(eq(makerPoEvents.makerPurchaseOrderId, poId));
         const hasVerifiedSend = events.some((event) =>
           event.eventType === 'SEND_EVIDENCE_REGISTERED' && event.verificationStatus === 'VERIFIED');
-        if (!hasVerifiedSend) {
+        const [confirmedManualSend] = await tx.select({ id: makerPoSendManualVerifications.id })
+          .from(makerPoSendManualVerifications)
+          .where(and(
+            eq(makerPoSendManualVerifications.makerPurchaseOrderId, poId),
+            eq(makerPoSendManualVerifications.result, 'confirmed')
+          ))
+          .limit(1);
+        if (!hasVerifiedSend && confirmedManualSend === undefined) {
           return {
             kind: 'not_cancelled' as const,
             status: po.status,
@@ -5309,7 +5464,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           eventType: 'MAKER_CANCELLATION_ACKNOWLEDGED' as const,
           evidenceDocumentVersionId: evidenceDocument?.versionId ?? null,
           verificationStatus: 'UNVERIFIED' as const,
-          verificationNote: body.note.trim(),
+          verificationNote: acknowledgementNote,
           recordedByUserId: user.id,
           recordedAt: now
         };
@@ -5325,7 +5480,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           beforeState: { status: 'CANCELLED' },
           afterState: {
             status: 'CANCELLED',
-            note: body.note.trim(),
+            note: acknowledgementNote,
             acknowledgedAt: acknowledgedAt.date,
             // FIX 2: this is the record that re-opens the ordering step.
             replacementAllowed: true,
@@ -5336,6 +5491,58 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           requestMetadata: { operation: 'maker_po:cancellation_acknowledgement', makerPurchaseOrderId: poId }
         });
 
+        // Reopening is part of the same acknowledged transaction. A rejected
+        // acknowledgement therefore leaves neither order status nor recovery
+        // audit behind. The representative-owned frozen/closed states are never
+        // mirrored, and another live paper blocks reopening the ordering step.
+        const recoveryOrder = lockedOrder!;
+        if (!recoveryOrder) throw new MakerPoStateConflict();
+        if (!isFrozenFilmOrderStatus(recoveryOrder.status)) {
+          const canReopenMakerStep = (
+            recoveryOrder.status === 'APPROVED_FOR_MANUAL_SEND' ||
+            recoveryOrder.status === 'MAKER_PO_SENT_MANUALLY' ||
+            recoveryOrder.status === 'MAKER_PO_ACCEPTED'
+          );
+          if (canReopenMakerStep && recoveryOrder.status !== 'MAKER_PO_READY') {
+            const [remainingLivePaper] = await tx.select({ id: makerPurchaseOrders.id })
+              .from(makerPurchaseOrders)
+              .where(and(
+                eq(makerPurchaseOrders.filmSupplyOrderId, recoveryOrder.id),
+                ne(makerPurchaseOrders.id, poId),
+                ne(makerPurchaseOrders.status, 'CANCELLED'),
+                isNull(makerPurchaseOrders.deletedAt)
+              ))
+              .limit(1)
+              .for('update');
+            if (!remainingLivePaper) {
+              const reopened = await tx.update(filmSupplyOrders)
+                .set({ status: 'MAKER_PO_READY', updatedAt: now })
+                .where(and(
+                  eq(filmSupplyOrders.id, recoveryOrder.id),
+                  eq(filmSupplyOrders.status, recoveryOrder.status)
+                ))
+                .returning({ id: filmSupplyOrders.id });
+              if (reopened.length > 0) {
+                await recordAuditEvent(tx, {
+                  projectId: ackProjectId,
+                  id: uuidv7(now),
+                  actorUserId: ackActorUserId,
+                  action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+                  entityType: 'film_supply_order',
+                  entityId: recoveryOrder.id,
+                  beforeState: { status: recoveryOrder.status },
+                  afterState: { status: 'MAKER_PO_READY' },
+                  occurredAt: now,
+                  requestMetadata: {
+                    operation: 'maker_po:cancellation_acknowledgement',
+                    reason: 'maker_cancellation_acknowledged_reopens_the_ordering_step',
+                    intendedReverseRecovery: true
+                  }
+                });
+              }
+            }
+          }
+        }
         return {
           kind: 'recorded' as const,
           event: ackEvent,
@@ -5352,48 +5559,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
             updatedAt: now
           })
         };
+
       });
-      if (isExceptionFilmSupplyOrderState(order.status as any) || String(order.status) === 'CANCELLED') {
-        // CR/CANCELLED cleanup only: never mirror this acknowledgement back to
-        // the order, because its representative decision owns that state.
-      } else {
-        const [currentOrder] = await db.select().from(filmSupplyOrders)
-          .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1).for('update');
-        // A cancelled PO is the paper that advanced the ordering step. Once its
-        // proven send is acknowledged, reopening that same ordering step is the
-        // deliberate recovery path (not a forbidden forward transition), so it
-        // applies directly from any live maker-chain state.
-        const canReopenMakerStep = currentOrder && (
-          currentOrder.status === 'APPROVED_FOR_MANUAL_SEND' ||
-          currentOrder.status === 'MAKER_PO_SENT_MANUALLY' ||
-          currentOrder.status === 'MAKER_PO_ACCEPTED'
-        );
-        if (currentOrder && currentOrder.status !== 'MAKER_PO_READY'
-          && !isFrozenFilmOrderStatus(currentOrder.status)
-          && canReopenMakerStep) {
-          const reopened = await db.update(filmSupplyOrders)
-            .set({ status: 'MAKER_PO_READY', updatedAt: now })
-            .where(and(eq(filmSupplyOrders.id, currentOrder.id), eq(filmSupplyOrders.status, currentOrder.status)))
-            .returning({ id: filmSupplyOrders.id });
-          if (reopened.length > 0) {
-            await recordAuditEvent(db, {
-              projectId: order.projectId,
-              id: uuidv7(now),
-              actorUserId: user.id,
-              action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
-              entityType: 'film_supply_order',
-              entityId: currentOrder.id,
-              beforeState: { status: currentOrder.status },
-              afterState: { status: 'MAKER_PO_READY' },
-              occurredAt: now,
-              requestMetadata: {
-                operation: 'maker_po:cancellation_acknowledgement',
-                reason: 'maker_cancellation_acknowledged_reopens_the_ordering_step'
-              }
-            });
-          }
-        }
-      }
 
       if (outcome.kind === 'not_cancelled' || outcome.kind === 'already') {
         return context.json({ error: outcome.message, code: outcome.code, status: outcome.status }, 422);
@@ -5570,24 +5737,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           requestMetadata: { operation: 'maker_po:accept_evidence' }
         });
 
-        const [currentOrder] = await tx.select().from(filmSupplyOrders)
-          .where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
-        if (currentOrder && transitionFilmSupplyOrder(currentOrder.status, 'MAKER_PO_ACCEPTED').ok) {
-          await tx.update(filmSupplyOrders).set({ status: 'MAKER_PO_ACCEPTED', updatedAt: now })
-            .where(eq(filmSupplyOrders.id, currentOrder.id));
-          await recordAuditEvent(tx, {
-            projectId: order.projectId,
-            id: uuidv7(now),
-            actorUserId: user.id,
-            action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
-            entityType: 'film_supply_order',
-            entityId: currentOrder.id,
-            beforeState: { status: currentOrder.status },
-            afterState: { status: 'MAKER_PO_ACCEPTED' },
-            occurredAt: now,
-            requestMetadata: { operation: 'maker_po:accept_evidence', reason: 'maker_po_accepted' }
-          });
-        }
+        await mirrorMakerPoFilmOrderTransition(tx, {
+          projectId: order.projectId,
+          actorUserId: user.id,
+          filmSupplyOrderId: po.filmSupplyOrderId,
+          expectedStatus: order.status,
+          nextStatus: 'MAKER_PO_ACCEPTED',
+          operation: 'maker_po:accept_evidence',
+          reason: 'maker_po_accepted',
+          occurredAt: now
+        });
 
         return {
           kind: 'applied' as const,

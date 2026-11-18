@@ -343,7 +343,7 @@ describe('hold release and production-chain guard', () => {
     expect(adminAttempt.body).toMatchObject({ code: 'INVALID_TRANSITION' });
   });
 
-  it('makes hold release admin-only, requires a reason, and returns exactly to the held origin', async () => {
+  it('makes hold release admin-only, requires a reason, and recovers a cleaned maker origin to READY', async () => {
     const staffRelease = await postAs(staffToken, `/api/film-supply-orders/${heldOrderId}/hold-release`, {
       reason: 'staff cannot release'
     });
@@ -361,7 +361,10 @@ describe('hold release and production-chain guard', () => {
       reason: 'root cause resolved'
     });
     expect(released.status).toBe(200);
-    expect(released.body).toMatchObject({ status: 'APPROVED_FOR_MANUAL_SEND', holdReason: null });
+    // The representative delegated this recovery rule: a hold whose origin was
+    // a maker-chain step must not resume there when its only paper was cleaned
+    // up during the hold; that would freeze replacement work at a dead step.
+    expect(released.body).toMatchObject({ status: 'MAKER_PO_READY', holdReason: null });
 
     const [event] = await db.select()
       .from(auditEvents)
@@ -370,8 +373,13 @@ describe('hold release and production-chain guard', () => {
       .limit(1);
     expect(event?.entityId).toBe(heldOrderId);
     expect(event?.beforeState).toMatchObject({ status: 'ON_HOLD', holdReason: 'test hold' });
-    expect(event?.afterState).toMatchObject({ status: 'APPROVED_FOR_MANUAL_SEND', holdReason: null });
-    expect(event?.requestMetadata).toMatchObject({ operation: 'film_order:release_hold', reason: 'root cause resolved' });
+    expect(event?.afterState).toMatchObject({ status: 'MAKER_PO_READY', holdReason: null });
+    expect(event?.requestMetadata).toMatchObject({
+      operation: 'film_order:release_hold',
+      reason: 'root cause resolved',
+      originState: 'APPROVED_FOR_MANUAL_SEND',
+      intendedReverseRecovery: 'no_active_maker_po_after_cleanup'
+    });
   });
 });
 
@@ -408,7 +416,7 @@ describe('cancellation review production guard', () => {
 });
 
 describe('maker-chain cancellation review recovery', () => {
-  it('lets admin resume only the maker-chain origin or close the order as cancelled', async () => {
+  it('lets admin resume a cleaned maker-chain origin to READY or close the order as cancelled', async () => {
     const now = new Date();
     const origin = 'MAKER_PO_SENT_MANUALLY';
     const orderId = uuidv7(now);
@@ -437,16 +445,17 @@ describe('maker-chain cancellation review recovery', () => {
       outcome: 'resume', reason: 'review resolved at the original maker step'
     });
     expect(resumed.status).toBe(200);
-    expect(resumed.body).toMatchObject({ status: origin });
+    expect(resumed.body).toMatchObject({ status: 'MAKER_PO_READY' });
     const [audit] = await db.select().from(auditEvents)
       .where(eq(auditEvents.action, 'FILM_SUPPLY_ORDER_CANCELLATION_REVIEW_RESOLVED'))
       .orderBy(sql`${auditEvents.occurredAt} desc`).limit(1);
     expect(audit?.beforeState).toMatchObject({ status: 'CANCELLATION_REVIEW' });
-    expect(audit?.afterState).toMatchObject({ status: origin });
+    expect(audit?.afterState).toMatchObject({ status: 'MAKER_PO_READY' });
     expect(audit?.requestMetadata).toMatchObject({
       operation: 'film_order:resolve_cancellation_review',
       outcome: 'resume',
       origin,
+      intendedReverseRecovery: 'no_active_maker_po_after_cleanup',
       reviewEventId: entry[0]?.id
     });
   });
@@ -911,7 +920,8 @@ describe('official-date write paths', () => {
       }
     ]);
 
-    // CANCELLATION_REVIEW: cleanup is allowed, but no mirror may move the order.
+    // The CANCELLED order owns its terminal status: cleanup is allowed, but no
+    // mirror may revive it.
     const cancelled = await postAs(adminToken, `/api/maker-purchase-orders/${paperId}/cancel`, {
       note: 'review decision: close the obsolete paper'
     });
@@ -930,7 +940,8 @@ describe('official-date write paths', () => {
       .then((result) => result.rows as Array<{ status: string }>);
     expect(paperOrder?.status).toBe('CANCELLED');
 
-    // CANCELLED: remaining paper cleanup is still possible, with no revival.
+    // CANCELLATION_REVIEW: remaining paper cleanup is still possible, with no
+    // representative-owned state change.
     const closedCleanup = await postAs(adminToken, `/api/maker-purchase-orders/${reviewPaperId}/cancel`, {
       note: 'close paper left behind by the cancelled order'
     });

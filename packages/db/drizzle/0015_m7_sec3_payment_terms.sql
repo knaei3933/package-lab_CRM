@@ -9,8 +9,20 @@
 -- The vocabulary is constrained at the database level so nothing outside the
 -- API can write a term the gate does not understand. NULL stays allowed: it is
 -- the pre-migration state of existing orders and reads as 'undetermined'.
-ALTER TABLE "film_supply_orders" ADD COLUMN "payment_terms" text DEFAULT 'undetermined';
-ALTER TABLE "film_supply_orders" ADD CONSTRAINT "film_supply_orders_payment_terms_vocabulary" CHECK ("payment_terms" is null or "payment_terms" in ('prepaid', 'on_delivery', 'undetermined'));
+ALTER TABLE "film_supply_orders" ADD COLUMN IF NOT EXISTS "payment_terms" text DEFAULT 'undetermined';
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'film_supply_orders_payment_terms_vocabulary'
+      AND conrelid = '"public"."film_supply_orders"'::regclass
+  ) THEN
+    ALTER TABLE "film_supply_orders"
+      ADD CONSTRAINT "film_supply_orders_payment_terms_vocabulary"
+      CHECK ("payment_terms" is null or "payment_terms" in ('prepaid', 'on_delivery', 'undetermined'));
+  END IF;
+END
+$$;
 --> statement-breakpoint
 
 -- Pre-commit enum vocabulary required by migrations 0016 and 0018. PostgreSQL
