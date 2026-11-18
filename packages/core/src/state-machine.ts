@@ -134,11 +134,22 @@ export type FilmSupplyOrderTransitionResult<TFrom extends FilmSupplyOrderState, 
   | { ok: true; from: TFrom; to: TTo }
   | { ok: false; from: FilmSupplyOrderState; to: FilmSupplyOrderState };
 
+/**
+ * `holdOrigin` is the normal status immediately before the order entered its
+ * current hold. Omitting it (unknown legacy data) or naming any other state
+ * rejects every release, so a held pre-acceptance order can never use the hold
+ * as a shortcut to FILM_IN_PRODUCTION. An order held while already in
+ * production resumes exactly that production state.
+ */
 export function transitionFilmSupplyOrder<TFrom extends FilmSupplyOrderState, TTo extends FilmSupplyOrderState>(
   from: TFrom,
-  to: TTo
+  to: TTo,
+  holdOrigin?: NormalFilmSupplyOrderState | null
 ): FilmSupplyOrderTransitionResult<TFrom, TTo> {
-  const allowed = FILM_SUPPLY_ORDER_TRANSITIONS[from].includes(to);
+  let allowed = FILM_SUPPLY_ORDER_TRANSITIONS[from].includes(to);
+  if (from === 'ON_HOLD') {
+    allowed = allowed && holdOrigin === to;
+  }
   return allowed ? { ok: true, from, to } : { ok: false, from, to };
 }
 

@@ -7,6 +7,7 @@ import {
   accounts,
   auditEvents,
   createDatabase,
+  filmSupplyOrders,
   projectAssignments,
   projects,
   sevenPurchaseOrders,
@@ -35,6 +36,7 @@ let staffToken = '';
 let viewerToken = '';
 let app: ReturnType<typeof createApp>;
 let poId = '';
+let heldOrderId = '';
 
 async function createSession(userId: string) {
   const now = new Date();
@@ -111,6 +113,35 @@ beforeAll(async () => {
   });
   expect(created.status).toBe(201);
   poId = (created.body as { id: string }).id;
+
+  // A synthetic hold event preserves the exact immediate-origin contract used
+  // by production transitions; this avoids building the full maker chain here.
+  const holdAt = new Date();
+  heldOrderId = uuidv7(holdAt);
+  await db.insert(filmSupplyOrders).values({
+    id: heldOrderId,
+    projectId,
+    code: 'FSO-APPROVED-HOLD',
+    status: 'ON_HOLD',
+    paymentTerms: 'prepaid',
+    holdReason: 'test hold',
+    createdByUserId: adminId,
+    createdAt: holdAt,
+    updatedAt: holdAt,
+    deletedAt: null
+  });
+  await db.insert(auditEvents).values({
+    id: uuidv7(holdAt),
+    projectId,
+    actorUserId: staffId,
+    action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+    entityType: 'film_supply_order',
+    entityId: heldOrderId,
+    beforeState: { status: 'APPROVED_FOR_MANUAL_SEND' },
+    afterState: { status: 'ON_HOLD' },
+    occurredAt: holdAt,
+    requestMetadata: { operation: 'film_order:transition' }
+  });
 });
 
 afterAll(async () => {
@@ -198,5 +229,52 @@ describe('staff approval evidence selection contract', () => {
     expect(staffView.requestMetadata).toEqual({ operation: 'document:create' });
 
     expect(buildAuditViewForRole('viewer', [row])[0]).not.toHaveProperty('afterState');
+  });
+});
+
+describe('hold release and production-chain guard', () => {
+  it('blocks a pre-acceptance hold from reaching production for every role', async () => {
+    const staffAttempt = await postAs(staffToken, `/api/film-supply-orders/${heldOrderId}/transitions`, {
+      to: 'FILM_IN_PRODUCTION'
+    });
+    expect(staffAttempt.status).toBe(422);
+    expect(staffAttempt.body).toMatchObject({ code: 'INVALID_TRANSITION' });
+
+    const adminAttempt = await postAs(adminToken, `/api/film-supply-orders/${heldOrderId}/transitions`, {
+      to: 'FILM_IN_PRODUCTION'
+    });
+    expect(adminAttempt.status).toBe(422);
+    expect(adminAttempt.body).toMatchObject({ code: 'INVALID_TRANSITION' });
+  });
+
+  it('makes hold release admin-only, requires a reason, and returns exactly to the held origin', async () => {
+    const staffRelease = await postAs(staffToken, `/api/film-supply-orders/${heldOrderId}/hold-release`, {
+      reason: 'staff cannot release'
+    });
+    expect(staffRelease.status).toBe(403);
+    const viewerRelease = await postAs(viewerToken, `/api/film-supply-orders/${heldOrderId}/hold-release`, {
+      reason: 'viewer cannot release'
+    });
+    expect(viewerRelease.status).toBe(403);
+
+    const missingReason = await postAs(adminToken, `/api/film-supply-orders/${heldOrderId}/hold-release`, {});
+    expect(missingReason.status).toBe(422);
+    expect(missingReason.body).toMatchObject({ code: 'HOLD_RELEASE_REASON_REQUIRED' });
+
+    const released = await postAs(adminToken, `/api/film-supply-orders/${heldOrderId}/hold-release`, {
+      reason: 'root cause resolved'
+    });
+    expect(released.status).toBe(200);
+    expect(released.body).toMatchObject({ status: 'APPROVED_FOR_MANUAL_SEND', holdReason: null });
+
+    const [event] = await db.select()
+      .from(auditEvents)
+      .where(eq(auditEvents.action, 'FILM_SUPPLY_ORDER_HOLD_RELEASED'))
+      .orderBy(sql`${auditEvents.occurredAt} desc`)
+      .limit(1);
+    expect(event?.entityId).toBe(heldOrderId);
+    expect(event?.beforeState).toMatchObject({ status: 'ON_HOLD', holdReason: 'test hold' });
+    expect(event?.afterState).toMatchObject({ status: 'APPROVED_FOR_MANUAL_SEND', holdReason: null });
+    expect(event?.requestMetadata).toMatchObject({ operation: 'film_order:release_hold', reason: 'root cause resolved' });
   });
 });

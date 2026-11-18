@@ -30,6 +30,7 @@ export type Operation =
   | 'film_order:update_payment_terms'
   | 'film_order_line:create'
   | 'film_order:transition'
+  | 'film_order:release_hold'
   | 'film_order:assume_receipt'
   | 'film_delivery:create'
   | 'delivery_confirmation:record'
@@ -106,6 +107,15 @@ export function canPerform(
   // exists, changing it rewrites the date every downstream gate reads, so only
   // the representative may call register-official again.
   if (operation === 'seven_po:register_overwrite') {
+    return actor.role === 'admin'
+      ? { allowed: true }
+      : { allowed: false, reason: 'ROLE_FORBIDDEN' };
+  }
+
+  // Releasing a hold rewrites the order's position in the delivery chain. The
+  // representative owns that recovery decision; staff and viewer are denied
+  // before project assignment can make the answer differ.
+  if (operation === 'film_order:release_hold') {
     return actor.role === 'admin'
       ? { allowed: true }
       : { allowed: false, reason: 'ROLE_FORBIDDEN' };

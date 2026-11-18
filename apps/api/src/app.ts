@@ -66,6 +66,7 @@ import {
   type MakerPoSnapshot,
   type MakerPoSnapshotArtworkFile,
   type MeasureUnit,
+  type NormalFilmSupplyOrderState,
   type UnitDomain,
   type EvidenceIdentifierStatus
 } from '@kanei/core';
@@ -136,6 +137,9 @@ interface OrderLineInput {
   orderedQuantity: string;
   unit: MeasureUnit;
 }
+
+/** Thrown when two release calls race; the loser answers without writing. */
+class HoldReleaseStateConflict extends Error {}
 
 type OrderLineValidation =
   | { ok: true; line: OrderLineInput }
@@ -1049,6 +1053,85 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         requestMetadata: { operation: 'film_order:transition' }
       });
     });
+    return context.json({ ...order, ...updated });
+  });
+
+  // Holds are a recovery side-channel, not a shortcut around the maker chain.
+  // The API keeps the origin from the append-only transition audit row and lets
+  // only the representative release the hold to that same normal state.
+  app.post('/api/film-supply-orders/:orderId/hold-release', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const orderId = context.req.param('orderId');
+
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const decision = canPerform(toActor(user), 'film_order:release_hold', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    if (order.status !== 'ON_HOLD') {
+      return context.json({ error: '保留中の発注ではありません', code: 'ORDER_NOT_ON_HOLD', from: order.status }, 422);
+    }
+
+    const body = await context.req.json().catch(() => null) as any;
+    if (typeof body?.reason !== 'string' || body.reason.trim().length === 0) {
+      return context.json({ error: '保留解除理由（reason）は必須です', code: 'HOLD_RELEASE_REASON_REQUIRED' }, 422);
+    }
+
+    const [holdEvent] = await db.select({
+      beforeState: auditEvents.beforeState,
+      afterState: auditEvents.afterState
+    }).from(auditEvents)
+      .where(and(
+        eq(auditEvents.entityType, 'film_supply_order'),
+        eq(auditEvents.entityId, orderId),
+        eq(auditEvents.action, 'FILM_SUPPLY_ORDER_TRANSITIONED'),
+        sql`${auditEvents.afterState} ->> 'status' = 'ON_HOLD'`
+      ))
+      .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+      .limit(1);
+    const holdOrigin = (holdEvent?.beforeState as { status?: unknown } | null)?.status;
+    const holdOriginState = typeof holdOrigin === 'string'
+      ? FILM_SUPPLY_ORDER_STATES[(FILM_SUPPLY_ORDER_STATES as readonly string[]).indexOf(holdOrigin)]
+      : undefined;
+    if (
+      holdOriginState === undefined
+      || (holdEvent?.afterState as { status?: unknown } | null)?.status !== 'ON_HOLD'
+      || !transitionFilmSupplyOrder(order.status, holdOriginState, holdOriginState).ok
+    ) {
+      return context.json({
+        error: '保留直前の状態を確認できないため解除できません',
+        code: 'HOLD_ORIGIN_UNKNOWN'
+      }, 422);
+    }
+
+    const now = new Date();
+    const updated = { status: holdOriginState, holdReason: null, updatedAt: now };
+    try {
+      await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(filmSupplyOrders)
+          .where(eq(filmSupplyOrders.id, orderId)).limit(1).for('update');
+        if (!current || current.status !== 'ON_HOLD') throw new HoldReleaseStateConflict();
+        await tx.update(filmSupplyOrders).set(updated).where(eq(filmSupplyOrders.id, orderId));
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'FILM_SUPPLY_ORDER_HOLD_RELEASED',
+          entityType: 'film_supply_order',
+          entityId: orderId,
+          beforeState: { status: current.status, holdReason: current.holdReason },
+          afterState: { status: updated.status, holdReason: null },
+          occurredAt: now,
+          requestMetadata: { operation: 'film_order:release_hold', reason: body.reason.trim() }
+        });
+      });
+    } catch (error) {
+      if (error instanceof HoldReleaseStateConflict) {
+        return context.json({ error: '保留状態がすでに変わりました', code: 'HOLD_RELEASE_STATE_CONFLICT' }, 422);
+      }
+      throw error;
+    }
     return context.json({ ...order, ...updated });
   });
 

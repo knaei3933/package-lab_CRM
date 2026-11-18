@@ -58,13 +58,19 @@ describe('M1 film supply order state machine', () => {
   });
 
   it('exception states resolve back into named normal states', () => {
-    expect(transitionFilmSupplyOrder('ON_HOLD', 'PROOF_READY').ok).toBe(true);
-    expect(transitionFilmSupplyOrder('ON_HOLD', 'FILM_IN_PRODUCTION').ok).toBe(true);
+    expect(transitionFilmSupplyOrder('ON_HOLD', 'PROOF_READY', 'PROOF_READY').ok).toBe(true);
+    expect(transitionFilmSupplyOrder('ON_HOLD', 'FILM_IN_PRODUCTION', 'FILM_IN_PRODUCTION').ok).toBe(true);
     expect(transitionFilmSupplyOrder('CANCELLATION_REVIEW', 'MAKER_PO_READY').ok).toBe(true);
     expect(transitionFilmSupplyOrder('CHANGE_REVIEW', 'ARTWORK_RECEIVED').ok).toBe(true);
     expect(transitionFilmSupplyOrder('CHANGE_REVIEW', 'PROOF_READY').ok).toBe(true);
     // CHANGE_REVIEW restarts the artwork/approval chain, not production.
     expect(transitionFilmSupplyOrder('CHANGE_REVIEW', 'FILM_SHIPPED').ok).toBe(false);
+  });
+
+  it('a hold releases only to its immediate prior state', () => {
+    expect(transitionFilmSupplyOrder('ON_HOLD', 'FILM_IN_PRODUCTION', 'APPROVED_FOR_MANUAL_SEND').ok).toBe(false);
+    expect(transitionFilmSupplyOrder('ON_HOLD', 'APPROVED_FOR_MANUAL_SEND', 'APPROVED_FOR_MANUAL_SEND').ok).toBe(true);
+    expect(transitionFilmSupplyOrder('ON_HOLD', 'PROOF_READY').ok).toBe(false);
   });
 });
 
