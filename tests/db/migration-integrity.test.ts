@@ -326,6 +326,14 @@ describe('drizzle migration ordering and 0021', () => {
       await constraintPool.end();
       expect(constraints.rows).toHaveLength(1);
       expect(constraints.rows[0]?.conname).toBe('payment_terms_equivalent_check');
+
+      // A DOMAIN over text is not the declared text contract, even when its
+      // default renders the same way.
+      await query('alter table film_supply_orders drop constraint payment_terms_equivalent_check');
+      await query('alter table film_supply_orders drop column payment_terms');
+      await query('create domain kanei_payment_terms_text as text');
+      await query(`alter table film_supply_orders add column payment_terms kanei_payment_terms_text default 'undetermined'`);
+      await expect(run0015()).rejects.toThrow(/DOMAIN columns are not accepted/);
     } finally {
       await pool.end();
     }

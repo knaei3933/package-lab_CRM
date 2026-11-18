@@ -199,6 +199,19 @@ function isUuid(value: unknown): value is string {
   return typeof value === 'string' && UUID_PATTERN.test(value);
 }
 
+function optionalUuidInput(value: unknown): { ok: true; value: string | null } | { ok: false } {
+  if (value === undefined || value === null) return { ok: true, value: null };
+  if (value === '') return { ok: true, value: null };
+  if (typeof value !== 'string' || value.length === 0 || !isUuid(value)) return { ok: false };
+  return { ok: true, value };
+}
+
+const ISO_DATE_WITH_OFFSET_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function isIsoDateWithOffset(value: unknown): value is string {
+  return typeof value === 'string' && ISO_DATE_WITH_OFFSET_PATTERN.test(value);
+}
+
 function postgresErrorCode(value: unknown): string | null {
   let current: unknown = value;
   for (let depth = 0; depth < 5 && current !== null && typeof current === 'object'; depth += 1) {
@@ -225,6 +238,9 @@ type OrderLineValidation =
 
 /** Database executor that can read: the pool or one open transaction. */
 type MakerPoQueryExecutor = Pick<AppDatabase, 'select'>;
+
+/** Database executor that can read and append audit/event rows. */
+type MakerPoReadWriteExecutor = MakerPoQueryExecutor & AuditEventWriter;
 
 /** Database executor that can write audit rows: the pool or one open transaction. */
 type AuditEventWriter = Pick<AppDatabase, 'insert'>;
@@ -451,6 +467,18 @@ async function loadExceptionOrigin(
 export function createApp({ db, secureCookies = false }: AppOptions) {
   const app = new Hono<AuthContext>();
 
+  // Any row-lock deadlock is a retryable concurrency conflict, not a server
+  // fault. PostgreSQL rolls the transaction back before this handler runs.
+  app.onError((error, context) => {
+    if (isPostgresDeadlockError(error)) {
+      return context.json({
+        error: '発注状態の処理でロック競合が発生しました',
+        code: 'FILM_ORDER_LOCK_CONFLICT'
+      }, 409);
+    }
+    throw error;
+  });
+
   app.get('/api/health', (context) => context.json({ status: 'ok', app: 'api', port: 3081 }));
 
   app.post('/api/auth/login', async (context) => {
@@ -606,6 +634,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const projectId = context.req.param('projectId');
+    if (!isUuid(projectId)) {
+      return context.json({
+        error: '経路パラメータ（projectId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
     const decision = canPerform(toActor(user), 'project:read', 'F1', projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
@@ -618,6 +652,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const projectId = context.req.param('projectId');
+    if (!isUuid(projectId)) {
+      return context.json({
+        error: '経路パラメータ（projectId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     if (Object.hasOwn(body ?? {}, 'route') || Object.hasOwn(body ?? {}, 'businessUnit')) {
@@ -666,6 +706,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const projectId = context.req.param('projectId');
+    if (!isUuid(projectId)) {
+      return context.json({
+        error: '経路パラメータ（projectId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
     const decision = canPerform(toActor(user), 'seven_po:create', 'F1', projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
@@ -724,6 +770,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const poId = context.req.param('poId');
+    if (!isUuid(poId)) {
+      return context.json({
+        error: '経路パラメータ（poId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [current] = await db.select().from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, poId)).limit(1);
     if (!current) return context.json({ error: 'セブン発注書が見つかりません' }, 404);
@@ -807,6 +859,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const projectId = context.req.param('projectId');
+    if (!isUuid(projectId)) {
+      return context.json({
+        error: '経路パラメータ（projectId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
     const decision = canPerform(toActor(user), 'pre_order:create', 'F1', projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
@@ -853,6 +911,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const preOrderId = context.req.param('preOrderId');
+    if (!isUuid(preOrderId)) {
+      return context.json({
+        error: '経路パラメータ（preOrderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [reference] = await db.select().from(preOrderReferences).where(eq(preOrderReferences.id, preOrderId)).limit(1);
     if (!reference) return context.json({ error: '先行発注参照が見つかりません' }, 404);
@@ -906,6 +970,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const projectId = context.req.param('projectId');
+    if (!isUuid(projectId)) {
+      return context.json({
+        error: '経路パラメータ（projectId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
     const decision = canPerform(toActor(user), 'film_order:create', 'F1', projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
@@ -997,6 +1067,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
@@ -1045,6 +1121,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
@@ -1089,6 +1171,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
@@ -1174,6 +1262,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
@@ -1296,8 +1390,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (target === 'ON_HOLD' && !holdReasonCheck.ok) {
       return context.json({
         error: holdReasonCheck.tooLong
-          ? `보류 사유는 ${REASON_MAX_LENGTH}자 이하로 입력해야 합니다`
-          : '보류 사유（holdReason）는 필수입니다',
+          ? `保留理由（holdReason）は${REASON_MAX_LENGTH}文字以下で入力してください`
+          : '保留理由（holdReason）は必須です',
         code: holdReasonCheck.tooLong ? 'HOLD_REASON_TOO_LONG' : 'HOLD_REASON_REQUIRED'
       }, 422);
     }
@@ -1780,6 +1874,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
@@ -2023,6 +2123,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const projectId = context.req.param('projectId');
+    if (!isUuid(projectId)) {
+      return context.json({
+        error: '経路パラメータ（projectId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
     // An unknown project is 404 before the assignment check: staff of this
     // company learn nothing about a project that does not exist.
     const [project] = await db.select({ id: projects.id, deletedAt: projects.deletedAt }).from(projects)
@@ -2091,6 +2197,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const projectId = context.req.param('projectId');
+    if (!isUuid(projectId)) {
+      return context.json({
+        error: '経路パラメータ（projectId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
     const decision = canPerform(toActor(user), 'filling_order:create', 'F1', projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
@@ -2154,6 +2266,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [order] = await db.select().from(fillingOrders).where(eq(fillingOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: '充填発注が見つかりません' }, 404);
@@ -2195,6 +2313,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [order] = await db.select().from(fillingOrders).where(eq(fillingOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: '充填発注が見つかりません' }, 404);
@@ -2282,6 +2406,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const projectId = context.req.param('projectId');
+    if (!isUuid(projectId)) {
+      return context.json({
+        error: '経路パラメータ（projectId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
     const decision = canPerform(toActor(user), 'commission_readiness:evaluate', 'F1', projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
@@ -2476,6 +2606,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const projectId = context.req.param('projectId');
+    if (!isUuid(projectId)) {
+      return context.json({
+        error: '経路パラメータ（projectId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
     const decision = canPerform(toActor(user), 'document:create', 'F1', projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
@@ -2724,6 +2860,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const documentId = context.req.param('documentId');
+    if (!isUuid(documentId)) {
+      return context.json({
+        error: '経路パラメータ（documentId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [current] = await db.select().from(documents).where(eq(documents.id, documentId)).limit(1);
     if (!current) return context.json({ error: '書類が見つかりません' }, 404);
@@ -2777,6 +2919,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const poId = context.req.param('poId');
+    if (!isUuid(poId)) {
+      return context.json({
+        error: '経路パラメータ（poId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [current] = await db.select().from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, poId)).limit(1);
     if (!current) return context.json({ error: 'セブン発注書が見つかりません' }, 404);
@@ -2943,6 +3091,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const poId = context.req.param('poId');
+    if (!isUuid(poId)) {
+      return context.json({
+        error: '経路パラメータ（poId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [po] = await db.select().from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, poId)).limit(1);
     if (!po) return context.json({ error: 'セブン発注書が見つかりません' }, 404);
@@ -3022,12 +3176,15 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
   // sections 5.7 and 6.1). Approvals are external facts recorded by an internal
   // user; the dual-approval gate is derived from the append-only event log and
   // is never stored on the order.
-  async function loadApprovalContext(orderId: string): Promise<{
+  async function loadApprovalContext(
+    orderId: string,
+    executor: MakerPoQueryExecutor = db
+  ): Promise<{
     revisions: ArtworkRevisionView[];
     events: ApprovalEventView[];
     verifications: EvidenceVerificationView[];
   }> {
-    const revisionRows = await db.select({
+    const revisionRows = await executor.select({
       id: artworkRevisions.id,
       filmSupplyOrderId: artworkRevisions.filmSupplyOrderId,
       designKey: artworkRevisions.designKey,
@@ -3041,7 +3198,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const revisionIds = revisionRows.map((row) => row.id);
     const eventRows = revisionIds.length === 0
       ? [] as ApprovalEventView[]
-      : await db.select({
+      : await executor.select({
         id: artworkApprovalEvents.id,
         artworkRevisionId: artworkApprovalEvents.artworkRevisionId,
         organization: artworkApprovalEvents.organization,
@@ -3063,7 +3220,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     // per approval event wins inside the gate derivation.
     const verificationRows = revisionIds.length === 0
       ? [] as EvidenceVerificationView[]
-      : await db.select({
+      : await executor.select({
         id: evidenceManualVerifications.id,
         approvalEventId: evidenceManualVerifications.approvalEventId,
         artworkRevisionId: evidenceManualVerifications.artworkRevisionId,
@@ -3134,8 +3291,11 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
   const DUAL_APPROVAL_NO_LONGER_VALID_MESSAGE =
     '二重承認が無効になっているため、この操作は実行できません。取り消された組織の承認を再取得してから実行してください';
 
-  async function dualApprovalRecheck(input: MakerPoRecheckInput): Promise<MakerPoRecheckRefusal | null> {
-    const approvalContext = await loadApprovalContext(input.order.id);
+  async function dualApprovalRecheck(
+    input: MakerPoRecheckInput,
+    executor: MakerPoReadWriteExecutor = db
+  ): Promise<MakerPoRecheckRefusal | null> {
+    const approvalContext = await loadApprovalContext(input.order.id, executor);
     const gate = deriveOrderApprovalGate(
       approvalContext.revisions,
       approvalContext.events,
@@ -3146,7 +3306,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     // is the fact that the paper already left the company (G9 VERIFIED).
     const provenSendRows = input.poId === null
       ? [] as Array<{ id: string }>
-      : await db.select({ id: makerPoEvents.id }).from(makerPoEvents).where(and(
+      : await executor.select({ id: makerPoEvents.id }).from(makerPoEvents).where(and(
         eq(makerPoEvents.makerPurchaseOrderId, input.poId),
         eq(makerPoEvents.eventType, 'SEND_EVIDENCE_REGISTERED'),
         eq(makerPoEvents.verificationStatus, 'VERIFIED')
@@ -3178,7 +3338,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           ? 'gate_closed_approval_withdrawn'
           : 'gate_closed_current_revision_missing_dual_approval';
 
-    await recordAuditEvent(db, {
+    await recordAuditEvent(executor, {
       projectId: input.order.projectId,
       id: uuidv7(input.now),
       actorUserId: input.actorUserId,
@@ -3239,13 +3399,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
    * Returns null when the gate is open, otherwise the 422 payload to answer
    * with.
    */
-  async function sevenPoPrecedenceRefusal(order: {
+  async function sevenPoPrecedenceRefusal(
+    order: {
     sevenPurchaseOrderId: string | null;
-  }): Promise<{ code: string; message: string } | null> {
+    },
+    executor: MakerPoReadWriteExecutor = db
+  ): Promise<{ code: string; message: string } | null> {
     if (!order.sevenPurchaseOrderId) {
       return { code: 'SEVEN_PO_REQUIRED', message: '検証済みのセブン発注書の紐付けが必要です' };
     }
-    const [po] = await db.select().from(sevenPurchaseOrders)
+    const [po] = await executor.select().from(sevenPurchaseOrders)
       .where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).limit(1);
     if (!po) return { code: 'SEVEN_PO_NOT_FOUND', message: 'セブン発注書が見つかりません' };
     const gate = evaluateSevenPoPrecedenceGate(po);
@@ -3257,6 +3420,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
@@ -3264,6 +3433,26 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
     if (String(order.status) === 'CANCELLED') {
       return context.json({ error: '取消終了した発注には版を追加できません', code: 'FILM_ORDER_CANCELLED' }, 409);
+    }
+
+    // Representative decision for seventh-recheck Medium-5: a live maker paper
+    // freezes production scope. A new artwork revision cannot enter change
+    // review while that paper is outstanding, because acceptance during review
+    // would leave a READY order holding an accepted paper with no forward path.
+    const [activeMakerPaper] = await db.select({ id: makerPurchaseOrders.id })
+      .from(makerPurchaseOrders)
+      .where(and(
+        eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
+        ne(makerPurchaseOrders.status, 'CANCELLED'),
+        isNull(makerPurchaseOrders.deletedAt)
+      ))
+      .limit(1);
+    if (activeMakerPaper) {
+      return context.json({
+        error: '有効なメーカー発注書がある間は新しい原稿版を登録できません。既存発注書を取り消すか、受入まで完了してください',
+        code: 'MAKER_PO_ACTIVE_ARTWORK_REVISION_BLOCKED',
+        makerPurchaseOrderId: activeMakerPaper.id
+      }, 409);
     }
 
     // Artwork only exists downstream of a verified purchase order.
@@ -3364,6 +3553,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       if (String(lockedOrder.status) === 'CANCELLED') {
         throw new MakerPoStateConflict();
       }
+      const [racingActivePaper] = await tx.select({ id: makerPurchaseOrders.id })
+        .from(makerPurchaseOrders)
+        .where(and(
+          eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
+          ne(makerPurchaseOrders.status, 'CANCELLED'),
+          isNull(makerPurchaseOrders.deletedAt)
+        ))
+        .limit(1)
+        .for('update');
+      if (racingActivePaper) throw new MakerPoStateConflict();
       await tx.insert(artworkRevisions).values(revision);
       await recordAuditEvent(tx, {
         projectId: order.projectId,
@@ -3410,6 +3609,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const revisionId = context.req.param('revisionId');
+    if (!isUuid(revisionId)) {
+      return context.json({
+        error: '経路パラメータ（revisionId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [revision] = await db.select({
       id: artworkRevisions.id,
@@ -3621,7 +3826,18 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const advancesToDualApproved = decisionCheck.value === 'APPROVE'
       && shouldAdvanceToDualApproved(gateAfter, order.status);
 
+    try {
+    let recordedOrderStatus: FilmOrderStatus = order.status;
     await db.transaction(async (tx) => {
+      // The order lock closes the side-channel race: an admin hold/CR/CANCELLED
+      // transition and this approval serialize before either writes. A frozen
+      // order may still receive an append-only approval fact, but it never
+      // advances; a newly cancelled order rolls this approval back.
+      const [lockedOrder] = await tx.select().from(filmSupplyOrders)
+        .where(eq(filmSupplyOrders.id, order.id)).limit(1).for('update');
+      if (!lockedOrder || lockedOrder.deletedAt) throw new MakerPoStateConflict();
+      if (String(lockedOrder.status) === 'CANCELLED') throw new MakerPoStateConflict();
+      const lockedStatus: FilmOrderStatus = lockedOrder.status;
       await tx.insert(artworkApprovalEvents).values(approvalEvent);
       await recordAuditEvent(tx, {
         projectId: order.projectId,
@@ -3634,10 +3850,15 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         occurredAt: now,
         requestMetadata: { operation: 'artwork_approval:record', filmSupplyOrderId: order.id }
       });
-      if (advancesToDualApproved) {
-        await tx.update(filmSupplyOrders)
+      if (advancesToDualApproved && !isFrozenFilmOrderStatus(lockedStatus)) {
+        const advanced = await tx.update(filmSupplyOrders)
           .set({ status: 'DUAL_APPROVED', updatedAt: now })
-          .where(eq(filmSupplyOrders.id, order.id));
+          .where(and(
+            eq(filmSupplyOrders.id, order.id),
+            sql`${filmSupplyOrders.status}::text = ${lockedStatus}::text`
+          ))
+          .returning({ id: filmSupplyOrders.id });
+        if (advanced.length === 0) throw new MakerPoStateConflict();
         await recordAuditEvent(tx, {
           projectId: order.projectId,
           id: uuidv7(now),
@@ -3645,11 +3866,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
           entityType: 'film_supply_order',
           entityId: order.id,
-          beforeState: { status: order.status },
+          beforeState: { status: lockedStatus },
           afterState: { status: 'DUAL_APPROVED' },
           occurredAt: now,
           requestMetadata: { operation: 'artwork_approval:record', reason: 'dual_approval_reached' }
         });
+        recordedOrderStatus = 'DUAL_APPROVED';
+      } else {
+        recordedOrderStatus = lockedStatus;
       }
     });
 
@@ -3660,10 +3884,19 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       // the dual approval — the order stays where it was.
       evidenceIdentifierStatus,
       countsTowardDualApproval,
-      orderStatus: advancesToDualApproved ? 'DUAL_APPROVED' : order.status,
+      orderStatus: recordedOrderStatus,
       dualApproved: gateAfter.dualApproved,
       missingApprovals: gateAfter.missingApprovals
     }, 201);
+    } catch (error) {
+      if (isPostgresDeadlockError(error)) {
+        return context.json({ error: '発注状態の処理でロック競合が発生しました', code: 'FILM_ORDER_LOCK_CONFLICT' }, 409);
+      }
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: '発注状態がすでに変わっています', code: 'FILM_ORDER_STATE_CHANGED' }, 409);
+      }
+      throw error;
+    }
   });
 
   /**
@@ -3675,6 +3908,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const versionId = context.req.param('versionId');
+    if (!isUuid(versionId)) {
+      return context.json({
+        error: '経路パラメータ（versionId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
     const [evidence] = await db.select({
       projectId: documents.projectId,
       documentId: documents.id,
@@ -3731,6 +3970,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const eventId = context.req.param('eventId');
+    if (!isUuid(eventId)) {
+      return context.json({
+        error: '経路パラメータ（eventId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [target] = await db.select().from(artworkApprovalEvents)
       .where(eq(artworkApprovalEvents.id, eventId)).limit(1);
@@ -3848,7 +4093,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const advancesToDualApproved = resultCheck.value === 'confirmed'
       && shouldAdvanceToDualApproved(gateAfter, order.status);
 
+    try {
+    let recordedOrderStatus: FilmOrderStatus = order.status;
     await db.transaction(async (tx) => {
+      // Serialize with hold/release and review resolution. As above, a frozen
+      // order can receive the verification fact but cannot be advanced by it.
+      const [lockedOrder] = await tx.select().from(filmSupplyOrders)
+        .where(eq(filmSupplyOrders.id, order.id)).limit(1).for('update');
+      if (!lockedOrder || lockedOrder.deletedAt) throw new MakerPoStateConflict();
+      if (String(lockedOrder.status) === 'CANCELLED') throw new MakerPoStateConflict();
+      const lockedStatus: FilmOrderStatus = lockedOrder.status;
       await tx.insert(evidenceManualVerifications).values(verification);
       await recordAuditEvent(tx, {
         projectId: order.projectId,
@@ -3871,10 +4125,15 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           filmSupplyOrderId: order.id
         }
       });
-      if (advancesToDualApproved) {
-        await tx.update(filmSupplyOrders)
+      if (advancesToDualApproved && !isFrozenFilmOrderStatus(lockedStatus)) {
+        const advanced = await tx.update(filmSupplyOrders)
           .set({ status: 'DUAL_APPROVED', updatedAt: now })
-          .where(eq(filmSupplyOrders.id, order.id));
+          .where(and(
+            eq(filmSupplyOrders.id, order.id),
+            sql`${filmSupplyOrders.status}::text = ${lockedStatus}::text`
+          ))
+          .returning({ id: filmSupplyOrders.id });
+        if (advanced.length === 0) throw new MakerPoStateConflict();
         await recordAuditEvent(tx, {
           projectId: order.projectId,
           id: uuidv7(now),
@@ -3882,7 +4141,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
           entityType: 'film_supply_order',
           entityId: order.id,
-          beforeState: { status: order.status },
+          beforeState: { status: lockedStatus },
           afterState: { status: 'DUAL_APPROVED' },
           occurredAt: now,
           requestMetadata: {
@@ -3890,6 +4149,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
             reason: 'dual_approval_reached_after_manual_verification'
           }
         });
+        recordedOrderStatus = 'DUAL_APPROVED';
+      } else {
+        recordedOrderStatus = lockedStatus;
       }
     });
 
@@ -3906,14 +4168,29 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       countsTowardDualApproval: resultCheck.value === 'confirmed' && (targetState?.valid ?? false),
       dualApproved: gateAfter.dualApproved,
       missingApprovals: gateAfter.missingApprovals,
-      orderStatus: advancesToDualApproved ? 'DUAL_APPROVED' : order.status
+      orderStatus: recordedOrderStatus
     }, 201);
+    } catch (error) {
+      if (isPostgresDeadlockError(error)) {
+        return context.json({ error: '発注状態の処理でロック競合が発生しました', code: 'FILM_ORDER_LOCK_CONFLICT' }, 409);
+      }
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: '発注状態がすでに変わっています', code: 'FILM_ORDER_STATE_CHANGED' }, 409);
+      }
+      throw error;
+    }
   });
 
   app.get('/api/film-supply-orders/:orderId/approval-gate', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
@@ -4221,6 +4498,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
@@ -4244,68 +4527,6 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       }, 409);
     }
 
-    const cancelledPapers = await db.select({ id: makerPurchaseOrders.id })
-      .from(makerPurchaseOrders)
-      .where(and(
-        eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
-        eq(makerPurchaseOrders.status, 'CANCELLED'),
-        isNull(makerPurchaseOrders.deletedAt)
-      ));
-    const cancellationGate = evaluateMakerPoCancellationAckGate(await Promise.all(cancelledPapers.map(async (paper) => {
-      const events = await db.select({
-        eventType: makerPoEvents.eventType,
-        verificationStatus: makerPoEvents.verificationStatus
-      }).from(makerPoEvents).where(eq(makerPoEvents.makerPurchaseOrderId, paper.id));
-      const [confirmedManualSend] = await db.select({ id: makerPoSendManualVerifications.id })
-        .from(makerPoSendManualVerifications)
-        .where(and(
-          eq(makerPoSendManualVerifications.makerPurchaseOrderId, paper.id),
-          eq(makerPoSendManualVerifications.result, 'confirmed')
-        ))
-        .limit(1);
-      return {
-        id: paper.id,
-        verifiedSend: confirmedManualSend !== undefined || events.some((event) =>
-          event.eventType === 'SEND_EVIDENCE_REGISTERED' && event.verificationStatus === 'VERIFIED'),
-        acknowledged: events.some((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED')
-      };
-    })));
-    if (!cancellationGate.ok) {
-      return context.json({
-        error: cancellationGate.message,
-        code: cancellationGate.code,
-        pendingMakerPurchaseOrderId: cancellationGate.pendingMakerPurchaseOrderId
-      }, 422);
-    }
-
-    const creationGate = evaluateMakerPoCreationGate({ orderStatus: order.status });
-    if (!creationGate.ok) return context.json({ error: creationGate.message, code: creationGate.code }, 422);
-
-    // M7 security fix S4: freezing the maker paper is work, so the seven
-    // purchase order behind it has to be officially registered AND
-    // checklist-verified (same precedence gate as every official artifact).
-    // The state gate alone can be satisfied by an order parked in an exception
-    // state and released straight to MAKER_PO_READY.
-    const precedenceRefusal = await sevenPoPrecedenceRefusal(order);
-    if (precedenceRefusal) {
-      return context.json({ error: precedenceRefusal.message, code: precedenceRefusal.code }, 422);
-    }
-
-    // M8-OPER3: freezing the paper is the first boundary act, so the dual
-    // approval it rests on is re-derived here, at the moment of freezing. A
-    // REVOKE recorded after the order reached MAKER_PO_READY never moved the
-    // status, so only this live read can refuse the freeze (and every re-check
-    // — pass or block — leaves its own audit row behind).
-    const creationRecheck = await dualApprovalRecheck({
-      order: { id: order.id, projectId: order.projectId },
-      orderStatus: order.status,
-      poId: null,
-      stage: 'maker_po:create',
-      actorUserId: user.id,
-      now: new Date()
-    });
-    if (creationRecheck) return context.json(creationRecheck, 422);
-
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.recipientAddress !== 'string' || body.recipientAddress.trim().length === 0) {
       return context.json({ error: '宛先住所が必要です', code: 'RECIPIENT_ADDRESS_REQUIRED' }, 422);
@@ -4318,53 +4539,110 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       }
       amounts = { currency: body.amounts.currency, totalAmount: body.amounts.totalAmount };
     }
-
-    // M8-HARDEN FIX B2: one active maker PO per order. The friendly check names
-    // the paper that already holds the slot; the partial unique index
-    // (maker_purchase_orders_active_order_unique) is the backstop for two
-    // requests that pass this check together. Replacement is explicit: cancel
-    // the existing paper first (history preserved), then create the new one.
-    const [activeMakerPo] = await db.select({
-      id: makerPurchaseOrders.id,
-      status: makerPurchaseOrders.status
-    }).from(makerPurchaseOrders).where(and(
-      eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
-      isNull(makerPurchaseOrders.deletedAt)
-    )).limit(1);
-    if (activeMakerPo && activeMakerPo.status !== 'CANCELLED') {
-      return context.json({
-        error: `この発注には既に有効なメーカー発注書があります（${activeMakerPo.id}）。発注内容を訂正する場合は、既存の発注書を取り消してから新しい発注書を作成してください。`,
-        code: 'MAKER_PO_ALREADY_EXISTS',
-        existingMakerPurchaseOrderId: activeMakerPo.id,
-        existingStatus: activeMakerPo.status
-      }, 422);
-    }
-    const parts = await loadMakerPoSnapshotParts(db, orderId);
-    const snapshot = buildMakerPoSnapshot({
-      order: { id: parts.order.id, code: parts.order.code, sevenPoNumber: parts.sevenPoNumber },
-      items: parts.lines,
-      artworkFiles: parts.artworkFiles,
-      amounts,
-      recipientAddress: body.recipientAddress
-    });
-    const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
-
     const now = new Date();
-    const poId = uuidv7(now);
-    const purchaseOrder = {
-      id: poId,
-      filmSupplyOrderId: orderId,
-      snapshot,
-      snapshotSha256,
-      status: 'DRAFT' as const,
-      ceoApprovedByUserId: null,
-      ceoApprovedAt: null,
-      createdByUserId: user.id,
-      createdAt: now,
-      updatedAt: now
-    };
+
     try {
-      await db.transaction(async (tx) => {
+      const outcome = await db.transaction(async (tx) => {
+        // All generation gates are re-evaluated after the order lock. Body
+        // parsing precedes this transaction, so a slow client cannot keep a
+        // stale gate open while the order or another paper changes.
+        await lockMakerPoOrderForProgressive(tx, {
+          filmSupplyOrderId: orderId,
+          expectedStatus: order.status
+        });
+
+        const cancelledPapers = await tx.select({ id: makerPurchaseOrders.id })
+          .from(makerPurchaseOrders)
+          .where(and(
+            eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
+            eq(makerPurchaseOrders.status, 'CANCELLED'),
+            isNull(makerPurchaseOrders.deletedAt)
+          ));
+        const cancellationGate = evaluateMakerPoCancellationAckGate(await Promise.all(cancelledPapers.map(async (paper) => {
+          const events = await tx.select({
+            eventType: makerPoEvents.eventType,
+            verificationStatus: makerPoEvents.verificationStatus
+          }).from(makerPoEvents).where(eq(makerPoEvents.makerPurchaseOrderId, paper.id));
+          const [confirmedManualSend] = await tx.select({ id: makerPoSendManualVerifications.id })
+            .from(makerPoSendManualVerifications)
+            .where(and(
+              eq(makerPoSendManualVerifications.makerPurchaseOrderId, paper.id),
+              eq(makerPoSendManualVerifications.result, 'confirmed')
+            ))
+            .limit(1);
+          return {
+            id: paper.id,
+            verifiedSend: confirmedManualSend !== undefined || events.some((event) =>
+              event.eventType === 'SEND_EVIDENCE_REGISTERED' && event.verificationStatus === 'VERIFIED'),
+            acknowledged: events.some((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED')
+          };
+        })));
+        if (!cancellationGate.ok) {
+          return {
+            kind: 'ackRequired' as const,
+            error: cancellationGate.message,
+            code: cancellationGate.code,
+            pendingMakerPurchaseOrderId: cancellationGate.pendingMakerPurchaseOrderId
+          };
+        }
+
+        const creationGate = evaluateMakerPoCreationGate({ orderStatus: order.status });
+        if (!creationGate.ok) {
+          return { kind: 'invalid' as const, error: creationGate.message, code: creationGate.code };
+        }
+
+        const precedenceRefusal = await sevenPoPrecedenceRefusal(order, tx);
+        if (precedenceRefusal) {
+          return { kind: 'invalid' as const, error: precedenceRefusal.message, code: precedenceRefusal.code };
+        }
+
+        const creationRecheck = await dualApprovalRecheck({
+          order: { id: order.id, projectId: order.projectId },
+          orderStatus: order.status,
+          poId: null,
+          stage: 'maker_po:create',
+          actorUserId: user.id,
+          now
+        }, tx);
+        if (creationRecheck) return { kind: 'invalid' as const, ...creationRecheck };
+
+        const [activeMakerPo] = await tx.select({
+          id: makerPurchaseOrders.id,
+          status: makerPurchaseOrders.status
+        }).from(makerPurchaseOrders).where(and(
+          eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
+          isNull(makerPurchaseOrders.deletedAt)
+        )).limit(1).for('update');
+        if (activeMakerPo && activeMakerPo.status !== 'CANCELLED') {
+          return {
+            kind: 'activePaper' as const,
+            existingMakerPurchaseOrderId: activeMakerPo.id,
+            existingStatus: activeMakerPo.status
+          };
+        }
+
+        const parts = await loadMakerPoSnapshotParts(tx, orderId);
+        const snapshot = buildMakerPoSnapshot({
+          order: { id: parts.order.id, code: parts.order.code, sevenPoNumber: parts.sevenPoNumber },
+          items: parts.lines,
+          artworkFiles: parts.artworkFiles,
+          amounts,
+          recipientAddress: body.recipientAddress
+        });
+        const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
+        const poId = uuidv7(now);
+        const purchaseOrder = {
+          id: poId,
+          filmSupplyOrderId: orderId,
+          snapshot,
+          snapshotSha256,
+          status: 'DRAFT' as const,
+          ceoApprovedByUserId: null,
+          ceoApprovedAt: null,
+          createdByUserId: user.id,
+          createdAt: now,
+          updatedAt: now
+        };
         await tx.insert(makerPurchaseOrders).values(purchaseOrder);
         await recordAuditEvent(tx, {
           projectId: order.projectId,
@@ -4377,7 +4655,32 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           occurredAt: now,
           requestMetadata: { operation: 'maker_po:create', filmSupplyOrderId: orderId }
         });
+        return { kind: 'created' as const, purchaseOrder };
       });
+
+      if (outcome.kind === 'ackRequired') {
+        return context.json({
+          error: outcome.error,
+          code: outcome.code,
+          pendingMakerPurchaseOrderId: outcome.pendingMakerPurchaseOrderId
+        }, 422);
+      }
+      if (outcome.kind === 'invalid') {
+        return context.json({
+          error: outcome.error,
+          code: outcome.code,
+          ...('missingApprovals' in outcome ? { missingApprovals: outcome.missingApprovals } : {})
+        }, 422);
+      }
+      if (outcome.kind === 'activePaper') {
+        return context.json({
+          error: `この発注には既に有効なメーカー発注書があります（${outcome.existingMakerPurchaseOrderId}）。発注内容を訂正する場合は、既存の発注書を取り消してから新しい発注書を作成してください。`,
+          code: 'MAKER_PO_ALREADY_EXISTS',
+          existingMakerPurchaseOrderId: outcome.existingMakerPurchaseOrderId,
+          existingStatus: outcome.existingStatus
+        }, 422);
+      }
+      return context.json(buildMakerPoViewForRole(user.role, outcome.purchaseOrder), 201);
     } catch (error) {
       if (makerPoActiveUniqueViolation(error)) {
         return context.json({
@@ -4385,12 +4688,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           code: 'MAKER_PO_ALREADY_EXISTS'
         }, 422);
       }
+      if (isPostgresDeadlockError(error)) {
+        return context.json({ error: '発注状態の処理でロック競合が発生しました', code: 'MAKER_PO_LOCK_CONFLICT' }, 409);
+      }
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: '発注状態がすでに変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
+      }
       throw error;
     }
-    // M8-OPERATOR FIX 1: the answer is shaped by the caller's role. Freezing the
-    // paper is admin-only (FIX 2), so today this is always the full view; the
-    // shaping stays explicit so the read and write answers can never drift.
-    return context.json(buildMakerPoViewForRole(user.role, purchaseOrder), 201);
   });
 
   app.post('/api/maker-purchase-orders/:poId/ceo-approval', async (context) => {
@@ -4627,6 +4932,13 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const body = await context.req.json().catch(() => null) as any;
     const sentAt = parseOptionalDate(body?.sentAt);
     if (!sentAt.ok) return context.json({ error: '送信日時が不正です', code: 'INVALID_DATE' }, 422);
+    const sendEvidenceId = optionalUuidInput(body?.evidenceDocumentVersionId);
+    if (!sendEvidenceId.ok) {
+      return context.json({
+        error: '引用された送信証跡のドキュメントバージョンIDが不正です',
+        code: 'SEND_EVIDENCE_DOCUMENT_VERSION_INVALID'
+      }, 422);
+    }
 
     // M8-HARDEN FIX C2: a send claimed more than ten minutes ahead of the server
     // clock is impossible, not early. The comparison is UTC (Date.getTime), so a
@@ -5104,6 +5416,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!verifiedAt.ok) {
       return context.json({ error: '検証日時（verifiedAt）が必要です', code: 'VERIFIED_AT_REQUIRED' }, 422);
     }
+    if (verifiedAt.date.getTime() > Date.now() + 5 * 60 * 1000) {
+      return context.json({ error: '検証日時（verifiedAt）に未来時刻は記録できません', code: 'VERIFIED_AT_IN_FUTURE' }, 422);
+    }
+    if (verifiedAt.date.getTime() < Date.UTC(2000, 0, 1)) {
+      return context.json({ error: '検証日時（verifiedAt）が許容範囲外です', code: 'VERIFIED_AT_OUT_OF_RANGE' }, 422);
+    }
     if (typeof body?.reasonNote !== 'string' || body.reasonNote.trim().length === 0) {
       return context.json({
         error: '根拠（reasonNote）は必須です。何を確認して納品を断定したかを記録してください',
@@ -5164,6 +5482,18 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           code: 'MAKER_PO_CANCELLED_SEND_CONFIRMATION_BLOCKED' as const,
           message: '取り消し済みのメーカー発注書の送信は確認できません'
         };
+      }
+      if (resultCheck.value === 'confirmed') {
+        const [racingConfirmed] = await tx.select({ id: makerPoSendManualVerifications.id })
+          .from(makerPoSendManualVerifications)
+          .where(and(
+            eq(makerPoSendManualVerifications.makerPoEventId, target.id),
+            eq(makerPoSendManualVerifications.result, 'confirmed')
+          ))
+          .limit(1);
+        if (racingConfirmed) {
+          return { kind: 'duplicateConfirmed' as const };
+        }
       }
       await tx.insert(makerPoSendManualVerifications).values(verification);
       await recordAuditEvent(tx, {
@@ -5252,6 +5582,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
 
     if (outcome.kind === 'cancelled') {
       return context.json({ error: outcome.message, code: outcome.code }, 409);
+    }
+    if (outcome.kind === 'duplicateConfirmed') {
+      return context.json({
+        error: 'この送信イベントはすでに確認済みです。納品の断定を取り消す場合は、新しい記録として残してください',
+        code: 'MAKER_PO_SEND_ALREADY_CONFIRMED'
+      }, 422);
     }
 
     return context.json({
@@ -5517,6 +5853,14 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const [order] = await db.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
     if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    const [cancellationEvent] = await db.select({ recordedAt: makerPoEvents.recordedAt })
+      .from(makerPoEvents)
+      .where(and(
+        eq(makerPoEvents.makerPurchaseOrderId, existing.id),
+        eq(makerPoEvents.eventType, 'MAKER_PO_CANCELLED')
+      ))
+      .orderBy(desc(makerPoEvents.recordedAt), desc(makerPoEvents.id))
+      .limit(1);
     // The same act as cancelling: freeing (or keeping closed) the order's
     // production step is the representative's decision, never staff work.
     const decision = canPerform(toActor(user), 'maker_po:cancel', 'F1', order.projectId);
@@ -5540,6 +5884,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const acknowledgementNote = noteCheck.text;
     const acknowledgedAt = parseOptionalDate(body?.acknowledgedAt);
     if (!acknowledgedAt.ok) return context.json({ error: '承認日時が不正です', code: 'INVALID_DATE' }, 422);
+    if (acknowledgedAt.date !== null && !isIsoDateWithOffset(body?.acknowledgedAt)) {
+      return context.json({
+        error: '承認日時（acknowledgedAt）はオフセット付きISO-8601で指定してください',
+        code: 'MAKER_CANCELLATION_ACK_TIME_FORMAT_INVALID'
+      }, 422);
+    }
     if (acknowledgedAt.date !== null) {
       if (acknowledgedAt.date.getTime() > now.getTime() + 5 * 60 * 1000) {
         return context.json({
@@ -5551,6 +5901,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         return context.json({
           error: '承認日時（acknowledgedAt）が許容範囲外です',
           code: 'MAKER_CANCELLATION_ACK_TIME_OUT_OF_RANGE'
+        }, 422);
+      }
+      if (cancellationEvent && acknowledgedAt.date.getTime() < cancellationEvent.recordedAt.getTime()) {
+        return context.json({
+          error: '承認日時（acknowledgedAt）は取消記録以降である必要があります',
+          code: 'MAKER_CANCELLATION_ACK_TIME_BEFORE_CANCELLATION'
         }, 422);
       }
     }
@@ -5617,6 +5973,38 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
             code: 'MAKER_PO_NOT_CANCELLED' as const
           };
         }
+        if (requestedEvidenceId !== null) {
+          const [currentEvidence] = await tx.select({
+            projectId: documents.projectId,
+            documentType: documents.documentType,
+            filmSupplyOrderId: documents.filmSupplyOrderId,
+            makerPurchaseOrderId: documents.makerPurchaseOrderId,
+            versionId: documentVersions.id,
+            verificationStatus: documents.verificationStatus
+          }).from(documentVersions)
+            .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+            .where(eq(documentVersions.id, requestedEvidenceId))
+            .limit(1)
+            .for('share');
+          if (!currentEvidence) {
+            return {
+              kind: 'evidenceChanged' as const,
+              message: '引用された承認証跡のドキュメントバージョンが見つかりません',
+              code: 'MAKER_CANCELLATION_ACK_EVIDENCE_NOT_FOUND' as const
+            };
+          }
+          if (currentEvidence.projectId !== order.projectId
+            || currentEvidence.filmSupplyOrderId !== order.id
+            || currentEvidence.makerPurchaseOrderId !== poId
+            || currentEvidence.documentType !== 'acceptance_evidence'
+            || currentEvidence.verificationStatus !== 'verified') {
+            return {
+              kind: 'evidenceChanged' as const,
+              message: '承認証跡は検証済み acceptance_evidence であり、同一プロジェクト・発注・paper に紐づく必要があります',
+              code: 'MAKER_CANCELLATION_ACK_EVIDENCE_MISMATCH' as const
+            };
+          }
+        }
         const events = await tx.select({
           id: makerPoEvents.id,
           eventType: makerPoEvents.eventType,
@@ -5631,13 +6019,23 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
             eq(makerPoSendManualVerifications.result, 'confirmed')
           ))
           .limit(1);
-        if (!hasVerifiedSend && confirmedManualSend === undefined) {
-          return {
-            kind: 'not_cancelled' as const,
-            status: po.status,
-            message: 'この発注書は送信証跡が確認されていないため、取り消し承認は不要です',
-            code: 'MAKER_PO_CANCELLATION_ACK_NOT_REQUIRED' as const
-          };
+        const provenSend = hasVerifiedSend || confirmedManualSend !== undefined;
+        let internalReplacementPaperLive = false;
+        if (!provenSend) {
+          // Representative decision for seventh-recheck Medium-2: an internal
+          // cancellation can still receive a record-only post-delivery fact.
+          // It must never reopen the order or lift a replacement gate.
+          const [liveReplacement] = await tx.select({ id: makerPurchaseOrders.id })
+            .from(makerPurchaseOrders)
+            .where(and(
+              eq(makerPurchaseOrders.filmSupplyOrderId, lockedOrder!.id),
+              ne(makerPurchaseOrders.id, poId),
+              ne(makerPurchaseOrders.status, 'CANCELLED'),
+              isNull(makerPurchaseOrders.deletedAt)
+            ))
+            .limit(1)
+            .for('update');
+          internalReplacementPaperLive = liveReplacement !== undefined;
         }
         if (events.some((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED')) {
           return {
@@ -5672,9 +6070,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
             status: 'CANCELLED',
             note: acknowledgementNote,
             acknowledgedAt: acknowledgedAt.date,
-            // FIX 2: this is the record that re-opens the ordering step.
-            replacementAllowed: true,
-            verifiedSend: true,
+            acknowledgementKind: provenSend ? 'CANCELLATION_ACKNOWLEDGEMENT' : 'POST_DELIVERY_CONFIRMATION',
+            replacementAllowed: provenSend,
+            verifiedSend: provenSend,
+            replacementPaperLive: internalReplacementPaperLive,
             rowsDeleted: false
           },
           occurredAt: now,
@@ -5735,6 +6134,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         return {
           kind: 'recorded' as const,
           event: ackEvent,
+          acknowledgementKind: provenSend ? 'CANCELLATION_ACKNOWLEDGEMENT' as const : 'POST_DELIVERY_CONFIRMATION' as const,
+          replacementPaperLive: internalReplacementPaperLive,
           purchaseOrder: buildMakerPoViewForRole(user.role, {
             id: poId,
             filmSupplyOrderId: po.filmSupplyOrderId,
@@ -5754,7 +6155,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       if (outcome.kind === 'not_cancelled' || outcome.kind === 'already') {
         return context.json({ error: outcome.message, code: outcome.code, status: outcome.status }, 422);
       }
-      return context.json({ status: 'CANCELLED', event: outcome.event, purchaseOrder: outcome.purchaseOrder }, 201);
+      if (outcome.kind === 'evidenceChanged') {
+        return context.json({ error: outcome.message, code: outcome.code }, 422);
+      }
+      return context.json({
+        status: 'CANCELLED',
+        event: outcome.event,
+        purchaseOrder: outcome.purchaseOrder,
+        acknowledgementKind: outcome.acknowledgementKind,
+        replacementPaperLive: outcome.replacementPaperLive === true
+      }, 201);
     } catch (error) {
       if (isPostgresDeadlockError(error)) {
         return context.json({ error: '発注状態の処理でロック競合が発生しました', code: 'MAKER_PO_LOCK_CONFLICT' }, 409);
@@ -5807,6 +6217,13 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const body = await context.req.json().catch(() => null) as any;
     const acceptedAt = parseOptionalDate(body?.acceptedAt);
     if (!acceptedAt.ok) return context.json({ error: '受領日時が不正です', code: 'INVALID_DATE' }, 422);
+    const acceptEvidenceId = optionalUuidInput(body?.evidenceDocumentVersionId);
+    if (!acceptEvidenceId.ok) {
+      return context.json({
+        error: '引用された受領証跡のドキュメントバージョンIDが不正です',
+        code: 'ACCEPT_EVIDENCE_DOCUMENT_VERSION_INVALID'
+      }, 422);
+    }
 
     // M8-OPER3: acceptance follows a proven send only, so the gate re-check
     // records its decision here — a withdrawal after the paper shipped is
@@ -6006,6 +6423,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const poId = context.req.param('poId');
+    if (!isUuid(poId)) {
+      return context.json({
+        error: '経路パラメータ（poId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [po] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1);
     if (!po) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
@@ -6028,6 +6451,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [order] = await db.select({ projectId: filmSupplyOrders.projectId })
       .from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
@@ -6181,6 +6610,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です' }, 401);
     const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
     if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);

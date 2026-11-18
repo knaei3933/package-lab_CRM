@@ -732,9 +732,8 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect((sent.body as { status: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
   });
 
-  it('T-24 an artwork change voids the approved snapshot and forces re-approval', async () => {
+  it('T-24 blocks artwork revision while an approved maker paper is live', async () => {
     const { order, po } = await reachApprovedMakerPo(projectId, 'T24');
-    const approvedHash = po.snapshotSha256;
 
     const secondProof = await uploadBoundDocument(order, projectId, {
       documentType: 'proof',
@@ -747,101 +746,16 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
       designKey: 'label-front',
       fileDocumentVersionId: secondProof.version.id
     });
-    expect(second.status).toBe(201);
-    expect((second.body as { revisionNo: number }).revisionNo).toBe(2);
 
-    // M8-HARDEN FIX A3: revision 2 holds no approval from either organization,
-    // so the boundary refuses the send before the snapshot is even compared —
-    // and a boundary refusal is not a void, so the paper is left untouched.
-    const heldSend = await sendMakerPoEmlEvidence(
-      (url, body) => postAs(staffToken, url, body),
-      po.id,
-      { orderCode: 'FSO-M4-T24', sentAtIso: plausibleTestSentAt() }
-    );
-    expect(heldSend.status).toBe(409);
+    // Seventh-recheck representative decision: while an approved maker paper is
+    // live, artwork revision cannot enter CHANGE_REVIEW. This prevents an
+    // acceptance during review from leaving a READY order with an accepted paper.
+    expect(second.status).toBe(409);
+    expect(second.body).toMatchObject({ code: 'MAKER_PO_ACTIVE_ARTWORK_REVISION_BLOCKED' });
     expect((await postJson(`/api/film-supply-orders/${order.orderId}/transitions`, {
       to: 'APPROVAL_PENDING'
-    })).status).toBe(200);
-
-    const refused = await sendMakerPoEmlEvidence(
-      (url, body) => postAs(staffToken, url, body),
-      po.id,
-      { orderCode: 'FSO-M4-T24', sentAtIso: plausibleTestSentAt() }
-    );
-    expect(refused.status).toBe(422);
-    const refusedBody = refused.body as {
-      code: string;
-      missingApprovals: Array<{ designKey: string; organization: string }>;
-    };
-    expect(refusedBody.code).toBe('DUAL_APPROVAL_NO_LONGER_VALID');
-    expect(refusedBody.missingApprovals).toEqual([
-      { designKey: 'label-front', organization: 'customer' },
-      { designKey: 'label-front', organization: 'seven' }
-    ]);
+    })).status).toBe(422);
     expect((await makerPoRow(po.id))?.status).toBe('APPROVED_FOR_MANUAL_SEND');
-
-    // M8-HARDEN FIX A3: the re-approval is no longer the leak it used to be.
-    // Certifying again is refused by the transition guard before the approval
-    // re-check even runs — only DRAFT or SNAPSHOT_VOIDED paper can be frozen —
-    // so the answer carries no missing approvals and the paper stays untouched.
-    const refusedReapproval = await approveMakerPo(po.id);
-    expect(refusedReapproval.status).toBe(422);
-    expect((refusedReapproval.body as { code: string }).code).toBe('MAKER_PO_TRANSITION_BLOCKED');
-    expect((refusedReapproval.body as { from: string }).from).toBe('APPROVED_FOR_MANUAL_SEND');
-    expect((await makerPoRow(po.id))?.status).toBe('APPROVED_FOR_MANUAL_SEND');
-
-    // The recovery starts with both organizations approving the NEW revision:
-    // only then may the paper be certified over it again.
-    const secondRevision = (second.body as { id: string }).id;
-    for (const organization of ['customer', 'seven'] as const) {
-      // The evidence issuer is the document vocabulary, not the approval
-      // organization: a customer-sourced evidence is 'customer_generated'.
-      const approvalEvidence = await uploadApprovalEvidence(
-        order,
-        projectId,
-        'label-front',
-        organization === 'seven' ? 'seven' : 'customer_generated'
-      );
-      const approval = await recordApproval(secondRevision, {
-        organization,
-        evidenceDocumentVersionId: approvalEvidence.version.id
-      });
-      expect(approval.status).toBe(201);
-    }
-    // The gate has re-opened, but the approved digest still names revision 1,
-    // so the first registration over the re-approved artwork voids the paper
-    // through G10 — that void is what makes a fresh approval reachable again.
-    const staleSend = await sendMakerPoEmlEvidence(
-      (url, body) => postAs(staffToken, url, body),
-      po.id,
-      { orderCode: 'FSO-M4-T24', sentAtIso: plausibleTestSentAt() }
-    );
-    expect(staleSend.status).toBe(422);
-    expect((staleSend.body as { code: string }).code).toBe('SNAPSHOT_VOIDED');
-    expect((await makerPoRow(po.id))?.status).toBe('SNAPSHOT_VOIDED');
-
-    const reapproved = await approveMakerPo(po.id);
-    expect(reapproved.status).toBe(200);
-    const reapprovedBody = reapproved.body as { purchaseOrder: MakerPoResponse };
-    expect(reapprovedBody.purchaseOrder.snapshotSha256).not.toBe(approvedHash);
-    expect(reapprovedBody.purchaseOrder.snapshot.specs.artworkFiles).toEqual([
-      { designKey: 'label-front', revisionNo: 2, fileSha256: secondProof.version.sha256 }
-    ]);
-    expect((await orderRow(order.orderId))?.status).toBe('DUAL_APPROVED');
-
-    const sent = await sendMakerPoEmlEvidence(
-      (url, body) => postAs(staffToken, url, body),
-      po.id,
-      // The re-approved snapshot freezes revision 2, so the mail carries those
-      // bytes (M8-HARDEN2 FIX 1).
-      { orderCode: 'FSO-M4-T24', sentAtIso: plausibleTestSentAt(), attachmentBytes: secondProof.bytes }
-    );
-    expect(sent.status).toBe(200);
-    expect((sent.body as { status: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
-    expect((await makerPoRow(po.id))?.status).toBe('MAKER_PO_SENT_MANUALLY');
-    // Review resolved earlier to its exact maker-chain origin; that origin stays
-    // unchanged while the paper advances.
-    expect((await orderRow(order.orderId))?.status).toBe('DUAL_APPROVED');
   });
 
   it('T-24a re-filing identical evidence bytes resolves to the stored version instead of a second version row', async () => {

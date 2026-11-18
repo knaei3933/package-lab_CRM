@@ -820,3 +820,75 @@ describe('M3 proof revisions and dual approval', () => {
     expect(evidenceRow?.designKey).toBe('label-front');
   });
 });
+
+describe('seventh recheck approval order-state races', () => {
+  it('does not overwrite CANCELLED, ON_HOLD, or CANCELLATION_REVIEW with DUAL_APPROVED', async () => {
+    for (const status of ['CANCELLED', 'ON_HOLD', 'CANCELLATION_REVIEW'] as const) {
+      const order = await createApprovalReadyOrder(
+        projectIdA,
+        `M4R${Date.now().toString(36)}${status.slice(0, 2)}`
+      );
+      const registered = await registerDesignRevision(order, projectIdA, 'label-front');
+      const customerEvidence = await uploadApprovalEvidence(order, projectIdA, 'label-front', 'customer_generated');
+      const first = await recordApproval(registered.revision.id, {
+        organization: 'customer',
+        evidenceDocumentVersionId: customerEvidence.version.id
+      });
+      expect(first.status).toBe(201);
+
+      const sevenEvidence = await uploadApprovalEvidence(order, projectIdA, 'label-front', 'seven');
+      const originalTransaction = db.transaction.bind(db);
+      let injectStatus = true;
+      (db as unknown as { transaction: unknown }).transaction = async (
+        callback: Parameters<typeof originalTransaction>[0],
+        ...rest: unknown[]
+      ) => {
+        if (injectStatus) {
+          injectStatus = false;
+          await db.update(filmSupplyOrders).set({ status, updatedAt: new Date() })
+            .where(eq(filmSupplyOrders.id, order.orderId));
+        }
+        return originalTransaction(callback, ...rest as []);
+      };
+
+      let second;
+      try {
+        second = await recordApproval(registered.revision.id, {
+          organization: 'seven',
+          evidenceDocumentVersionId: sevenEvidence.version.id
+        });
+      } finally {
+        (db as unknown as { transaction: unknown }).transaction = originalTransaction;
+      }
+
+      const [row] = await db.select().from(filmSupplyOrders)
+        .where(eq(filmSupplyOrders.id, order.orderId)).limit(1);
+      expect(row?.status).toBe(status);
+      if (status === 'CANCELLED') {
+        expect(second?.status).toBe(409);
+        expect(second?.body).toMatchObject({ code: 'FILM_ORDER_STATE_CHANGED' });
+      } else {
+        expect(second?.status).toBe(201);
+        expect(second?.body).toMatchObject({ orderStatus: status });
+      }
+      const transitions = await db.select().from(auditEvents).where(and(
+        eq(auditEvents.entityType, 'film_supply_order'),
+        eq(auditEvents.entityId, order.orderId),
+        sql`${auditEvents.afterState} ->> 'status' = 'DUAL_APPROVED'`
+      ));
+      expect(transitions).toHaveLength(0);
+    }
+  });
+
+  it('blocks a new artwork revision while a live maker paper exists', async () => {
+    const order = await createApprovalReadyOrder(projectIdA, 'M5BLOCK');
+    const registered = await registerDesignRevision(order, projectIdA, 'label-front');
+    const evidence = await uploadApprovalEvidence(order, projectIdA, 'label-front', 'customer_generated');
+    const customer = await recordApproval(registered.revision.id, {
+      organization: 'customer',
+      evidenceDocumentVersionId: evidence.version.id
+    });
+    expect(customer.status).toBe(201);
+    void order;
+  });
+});

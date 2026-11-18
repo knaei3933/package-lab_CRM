@@ -13,6 +13,8 @@ ALTER TABLE "film_supply_orders" ADD COLUMN IF NOT EXISTS "payment_terms" text D
 DO $$
 DECLARE
   actual_column_default text;
+  actual_data_type text;
+  actual_type_kind char;
   named_constraint_definition text;
   expected_constraint_definition text := 'CHECK (((payment_terms IS NULL) OR (payment_terms = ANY (ARRAY[''prepaid''::text, ''on_delivery''::text, ''undetermined''::text]))))';
 BEGIN
@@ -24,11 +26,21 @@ BEGIN
   ) THEN
     ALTER TABLE "film_supply_orders" ADD COLUMN "payment_terms" text DEFAULT 'undetermined';
   ELSE
-    SELECT column_default INTO actual_column_default
-    FROM information_schema.columns
-    WHERE table_schema = 'public'
-      AND table_name = 'film_supply_orders'
-      AND column_name = 'payment_terms';
+    SELECT c.column_default, c.data_type, t.typtype
+    INTO actual_column_default, actual_data_type, actual_type_kind
+    FROM information_schema.columns c
+    JOIN pg_class rel ON rel.relname = c.table_name AND rel.relnamespace = 'public'::regnamespace
+    JOIN pg_attribute attr ON attr.attrelid = rel.oid AND attr.attname = c.column_name
+    JOIN pg_type t ON t.oid = attr.atttypid
+    WHERE c.table_schema = 'public'
+      AND c.table_name = 'film_supply_orders'
+      AND c.column_name = 'payment_terms';
+    IF actual_type_kind = 'd' THEN
+      RAISE EXCEPTION 'payment_terms column definition drift: DOMAIN columns are not accepted';
+    END IF;
+    IF actual_data_type IS DISTINCT FROM 'text' THEN
+      RAISE EXCEPTION 'payment_terms column definition drift: expected text, found %', actual_data_type;
+    END IF;
     IF actual_column_default IS DISTINCT FROM '''undetermined''::text' THEN
       RAISE EXCEPTION 'payment_terms column definition drift: expected text DEFAULT ''undetermined''::text, found %', actual_column_default;
     END IF;
@@ -49,7 +61,11 @@ BEGIN
     SELECT 1 FROM pg_constraint con
     WHERE con.conrelid = '"public"."film_supply_orders"'::regclass
       AND contype = 'c'
-      AND pg_get_constraintdef(con.oid) = expected_constraint_definition
+      AND pg_get_constraintdef(con.oid) ILIKE '%payment_terms%'
+      AND pg_get_constraintdef(con.oid) ILIKE '%is null%'
+      AND pg_get_constraintdef(con.oid) ILIKE '%prepaid%'
+      AND pg_get_constraintdef(con.oid) ILIKE '%on_delivery%'
+      AND pg_get_constraintdef(con.oid) ILIKE '%undetermined%'
   ) THEN
     ALTER TABLE "film_supply_orders"
       ADD CONSTRAINT "film_supply_orders_payment_terms_vocabulary"

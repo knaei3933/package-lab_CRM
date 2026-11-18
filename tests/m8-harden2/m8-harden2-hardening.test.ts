@@ -610,7 +610,7 @@ describe('M8-HARDEN2 FIX 2: replacement after a proven send needs the acknowledg
     // The acknowledgement: append-only, bound to the cancelled paper, audited.
     const acked = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, {
       note: 'メーカーより取消の受領を確認（メール）',
-      acknowledgedAt: '2026-11-16T03:00:00.000Z'
+      acknowledgedAt: new Date().toISOString()
     });
     expect(acked.status).toBe(201);
     const ackBody = acked.body as { event: { id: string; eventType: string; verificationNote: string | null } };
@@ -655,11 +655,19 @@ describe('M8-HARDEN2 FIX 2: replacement after a proven send needs the acknowledg
     // Cancelled without a proven send: no acknowledgement is needed, so none is
     // recordable.
     expect((await cancelMakerPo(poId, '宛先訂正')).status).toBe(200);
-    const unneeded = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, {
-      note: '送信されていない発注書です'
+    // Medium-2 decision: internal cancellations also accept a record-only
+    // post-delivery confirmation, but it never reopens the ordering step.
+    const postDelivery = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, {
+      note: 'after cancellation, the maker reported receipt before closure',
+      acknowledgedAt: new Date().toISOString()
     });
-    expect(unneeded.status).toBe(422);
-    expect((unneeded.body as { code: string }).code).toBe('MAKER_PO_CANCELLATION_ACK_NOT_REQUIRED');
+    expect(postDelivery.status).toBe(201);
+    expect(postDelivery.body).toMatchObject({
+      acknowledgementKind: 'POST_DELIVERY_CONFIRMATION',
+      replacementPaperLive: false
+    });
+    expect((await poEvents(poId)).filter((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED')).toHaveLength(1);
+    expect((await orderRow(chain.orderId))?.status).toBe('MAKER_PO_READY');
     expect(await activePoRows(chain.orderId)).toHaveLength(0);
   });
 });
@@ -1254,7 +1262,7 @@ describe('sixth recheck server residual fixes', () => {
     const unverified = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, {
       note: 'maker accepted',
       evidenceDocumentVersionId: evidence.version.id,
-      acknowledgedAt: new Date(Date.now() - 60_000).toISOString()
+      acknowledgedAt: new Date().toISOString()
     });
     expect(unverified.status).toBe(422);
     expect(unverified.body).toMatchObject({ code: 'MAKER_CANCELLATION_ACK_EVIDENCE_NOT_VERIFIED' });
@@ -1265,7 +1273,7 @@ describe('sixth recheck server residual fixes', () => {
     const acknowledged = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, {
       note: 'maker accepted',
       evidenceDocumentVersionId: evidence.version.id,
-      acknowledgedAt: new Date(Date.now() - 60_000).toISOString()
+      acknowledgedAt: new Date().toISOString()
     });
     expect(acknowledged.status).toBe(201);
     expect((await orderRow(chain.orderId))?.status).toBe('MAKER_PO_READY');
@@ -1327,5 +1335,252 @@ describe('sixth recheck server residual fixes', () => {
     expect(cancelled?.body).toMatchObject({ code: 'MAKER_PO_LOCK_CONFLICT' });
     expect((await poRow(poId))?.status).toBe('DRAFT');
     expect((await poEvents(poId)).filter((event) => event.eventType === 'MAKER_PO_CANCELLED')).toHaveLength(0);
+  });
+});
+
+describe('seventh recheck server hardening', () => {
+  it('blocks paper creation when the order races to CANCELLED before the transaction', async () => {
+    const chain = await reachMakerPoReady(`R8Q2-${nextTag()}`);
+    const originalTransaction = db.transaction.bind(db);
+    let injectCancel = true;
+    (db as unknown as { transaction: unknown }).transaction = async (
+      callback: Parameters<typeof originalTransaction>[0],
+      ...rest: unknown[]
+    ) => {
+      if (injectCancel) {
+        injectCancel = false;
+        await db.update(filmSupplyOrders).set({ status: 'CANCELLED', updatedAt: new Date() })
+          .where(eq(filmSupplyOrders.id, chain.orderId));
+      }
+      return originalTransaction(callback, ...rest as []);
+    };
+    let created;
+    try {
+      created = await createMakerPo(chain.orderId);
+    } finally {
+      (db as unknown as { transaction: unknown }).transaction = originalTransaction;
+    }
+    expect(created?.status).toBe(422);
+    expect(created?.body).toMatchObject({ code: 'MAKER_PO_STATE_CHANGED' });
+    expect(await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.filmSupplyOrderId, chain.orderId))).toHaveLength(0);
+  });
+
+  it('rechecks an active paper inside the creation transaction', async () => {
+    const chain = await reachMakerPoReady(`R8Q1-${nextTag()}`);
+    const racingPaperId = uuidv7();
+    const originalTransaction = db.transaction.bind(db);
+    let injectPaper = true;
+    (db as unknown as { transaction: unknown }).transaction = async (
+      callback: Parameters<typeof originalTransaction>[0],
+      ...rest: unknown[]
+    ) => {
+      if (injectPaper) {
+        injectPaper = false;
+        await db.insert(makerPurchaseOrders).values({
+          id: racingPaperId,
+          filmSupplyOrderId: chain.orderId,
+          snapshot: { order: { id: chain.orderId }, items: [], artworkFiles: [], amounts: [] },
+          snapshotSha256: 'a'.repeat(64),
+          status: 'DRAFT',
+          createdByUserId: adminId,
+          createdAt: new Date(),
+          updatedAt: new Date()
+        });
+      }
+      return originalTransaction(callback, ...rest as []);
+    };
+    let created;
+    try {
+      created = await createMakerPo(chain.orderId);
+    } finally {
+      (db as unknown as { transaction: unknown }).transaction = originalTransaction;
+    }
+    expect(created?.status).toBe(422);
+    expect(created?.body).toMatchObject({
+      code: 'MAKER_PO_ALREADY_EXISTS',
+      existingMakerPurchaseOrderId: racingPaperId
+    });
+    expect(await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.filmSupplyOrderId, chain.orderId))).toHaveLength(1);
+  });
+
+  it('returns a warning flag when a post-delivery ack races beside a live replacement', async () => {
+    const chain = await reachMakerPoReady(`R8M2-${nextTag()}`);
+    const cancelledPoId = ((await createMakerPo(chain.orderId)).body as { id: string }).id;
+    expect((await approveMakerPo(cancelledPoId)).status).toBe(200);
+    await sendHeaderCleanEml(cancelledPoId, chain.orderCode, { kind: 'none', artworkBytes: chain.artworkBytes });
+    expect((await cancelMakerPo(cancelledPoId, 'obsolete pending paper')).status).toBe(200);
+    const replacementId = ((await createMakerPo(chain.orderId)).body as { id: string }).id;
+    expect(replacementId).not.toBe(cancelledPoId);
+
+    const acknowledgement = await postAs(adminToken, `/api/maker-purchase-orders/${cancelledPoId}/cancellation-acknowledgement`, {
+      note: 'after cancellation, the maker reported delivery',
+      acknowledgedAt: new Date().toISOString()
+    });
+    expect(acknowledgement.status).toBe(201);
+    expect(acknowledgement.body).toMatchObject({
+      acknowledgementKind: 'POST_DELIVERY_CONFIRMATION',
+      replacementPaperLive: true
+    });
+    expect((await orderRow(chain.orderId))?.status).toBe('MAKER_PO_READY');
+    expect((await poRow(cancelledPoId))?.status).toBe('CANCELLED');
+    expect((await poRow(replacementId))?.status).toBe('DRAFT');
+  });
+
+  it('rejects a racing duplicate confirmed manual verification inside the transaction', async () => {
+    const chain = await reachMakerPoReady(`R8L1-${nextTag()}`);
+    const poId = ((await createMakerPo(chain.orderId)).body as { id: string }).id;
+    expect((await approveMakerPo(poId)).status).toBe(200);
+    const pending = await sendHeaderCleanEml(poId, chain.orderCode, { kind: 'none', artworkBytes: chain.artworkBytes });
+    const pendingBody = pending.body as { verificationStatus: string; event: { id: string } };
+    expect(pendingBody.verificationStatus).toBe('PENDING_MANUAL_VERIFICATION');
+
+    const originalTransaction = db.transaction.bind(db);
+    let injectDuplicate = true;
+    (db as unknown as { transaction: unknown }).transaction = async (
+      callback: Parameters<typeof originalTransaction>[0],
+      ...rest: unknown[]
+    ) => {
+      if (injectDuplicate) {
+        injectDuplicate = false;
+        await db.insert(makerPoSendManualVerifications).values({
+          id: uuidv7(), makerPoEventId: pendingBody.event.id, makerPurchaseOrderId: poId,
+          result: 'confirmed', verifierName: '先行確認', verifiedAt: new Date(),
+          reasonNote: 'race winner', recordedByUserId: adminId, recordedAt: new Date()
+        });
+      }
+      return originalTransaction(callback, ...rest as []);
+    };
+    let confirmation;
+    try {
+      confirmation = await postAs(adminToken, `/api/maker-po-events/${pendingBody.event.id}/send-manual-verification`, {
+        result: 'confirmed', verifierName: '合成代表者', verifiedAt: new Date().toISOString(), reasonNote: 'racing loser'
+      });
+    } finally {
+      (db as unknown as { transaction: unknown }).transaction = originalTransaction;
+    }
+    expect(confirmation?.status).toBe(422);
+    expect(confirmation?.body).toMatchObject({ code: 'MAKER_PO_SEND_ALREADY_CONFIRMED' });
+    expect(await db.select().from(makerPoSendManualVerifications)
+      .where(eq(makerPoSendManualVerifications.makerPoEventId, pendingBody.event.id))).toHaveLength(1);
+  });
+
+  it('rejects non-UUID evidence IDs before boundary recheck writes', async () => {
+    const chain = await reachMakerPoReady(`R8L2-${nextTag()}`);
+    const poId = ((await createMakerPo(chain.orderId)).body as { id: string }).id;
+    expect((await approveMakerPo(poId)).status).toBe(200);
+    const auditCount = (await db.select().from(auditEvents)).length;
+    const sent = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
+      evidenceDocumentVersionId: 'not-a-uuid',
+      sentAt: new Date().toISOString()
+    });
+    const accepted = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {
+      evidenceDocumentVersionId: 'not-a-uuid',
+      acceptedAt: new Date().toISOString()
+    });
+    expect(sent.status).toBe(422);
+    expect(sent.body).toMatchObject({ code: 'SEND_EVIDENCE_DOCUMENT_VERSION_INVALID' });
+    expect(accepted.status).toBe(422);
+    expect(accepted.body).toMatchObject({ code: 'ACCEPT_EVIDENCE_DOCUMENT_VERSION_INVALID' });
+    expect((await db.select().from(auditEvents)).length).toBe(auditCount);
+  });
+
+  it('returns 400 for representative non-UUID paths', async () => {
+    const responses = await Promise.all([
+      postAs(adminToken, '/api/film-supply-orders/not-a-uuid/transitions', { to: 'DRAFT' }),
+      postAs(adminToken, '/api/film-supply-orders/not-a-uuid/maker-purchase-orders', { recipientAddress: 'x' }),
+      getAs(adminToken, '/api/maker-purchase-orders/not-a-uuid')
+    ]);
+    expect(responses.map((response) => response.status)).toEqual([400, 400, 400]);
+    expect(responses.map((response) => (response.body as { code: string }).code))
+      .toEqual(['INVALID_PATH_PARAMETER', 'INVALID_PATH_PARAMETER', 'INVALID_PATH_PARAMETER']);
+  });
+
+  it('requires strict post-cancellation acknowledgement time', async () => {
+    const chain = await reachMakerPoReady(`R8L4-${nextTag()}`);
+    const poId = ((await createMakerPo(chain.orderId)).body as { id: string }).id;
+    await sendVerifiedEml(poId, chain.orderCode, chain.artworkBytes);
+    expect((await cancelMakerPo(poId, 'proven send correction')).status).toBe(200);
+    const badFormats = await Promise.all([
+      postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, { note: 'n', acknowledgedAt: '1' }),
+      postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, { note: 'n', acknowledgedAt: 'Nov 18' }),
+      postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, { note: 'n', acknowledgedAt: '2026-11-18T10:00:00' }),
+      postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, { note: 'n', acknowledgedAt: '2001-01-02T00:00:00Z' })
+    ]);
+    expect(badFormats.map((response) => response.status)).toEqual([422, 422, 422, 422]);
+    expect(badFormats.map((response) => (response.body as { code: string }).code)).toEqual([
+      'MAKER_CANCELLATION_ACK_TIME_FORMAT_INVALID',
+      'MAKER_CANCELLATION_ACK_TIME_FORMAT_INVALID',
+      'MAKER_CANCELLATION_ACK_TIME_FORMAT_INVALID',
+      'MAKER_CANCELLATION_ACK_TIME_BEFORE_CANCELLATION'
+    ]);
+  });
+
+  it('rejects future manual verification times', async () => {
+    const chain = await reachMakerPoReady(`R8L5-${nextTag()}`);
+    const poId = ((await createMakerPo(chain.orderId)).body as { id: string }).id;
+    expect((await approveMakerPo(poId)).status).toBe(200);
+    const pending = await sendHeaderCleanEml(poId, chain.orderCode, { kind: 'none', artworkBytes: chain.artworkBytes });
+    const pendingBody = pending.body as { verificationStatus: string; event: { id: string } };
+    const response = await postAs(adminToken, `/api/maker-po-events/${pendingBody.event.id}/send-manual-verification`, {
+      result: 'confirmed', verifierName: '合成代表者', verifiedAt: '2099-01-01T00:00:00.000Z', reasonNote: 'future'
+    });
+    expect(response.status).toBe(422);
+    expect(response.body).toMatchObject({ code: 'VERIFIED_AT_IN_FUTURE' });
+    expect(await db.select().from(makerPoSendManualVerifications)
+      .where(eq(makerPoSendManualVerifications.makerPoEventId, pendingBody.event.id))).toHaveLength(0);
+  });
+
+  it('rechecks acknowledgement evidence under a shared lock before recording', async () => {
+    const chain = await reachMakerPoReady(`R8L6-${nextTag()}`);
+    const poId = ((await createMakerPo(chain.orderId)).body as { id: string }).id;
+    await sendVerifiedEml(poId, chain.orderCode, chain.artworkBytes);
+    expect((await cancelMakerPo(poId, 'proven send correction')).status).toBe(200);
+    const evidence = await uploadDocument({
+      documentType: 'acceptance_evidence', issuerEntity: 'kanei', orderId: chain.orderId,
+      poId: chain.poId, makerPoId: poId, content: 'ack evidence\n'
+    });
+    expect((await postAs(staffToken, `/api/documents/${evidence.document.id}/verify`, {
+      verificationStatus: 'verified'
+    })).status).toBe(200);
+
+    const originalTransaction = db.transaction.bind(db);
+    let invalidateEvidence = true;
+    (db as unknown as { transaction: unknown }).transaction = async (
+      callback: Parameters<typeof originalTransaction>[0],
+      ...rest: unknown[]
+    ) => {
+      if (invalidateEvidence) {
+        invalidateEvidence = false;
+        await db.update(documents).set({ verificationStatus: 'mismatch', updatedAt: new Date() })
+          .where(eq(documents.id, evidence.document.id));
+      }
+      return originalTransaction(callback, ...rest as []);
+    };
+    let acknowledgement;
+    try {
+      acknowledgement = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, {
+        note: 'maker accepted', evidenceDocumentVersionId: evidence.version.id,
+        acknowledgedAt: new Date().toISOString()
+      });
+    } finally {
+      (db as unknown as { transaction: unknown }).transaction = originalTransaction;
+    }
+    expect(acknowledgement?.status).toBe(422);
+    expect(acknowledgement?.body).toMatchObject({ code: 'MAKER_CANCELLATION_ACK_EVIDENCE_MISMATCH' });
+    expect((await poEvents(poId)).filter((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED')).toHaveLength(0);
+  });
+
+  it('returns Japanese hold reason errors with stable codes', async () => {
+    const chain = await reachMakerPoReady(`R8L7-${nextTag()}`);
+    const missing = await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'ON_HOLD' });
+    const tooLong = await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
+      to: 'ON_HOLD', holdReason: 'a'.repeat(1001)
+    });
+    expect(missing.status).toBe(422);
+    expect(missing.body).toMatchObject({ code: 'HOLD_REASON_REQUIRED', error: '保留理由（holdReason）は必須です' });
+    expect(tooLong.status).toBe(422);
+    expect(tooLong.body).toMatchObject({ code: 'HOLD_REASON_TOO_LONG', error: '保留理由（holdReason）は1000文字以下で入力してください' });
   });
 });

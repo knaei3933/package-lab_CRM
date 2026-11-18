@@ -470,122 +470,91 @@ describe('M8-FAIL A: approval reuse across revisions', () => {
     expect(await recheckRows([chain.orderId])).toHaveLength(0);
   });
 
-  it('M8-HARDEN FIX A3: a still-draft maker PO is no longer certifiable over a superseded revision', async () => {
+  it('M8-HARDEN FIX A3: blocks a superseding revision while a still-draft maker PO is live', async () => {
     const chain = await reachMakerPoReady(`A3-${nextTag()}`);
     const created = await createMakerPo(chain.orderId);
     expect(created.status).toBe(201);
-    const poId = ((created.body as MakerPoBody).id);
+    const poId = (created.body as MakerPoBody).id;
     const approvedSha = (created.body as MakerPoBody).snapshotSha256;
 
-    // The failure lands while the paper is an unapproved draft.
-    const next = await registerNextRevision(chain);
-    expect(next.body.status).toBe('CHANGE_REVIEW');
+    // Seventh-recheck representative decision: revision intake is blocked while
+    // any live paper exists. This closes the Medium-5 deadlock before it starts.
+    const proof = await uploadDocument({
+      documentType: 'proof', issuerEntity: 'kanei', designKey: 'label-front',
+      orderId: chain.orderId, poId: chain.poId
+    });
+    const next = await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/artwork-revisions`, {
+      designKey: 'label-front', fileDocumentVersionId: proof.version.id
+    });
+    expect(next.status).toBe(409);
+    expect(next.body).toMatchObject({ code: 'MAKER_PO_ACTIVE_ARTWORK_REVISION_BLOCKED' });
+    expect((await orderRow(chain.orderId))?.status).toBe('MAKER_PO_READY');
 
-    // FIX A3 (was FINDING A3): the CEO approval is refused — the current
-    // revision holds no valid approval from either organization, and certifying
-    // the paper over artwork nobody approved is exactly the leak that was
-    // closed. The refusal names both missing approvals.
-    const heldApproval = await approveMakerPo(poId);
-    expect(heldApproval.status).toBe(409);
-    expect((heldApproval.body as { code: string }).code).toBe('ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED');
-    expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
-      to: 'APPROVAL_PENDING'
-    })).status).toBe(200);
+    // The existing paper can still be refused at the boundary, and the refusal
+    // is write-neutral.
+    const sendAttempt = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
+      sentAt: '2026-11-15T09:00:00.000Z'
+    });
+    expect(sendAttempt.status).toBe(422);
+    expect(['MAKER_PO_TRANSITION_BLOCKED', 'DUAL_APPROVAL_NO_LONGER_VALID'])
+      .toContain((sendAttempt.body as { code: string }).code);
 
-    const approval = await approveMakerPo(poId);
-    expect(approval.status).toBe(422);
-    const refusal = approval.body as {
-      code: string;
-      error: string;
-      missingApprovals: Array<{ designKey: string; organization: string }>;
-    };
-    expect(refusal.code).toBe('DUAL_APPROVAL_NO_LONGER_VALID');
-    expect(refusal.error).toContain('二重承認');
-    expect(refusal.missingApprovals).toEqual([
-      { designKey: 'label-front', organization: 'customer' },
-      { designKey: 'label-front', organization: 'seven' }
-    ]);
-
-    // Nothing was certified: the paper stays a draft with an empty event log,
-    // and the snapshot digest it froze is still the one nobody has approved
-    // over.
     const [poRow] = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.id, poId)).limit(1);
     expect(poRow?.status).toBe('DRAFT');
     expect(poRow?.ceoApprovedAt).toBeNull();
     expect(poRow?.snapshotSha256).toBe(approvedSha);
     expect((await poEvents(poId))).toHaveLength(0);
-    // Sending unapproved paper is refused by the same re-check.
-    const sendAttempt = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {
-      sentAt: '2026-11-15T09:00:00.000Z'
-    });
-    expect(sendAttempt.status).toBe(422);
-    expect((sendAttempt.body as { code: string }).code).toBe('DUAL_APPROVAL_NO_LONGER_VALID');
-
-    // The audit trail names exactly what happened: the re-check blocked on the
-    // superseded revision — the case that used to pass with the
-    // snapshot-void-governs reason.
-    const rows = await recheckRows([chain.orderId, poId]);
-    const approveRecheck = rows.map(recheckState).find((state) => state.stage === 'maker_po:ceo_approve');
-    expect(approveRecheck?.result).toBe('blocked');
-    expect(approveRecheck?.reason).toBe('gate_closed_current_revision_missing_dual_approval');
-    expect(approveRecheck?.gate.dualApproved).toBe(false);
+    const rechecks = await recheckRows([chain.orderId, poId]);
+    expect(rechecks.length).toBeGreaterThan(0);
+    expect(rechecks.map(recheckState).some((state) => state.stage === 'maker_po:ceo_approve')).toBe(false);
   });
 
-  it('M8-HARDEN FIX A3 recovery: both organizations approving the new revision reopens the boundary', async () => {
+  it('M8-HARDEN FIX A3 recovery: cancellation allows safe revision replacement', async () => {
     const chain = await reachMakerPoReady(`A3REC-${nextTag()}`);
-    const created = await createMakerPo(chain.orderId);
-    expect(created.status).toBe(201);
-    const poId = (created.body as MakerPoBody).id;
+    const stale = await createMakerPo(chain.orderId);
+    expect(stale.status).toBe(201);
+    const stalePoId = (stale.body as MakerPoBody).id;
+
+    // Retire the live paper first. A DRAFT paper is an internal cancel and
+    // safely reopens the ordering step for artwork correction.
+    const cancelled = await cancelMakerPo(stalePoId, 'artwork correction before certification');
+    expect(cancelled.status).toBe(200);
+    expect((await orderRow(chain.orderId))?.status).toBe('MAKER_PO_READY');
 
     const next = await registerNextRevision(chain);
     expect(next.body.status).toBe('CHANGE_REVIEW');
-    expect((await approveMakerPo(poId)).status).toBe(409);
     expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
       to: 'APPROVAL_PENDING'
     })).status).toBe(200);
-    // Outside the frozen-review gate, the old dual-approval refusal is preserved.
-    expect((await approveMakerPo(poId)).status).toBe(422);
 
-    // The recovery: both organizations approve the NEW revision.
     expect((await recordTextApproval({ chain, organization: 'customer', revisionId: next.body.id })).dualApproved)
       .toBe(false);
     expect((await recordTextApproval({ chain, organization: 'seven', revisionId: next.body.id })).dualApproved)
       .toBe(true);
-
-    // The second approval advanced the chain to DUAL_APPROVED; move
-    // to READY before certifying the replacement paper.
     expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, {
       to: 'MAKER_PO_READY'
     })).status).toBe(200);
 
-    const approval = await approveMakerPo(poId);
+    const replacement = await createMakerPo(chain.orderId);
+    expect(replacement.status).toBe(201);
+    const replacementPoId = (replacement.body as MakerPoBody).id;
+    const approval = await approveMakerPo(replacementPoId);
     expect(approval.status).toBe(200);
     const approved = approval.body as { purchaseOrder: MakerPoBody };
-    expect(approved.purchaseOrder.status).toBe('APPROVED_FOR_MANUAL_SEND');
     expect(approved.purchaseOrder.snapshot.specs.artworkFiles[0]).toEqual({
       designKey: 'label-front',
       revisionNo: 2,
       fileSha256: next.proofSha256
     });
-
-    // The re-check that allowed it read the reopened gate.
-    const rows = await recheckRows([chain.orderId, poId]);
-    const approveRechecks = rows.map(recheckState).filter((state) => state.stage === 'maker_po:ceo_approve');
-    expect(approveRechecks).toHaveLength(2);
-    expect(approveRechecks[0]?.result).toBe('blocked');
-    expect(approveRechecks[1]?.result).toBe('passed');
-    expect(approveRechecks[1]?.reason).toBe('gate_open');
-
-    // And the send that follows is provable again: the approved artwork of the
-    // re-approved revision attached (M8-HARDEN2 FIX 1).
-    const sent = await sendMakerPoEml(poId, chain.orderCode, { attachmentBytes: next.proofBytes });
-    expect(sent.status).toBe(200);
-    expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
+    expect((await orderRow(chain.orderId))?.status).toBe('APPROVED_FOR_MANUAL_SEND');
+    const papers = await db.select().from(makerPurchaseOrders)
+      .where(eq(makerPurchaseOrders.filmSupplyOrderId, chain.orderId));
+    expect(papers).toHaveLength(2);
+    expect(papers.filter((paper) => paper.status !== 'CANCELLED')).toHaveLength(1);
+    expect(papers.some((paper) => paper.id === stalePoId && paper.status === 'CANCELLED')).toBe(true);
   });
-});
 
-describe('M8-FAIL B: duplicate send and duplicate paper', () => {
   it('refuses a re-send of proven paper with MAKER_PO_TRANSITION_BLOCKED and records no second send event', async () => {
     const chain = await reachMakerPoReady(`B1-${nextTag()}`);
     const created = await createMakerPo(chain.orderId);

@@ -6,6 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
 import {
   accounts,
+  artworkApprovalEvents,
   artworkRevisions,
   createDatabase,
   documents,
@@ -300,5 +301,62 @@ describe('stored EML evidence identifier (G6)', () => {
       approvalEvent: { evidenceIdentifier: MESSAGE_ID, evidenceIdentifierStatus: 'verified_in_document' },
       countsTowardDualApproval: true
     });
+  });
+});
+
+
+describe('seventh recheck approval verification race guard', () => {
+  it('does not advance a concurrently frozen order after manual evidence verification', async () => {
+    const [revisionRow] = await db.select({ sha256: documentVersions.sha256 })
+      .from(artworkRevisions)
+      .innerJoin(documentVersions, sql`document_versions.id = ${artworkRevisions.fileDocumentVersionId}`)
+      .where(sql`${artworkRevisions.id} = ${revisionId}`);
+    const sha256 = revisionRow?.sha256 ?? 'b'.repeat(64);
+    const now = new Date();
+    const customerId = uuidv7();
+    const sevenId = uuidv7();
+    await db.insert(artworkApprovalEvents).values([
+      {
+        id: customerId, artworkRevisionId: revisionId, organization: 'customer' as const,
+        decision: 'APPROVE' as const, approvedFileSha256: sha256,
+        recordedAt: now, eventTime: now, evidenceDocumentVersionId: emlVersionId,
+        evidenceIdentifier: MESSAGE_ID, evidenceIdentifierStatus: 'pending_manual_verification' as const,
+        evidenceSource: 'email' as const, recordedByUserId: adminId
+      },
+      {
+        id: sevenId, artworkRevisionId: revisionId, organization: 'seven' as const,
+        decision: 'APPROVE' as const, approvedFileSha256: sha256,
+        recordedAt: now, eventTime: now, evidenceDocumentVersionId: emlVersionId,
+        evidenceIdentifier: MESSAGE_ID, evidenceIdentifierStatus: 'verified_in_document' as const,
+        evidenceSource: 'email' as const, recordedByUserId: adminId
+      }
+    ]);
+
+    const originalTransaction = db.transaction.bind(db);
+    let injectHold = true;
+    (db as unknown as { transaction: unknown }).transaction = async (
+      callback: Parameters<typeof originalTransaction>[0],
+      ...rest: unknown[]
+    ) => {
+      if (injectHold) {
+        injectHold = false;
+        await db.update(filmSupplyOrders).set({ status: 'ON_HOLD', updatedAt: new Date() })
+          .where(sql`id = ${orderId}`);
+      }
+      return originalTransaction(callback, ...rest as []);
+    };
+    let verification;
+    try {
+      verification = await postAs(adminToken, `/api/artwork-approval-events/${customerId}/verification`, {
+        result: 'confirmed', verifierName: '代表', verifiedAt: new Date().toISOString(), reasonNote: '原本確認'
+      });
+    } finally {
+      (db as unknown as { transaction: unknown }).transaction = originalTransaction;
+    }
+
+    expect(verification?.status).toBe(201);
+    expect(verification?.body).toMatchObject({ orderStatus: 'ON_HOLD' });
+    const [row] = await db.select().from(filmSupplyOrders).where(sql`id = ${orderId}`);
+    expect(row?.status).toBe('ON_HOLD');
   });
 });
