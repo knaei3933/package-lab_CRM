@@ -416,30 +416,213 @@ export interface PdfTextLayerPage {
   text: string;
 }
 
+type PdfDictionary = Map<string, PdfValue>;
+type PdfValue =
+  | { kind: 'name'; value: string }
+  | { kind: 'number'; value: string }
+  | { kind: 'reference'; id: number }
+  | { kind: 'array'; values: Array<PdfValue> }
+  | { kind: 'dictionary'; value: PdfDictionary }
+  | { kind: 'opaque' };
+
 interface ParsedPdfObject {
   id: number;
-  /** The object dictionary, without the trailing `stream` keyword. */
-  header: string;
+  dictionary: PdfDictionary;
   stream: Buffer | null;
 }
 
 type PdfObjectMap = Map<number, ParsedPdfObject>;
-type PdfObjectParse = { valid: true; objects: PdfObjectMap } | { valid: false };
+type PdfDocumentParse =
+  | { valid: true; objects: PdfObjectMap; rootId: number }
+  | { valid: false };
 
 const PDF_MAX_OBJECTS = 5000;
 const PDF_MAX_STREAMS = 1000;
 const PDF_MAX_PAGES = 1000;
 const PDF_MAX_CONTENT_REFERENCES = 20;
 const PDF_MAX_STREAM_OUTPUT_BYTES = 8 * 1024 * 1024;
+const PDF_MAX_CONTENT_BYTES = 8 * 1024 * 1024;
 const PDF_MAX_TOTAL_DECODED_BYTES = 32 * 1024 * 1024;
+const PDF_MIN_FONT_SIZE = 0.5;
 
 interface PdfDecodeBudget {
   decodedBytes: number;
+  contentBytes: number;
   exhausted: boolean;
   decodedStreams: Map<number, string>;
 }
 
-function parsePdfObjects(bytes: Buffer): PdfObjectParse {
+interface PdfLexToken {
+  kind: 'dictOpen' | 'dictClose' | 'arrayOpen' | 'arrayClose' | 'name' | 'number' | 'string' | 'keyword';
+  value: string;
+}
+
+/** Lexes PDF object syntax without treating names or strings as dictionary keys. */
+function lexPdfTokens(text: string): Array<PdfLexToken> | null {
+  const tokens: Array<PdfLexToken> = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const character = text[cursor]!;
+    if (/\s/.test(character)) {
+      cursor += 1;
+      continue;
+    }
+    if (character === '%') {
+      const end = text.slice(cursor).search(/\r\n|\n|\r/);
+      if (end < 0) break;
+      cursor += end + (text.slice(cursor + end).startsWith('\r\n') ? 2 : 1);
+      continue;
+    }
+    if (text.startsWith('<<', cursor)) {
+      tokens.push({ kind: 'dictOpen', value: '<<' });
+      cursor += 2;
+      continue;
+    }
+    if (text.startsWith('>>', cursor)) {
+      tokens.push({ kind: 'dictClose', value: '>>' });
+      cursor += 2;
+      continue;
+    }
+    if (character === '[') {
+      tokens.push({ kind: 'arrayOpen', value: '[' });
+      cursor += 1;
+      continue;
+    }
+    if (character === ']') {
+      tokens.push({ kind: 'arrayClose', value: ']' });
+      cursor += 1;
+      continue;
+    }
+    if (character === '(') {
+      let depth = 1;
+      let index = cursor + 1;
+      let escaped = false;
+      while (index < text.length && depth > 0) {
+        const current = text[index]!;
+        if (escaped) escaped = false;
+        else if (current === '\\') escaped = true;
+        else if (current === '(') depth += 1;
+        else if (current === ')') depth -= 1;
+        index += 1;
+      }
+      if (depth !== 0) return null;
+      tokens.push({ kind: 'string', value: text.slice(cursor, index) });
+      cursor = index;
+      continue;
+    }
+    if (character === '<') {
+      const close = text.indexOf('>', cursor + 1);
+      if (close < 0) return null;
+      tokens.push({ kind: 'string', value: text.slice(cursor, close + 1) });
+      cursor = close + 1;
+      continue;
+    }
+    if (character === '/') {
+      let index = cursor + 1;
+      while (index < text.length && !/[\s/<>\[\](){}]/.test(text[index] ?? '')) index += 1;
+      if (index === cursor + 1) return null;
+      tokens.push({ kind: 'name', value: text.slice(cursor + 1, index) });
+      cursor = index;
+      continue;
+    }
+    let index = cursor;
+    while (index < text.length && !/[\s/<>\[\](){}]/.test(text[index] ?? '')) index += 1;
+    if (index === cursor) return null;
+    const value = text.slice(cursor, index);
+    tokens.push({
+      kind: /^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(value) ? 'number' : 'keyword',
+      value
+    });
+    cursor = index;
+  }
+  return tokens;
+}
+
+function parsePdfDictionary(tokens: Array<PdfLexToken>, start: number): { value: PdfDictionary; next: number } | null {
+  if (tokens[start]?.kind !== 'dictOpen') return null;
+  const value: PdfDictionary = new Map();
+  let index = start + 1;
+  for (;;) {
+    const token = tokens[index];
+    if (token === undefined) return null;
+    if (token.kind === 'dictClose') return { value, next: index + 1 };
+    if (token.kind !== 'name') return null;
+    const key = token.value;
+    if (value.has(key)) return null; // duplicate top-level keys are ambiguous
+    index += 1;
+
+    let child: PdfValue | null = null;
+    const current = tokens[index];
+    if (current === undefined) return null;
+    if (current.kind === 'dictOpen') {
+      const parsed = parsePdfDictionary(tokens, index);
+      if (parsed === null) return null;
+      child = { kind: 'dictionary', value: parsed.value };
+      index = parsed.next;
+    } else if (current.kind === 'arrayOpen') {
+      index += 1;
+      const values: Array<PdfValue> = [];
+      for (;;) {
+        const member = tokens[index];
+        if (member === undefined) return null;
+        if (member.kind === 'arrayClose') {
+          index += 1;
+          break;
+        }
+        if (member.kind === 'dictOpen') {
+          const parsed = parsePdfDictionary(tokens, index);
+          if (parsed === null) return null;
+          values.push({ kind: 'dictionary', value: parsed.value });
+          index = parsed.next;
+          continue;
+        }
+        if (member.kind === 'number' && tokens[index + 1]?.kind === 'number'
+          && tokens[index + 2]?.kind === 'keyword' && tokens[index + 2]?.value === 'R') {
+          values.push({ kind: 'reference', id: Number.parseInt(member.value, 10) });
+          index += 3;
+          continue;
+        }
+        if (member.kind === 'name') values.push({ kind: 'name', value: member.value });
+        else if (member.kind === 'number') values.push({ kind: 'number', value: member.value });
+        else if (member.kind === 'string') values.push({ kind: 'opaque' });
+        else return null;
+        index += 1;
+      }
+      child = { kind: 'array', values };
+    } else if (current.kind === 'name') {
+      child = { kind: 'name', value: current.value };
+      index += 1;
+    } else if (current.kind === 'number') {
+      if (tokens[index + 1]?.kind === 'number'
+        && tokens[index + 2]?.kind === 'keyword' && tokens[index + 2]?.value === 'R') {
+        child = { kind: 'reference', id: Number.parseInt(current.value, 10) };
+        index += 3;
+      } else {
+        child = { kind: 'number', value: current.value };
+        index += 1;
+      }
+    } else if (current.kind === 'string') {
+      child = { kind: 'opaque' };
+      index += 1;
+    } else if (current.kind === 'keyword' && /^(?:true|false|null)$/.test(current.value)) {
+      child = { kind: 'opaque' };
+      index += 1;
+    } else {
+      return null;
+    }
+    value.set(key, child);
+  }
+}
+
+function parsePdfObjectDictionary(header: string): PdfDictionary | null {
+  const tokens = lexPdfTokens(header);
+  if (tokens === null || tokens.length === 0 || tokens[0]?.kind !== 'dictOpen') return null;
+  const parsed = parsePdfDictionary(tokens, 0);
+  if (parsed === null || parsed.next !== tokens.length) return null;
+  return parsed.value;
+}
+
+function parsePdfObjects(bytes: Buffer): PdfObjectMap | null {
   const latin = bytes.toString('latin1');
   const objects: PdfObjectMap = new Map();
   let streamCount = 0;
@@ -450,93 +633,147 @@ function parsePdfObjects(bytes: Buffer): PdfObjectParse {
     const match = objectPattern.exec(latin);
     if (match === null) break;
     const id = Number.parseInt(match[1] ?? '', 10);
-    if (!Number.isInteger(id) || id <= 0 || objects.has(id) || objects.size >= PDF_MAX_OBJECTS) {
-      return { valid: false };
-    }
+    if (!Number.isInteger(id) || id <= 0 || objects.has(id) || objects.size >= PDF_MAX_OBJECTS) return null;
     const objectStart = match.index + match[0].length;
     const objectEnd = latin.indexOf('endobj', objectStart);
-    if (objectEnd < 0) return { valid: false };
+    if (objectEnd < 0) return null;
 
     const streamStart = latin.indexOf('stream', objectStart);
     const hasStream = streamStart >= 0 && streamStart < objectEnd;
+    let dictionary: PdfDictionary | null;
+    let stream: Buffer | null = null;
     if (!hasStream) {
-      objects.set(id, { id, header: latin.slice(objectStart, objectEnd), stream: null });
+      dictionary = parsePdfObjectDictionary(latin.slice(objectStart, objectEnd));
+      if (dictionary === null) return null;
       cursor = objectEnd + 'endobj'.length;
-      continue;
+    } else {
+      let dataStart = streamStart + 'stream'.length;
+      if (latin[dataStart] === '\r') dataStart += 1;
+      if (latin[dataStart] === '\n') dataStart += 1;
+      const dataEnd = latin.indexOf('endstream', dataStart);
+      if (dataEnd < 0 || dataEnd > objectEnd) return null;
+      const endObject = latin.indexOf('endobj', dataEnd);
+      if (endObject !== objectEnd) return null;
+      dictionary = parsePdfObjectDictionary(latin.slice(objectStart, streamStart));
+      if (dictionary === null) return null;
+      stream = Buffer.from(latin.slice(dataStart, dataEnd), 'latin1');
+      streamCount += 1;
+      if (streamCount > PDF_MAX_STREAMS) return null;
+      cursor = endObject + 'endobj'.length;
     }
 
-    let dataStart = streamStart + 'stream'.length;
-    if (latin[dataStart] === '\r') dataStart += 1;
-    if (latin[dataStart] === '\n') dataStart += 1;
-    const dataEnd = latin.indexOf('endstream', dataStart);
-    if (dataEnd < 0 || dataEnd > objectEnd) return { valid: false };
-    const endObject = latin.indexOf('endobj', dataEnd);
-    if (endObject !== objectEnd) return { valid: false };
-    streamCount += 1;
-    if (streamCount > PDF_MAX_STREAMS) return { valid: false };
-    objects.set(id, {
-      id,
-      header: latin.slice(objectStart, streamStart),
-      stream: Buffer.from(latin.slice(dataStart, dataEnd), 'latin1')
-    });
-    cursor = endObject + 'endobj'.length;
+    // Object streams and cross-reference streams require a full PDF parser that
+    // this intentionally conservative verifier deliberately does not implement.
+    const typeName = dictionary.get('Type');
+    if (typeName?.kind === 'name' && /^(?:ObjStm|XRef)$/.test(typeName.value)) return null;
+  if (/\/Type\s*\/[^\s]*#/.test(latin.slice(objectStart, hasStream ? streamStart : objectEnd))) {
+    return null;
   }
-  // These container formats require a full PDF object parser that this
-  // intentionally conservative verifier does not implement.
-  for (const object of objects.values()) {
-    if (/\/Type\s*\/(?:ObjStm|XRef)(?![A-Za-z0-9_])/.test(object.header)) return { valid: false };
-    if (/\/Type\s*\/[^\s]*#/.test(object.header)) return { valid: false };
+    objects.set(id, { id, dictionary, stream });
   }
-  return objects.size > 0 ? { valid: true, objects } : { valid: false };
+  const result = objects.size > 0 ? objects : null;
+  return result;
 }
 
-function findDictionaryValue(dictionary: string, key: string): { start: number; value: string } | null {
-  const keyPattern = new RegExp(`/${key}(?![A-Za-z0-9_])`);
-  const match = keyPattern.exec(dictionary);
-  if (match === null) return null;
-  let cursor = match.index + match[0].length;
-  while (cursor < dictionary.length && /\s/.test(dictionary[cursor] ?? '')) cursor += 1;
-  if (dictionary[cursor] !== '<') {
-    // Bound the direct value (for example `3 0 R`) before the next `/Key`.
-    const nextKey = dictionary.indexOf('/', cursor + 1);
-    const end = nextKey < 0 ? dictionary.length : nextKey;
-      const close = dictionary.indexOf('>>', cursor + 1);
-      const boundedEnd = close >= 0 && close < end ? close : end;
-      return { start: cursor, value: dictionary.slice(cursor, boundedEnd) };
+function parseTrailerRoot(bytes: Buffer): number | null {
+  const latin = bytes.toString('latin1');
+  const trailerPattern = /(?:^|[\r\n\t\f\v ])trailer(?=\s)/g;
+  let rootId: number | null = null;
+  let trailerCount = 0;
+  for (let match = trailerPattern.exec(latin); match !== null; match = trailerPattern.exec(latin)) {
+    trailerCount += 1;
+    if (trailerCount > 1) return null;
+    const tokens = lexPdfTokens(latin.slice(match.index + match[0].length));
+    if (tokens === null || tokens[0]?.kind !== 'dictOpen') return null;
+    const parsed = parsePdfDictionary(tokens, 0);
+    if (parsed === null) return null;
+    const root = parsed.value.get('Root');
+    if (root?.kind !== 'reference') return null;
+    rootId = root.id;
   }
-  const open = cursor;
-  let depth = 0;
-  for (let index = open; index < dictionary.length; index += 1) {
-    if (dictionary.startsWith('<<', index)) {
-      depth += 1;
-      index += 1;
-    } else if (dictionary.startsWith('>>', index)) {
-      depth -= 1;
-      if (depth === 0) return { start: open, value: dictionary.slice(open, index + 2) };
-      index += 1;
-    }
+  return trailerCount === 1 ? rootId : null;
+}
+
+function pdfHeaderOffset(bytes: Buffer): number | null {
+  // PDF permits up to 1024 bytes before its header.
+  const index = bytes.indexOf('%PDF-');
+  return index >= 0 && index <= 1023 ? index : null;
+}
+
+function parsePdfDocument(bytes: Buffer): { objects: PdfObjectMap; rootId: number } | null {
+  const offset = pdfHeaderOffset(bytes);
+  if (offset === null) return null;
+  const body = bytes.subarray(offset);
+  const objects = parsePdfObjects(body);
+  if (objects === null) return null;
+  const rootId = parseTrailerRoot(body);
+  if (rootId === null || !objects.has(rootId)) return null;
+  const root = objects.get(rootId)!;
+  const type = root.dictionary.get('Type');
+  if (type?.kind !== 'name' || type.value !== 'Catalog') return null;
+  const catalogs = [...objects.values()].filter((object) => {
+    const objectType = object.dictionary.get('Type');
+    return objectType?.kind === 'name' && objectType.value === 'Catalog';
+  });
+  return catalogs.length === 1 && objects.has(rootId) ? { objects, rootId } : null;
+}
+
+function dictionaryValue(dictionary: PdfDictionary, key: string): PdfValue | null {
+  return dictionary.get(key) ?? null;
+}
+
+function directDictionaryName(dictionary: PdfDictionary, key: string): string | null {
+  const value = dictionaryValue(dictionary, key);
+  if (value?.kind !== 'name' || !/^[A-Za-z0-9]+$/.test(value.value)) return null;
+  return value.value;
+}
+
+function directDictionaryReference(dictionary: PdfDictionary, key: string): number | null {
+  const value = dictionaryValue(dictionary, key);
+  return value?.kind === 'reference' ? value.id : null;
+}
+
+function directArrayReferences(dictionary: PdfDictionary, key: string, max: number): Array<number> | null {
+  const value = dictionaryValue(dictionary, key);
+  if (value?.kind !== 'array' || value.values.length > max) return null;
+  const ids: number[] = [];
+  for (const member of value.values) {
+    if (member.kind !== 'reference') return null;
+    ids.push(member.id);
+  }
+  return ids;
+}
+
+function directNumber(dictionary: PdfDictionary, key: string): number | null {
+  const value = dictionaryValue(dictionary, key);
+  if (value?.kind !== 'number') return null;
+  const parsed = Number.parseFloat(value.value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function directMediaBox(dictionary: PdfDictionary): Array<number> | null {
+  const value = dictionaryValue(dictionary, 'MediaBox');
+  if (value?.kind !== 'array' || value.values.length !== 4) return null;
+  const numbers = value.values.map((entry) => entry.kind === 'number' ? Number.parseFloat(entry.value) : Number.NaN);
+  if (numbers.some((entry) => !Number.isFinite(entry)) || numbers[0]! > numbers[2]! || numbers[1]! > numbers[3]!) {
+    return null;
+  }
+  return numbers as Array<number>;
+}
+
+function pageMediaBox(page: ParsedPdfObject, objects: PdfObjectMap): Array<number> | null {
+  let current: ParsedPdfObject | undefined = page;
+  const visited = new Set<number>();
+  for (let depth = 0; current !== undefined && depth < 32; depth += 1) {
+    if (visited.has(current.id)) return null;
+    visited.add(current.id);
+    const box = directMediaBox(current.dictionary);
+    if (box !== null) return box;
+    const parentId = directDictionaryReference(current.dictionary, 'Parent');
+    if (parentId === null) return null;
+    current = objects.get(parentId);
   }
   return null;
-}
-
-function indirectRefs(value: string): Array<{ id: number }> {
-  const refs: Array<{ id: number }> = [];
-  const pattern = /(\d+)\s+\d+\s+R/g;
-  for (let match = pattern.exec(value); match !== null; match = pattern.exec(value)) {
-    refs.push({ id: Number.parseInt(match[1] ?? '', 10) });
-  }
-  return refs;
-}
-
-function boundedIndirectRefs(value: string, max: number): Array<{ id: number }> | null {
-  if (value.length > 128 * 1024) return null;
-  const refs: Array<{ id: number }> = [];
-  const pattern = /(\d+)\s+\d+\s+R/g;
-  for (let match = pattern.exec(value); match !== null; match = pattern.exec(value)) {
-    if (refs.length >= max) return null;
-    refs.push({ id: Number.parseInt(match[1] ?? '', 10) });
-  }
-  return refs;
 }
 
 function decodePdfStream(
@@ -544,23 +781,24 @@ function decodePdfStream(
   budget: PdfDecodeBudget
 ): { state: 'text' | 'indeterminate'; text: string } {
   if (budget.exhausted) return { state: 'indeterminate', text: '' };
-  const filters = object.header.match(/\/[A-Za-z][A-Za-z0-9]+Decode\b/g) ?? [];
-  if (filters.some((filter) => filter !== '/FlateDecode')) return { state: 'indeterminate', text: '' };
+  // Any parameters/predictor means this verifier cannot know the decoded bytes.
+  if (object.dictionary.has('DecodeParms') || object.dictionary.has('Predictor')) {
+    return { state: 'indeterminate', text: '' };
+  }
   const data = object.stream;
   if (data === null || data.length > PDF_MAX_STREAM_OUTPUT_BYTES) {
     budget.exhausted = true;
     return { state: 'indeterminate', text: '' };
   }
-  if (filters.length === 0) {
+  const filter = object.dictionary.get('Filter');
+  // Filter arrays are rejected even when their sole member is supported.
+  if (filter === undefined) {
     const text = data.toString('latin1');
-    budget.decodedBytes += data.length;
+    budget.decodedBytes += text.length;
     if (budget.decodedBytes > PDF_MAX_TOTAL_DECODED_BYTES) budget.exhausted = true;
     return { state: 'text', text };
   }
-  if (filters.length > 1) return { state: 'indeterminate', text: '' };
-  // Standard PDF FlateDecode uses zlib framing. A bare raw DEFLATE payload is
-  // accepted only when the standard framing fails. maxOutputLength stops a bomb
-  // before the Buffer is materialized at full expansion.
+  if (filter.kind !== 'name' || filter.value !== 'FlateDecode') return { state: 'indeterminate', text: '' };
   try {
     const inflated = inflateSync(data, { maxOutputLength: PDF_MAX_STREAM_OUTPUT_BYTES });
     if (inflated.length > PDF_MAX_STREAM_OUTPUT_BYTES
@@ -585,82 +823,61 @@ function decodePdfStream(
   }
 }
 
-type ResourceResolution =
-  | { valid: true; dictionary: string | null }
-  | { valid: false };
-
-function resolvePageResources(pageHeader: string, objects: PdfObjectMap): ResourceResolution {
-  let source = pageHeader;
-  const visited = new Set<string>();
-  for (;;) {
-    const resources = findDictionaryValue(source, 'Resources');
-    if (resources !== null) {
-      const trimmedValue = resources.value.trimStart();
-      if (trimmedValue.startsWith('<<')) return { valid: true, dictionary: resources.value };
-      const refs = boundedIndirectRefs(trimmedValue, 4);
-      if (refs === null || refs.length !== 1) return { valid: false };
-      const resourceObject = objects.get(refs[0]!.id);
+function resolvePageResources(
+  page: ParsedPdfObject,
+  objects: PdfObjectMap
+): { valid: true; dictionary: PdfDictionary | null } | { valid: false } {
+  let current: ParsedPdfObject | undefined = page;
+  const visited = new Set<number>();
+  for (let depth = 0; current !== undefined && depth < 32; depth += 1) {
+    if (visited.has(current.id)) return { valid: false };
+    visited.add(current.id);
+    const resourcesValue = dictionaryValue(current.dictionary, 'Resources');
+    if (resourcesValue !== null) {
+      if (resourcesValue.kind === 'dictionary') return { valid: true, dictionary: resourcesValue.value };
+      if (resourcesValue.kind !== 'reference') return { valid: false };
+      const resourceObject = objects.get(resourcesValue.id);
       if (resourceObject === undefined || resourceObject.stream !== null) return { valid: false };
-      const dictionary = findDictionaryValue(resourceObject.header, 'Resources');
-      if (dictionary === null || !dictionary.value.includes('<<')) return { valid: false };
-      return { valid: true, dictionary: dictionary.value };
+      const resources = dictionaryValue(resourceObject.dictionary, 'Resources');
+      if (resources?.kind !== 'dictionary') return { valid: false };
+      return { valid: true, dictionary: resources.value };
     }
-
-    const parent = findDictionaryValue(source, 'Parent');
-    if (parent === null) return { valid: true, dictionary: null };
-    const refs = boundedIndirectRefs(parent.value, 8);
-    if (refs === null || refs.length !== 1) return { valid: false };
-    const parentKey = String(refs[0]!.id);
-    if (visited.has(parentKey)) return { valid: false };
-    visited.add(parentKey);
-    const parentObject = objects.get(refs[0]!.id);
-    if (parentObject === undefined || parentObject.stream !== null) return { valid: false };
-    source = parentObject.header;
+    const parentId = directDictionaryReference(current.dictionary, 'Parent');
+    if (parentId === null) return { valid: true, dictionary: null };
+    current = objects.get(parentId);
   }
+  return { valid: false };
 }
 
-function resourceMap(resources: string | null, group: 'Font' | 'XObject'): Map<string, number> {
+function resourceMap(resources: PdfDictionary | null, group: string): Map<string, number> {
   const map = new Map<string, number>();
   if (resources === null) return map;
-  const groupDictionary = findDictionaryValue(resources, group);
-  if (groupDictionary === null || !groupDictionary.value.includes('<<')) return map;
-  const open = groupDictionary.value.indexOf('<<');
-  let depth = 0;
-  let end = -1;
-  for (let index = open; index < groupDictionary.value.length; index += 1) {
-    if (groupDictionary.value.startsWith('<<', index)) {
-      depth += 1;
-      index += 1;
-    } else if (groupDictionary.value.startsWith('>>', index)) {
-      depth -= 1;
-      if (depth === 0) {
-        end = index + 2;
-        break;
-      }
-      index += 1;
-    }
-  }
-  if (end < 0) return map;
-  const names = groupDictionary.value.slice(open, end);
-  const pattern = /\/([^\s/<>\[\]()]+)\s+(\d+)\s+\d+\s+R/g;
-  for (let match = pattern.exec(names); match !== null; match = pattern.exec(names)) {
-    const name = match[1];
-    const id = Number.parseInt(match[2] ?? '', 10);
-    if (name && Number.isInteger(id)) map.set(name, id);
+  const value = dictionaryValue(resources, group);
+  if (value?.kind !== 'dictionary') return map;
+  for (const [name, member] of value.value) {
+    if (member.kind === 'reference') map.set(name, member.id);
   }
   return map;
 }
 
 function parsePageContents(
-  pageHeader: string,
+  page: ParsedPdfObject,
   objects: PdfObjectMap,
   budget: PdfDecodeBudget
-): Array<string> | null {
-  const value = findDictionaryValue(pageHeader, 'Contents');
-  if (value === null) return null;
-  const refs = boundedIndirectRefs(value.value, PDF_MAX_CONTENT_REFERENCES);
-  if (refs === null || refs.length === 0) return null;
-  const uniqueIds = [...new Set(refs.map((ref) => ref.id))];
+): string | null {
+  const contentsValue = dictionaryValue(page.dictionary, 'Contents');
+  let references: Array<number>;
+  if (contentsValue?.kind === 'reference') {
+    references = [contentsValue.id];
+  } else if (contentsValue?.kind === 'array') {
+    const bounded = directArrayReferences(page.dictionary, 'Contents', PDF_MAX_CONTENT_REFERENCES);
+    if (bounded === null) return null;
+    references = bounded;
+  } else {
+    return null;
+  }
+  if (references === null || references.length === 0) return null;
+  const uniqueIds = [...new Set(references)];
   if (uniqueIds.length > PDF_MAX_CONTENT_REFERENCES) return null;
   const parts: string[] = [];
   for (const id of uniqueIds) {
@@ -673,31 +890,15 @@ function parsePageContents(
     if (object === undefined || object.stream === null) return null;
     const decoded = decodePdfStream(object, budget);
     if (decoded.state === 'indeterminate' || budget.exhausted) return null;
+    budget.contentBytes += decoded.text.length;
+    if (budget.contentBytes > PDF_MAX_CONTENT_BYTES) {
+      budget.exhausted = true;
+      return null;
+    }
     budget.decodedStreams.set(id, decoded.text);
     parts.push(decoded.text);
   }
-  return parts;
-}
-
-function directTypeName(header: string): string | null {
-  const value = findDictionaryValue(header, 'Type');
-  if (value === null) return null;
-  const name = value.value.trim();
-  return /^\/[A-Za-z0-9]+$/.test(name) ? name.slice(1) : null;
-}
-
-function directIndirectReference(header: string, key: string): number | null {
-  const value = findDictionaryValue(header, key);
-  if (value === null) return null;
-  const refs = boundedIndirectRefs(value.value, 1);
-  return refs !== null && refs.length === 1 ? refs[0]!.id : null;
-}
-
-function directPageCount(header: string): number | null {
-  const value = findDictionaryValue(header, 'Count');
-  if (value === null) return null;
-  const text = value.value.trim();
-  return /^\d+$/.test(text) ? Number.parseInt(text, 10) : null;
+  return parts.join('\n');
 }
 
 function collectPageTree(
@@ -708,32 +909,27 @@ function collectPageTree(
   if (ancestors.has(objectId)) return null;
   const object = objects.get(objectId);
   if (object === undefined || object.stream !== null) return null;
-  const typeName = directTypeName(object.header);
+  const typeName = directDictionaryName(object.dictionary, 'Type');
   if (typeName !== 'Page' && typeName !== 'Pages') return null;
 
-  const kidsValue = findDictionaryValue(object.header, 'Kids');
-  if (kidsValue === null || !kidsValue.value.includes('[')) return null;
-  const kids = boundedIndirectRefs(kidsValue.value, PDF_MAX_PAGES);
+  const kids = directArrayReferences(object.dictionary, 'Kids', PDF_MAX_PAGES);
   if (kids === null) return null;
-  const count = directPageCount(object.header);
-  if (count === null) return null;
+  const count = directNumber(object.dictionary, 'Count');
+  if (count === null || !Number.isInteger(count) || count !== kids.length) return null;
 
   const nextAncestors = new Set(ancestors);
   nextAncestors.add(objectId);
   const leaves: number[] = [];
-  for (const kid of kids) {
-    const kidObject = objects.get(kid.id);
-    if (kidObject === undefined || kidObject.stream !== null) return null;
-    const kidType = directTypeName(kidObject.header);
-    if (kidType === 'Page') {
-      leaves.push(kid.id);
-    } else if (kidType === 'Pages') {
-      const subtree = collectPageTree(kid.id, objects, nextAncestors);
+  for (const kidId of kids) {
+    const kid = objects.get(kidId);
+    if (kid === undefined || kid.stream !== null) return null;
+    const kidType = directDictionaryName(kid.dictionary, 'Type');
+    if (kidType === 'Page') leaves.push(kidId);
+    else if (kidType === 'Pages') {
+      const subtree = collectPageTree(kidId, objects, nextAncestors);
       if (subtree === null) return null;
       leaves.push(...subtree);
-    } else {
-      return null;
-    }
+    } else return null;
     if (leaves.length > PDF_MAX_PAGES) return null;
   }
   return leaves.length === count ? leaves : null;
@@ -828,14 +1024,14 @@ function tokenizePdfContent(content: string): Array<PdfContentToken> | null {
     }
     if (character === '/') {
       let index = cursor + 1;
-      while (index < content.length && !/[\s/<>\[\]()]/.test(content[index] ?? '')) index += 1;
+      while (index < content.length && !/[\s/<>\[\](){}]/.test(content[index] ?? '')) index += 1;
       if (index === cursor + 1) return null;
       tokens.push({ kind: 'name', value: content.slice(cursor + 1, index) });
       cursor = index;
       continue;
     }
     let index = cursor;
-    while (index < content.length && !/[\s/<>\[\]()]/.test(content[index] ?? '')) index += 1;
+    while (index < content.length && !/[\s/<>\[\](){}]/.test(content[index] ?? '')) index += 1;
     if (index === cursor) return null;
     const value = content.slice(cursor, index);
     tokens.push({
@@ -849,10 +1045,17 @@ function tokenizePdfContent(content: string): Array<PdfContentToken> | null {
   return tokens;
 }
 
-function isSimpleTextContent(content: string): boolean {
+function matrixIsIdentity(values: Array<PdfContentToken>): boolean {
+  if (values.length !== 6) return false;
+  const numbers = values.map((entry) => Number.parseFloat(entry.value));
+  return values.every((entry) => entry.kind === 'number') && numbers.every((entry) => Number.isFinite(entry))
+    && numbers[0] === 1 && numbers[1] === 0 && numbers[2] === 0 && numbers[3] === 1;
+}
+
+function isSimpleTextContent(content: string, mediaBox: Array<number>): boolean {
   const safeOperators = new Set([
-    'q', 'Q', 'cm', 'BT', 'ET', 'Tf', 'Td', 'TD', 'Tm', 'T*', 'Tj', 'TJ', "'", '"', 'Do',
-    'g', 'rg', 'k', 'Tr'
+    'BT', 'ET', 'Tf', 'Td', 'TD', 'Tm', 'T*', 'Tj', 'TJ', "'", '"',
+    'g', 'rg', 'k', 'Tr', 'Do'
   ]);
   const tokens = tokenizePdfContent(content);
   if (tokens === null) return false;
@@ -860,9 +1063,27 @@ function isSimpleTextContent(content: string): boolean {
     const token = tokens[index]!;
     if (token.kind !== 'operator') continue;
     if (!safeOperators.has(token.value)) return false;
+    const previous = (count: number) => tokens.slice(Math.max(0, index - count), index);
+
     if (token.value === 'Tf') {
       const size = tokens[index - 1];
-      if (size === undefined || size.kind !== 'number' || !(Number.parseFloat(size.value) > 0)) return false;
+      if (size === undefined || size.kind !== 'number') return false;
+      const parsed = Number.parseFloat(size.value);
+      if (!Number.isFinite(parsed) || parsed < PDF_MIN_FONT_SIZE) return false;
+    }
+    if (token.value === 'Td' || token.value === 'TD') {
+      const operands = previous(2);
+      if (operands.length !== 2 || operands.some((entry) => entry.kind !== 'number')) return false;
+      const x = Number.parseFloat(operands[0]!.value);
+      const y = Number.parseFloat(operands[1]!.value);
+      if (x < mediaBox[0]! || x > mediaBox[2]! || y < mediaBox[1]! || y > mediaBox[3]!) return false;
+    }
+    if (token.value === 'Tm') {
+      const operands = previous(6);
+      if (!matrixIsIdentity(operands)) return false;
+      const x = Number.parseFloat(operands[4]!.value);
+      const y = Number.parseFloat(operands[5]!.value);
+      if (x < mediaBox[0]! || x > mediaBox[2]! || y < mediaBox[1]! || y > mediaBox[3]!) return false;
     }
     if (token.value === 'Tr') {
       const mode = tokens[index - 1];
@@ -870,70 +1091,66 @@ function isSimpleTextContent(content: string): boolean {
         || !/^[+-]?\d+$/.test(mode.value) || Number.parseInt(mode.value, 10) !== 0) return false;
     }
     if (token.value === 'g') {
-      const values = tokens.slice(Math.max(0, index - 1), index);
+      const values = previous(1);
       if (values.length !== 1 || values.some((entry) => entry.kind !== 'number')) return false;
-      if (Number.parseFloat(values[0]!.value) === 1) return false;
+      if (Number.parseFloat(values[0]!.value) >= 0.95) return false;
     }
     if (token.value === 'rg') {
-      const values = tokens.slice(Math.max(0, index - 3), index);
+      const values = previous(3);
       if (values.length !== 3 || values.some((entry) => entry.kind !== 'number')) return false;
-      if (values.every((entry) => Number.parseFloat(entry.value) === 1)) return false;
+      if (values.every((entry) => Number.parseFloat(entry.value) >= 0.95)) return false;
     }
     if (token.value === 'k') {
-      const values = tokens.slice(Math.max(0, index - 4), index);
+      const values = previous(4);
       if (values.length !== 4 || values.some((entry) => entry.kind !== 'number')) return false;
-      if (values.every((entry) => Number.parseFloat(entry.value) === 0)) return false;
+      if (values.every((entry) => Number.parseFloat(entry.value) <= 0.05)) return false;
     }
   }
   return true;
 }
 
 /**
- * G5/G7: only the Catalog→Pages→Kids tree participates. Only its referenced
- * /Contents streams are decoded. Simple text pages can be automatic; images,
- * OCR layers, clipping/shading, unsupported operators and resource/budget
- * problems are all fail-closed.
+ * G5/G7: only the trailer /Root Catalog and its Catalog→Pages→Kids tree
+ * participate. Only referenced /Contents streams are decoded. Simple,
+ * visibly readable text pages can be automatic; opaque structure, images,
+ * OCR layers, clipping/shading and budget problems are fail-closed.
  */
 export function inspectPdfTextLayers(bytes: Buffer): PdfTextLayerPage[] {
   const indeterminate: PdfTextLayerPage[] = [{ state: 'indeterminate', text: '' }];
-  if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') return [];
-  const parsedObjects = parsePdfObjects(bytes);
-  if (!parsedObjects.valid) return indeterminate;
-
-  const catalogIds = [...parsedObjects.objects.entries()]
-    .filter(([, object]) => object.stream === null && directTypeName(object.header) === 'Catalog')
-    .map(([id]) => id);
-  if (catalogIds.length !== 1) return indeterminate;
-  const pagesId = directIndirectReference(
-    parsedObjects.objects.get(catalogIds[0]!)!.header,
-    'Pages'
-  );
+  if (pdfHeaderOffset(bytes) === null) return [];
+  const document = parsePdfDocument(bytes);
+  if (document === null) return indeterminate;
+  const catalog = document.objects.get(document.rootId)!;
+  const pagesId = directDictionaryReference(catalog.dictionary, 'Pages');
   if (pagesId === null) return indeterminate;
-  const pageIds = collectPageTree(pagesId, parsedObjects.objects, new Set());
+  const pageIds = collectPageTree(pagesId, document.objects, new Set());
   if (pageIds === null || pageIds.length === 0) return indeterminate;
 
   const budget: PdfDecodeBudget = {
     decodedBytes: 0,
+    contentBytes: 0,
     exhausted: false,
     decodedStreams: new Map()
   };
   const pages: PdfTextLayerPage[] = [];
   for (const pageId of pageIds) {
-    const page = parsedObjects.objects.get(pageId)!;
-    const contentParts = parsePageContents(page.header, parsedObjects.objects, budget);
-    if (contentParts === null || budget.exhausted) return indeterminate;
-    const cleanContent = stripPdfContentComments(contentParts.join('\n'));
-    if (cleanContent === null || !isSimpleTextContent(cleanContent)) return indeterminate;
+    const page = document.objects.get(pageId)!;
+    const mediaBox = pageMediaBox(page, document.objects);
+    if (mediaBox === null) return indeterminate;
+    const rawContent = parsePageContents(page, document.objects, budget);
+    if (rawContent === null || budget.exhausted) return indeterminate;
+    const cleanContent = stripPdfContentComments(rawContent);
+    if (cleanContent === null || !isSimpleTextContent(cleanContent, mediaBox)) return indeterminate;
 
     const text = extractPdfContentText(cleanContent);
-    const usedFonts = [...cleanContent.matchAll(/\/([^\s/<>\[\]()]+)\s+(?:[\d.]+\s+)?Tf(?=\s|$)/g)]
+    const usedFonts = [...cleanContent.matchAll(/\/([^\s/<>\[\](){}]+)\s+(?:[\d.]+\s+)?Tf(?=\s|$)/g)]
       .map((match) => match[1] ?? '');
-    const imageNames = [...cleanContent.matchAll(/\/([^\s/<>\[\]()]+)\s+Do(?=\s|$)/g)]
+    const imageNames = [...cleanContent.matchAll(/\/([^\s/<>\[\](){}]+)\s+Do(?=\s|$)/g)]
       .map((match) => match[1] ?? '');
 
-    let resources: string | null = null;
+    let resources: PdfDictionary | null = null;
     if (usedFonts.length > 0 || imageNames.length > 0) {
-      const resolution = resolvePageResources(page.header, parsedObjects.objects);
+      const resolution = resolvePageResources(page, document.objects);
       if (!resolution.valid) return indeterminate;
       resources = resolution.dictionary;
     }
@@ -942,9 +1159,9 @@ export function inspectPdfTextLayers(bytes: Buffer): PdfTextLayerPage[] {
       const fonts = resourceMap(resources, 'Font');
       const validFonts = usedFonts.every((name) => {
         const id = fonts.get(name);
-        const font = id === undefined ? undefined : parsedObjects.objects.get(id);
+        const font = id === undefined ? undefined : document.objects.get(id);
         return font !== undefined && font.stream === null
-          && /\/Type\s*\/Font(?![A-Za-z0-9_])/.test(font.header);
+          && directDictionaryName(font.dictionary, 'Type') === 'Font';
       });
       if (!validFonts) return indeterminate;
     }
@@ -954,9 +1171,9 @@ export function inspectPdfTextLayers(bytes: Buffer): PdfTextLayerPage[] {
       const xobjects = resourceMap(resources, 'XObject');
       hasImage = imageNames.every((name) => {
         const id = xobjects.get(name);
-        const xobject = id === undefined ? undefined : parsedObjects.objects.get(id);
+        const xobject = id === undefined ? undefined : document.objects.get(id);
         return xobject !== undefined && xobject.stream !== null
-          && /\/Subtype\s*\/Image(?![A-Za-z0-9_])/.test(xobject.header);
+          && directDictionaryName(xobject.dictionary, 'Subtype') === 'Image';
       });
       if (!hasImage) return indeterminate;
     }
@@ -1375,10 +1592,12 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
   const matchedAttachments = eml.attachments.filter((attachment) =>
     input.artworkFileSha256s.includes(attachment.sha256)
   );
+  const isDeclaredPdf = (attachment: EmlAttachment): boolean =>
+    attachment.contentType?.toLowerCase() === 'application/pdf'
+    || attachment.filename?.toLowerCase().endsWith('.pdf') === true;
   if (matchedAttachments.length > 0) {
-    const pdfPages = matchedAttachments
-      .filter((attachment) => attachment.bytes.subarray(0, 5).toString('latin1') === '%PDF-')
-      .flatMap((attachment) => inspectPdfTextLayers(attachment.bytes));
+    const matchedPdfs = matchedAttachments.filter(isDeclaredPdf);
+    const pdfPages = matchedPdfs.flatMap((attachment) => inspectPdfTextLayers(attachment.bytes));
     const hasIndeterminateLayer = pdfPages.some((page) => page.state === 'indeterminate');
     const hasScanLayer = pdfPages.some((page) => page.state === 'scan');
     const hasOcrLayer = pdfPages.some((page) => page.state === 'ocr');
@@ -1416,7 +1635,14 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
       checks.push(check('code_consistency', 'passed', requiredCodes.join(',')));
     }
     if (pdfPages.length === 0) {
-      checks.push(check('code_consistency', 'skipped', 'no PDF attachment'));
+      checks.push(check(
+        'code_consistency',
+        matchedPdfs.length > 0 ? 'failed' : 'skipped',
+        matchedPdfs.length > 0
+          ? 'a declared PDF could not be safely parsed: human verification required'
+          : 'no PDF attachment'
+      ));
+      if (matchedPdfs.length > 0) pendingCodes.push('PDF_TEXT_LAYER_INDETERMINATE');
     }
   } else {
     checks.push(check('code_consistency', 'skipped', 'no approved attachment'));

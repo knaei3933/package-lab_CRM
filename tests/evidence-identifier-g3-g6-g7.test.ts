@@ -26,6 +26,8 @@ interface TestPdfObject {
 }
 
 function buildPdf(objects: TestPdfObject[]): Buffer {
+  const catalog = objects.find((object) => /\/Type\s*\/Catalog(?![A-Za-z0-9_])/.test(object.dict));
+  const rootId = catalog?.id ?? objects.length + 1;
   const chunks: Buffer[] = [Buffer.from('%PDF-1.4\n', 'latin1')];
   for (const object of objects) {
     chunks.push(Buffer.from(`${object.id} 0 obj ${object.dict}`, 'latin1'));
@@ -39,13 +41,17 @@ function buildPdf(objects: TestPdfObject[]): Buffer {
     chunks.push(Buffer.from('endobj\n', 'latin1'));
   }
   chunks.push(Buffer.from('%%EOF\n', 'latin1'));
+  chunks.push(Buffer.from(
+    `trailer << /Size ${objects.length + 1} /Root ${rootId} 0 R >>\nstartxref\n0\n%%EOF\n`,
+    'latin1'
+  ));
   return Buffer.concat(chunks);
 }
 
 function withPageTree(objects: TestPdfObject[], pageId: number): TestPdfObject[] {
   return [
     ...objects,
-    { id: 102, dict: `<< /Type /Pages /Kids [${pageId} 0 R] /Count 1 >>` },
+    { id: 102, dict: `<< /Type /Pages /Kids [${pageId} 0 R] /Count 1 /MediaBox [0 0 612 792] >>` },
     { id: 103, dict: '<< /Type /Catalog /Pages 102 0 R >>' }
   ];
 }
@@ -123,13 +129,16 @@ function structuredTextPdf(input: {
   pagesDict?: string;
   catalogDict?: string;
   extraObjects?: TestPdfObject[];
+  compress?: boolean;
 } = {}): Buffer {
-  const content = input.content ?? Buffer.from(`BT /F1 12 Tf (${ORDER_CODE}) Tj ET`, 'utf8');
-  const compressed = deflateSync(content);
+  const rawContent = input.content ?? Buffer.from(`BT /F1 12 Tf (${ORDER_CODE}) Tj ET`, 'utf8');
+  const compressed = input.compress === false ? rawContent : deflateSync(rawContent);
   const objects = textPageObjects({
     contentsId: 3,
     contents: compressed,
-    contentsDict: input.contentDict ?? `<< /Filter /FlateDecode /Length ${compressed.length} >>`
+    contentsDict: input.contentDict ?? (input.compress === false
+      ? `<< /Length ${rawContent.length} >>`
+      : `<< /Filter /FlateDecode /Length ${compressed.length} >>`)
   });
   objects.push({
     id: 101,
@@ -138,7 +147,7 @@ function structuredTextPdf(input: {
   });
   objects.push({
     id: 102,
-    dict: input.pagesDict ?? '<< /Type /Pages /Kids [101 0 R] /Count 1 >>'
+    dict: input.pagesDict ?? '<< /Type /Pages /Kids [101 0 R] /Count 1 /MediaBox [0 0 612 792] >>'
   });
   objects.push({
     id: 103,
@@ -149,7 +158,20 @@ function structuredTextPdf(input: {
 }
 
 function appendPdfObjects(pdf: Buffer, objects: TestPdfObject[]): Buffer {
-  return Buffer.concat([pdf, buildPdf(objects)]);
+  const chunks: Buffer[] = [pdf];
+  for (const object of objects) {
+    chunks.push(Buffer.from(`${object.id} 0 obj ${object.dict}`, 'latin1'));
+    if (object.stream !== undefined) {
+      chunks.push(
+        Buffer.from('\nstream\n', 'latin1'),
+        object.stream,
+        Buffer.from('\nendstream\nendobj\n', 'latin1')
+      );
+    } else {
+      chunks.push(Buffer.from('endobj\n', 'latin1'));
+    }
+  }
+  return Buffer.concat(chunks);
 }
 
 function multiPagePdf(pages: string[]): Buffer {
@@ -179,7 +201,7 @@ function multiPagePdf(pages: string[]): Buffer {
     });
   });
   const kids = pages.map((_text, index) => `${20 + index} 0 R`).join(' ');
-  objects.push({ id: 102, dict: `<< /Type /Pages /Kids [${kids}] /Count ${pages.length} >>` });
+  objects.push({ id: 102, dict: `<< /Type /Pages /Kids [${kids}] /Count ${pages.length} /MediaBox [0 0 612 792] >>` });
   objects.push({ id: 103, dict: '<< /Type /Catalog /Pages 102 0 R >>' });
   return buildPdf(objects);
 }
@@ -436,6 +458,17 @@ describe('evidence identifier decisions G3/G6/G7', () => {
       expect(evaluate(pdf)).toMatchObject({ verificationStatus: 'VERIFIED' });
     });
 
+    it('H3: rejects an unreferenced decoy Catalog', () => {
+      const pdf = appendPdfObjects(pdfWithText(ORDER_CODE), [
+        { id: 902, dict: `<< /Type /Catalog /Pages 102 0 R >>` }
+      ]);
+      expect(inspectPdfTextLayers(pdf)).toMatchObject([{ state: 'indeterminate', text: '' }]);
+      expect(evaluate(pdf)).toMatchObject({
+        verificationStatus: 'PENDING_MANUAL_VERIFICATION',
+        pendingCode: 'PDF_TEXT_LAYER_INDETERMINATE'
+      });
+    });
+
     it('H3: fails closed on a cyclic Pages/Kids tree', () => {
       const pdf = structuredTextPdf({
         pagesDict: '<< /Type /Pages /Kids [102 0 R] /Count 1 >>'
@@ -451,6 +484,18 @@ describe('evidence identifier decisions G3/G6/G7', () => {
         )
       });
       expect(inspectPdfTextLayers(pdf)).toMatchObject([{ state: 'indeterminate', text: '' }]);
+    });
+
+    it('H5: accepts comments in an otherwise simple readable text PDF', () => {
+      const pdf = structuredTextPdf({
+        content: Buffer.from(
+          `BT % document identifier follows\n /F1 12 Tf (${ORDER_CODE}) Tj ET`,
+          'latin1'
+        ),
+        compress: false
+      });
+      expect(inspectPdfTextLayers(pdf)).toMatchObject([{ state: 'text', text: ORDER_CODE }]);
+      expect(evaluate(pdf)).toMatchObject({ verificationStatus: 'VERIFIED' });
     });
 
     it('H5: strips comments before parsing, so commented code cannot rescue wrong text', () => {
@@ -491,6 +536,100 @@ describe('evidence identifier decisions G3/G6/G7', () => {
         content: Buffer.from(`BT /F1 12 Tf 03 Tr (${ORDER_CODE}) Tj ET`, 'latin1')
       });
       expect(inspectPdfTextLayers(pdf)).toMatchObject([{ state: 'indeterminate', text: '' }]);
+    });
+
+    it('D1t: uses top-level dictionary keys and rejects duplicate shadow keys', () => {
+      const nestedShadow = structuredTextPdf({
+        pageDict: [
+          '<< /Type /Page /Parent 102 0 R /Contents 3 0 R',
+          '/Resources << /Font << /F1 100 0 R >> /Shadow << /Contents 901 0 R >> >>',
+          '/ShadowText (/Contents 901 0 R)',
+          '/MediaBox [0 0 612 792] >>'
+        ].join(' '),
+        extraObjects: [
+          { id: 901, dict: '<< /Length 4 >>', stream: Buffer.from('EVIL', 'latin1') }
+        ]
+      });
+      expect(inspectPdfTextLayers(nestedShadow)).toMatchObject([{ state: 'text', text: ORDER_CODE }]);
+      expect(evaluate(nestedShadow)).toMatchObject({ verificationStatus: 'VERIFIED' });
+
+      const duplicate = structuredTextPdf({
+        pageDict: [
+          '<< /Type /Page /Parent 102 0 R /Contents 3 0 R /Contents 901 0 R',
+          '/Resources << /Font << /F1 100 0 R >> >> /MediaBox [0 0 612 792] >>'
+        ].join(' '),
+        extraObjects: [
+          { id: 901, dict: '<< /Length 4 >>', stream: Buffer.from('EVIL', 'latin1') }
+        ]
+      });
+      expect(inspectPdfTextLayers(duplicate)).toMatchObject([{ state: 'indeterminate', text: '' }]);
+    });
+
+    it('T1t: uses only trailer /Root and rejects missing, duplicate or mismatched roots', () => {
+      const noRoot = buildPdf([
+        { id: 1, dict: '<< /Type /Catalog /Pages 2 0 R >>' },
+        { id: 2, dict: '<< /Type /Pages /Kids [] /Count 0 /MediaBox [0 0 612 792] >>' },
+        { id: 3, dict: '<< /Length 0 >>', stream: Buffer.alloc(0) }
+      ]);
+      expect(inspectPdfTextLayers(noRoot)).toMatchObject([{ state: 'indeterminate', text: '' }]);
+
+      const mismatched = buildPdf([
+        { id: 1, dict: '<< /Type /Catalog /Pages 2 0 R >>' },
+        { id: 2, dict: '<< /Type /Pages /Kids [] /Count 0 /MediaBox [0 0 612 792] >>' },
+        { id: 3, dict: '<< /Type /Catalog /Pages 2 0 R >>' },
+        { id: 4, dict: '<< /Length 0 >>', stream: Buffer.alloc(0) }
+      ]);
+      // buildPdf's trailer points to the first Catalog; the decoy Catalog makes
+      // this structurally ambiguous even though /Root technically resolves.
+      expect(inspectPdfTextLayers(mismatched)).toMatchObject([{ state: 'indeterminate', text: '' }]);
+    });
+
+    it('PRED: rejects DecodeParms, Predictor and /Filter arrays', () => {
+      const cases = [
+        '<< /Filter /FlateDecode /DecodeParms << /Columns 4 >> /Length 4 >>',
+        '<< /Filter /FlateDecode /Predictor 12 /Length 4 >>',
+        '<< /Filter [/FlateDecode] /Length 4 >>'
+      ];
+      for (const contentDict of cases) {
+        const pdf = structuredTextPdf({
+          content: Buffer.from(`BT /F1 12 Tf (${ORDER_CODE}) Tj ET`, 'latin1'),
+          contentDict
+        });
+        expect(inspectPdfTextLayers(pdf)).toMatchObject([{ state: 'indeterminate', text: '' }]);
+        expect(evaluate(pdf)).toMatchObject({
+          verificationStatus: 'PENDING_MANUAL_VERIFICATION',
+          pendingCode: 'PDF_TEXT_LAYER_INDETERMINATE'
+        });
+      }
+    });
+
+    it('J1t: accepts a PDF header within 1024 bytes of junk and rejects one beyond it', () => {
+      const offsetPdf = Buffer.concat([
+        Buffer.alloc(1023),
+        pdfWithText(ORDER_CODE)
+      ]);
+      expect(inspectPdfTextLayers(offsetPdf)).toMatchObject([{ state: 'text', text: ORDER_CODE }]);
+      expect(evaluate(offsetPdf)).toMatchObject({ verificationStatus: 'VERIFIED' });
+
+      const tooFar = Buffer.concat([
+        Buffer.alloc(1024),
+        pdfWithText(ORDER_CODE)
+      ]);
+      expect(inspectPdfTextLayers(tooFar)).toMatchObject([]);
+    });
+
+    it('J1t: keeps a declared but unparsable PDF pending', () => {
+      const pdf = Buffer.from('not a pdf despite its declared content type', 'latin1');
+      const result = evaluate(pdf);
+      expect(result).toMatchObject({
+        verificationStatus: 'PENDING_MANUAL_VERIFICATION',
+        pendingCode: 'PDF_TEXT_LAYER_INDETERMINATE'
+      });
+      const checks = result.verificationStatus === 'PENDING_MANUAL_VERIFICATION' ? result.checks : [];
+      expect(checks.find((check) => check.key === 'code_consistency')).toMatchObject({
+        status: 'failed',
+        detail: expect.stringContaining('could not be safely parsed')
+      });
     });
 
     it('stops a compressed stream above 8MB before a large expansion, in under one second', () => {
