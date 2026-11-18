@@ -42,6 +42,7 @@ import {
   rejectedSendManualVerifications,
   sendEventsWithoutKnownDecision,
   sendManualVerificationsFromAuditEvents,
+  undisclosedSendDecisionEventIds,
   unsettledSendsOfCancelledPaper
 } from '../../lib/maker-po-data';
 import type {
@@ -149,6 +150,7 @@ export default async function MakerPoPage() {
     sendManualVerifications,
     cancellationFlags: cancellationAcknowledgementFlags(audit.events),
     acknowledgementKinds: acknowledgementKindsFromAuditEvents(audit.events),
+    undisclosedDecisions: undisclosedSendDecisionEventIds(audit.events),
     auditWindowComplete: audit.makerEventsComplete
   })));
   // Medium-3: a cancelled or frozen order is on the board only while its
@@ -279,7 +281,12 @@ export default async function MakerPoPage() {
         </RoleGate>
       </details>
 
-      <AuditDashboardSection events={audit.events} error={audit.error} role={role} />
+      <AuditDashboardSection
+        events={audit.events}
+        error={audit.error}
+        role={role}
+        acknowledgementKinds={acknowledgementKindsOfCards(allCards)}
+      />
     </section>
   );
 }
@@ -401,6 +408,11 @@ interface PaperWork extends MakerPoStagePaper {
   offersPostDelivery: boolean;
   /** Medium-1: sends of a cancelled paper nobody can settle any more (read-only note, never ③′). */
   unsettledCancelledSends: MakerPoEventRow[];
+  /**
+   * Recheck 9 Medium-3: sends of a cancelled paper whose decision this screen
+   * cannot read (staff: the audit rows carry no result) — neither 「手動確認待ち」 nor settled.
+   */
+  undecidableCancelledSends: MakerPoEventRow[];
 }
 
 /** The papers as the shared cleanup / creation judgements read them. */
@@ -437,6 +449,8 @@ async function loadOrderPapers(
     sendManualVerifications: MakerPoSendManualVerification[];
     cancellationFlags: ReadonlyMap<string, boolean>;
     acknowledgementKinds: ReadonlyMap<string, CancellationAcknowledgementKind>;
+    /** Sends that have a decision this role cannot read (recheck 9 Medium-3). */
+    undisclosedDecisions: ReadonlySet<string>;
     auditWindowComplete: boolean;
   }
 ): Promise<OrderCard> {
@@ -462,6 +476,17 @@ async function loadOrderPapers(
     ? await loadManualVerificationsForEvents(context.projectId, undecided)
     : { verifications: [], unreadEventIds: new Set<string>() };
   const knownVerifications = [...known, ...targeted.verifications];
+  // Recheck 9 Medium-3: a send whose decision cannot be read is not "never
+  // confirmed". Staff cannot read the decisions (their audit rows carry no
+  // result) nor ask for them, so a decision row they see without its result,
+  // or a send past a capped audit read, leaves the proof unknown — never
+  // 'unproven', which inverted the kind of a proven send's 取り消し承認.
+  const undecidable = new Set<string>([...targeted.unreadEventIds, ...context.undisclosedDecisions]);
+  if (!readsDecisions && !context.auditWindowComplete) {
+    for (const id of sendEventsWithoutKnownDecision(details.flatMap((detail) => detail?.events ?? []), known)) {
+      undecidable.add(id);
+    }
+  }
   const papers = list.map((po, index): PaperWork => {
     const detail = details[index] ?? { purchaseOrder: null, events: [], error: '取得できませんでした。' };
     const events = detail.events;
@@ -470,7 +495,7 @@ async function loadOrderPapers(
     // A failed read of the paper's own events cannot prove "unsent" (review M1).
     const sendProof: MakerPoSendProof = detail.error
       ? 'unknown'
-      : makerPoSendProof(events, knownVerifications, targeted.unreadEventIds, context.cancellationFlags);
+      : makerPoSendProof(events, knownVerifications, undecidable, context.cancellationFlags);
     const acknowledgementRecorded = hasCancellationAcknowledgement(events);
     const acknowledgementKind = detail.error
       ? null
@@ -490,7 +515,13 @@ async function loadOrderPapers(
       acknowledgementKind,
       offersPostDelivery: !detail.error && offersPostDeliveryConfirmation(po.status, sendProof, events),
       acknowledgementOwed: acknowledgementOwed({ status: po.status, sendProof, acknowledgementRecorded }),
-      unsettledCancelledSends: unsettledSendsOfCancelledPaper(events, knownVerifications, po.status)
+      unsettledCancelledSends: unsettledSendsOfCancelledPaper(events, knownVerifications, po.status, undecidable),
+      undecidableCancelledSends: po.status === 'CANCELLED'
+        ? events.filter((event) => event.eventType === 'SEND_EVIDENCE_REGISTERED'
+          && event.verificationStatus === 'PENDING_MANUAL_VERIFICATION'
+          && undecidable.has(event.id)
+          && !knownVerifications.some((verification) => verification.makerPoEventId === event.id))
+        : []
     };
   });
   return { entry, papers };
@@ -615,6 +646,7 @@ function MakerPoOrderSection({
   const stuckPapers = closure ? papers.filter((paper) =>
     paper.po.status !== 'CANCELLED' && !isCancellableMakerPoStatus(paper.po.status)) : [];
   const unsettledCancelledSends = papers.filter((paper) => paper.unsettledCancelledSends.length > 0);
+  const undecidableCancelledSends = papers.filter((paper) => paper.undecidableCancelledSends.length > 0);
 
   // A line for a current stage that has no block of its own for this role.
   const fallback: string | null = stages.unknown === 'list-error'
@@ -756,6 +788,24 @@ function MakerPoOrderSection({
             + '取り消し済みの発注書の送信は、確認も却下も記録できません（APIが拒否します）。記録は履歴として残ります。'
             + (paper.sendProof === 'unproven' ? 'この取り消しは内部の訂正として扱われたため、取り消し承認も不要です。' : '')
             + unsettledCancelledSendFollowUp(paper, canCancel)}
+        </p>
+      ))}
+
+      {/* Recheck 9 Medium-3: a decision this screen cannot read is said as such — never 「手動確認待ち」 or 内部の訂正. */}
+      {undecidableCancelledSends.map((paper) => (
+        <p key={`undecidable:${paper.po.id}`} className="role-notice">
+          {`取り消し済みの発注書 ${shortId(paper.po.id)} の送信記録（${paper.undecidableCancelledSends
+            .map((event) => shortId(event.id)).join('、')}）は、`
+            + (canVerifySend || canCancel
+              ? '送信の手動確認の記録を読み込めなかったため、'
+              : '送信の手動確認の結果（確認・却下）がこの役割の画面には表示されないため、')
+            + '送信ずみとして取り消されたのか、内部の訂正として取り消されたのかをこの画面では判定できません。'
+            + (paper.acknowledgementRecorded
+              ? `取り消し後の記録（${cancellationAcknowledgementLabel(paper.acknowledgementKind)}）はあります。`
+              : '')
+            + (canVerifySend || canCancel
+              ? '画面を再読み込みしてください。'
+              : 'メーカーへの連絡が必要かどうかは代表者に確認してください。')}
         </p>
       ))}
 
@@ -1604,14 +1654,48 @@ const AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
   MAKER_CANCELLATION_ACKNOWLEDGED: '取り消し承認（メーカー取消確認）'
 };
 
+/**
+ * Recheck 9 Medium-3: the kind each card judged for its acknowledgement, by
+ * acknowledgement event id — the dashboard says what the card says.
+ */
+function acknowledgementKindsOfCards(
+  cards: ReadonlyArray<OrderCard>
+): Map<string, CancellationAcknowledgementKind | 'unknown'> {
+  const kinds = new Map<string, CancellationAcknowledgementKind | 'unknown'>();
+  for (const card of cards) {
+    for (const paper of card.papers) {
+      if (paper.acknowledgementKind === null) continue;
+      for (const event of paper.events) {
+        if (event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED') kinds.set(event.id, paper.acknowledgementKind);
+      }
+    }
+  }
+  return kinds;
+}
+
+/**
+ * The label of one MAKER_CANCELLATION_ACKNOWLEDGED audit row: the kind the
+ * row carries (admin), else the card's judgement, else 'unknown' — never the
+ * 取り消し承認 by default (staff rows carry no kind; recheck 9 Medium-3).
+ */
+function acknowledgementAuditLabel(
+  event: AuditEventView,
+  cardKinds: ReadonlyMap<string, CancellationAcknowledgementKind | 'unknown'>
+): string {
+  const audited = acknowledgementKindsFromAuditEvents([event]).get(event.entityId);
+  return cancellationAcknowledgementLabel(audited ?? cardKinds.get(event.entityId) ?? 'unknown');
+}
+
 function AuditDashboardSection({
   events,
   error,
-  role
+  role,
+  acknowledgementKinds
 }: {
   events: AuditEventView[];
   error: string | null;
   role: string | null;
+  acknowledgementKinds: ReadonlyMap<string, CancellationAcknowledgementKind | 'unknown'>;
 }) {
   return (
     // UI batch C (2-④): folded, its count in the summary.
@@ -1648,8 +1732,8 @@ function AuditDashboardSection({
                 <tr key={event.id}>
                   <td style={tdStyle}>{formatTimestamp(event.occurredAt)}</td>
                   <td style={tdStyle}>
-                    {event.action === 'MAKER_CANCELLATION_ACKNOWLEDGED' && after?.acknowledgementKind === 'POST_DELIVERY_CONFIRMATION'
-                      ? cancellationAcknowledgementLabel('POST_DELIVERY_CONFIRMATION')
+                    {event.action === 'MAKER_CANCELLATION_ACKNOWLEDGED' && event.entityType === 'maker_po_event'
+                      ? acknowledgementAuditLabel(event, acknowledgementKinds)
                       : AUDIT_ACTION_LABELS[event.action] ?? MAKER_PO_EVENT_TYPE_LABELS[event.action] ?? event.action}
                   </td>
                   <td style={tdStyle}>

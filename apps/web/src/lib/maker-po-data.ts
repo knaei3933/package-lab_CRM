@@ -334,14 +334,17 @@ export function pendingManualVerificationEvents(
 export function unsettledSendsOfCancelledPaper(
   events: ReadonlyArray<MakerPoEventRow>,
   manualVerifications: ReadonlyArray<MakerPoSendManualVerification>,
-  paperStatus: string
+  paperStatus: string,
+  /** Sends whose decision exists but cannot be read here (recheck 9 Medium-3): not "pending". */
+  undecidable: ReadonlySet<string> = new Set()
 ): MakerPoEventRow[] {
   if (paperStatus !== 'CANCELLED') return [];
   const settled = new Set(manualVerifications.map((verification) => verification.makerPoEventId));
   return events.filter((event) =>
     event.eventType === 'SEND_EVIDENCE_REGISTERED'
     && event.verificationStatus === 'PENDING_MANUAL_VERIFICATION'
-    && !settled.has(event.id));
+    && !settled.has(event.id)
+    && !undecidable.has(event.id));
 }
 
 /**
@@ -403,6 +406,32 @@ export function sendManualVerificationsFromAuditEvents(
       recordedAt: auditEvent.occurredAt
     }];
   });
+}
+
+/**
+ * Recheck 9 Medium-3: the send events that HAVE a representative decision the
+ * viewer cannot read. The API shows staff the audit row of each decision
+ * (MAKER_PO_SEND_MANUAL_VERIFICATION_RECORDED, entity: the send event) with its
+ * afterState narrowed to status-like keys, so `result` is absent. Such a send
+ * was settled — confirmed (a proven send) or rejected — and the screen must not
+ * read it as "never confirmed" (unproven) nor as 「手動確認待ち」.
+ */
+export function undisclosedSendDecisionEventIds(
+  auditEvents: ReadonlyArray<AuditEventView>
+): Set<string> {
+  const disclosed = new Set(sendManualVerificationsFromAuditEvents(auditEvents)
+    .map((verification) => verification.makerPoEventId));
+  const ids = new Set<string>();
+  for (const auditEvent of auditEvents) {
+    if (
+      auditEvent.action === 'MAKER_PO_SEND_MANUAL_VERIFICATION_RECORDED'
+      && auditEvent.entityType === 'maker_po_event'
+      && !disclosed.has(auditEvent.entityId)
+    ) {
+      ids.add(auditEvent.entityId);
+    }
+  }
+  return ids;
 }
 
 /** The rejected decisions shown as history rather than as actionable rows. */
@@ -676,7 +705,10 @@ export function acknowledgementKindsFromAuditEvents(
  * recorded. The audit row says it when the screen could read it; otherwise the
  * API's own rule is re-applied: the kind is the send proof at recording time,
  * and since 20d5f70 no send of a cancelled paper can be proven afterwards, so
- * the proof read now is that proof. 'unknown': neither could be read.
+ * the proof read now is that proof. 'unknown': neither could be read — e.g.
+ * on the staff screen, whose audit rows carry neither the kind nor the send
+ * decisions (recheck 9 Medium-3: the proof is then 'unknown', never the
+ * 'unproven' that turned a proven send's 取り消し承認 into 事後確認).
  */
 export function cancellationAcknowledgementKind(
   events: ReadonlyArray<MakerPoEventRow>,
@@ -885,14 +917,17 @@ export async function loadMakerPaperCleanup(
   }
   const verifications = sendManualVerificationsFromAuditEvents(audit ?? []);
   const flags = cancellationAcknowledgementFlags(audit ?? []);
+  // Recheck 9 Medium-3: a decision the role cannot read is no decision read.
+  const undisclosed = undisclosedSendDecisionEventIds(audit ?? []);
   for (const [orderId, rows] of papersByOrder) {
     const judgements: MakerPaperJudgement[] = rows.map((po) => {
       if (po.status !== 'CANCELLED') return { status: po.status, sendProof: 'unproven', acknowledgementRecorded: false };
       const detail = details.get(po.id);
       if (!detail || detail.error) return { status: po.status, sendProof: 'unknown', acknowledgementRecorded: false };
-      const unread = auditComplete
-        ? new Set<string>()
-        : new Set(sendEventsWithoutKnownDecision(detail.events, verifications));
+      const unread = new Set<string>(auditComplete
+        ? []
+        : sendEventsWithoutKnownDecision(detail.events, verifications));
+      for (const id of undisclosed) unread.add(id);
       return {
         status: po.status,
         sendProof: makerPoSendProof(detail.events, verifications, unread, flags),
