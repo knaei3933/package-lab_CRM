@@ -30,8 +30,10 @@ interface DateTimeInputsProps {
   hint?: string | undefined;
   /**
    * Called on the form's reset event with the value the field started with
-   * (React 19 resets a form after its action; the uncontrolled inputs go back
-   * to their defaults, so this field does too). Defaults to onChange.
+   * (the form shell resets the form only after a successful record — review
+   * H1 — and the uncontrolled inputs go back to their defaults, so this field
+   * does too; after a refusal nothing resets and the entry stays). Defaults
+   * to onChange.
    */
   onReset?: ((value: string) => void) | undefined;
 }
@@ -82,7 +84,7 @@ export function DateTimeInputs({ name, label, value, onChange, required, hint, o
     setPreview(value);
   }, [value]);
 
-  // The form's reset (after an action) brings the texts back to the starting value.
+  // The form's reset (only after a successful record) brings the texts back to the starting value.
   useEffect(() => {
     const form = dateRef.current?.form;
     if (!form) return undefined;

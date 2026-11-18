@@ -2,8 +2,24 @@
 
 import { useActionState, useState } from 'react';
 import type { FormAction } from './ActionForm';
-import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, normalizeQuantityInput } from './form-feedback';
+import {
+  FeedbackForm,
+  FieldError,
+  FieldFeedback,
+  FormErrorSummary,
+  FormResult,
+  normalizeQuantityInput,
+  SubmitLock,
+  summaryFromFields
+} from './form-feedback';
+import type { ConfirmResolver } from './form-feedback';
 import { OffsetDateTimeField } from './OffsetDateTimeField';
+import {
+  DELIVERY_RECORD_CONFIRM_BODY,
+  DELIVERY_RECORD_CONFIRM_TITLE,
+  DELIVERY_RECORD_SUBMIT_LABEL,
+  deliveryRecordConfirmSpec
+} from '../lib/confirm-summary';
 import type { Choice } from '../lib/types';
 import { buttonStyle, inputStyle, noteStyle } from '../lib/ui';
 
@@ -28,6 +44,12 @@ const fieldLabel = (basis: number) => ({ display: 'grid', gap: 4, maxWidth: '100
 const labelOnly = { display: 'grid', gap: 4 } as const;
 const control = (max: number) => ({ ...inputStyle, width: '100%', maxWidth: max });
 
+/** Review M3: the delivery is read back before it is recorded; an empty 納品日 is named as 「現在日時」 (texts: lib/confirm-summary). */
+const deliveryConfirm: ConfirmResolver = (form) => {
+  const [deliveredAt, ...rows] = summaryFromFields(form, ['deliveredAt', 'orderId', 'lineId', 'deliveredQuantity', 'unit']);
+  return deliveryRecordConfirmSpec(rows, deliveredAt?.value ?? '');
+};
+
 /**
  * Criterion 6 (recording side): a delivery row has to exist before it can be
  * confirmed, so the confirmation screen also records deliveries. The line
@@ -50,7 +72,17 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices, successH
   }
 
   return (
-    <FeedbackForm action={formAction} state={state} pending={pending} style={{ display: 'grid', gap: 10 }}>
+    <FeedbackForm
+      action={formAction}
+      state={state}
+      pending={pending}
+      confirm={deliveryConfirm}
+      dialogDefaults={{
+        options: { title: DELIVERY_RECORD_CONFIRM_TITLE, body: DELIVERY_RECORD_CONFIRM_BODY },
+        confirmLabel: DELIVERY_RECORD_SUBMIT_LABEL
+      }}
+      style={{ display: 'grid', gap: 10 }}
+    >
       <input type="hidden" readOnly name="kind" value={kind} />
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
         <FieldFeedback name="orderId">
@@ -153,9 +185,18 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices, successH
         </label>
       </div>
       <div className="form-actions">
-        <button type="submit" aria-disabled={pending || undefined} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
-          {pending ? '記録中…' : '納品を記録する'}
-        </button>
+        <SubmitLock>
+          {(locked) => (
+            <button
+              type="submit"
+              aria-disabled={pending || undefined}
+              disabled={locked || undefined}
+              style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
+            >
+              {pending ? '記録中…' : DELIVERY_RECORD_SUBMIT_LABEL}
+            </button>
+          )}
+        </SubmitLock>
         <FormErrorSummary />
         <FormResult state={state} successHint={successHint} />
       </div>

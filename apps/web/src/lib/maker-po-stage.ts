@@ -34,10 +34,19 @@ export interface MakerPoStage {
   summary: string | null;
 }
 
+/**
+ * Review M4: why no stage can be named. list-error: the maker PO list could
+ * not be read; missing-paper: the list is empty although the film order is
+ * already in the maker chain past MAKER_PO_READY (the data disagree).
+ */
+export type MakerPoStageUnknown = 'list-error' | 'missing-paper';
+
 export interface MakerPoStageView {
   stages: MakerPoStage[];
   current: MakerPoStage | null;
   condition: MakerPoStageCondition;
+  /** Set when the stages cannot be read at all (no stage is current or done). */
+  unknown: MakerPoStageUnknown | null;
   /** The id of the paper the stages describe (the live one, else the latest). */
   primaryPoId: string | null;
   /** One line per earlier cancelled paper of the same order. */
@@ -57,7 +66,20 @@ export interface MakerPoStageInput {
   /** The film order's status; null when the role may not read it. */
   orderStatus: string | null;
   papers: ReadonlyArray<MakerPoStagePaper>;
+  /** Review M4: the maker PO list failed to load (the papers are then not the real list). */
+  listFailed?: boolean | undefined;
 }
+
+/**
+ * Film order states that exist only once a maker PO was created (the chain
+ * after MAKER_PO_READY). An empty paper list next to one of them is a data
+ * mismatch, not "no paper yet".
+ */
+const ORDER_STATES_WITH_MAKER_PAPER: readonly string[] = [
+  'APPROVED_FOR_MANUAL_SEND',
+  'MAKER_PO_SENT_MANUALLY',
+  'MAKER_PO_ACCEPTED'
+];
 
 const STAGE_NAMES: Readonly<Record<MakerPoStageKey, { number: string; name: string }>> = {
   create: { number: '①', name: '発注書の作成' },
@@ -73,8 +95,9 @@ export function stageLabel(stage: Pick<MakerPoStage, 'number' | 'name'>): string
   return stage.number ? `${stage.number} ${stage.name}` : stage.name;
 }
 
-/** 「このあと: ③ 送信の記録 → ④ 受入 → 完了」, or null when nothing follows. */
+/** 「このあと: ③ 送信の記録 → ④ 受入 → 完了」, or null when nothing follows (or the stages are unknown). */
 export function upcomingStagesLine(view: MakerPoStageView): string | null {
+  if (view.unknown) return null;
   const upcoming = view.stages.filter((stage) => stage.state === 'upcoming');
   return upcoming.length === 0 ? null : `このあと: ${upcoming.map(stageLabel).join(' → ')}`;
 }
@@ -173,11 +196,13 @@ export function makerPoStages(input: MakerPoStageInput): MakerPoStageView {
     .map(cancelledLine);
   const view = (
     stages: MakerPoStage[],
-    condition: MakerPoStageCondition
+    condition: MakerPoStageCondition,
+    unknown: MakerPoStageUnknown | null = null
   ): MakerPoStageView => ({
     stages,
     current: stages.find((stage) => stage.state === 'current') ?? null,
     condition,
+    unknown,
     primaryPoId: primary?.po.id ?? null,
     cancelledPapers
   });
@@ -189,7 +214,15 @@ export function makerPoStages(input: MakerPoStageInput): MakerPoStageView {
   if (input.orderStatus !== null && isFilmOrderPastMakerAcceptance(input.orderStatus)) {
     return view(build(allDone, withVerify, lines), 'complete');
   }
+  // Review M4: without a readable list (or with a list that cannot be right)
+  // no stage is marked — never 「① 作成してください」 for a paper that exists.
+  if (input.listFailed) {
+    return view(build({}, false, null), 'attention', 'list-error');
+  }
   if (!primary) {
+    if (input.orderStatus !== null && ORDER_STATES_WITH_MAKER_PAPER.includes(input.orderStatus)) {
+      return view(build({}, false, null), 'attention', 'missing-paper');
+    }
     return view(build({ create: 'current' }, false, null), 'normal');
   }
 
@@ -234,12 +267,16 @@ export function makerPoStages(input: MakerPoStageInput): MakerPoStageView {
 }
 
 /**
- * The 「いまの段階」 headline. Without a current stage: complete → 完了;
+ * The 「いまの段階」 headline. Unknown stages (review M4) say why first: the
+ * list could not be read → reload; the list disagrees with the order status.
+ * Without a current stage: complete → 完了;
  * halted (every paper cancelled) → waiting for a new paper; a status this
  * table does not know → a neutral 「状態を確認できません」 (never a claim that
  * the paper was cancelled).
  */
-export function stageHeadline(view: Pick<MakerPoStageView, 'current' | 'condition'>): string {
+export function stageHeadline(view: Pick<MakerPoStageView, 'current' | 'condition'> & { unknown?: MakerPoStageUnknown | null }): string {
+  if (view.unknown === 'list-error') return 'メーカー発注書を取得できませんでした（再読み込みしてください）';
+  if (view.unknown === 'missing-paper') return 'メーカー発注書を確認できません（発注の状態と一致しません）';
   if (view.current) return stageLabel(view.current);
   if (view.condition === 'complete') return '完了（受入確認済み）';
   if (view.condition === 'halted') return '取り消し済み（新しい発注書の作成待ち）';
@@ -249,8 +286,9 @@ export function stageHeadline(view: Pick<MakerPoStageView, 'current' | 'conditio
 /**
  * The G6 payment-gate box is large while the gate still decides the next step:
  * at ① or ②, and when no stage is current and the paper is not complete (all
- * papers cancelled → the next step is ① again; an unknown status). Afterwards
- * it shrinks to one line.
+ * papers cancelled → the next step is ① again; an unknown status; stages that
+ * cannot be read, review M4 — the gate state is then shown in full rather
+ * than hidden). Afterwards it shrinks to one line.
  */
 export function paymentGateDecides(view: Pick<MakerPoStageView, 'current' | 'condition'>): boolean {
   if (!view.current) return view.condition !== 'complete';

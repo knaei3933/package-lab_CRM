@@ -9,7 +9,8 @@ import {
   FormErrorSummary,
   FormFeedbackContext,
   FormResult,
-  resolverFromOptions
+  resolverFromOptions,
+  SubmitLock
 } from './form-feedback';
 import type { ConfirmOptions } from './form-feedback';
 import { lineField } from '../lib/form-messages';
@@ -267,9 +268,18 @@ export function OrderCreateForm({
       </div>
 
       <div className="form-actions">
-        <button type="submit" aria-disabled={pending || undefined} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
-          {pending ? '作成中…' : SUBMIT_LABEL}
-        </button>
+        <SubmitLock>
+          {(locked) => (
+            <button
+              type="submit"
+              aria-disabled={pending || undefined}
+              disabled={locked || undefined}
+              style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
+            >
+              {pending ? '作成中…' : SUBMIT_LABEL}
+            </button>
+          )}
+        </SubmitLock>
         <FormErrorSummary />
         <FormResult state={state} successHint={successHint} />
       </div>

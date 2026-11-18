@@ -83,7 +83,10 @@ export function TextField({
   placeholder,
   width,
   value,
-  onChange
+  onChange,
+  autoComplete,
+  spellCheck,
+  autoCapitalize
 }: FieldProps & {
   type?: 'text' | 'password' | 'datetime-local' | 'date' | 'number';
   defaultValue?: string | undefined;
@@ -92,6 +95,10 @@ export function TextField({
   width?: number | undefined;
   value?: string | undefined;
   onChange?: ChangeEventHandler<HTMLInputElement> | undefined;
+  /** Review L6: addresses and codes are not words — no autocomplete, spell check or capitalization. */
+  autoComplete?: string | undefined;
+  spellCheck?: boolean | undefined;
+  autoCapitalize?: string | undefined;
 }) {
   const feedback = useFieldFeedback(name, Boolean(hint));
   const max = width ?? 260;
@@ -105,6 +112,9 @@ export function TextField({
         placeholder={placeholder}
         required={required}
         onChange={onChange}
+        autoComplete={autoComplete}
+        spellCheck={spellCheck}
+        autoCapitalize={autoCapitalize}
         aria-describedby={feedback.describedBy}
         aria-invalid={feedback.invalid}
         data-feedback-label={label}

@@ -2,7 +2,7 @@
 
 import { useActionState, useId, useState } from 'react';
 import type { FormAction } from './ActionForm';
-import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, resolverFromOptions, summaryFromFields } from './form-feedback';
+import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, resolverFromOptions, SubmitLock, summaryFromFields } from './form-feedback';
 import type { ConfirmOptions, ConfirmResolver } from './form-feedback';
 import { OffsetDateTimeField } from './OffsetDateTimeField';
 import { approvalConfirmSpec } from '../lib/confirm-summary';
@@ -186,12 +186,33 @@ export function ApprovalDecisionForm({
         </label>
       </div>
       <div className="form-actions">
-        <button type="submit" name="organization" value="customer" aria-disabled={pending || undefined} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
-          顧客として承認する
-        </button>
-        <button type="submit" name="organization" value="seven" aria-disabled={pending || undefined} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
-          セブン化学として承認する
-        </button>
+        {/* Review M1: disabled until hydration, so neither button records an approval past the dialog. */}
+        <SubmitLock>
+          {(locked) => (
+            <>
+              <button
+                type="submit"
+                name="organization"
+                value="customer"
+                aria-disabled={pending || undefined}
+                disabled={locked || undefined}
+                style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
+              >
+                顧客として承認する
+              </button>
+              <button
+                type="submit"
+                name="organization"
+                value="seven"
+                aria-disabled={pending || undefined}
+                disabled={locked || undefined}
+                style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
+              >
+                セブン化学として承認する
+              </button>
+            </>
+          )}
+        </SubmitLock>
         <span style={noteStyle}>どちらが先でも構いません。2つ目の承認でダブル承認（校了）になります。</span>
         <FormErrorSummary />
         <FormResult state={state} successHint={successHint} />

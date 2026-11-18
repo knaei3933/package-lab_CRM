@@ -5,7 +5,7 @@ import type { ChangeEvent } from 'react';
 import type { FormAction } from './ActionForm';
 import { DateTimeInputs } from './DateTimeInputs';
 import { SelectField, TextField } from './fields';
-import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, resolverFromOptions } from './form-feedback';
+import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, resolverFromOptions, SubmitLock } from './form-feedback';
 import type { ConfirmOptions, ConfirmResolver } from './form-feedback';
 import { MAKER_PO_SEND_CONFIRM_TITLE, MAKER_PO_SEND_SUBMIT_LABEL, makerPoSendConfirmSpec } from '../lib/confirm-summary';
 import { datetimeLocalToIso } from '../lib/datetime';
@@ -106,7 +106,11 @@ export function MakerPoSendEvidenceForm({
     if (state?.ok) forgetEml();
   }, [state]);
 
-  /** The form's reset (React 19, after the action): the file input is emptied natively, so is the held EML. */
+  /**
+   * The form's reset (the shell resets only after a recorded send, review H1):
+   * the file input is emptied natively, so is the held EML. A refused send
+   * keeps the EML, 送信元・宛先 and the send time for the retry (review M2).
+   */
   function onFormReset(): void {
     forgetEml();
     setFormState((current) => ({
@@ -303,6 +307,9 @@ export function MakerPoSendEvidenceForm({
             }));
           }}
           width={260}
+          autoComplete="off"
+          spellCheck={false}
+          autoCapitalize="off"
         />
         <TextField
           name="recipients"
@@ -310,6 +317,9 @@ export function MakerPoSendEvidenceForm({
           required
           defaultValue={recipientAddress ?? undefined}
           width={260}
+          autoComplete="off"
+          spellCheck={false}
+          autoCapitalize="off"
         />
         {/* UI batch C (1-②): text date + time; the posted sentAtLocal / sentAt stay as before. */}
         <input readOnly type="hidden" name="sentAtLocal" value={formState.values.sentAt} />
@@ -344,9 +354,18 @@ export function MakerPoSendEvidenceForm({
       <input readOnly type="hidden" name="sentAt" value={datetimeLocalToIso(formState.values.sentAt) ?? ''} />
 
       <div className="form-actions">
-        <button type="submit" aria-disabled={pending || undefined} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
-          {pending ? '送信中…' : SUBMIT_LABEL}
-        </button>
+        <SubmitLock>
+          {(locked) => (
+            <button
+              type="submit"
+              aria-disabled={pending || undefined}
+              disabled={locked || undefined}
+              style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
+            >
+              {pending ? '送信中…' : SUBMIT_LABEL}
+            </button>
+          )}
+        </SubmitLock>
         <FormErrorSummary />
         {/* File-reading notices (EML header, subject insertion): polite, always present;
             notices in the note colour, only a wrong or unreadable file in red (review L11). */}

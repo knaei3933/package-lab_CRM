@@ -146,8 +146,10 @@ describe('submit gate (1-③)', () => {
     expect(gate.state).toBe('confirming');
     expect(gate.confirm()).toBe(true);
     expect(gate.confirm()).toBe(false); // a double click does not confirm twice
-    expect(gate.submit({ invalid: false, needsConfirm: true })).toBe('submit');
-    // The next submit asks again.
+    // Review H1/L3: the shell dispatches the confirmed submit itself (no
+    // requestSubmit round trip), so the gate is idle at once and the next
+    // submit asks again.
+    expect(gate.state).toBe('idle');
     expect(gate.submit({ invalid: false, needsConfirm: true })).toBe('confirm');
   });
 
@@ -163,11 +165,15 @@ describe('submit gate (1-③)', () => {
     expect(createSubmitGate().submit({ invalid: false, needsConfirm: false })).toBe('submit');
   });
 
-  it('source guard: the shell prevents the native submit for invalid/confirm and re-submits with the submitter', () => {
+  it('source guard: the shell prevents every native submit and dispatches with the submitter (review H1)', () => {
     const source = read('components/form-feedback.tsx');
-    expect(source).toMatch(/if \(decision === 'invalid'\) \{\s*event\.preventDefault\(\);/);
-    expect(source).toMatch(/if \(decision === 'confirm' && dialog\) \{\s*event\.preventDefault\(\);/);
-    expect(source).toContain('form.requestSubmit(submitter);');
+    // Review H1: prevented before any decision, so React never runs (and resets after) the action itself.
+    const onSubmitBody = source.slice(source.indexOf('{', source.indexOf('function onSubmit(')) + 1);
+    const firstStatement = onSubmitBody.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '').trim().split(';')[0]!.replace(/\s+/g, '');
+    expect(firstStatement).toBe('event.preventDefault()');
+    expect(source).toMatch(/if \(decision === 'confirm' && dialog\) \{\s*submitterRef\.current = submitter;\s*setHeld\(dialog\);\s*return;\s*\}\s*dispatch\(form, submitter\);/);
+    expect(source).toMatch(/if \(!form \|\| !gate\.confirm\(\)\) return;\s*setHeld\(null\);\s*dispatch\(form, submitterRef\.current\);/);
+    expect(source).not.toContain('requestSubmit(');
     // Native validation stays on until hydration (no-JS submits behave as before).
     expect(source).toContain('noValidate={mounted}');
   });

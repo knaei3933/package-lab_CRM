@@ -3,7 +3,7 @@
 import { useActionState, useId, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { FormAction } from './ActionForm';
-import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, resolverFromOptions } from './form-feedback';
+import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, resolverFromOptions, SubmitLock } from './form-feedback';
 import type { ConfirmOptions } from './form-feedback';
 import type { Choice } from '../lib/types';
 import { isMakerPoBoundDocumentType } from '../lib/document-maker-po';
@@ -129,7 +129,11 @@ export function DocumentUploadForm({
     reader.readAsDataURL(file);
   }
 
-  /** Drops the picked file's state (ファイルを外す, and the form reset, which empties the file input). */
+  /**
+   * Drops the picked file's state (ファイルを外す, and the form reset after a
+   * successful upload, which empties the file input). A refused upload keeps
+   * the file, its bytes and the other fields (review H1 / L7).
+   */
   function forgetFile(): void {
     readToken.current += 1;
     setContentBase64('');
@@ -339,9 +343,18 @@ export function DocumentUploadForm({
       </label>
 
       <div className="form-actions">
-        <button type="submit" aria-disabled={pending || undefined} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
-          {pending ? 'アップロード中…' : SUBMIT_LABEL}
-        </button>
+        <SubmitLock>
+          {(locked) => (
+            <button
+              type="submit"
+              aria-disabled={pending || undefined}
+              disabled={locked || undefined}
+              style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
+            >
+              {pending ? 'アップロード中…' : SUBMIT_LABEL}
+            </button>
+          )}
+        </SubmitLock>
         <FormErrorSummary />
         <FormResult state={state} successHint={successHint} />
       </div>

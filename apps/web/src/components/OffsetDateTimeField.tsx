@@ -42,7 +42,7 @@ export function OffsetDateTimeField({ name, label, required, hint, defaultValue 
         value={mounted ? datetimeLocalToIso(localValue) ?? '' : ''}
       />
       <input readOnly type="hidden" name={`${name}Local`} value={localValue} />
-      {/* On the form's reset DateTimeInputs hands back the starting value (the default) through onChange. */}
+      {/* On the form's reset (after a successful record only, review H1) DateTimeInputs hands back the starting value (the default) through onChange. */}
       <DateTimeInputs name={name} label={label} required={required} hint={hint} value={localValue} onChange={setLocalValue} />
     </>
   );

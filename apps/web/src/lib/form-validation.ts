@@ -162,23 +162,24 @@ export function fileReadIssue(state: FileReadState): string | null {
 export type SubmitDecision = 'invalid' | 'confirm' | 'submit' | 'ignore';
 
 /**
- * The submit → check → confirm → submit-once sequence, without the DOM.
+ * The submit → check → confirm → dispatch-once sequence, without the DOM.
  *
- * - idle + invalid fields → 'invalid' (the shell prevents the submit).
- * - idle + a confirm dialog → 'confirm' (prevented; the dialog opens).
- * - confirm() moves to 'confirmed' exactly once; the shell then calls
- *   form.requestSubmit(), and that one submit passes ('submit') and resets.
+ * - idle + invalid fields → 'invalid' (the shell shows the field errors).
+ * - idle + a confirm dialog → 'confirm' (the dialog opens).
+ * - idle + nothing to ask → 'submit' (the shell dispatches the action).
+ * - confirm() is true exactly once per opened dialog and returns the gate to
+ *   idle, so the shell dispatches once and the next submit asks again (a
+ *   double click on the confirm button dispatches nothing more).
  * - cancel() drops a pending confirmation.
  * - while the server action runs (pending) every submit is 'ignore': the
- *   button stays focusable (aria-disabled) and the shell prevents the submit.
+ *   button stays focusable (aria-disabled) and nothing is dispatched.
  *
- * React 19 skips a form's function action when onSubmit called
- * preventDefault (react-dom FormActionEventPlugin checks
- * nativeEvent.defaultPrevented), which is what makes 'invalid' / 'confirm'
- * stop the server action.
+ * After hydration the shell prevents every native submit and dispatches the
+ * action itself (form-feedback.tsx), so none of these decisions depends on
+ * React's own form-action handling.
  */
 export interface SubmitGate {
-  readonly state: 'idle' | 'confirming' | 'confirmed';
+  readonly state: 'idle' | 'confirming';
   submit(input: { invalid: boolean; needsConfirm: boolean; pending?: boolean | undefined }): SubmitDecision;
   confirm(): boolean;
   cancel(): void;
@@ -191,14 +192,7 @@ export function createSubmitGate(): SubmitGate {
       return state;
     },
     submit({ invalid, needsConfirm, pending }) {
-      if (pending) {
-        if (state === 'confirmed') state = 'idle';
-        return 'ignore';
-      }
-      if (state === 'confirmed') {
-        state = 'idle';
-        return 'submit';
-      }
+      if (pending) return 'ignore';
       if (invalid) {
         state = 'idle';
         return 'invalid';
@@ -212,11 +206,23 @@ export function createSubmitGate(): SubmitGate {
     },
     confirm() {
       if (state !== 'confirming') return false;
-      state = 'confirmed';
+      state = 'idle';
       return true;
     },
     cancel() {
       if (state === 'confirming') state = 'idle';
     }
   };
+}
+
+/**
+ * Review H1: whether the form shell resets the form after this action result.
+ * Only a success resets (once per result object); a refusal keeps every value
+ * the operator entered — dates, selects, the picked file — for the retry.
+ */
+export function shouldResetAfterResult(
+  state: { ok: boolean } | null,
+  alreadyReset: { ok: boolean } | null
+): boolean {
+  return state !== null && state.ok === true && state !== alreadyReset;
 }

@@ -357,6 +357,12 @@ function PaymentTermsCell({
         action={updateFilmPaymentTermsAction}
         submitLabel="決済条件を記録する"
         hint="決済条件は発注が下書きの間だけ記録できます。ここでの記録は入金確認（検証）ではありません。入金の確認は別の手動ステップです。"
+        confirm={{
+          title: '決済条件を記録しますか？',
+          body: '選んだ決済条件（G6）をこのフィルム発注に記録します。記録は入金確認ではありません。発注が下書きの間は記録し直せますが、下書きでなくなると変更できません。',
+          tone: 'primary',
+          summaryFields: ['paymentTerms']
+        }}
       >
         <input type="hidden" readOnly name="orderId" value={order.id} />
         <SelectField name="paymentTerms" label="決済条件" required width={280} choices={PAYMENT_TERMS_CHOICES} />
@@ -428,7 +434,16 @@ function SevenPurchaseOrderSection({
                       <RoleGate role={role} operation="seven_po:register" label="公式登録日の記録">
                         <details style={{ marginBottom: 8 }}>
                           <summary style={{ fontSize: 13, cursor: 'pointer' }}>公式登録日を記録する</summary>
-                          <ActionForm action={registerSevenPurchaseOrderAction} submitLabel="公式登録する">
+                          <ActionForm
+                            action={registerSevenPurchaseOrderAction}
+                            submitLabel="公式登録する"
+                            confirm={{
+                              title: '公式登録日を記録しますか？',
+                              body: 'このセブン化学発注書の公式登録日を記録します。公式登録はフィルム発注を進める前提の一つです。記録した公式登録日をあとから変更できるのは代表者だけです。',
+                              tone: 'primary',
+                              summaryFields: ['officialRegisteredAt']
+                            }}
+                          >
                             <input type="hidden" readOnly name="poId" value={po.id} />
                             <DateTextField name="officialRegisteredAt" label="公式登録日" required width={200} />
                           </ActionForm>
@@ -442,6 +457,19 @@ function SevenPurchaseOrderSection({
                           action={verifySevenPurchaseOrderAction}
                           submitLabel="チェックリストを記録する"
                           hint="人は必須の記録項目をすべて埋めてください。見積と一致していない場合は「相違あり・確認中」になり、前提ゲートは閉じたままです。"
+                          confirm={{
+                            title: '真性行チェックリストを記録しますか？',
+                            body: 'このセブン化学発注書の真性確認として、チェック内容を記録します。突合結果が「見積と一致していない」のときは「相違あり・確認中」になり、前提ゲートは閉じたままです。記録し直すと最新の内容で上書きされ、以前の記録は履歴に残ります。',
+                            tone: 'primary',
+                            summaryFields: [
+                              'quoteMatchesPo',
+                              'quoteCompared',
+                              'uncertain',
+                              'confirmationReplyRecorded',
+                              'documentNumber',
+                              'issueDate'
+                            ]
+                          }}
                         >
                           <input type="hidden" readOnly name="poId" value={po.id} />
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>

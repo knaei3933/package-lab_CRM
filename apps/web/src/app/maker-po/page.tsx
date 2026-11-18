@@ -423,7 +423,8 @@ async function MakerPoOrderSection({
       acknowledgementRecorded: hasCancellationAcknowledgement(events)
     };
   });
-  const stages = makerPoStages({ orderStatus: status, papers });
+  // Review M4: a failed list read is not "no paper yet".
+  const stages = makerPoStages({ orderStatus: status, papers, listFailed: entry.makerPoError !== null });
   const primary = papers.find((paper) => paper.po.id === stages.primaryPoId) ?? null;
   const current = stages.current;
   // The G6 box is large while it still decides something (① and ②, or back
@@ -444,15 +445,19 @@ async function MakerPoOrderSection({
     paper.po.status === 'CANCELLED' && paper.verifiedSend && !paper.acknowledgementRecorded);
 
   // A line for a current stage that has no block of its own for this role.
-  const fallback: string | null = list.length === 0
-    ? `この発注のメーカー発注書はまだありません。次のアクション: ${canRoleOperate(role, 'maker_po:create')
-      ? '上の「① 発注書の作成」で作成してください。'
-      : '代表者による発注書の作成を待ちます。'}`
-    : current?.key === 'verify' && !canVerifySend
-      ? '送信記録は代表者の手動確認待ちです。代表者が原本のEMLと発注内容を見比べて記録します。'
-      : primary && ['SEND_UNVERIFIED', 'MAKER_PO_ACCEPTED', 'CANCELLED'].includes(primary.po.status)
-        ? nextActionForStatus(primary.po.status, role ?? 'viewer')
-        : null;
+  const fallback: string | null = stages.unknown === 'list-error'
+    ? 'メーカー発注書の一覧を取得できなかったため、いまの段階を表示できません。画面を再読み込みしてください。'
+    : stages.unknown === 'missing-paper'
+      ? 'この発注はメーカー発注書の作成より先の状態ですが、メーカー発注書が見つかりません。画面を再読み込みし、表示が変わらない場合は記録の状態を確認してください。'
+      : list.length === 0
+        ? `この発注のメーカー発注書はまだありません。次のアクション: ${canRoleOperate(role, 'maker_po:create')
+          ? '上の「① 発注書の作成」で作成してください。'
+          : '代表者による発注書の作成を待ちます。'}`
+        : current?.key === 'verify' && !canVerifySend
+          ? '送信記録は代表者の手動確認待ちです。代表者が原本のEMLと発注内容を見比べて記録します。'
+          : primary && ['SEND_UNVERIFIED', 'MAKER_PO_ACCEPTED', 'CANCELLED'].includes(primary.po.status)
+            ? nextActionForStatus(primary.po.status, role ?? 'viewer')
+            : null;
 
   return (
     <div style={cardStyle}>
@@ -1096,6 +1101,12 @@ function MakerPoAcceptanceBlock({
             action={recordProvisionalAcceptanceAction}
             submitLabel="受入記録（仮）を記録する"
             hint="この記録は「仮」と明示され、発注書の状態は動きません。最終受入確認は代表者だけが記録できます。"
+            confirm={{
+              title: '受入記録（仮）を記録しますか？',
+              body: 'メーカー受入を「仮」の記録として残します。発注書の状態は動きません。日時を入力しなかった場合は、受入日時なしで記録されます。記録は履歴に残り、取り消す操作はありません。',
+              tone: 'primary',
+              summaryFields: ['acceptedAt']
+            }}
           >
             <input type="hidden" readOnly name="poId" value={po.id} />
             <OffsetDateTimeField name="acceptedAt" label="メーカー受入の日時" width={240} />

@@ -129,3 +129,26 @@ export function makerPoSendConfirmSpec(input: {
     ]
   };
 }
+
+export const DELIVERY_RECORD_SUBMIT_LABEL = '納品を記録する';
+export const DELIVERY_RECORD_CONFIRM_TITLE = '納品を記録しますか？';
+export const DELIVERY_RECORD_CONFIRM_BODY =
+  'この内容で納品を1件記録します。納品日を入力しなかった場合は、記録した時点の現在日時が納品日になります。記録した納品を削除する操作はありません。';
+/** The 納品日 row when the field was left empty: the API records the moment of recording (review M3). */
+export const DELIVERED_AT_NOW_VALUE = '未入力（記録した時点の現在日時で記録します）';
+
+/**
+ * DeliveryRecordForm (review M3): the rows the shell read from the fields
+ * (発注・明細・数量・単位) plus the 納品日 row, which says outright that an
+ * empty date becomes the recording time instead of showing （未入力）.
+ */
+export function deliveryRecordConfirmSpec(rows: readonly SummaryRow[], deliveredAt: string): ConfirmSpec {
+  return {
+    options: { title: DELIVERY_RECORD_CONFIRM_TITLE, body: DELIVERY_RECORD_CONFIRM_BODY },
+    confirmLabel: DELIVERY_RECORD_SUBMIT_LABEL,
+    summary: [
+      ...rows,
+      { label: '納品日', value: deliveredAt === EMPTY_SUMMARY_VALUE || deliveredAt.trim() === '' ? DELIVERED_AT_NOW_VALUE : deliveredAt }
+    ]
+  };
+}

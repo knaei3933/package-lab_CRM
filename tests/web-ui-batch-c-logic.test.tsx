@@ -216,9 +216,9 @@ describe('submit gate while the action runs (review M3)', () => {
       expect(text, file).toMatch(/aria-disabled=\{pending \|\| undefined\}/);
       expect(text, file).toMatch(/<FeedbackForm[\s\S]*?pending=\{pending\}/);
     }
-    // The shell drops the submit while pending (React 19 then skips the action).
+    // The shell drops the submit while pending (every submit is prevented; review H1: nothing is dispatched).
     expect(source('apps/web/src/components/form-feedback.tsx')).toMatch(
-      /if \(gate\.submit\(\{ invalid: false, needsConfirm: false, pending \}\) === 'ignore'\) event\.preventDefault\(\);/
+      /const decision = gate\.submit\(\{ invalid: check\.count > 0, needsConfirm: dialog !== null, pending \}\);[\s\S]*?if \(decision === 'ignore'\) return;/
     );
     // The non-shell submitters follow the same rule.
     expect(source('apps/web/src/components/LoginForm.tsx')).toMatch(/if \(pending\) return;[\s\S]*aria-disabled=\{pending \|\| undefined\}/);

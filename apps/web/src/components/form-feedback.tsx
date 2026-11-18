@@ -1,7 +1,7 @@
 'use client';
 
 import '../app/forms.css';
-import { createContext, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createContext, startTransition, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
 import { ConfirmDialog } from './ConfirmDialog';
 import type { ConfirmSummaryItem } from './ConfirmDialog';
@@ -15,7 +15,8 @@ import {
   formErrorSummary,
   normalizeQuantityText,
   plainLabel,
-  planInvalidSubmit
+  planInvalidSubmit,
+  shouldResetAfterResult
 } from '../lib/form-validation';
 import type { ControlDescriptor, ControlKind } from '../lib/form-validation';
 import type { ActionState } from '../lib/types';
@@ -29,9 +30,12 @@ import type { ActionState } from '../lib/types';
  *   next to the button and moving focus to the first problem.
  * - Server refusals keep showing in the result line; when one names a field
  *   (lib/form-messages), that field shows it too and takes focus.
- * - Confirm: a valid submit with a confirm spec is held (preventDefault) and a
- *   dialog opens; キャンセル drops it, the confirm button re-submits once
- *   through form.requestSubmit(submitter).
+ * - Confirm: a valid submit with a confirm spec is held and a dialog opens;
+ *   キャンセル drops it, the confirm button dispatches the held submit once
+ *   (same FormData, same pressed button).
+ * - Before hydration a form with a confirm spec keeps its submit buttons
+ *   disabled (SubmitLock), so no click or Enter can post it past the dialog
+ *   (review M1). Forms without one post natively as before.
  *
  * - While the action runs (pending) the submit buttons are aria-disabled, not
  *   disabled, so the focused button keeps focus; the shell ignores submits.
@@ -39,12 +43,16 @@ import type { ActionState } from '../lib/types';
  * The DOM is only read here: which controls stop a submit, the dialog rows and
  * the server-message → field step are pure functions in lib/ (tested there).
  *
- * React 19 runs a form's function action only when the submit event was not
- * default-prevented (react-dom FormActionEventPlugin: `if
- * (nativeEvent.defaultPrevented) …` skips the action), so preventDefault here
- * is what stops the server action. Before hydration none of this runs: the
- * browser validates natively (noValidate is only set once mounted) and the
- * server action handles the submit exactly as before.
+ * Review H1: after hydration every submit is default-prevented and the shell
+ * dispatches the action itself (startTransition → action(formDataFor(…))).
+ * When React 19 runs a form's function action it resets the form afterwards
+ * whatever the result (requestFormReset); a default-prevented submit makes
+ * react-dom skip the action and that reset (FormActionEventPlugin only
+ * records the pending form status). The shell resets the form itself, and
+ * only after a successful result — a refusal keeps every entered value.
+ * Before hydration none of this runs: the browser validates natively
+ * (noValidate is only set once mounted) and the server action handles the
+ * submit as a plain POST (`action` stays on the <form> for that).
  */
 
 export type FormTone = 'primary' | 'danger';
@@ -65,6 +73,8 @@ export interface ConfirmOptions {
 interface FormFeedbackValue {
   errors: Readonly<Record<string, string>>;
   summaryCount: number;
+  /** Review M1: the form has a confirm spec and is not hydrated yet — its submit buttons stay disabled. */
+  submitLocked?: boolean | undefined;
 }
 
 export const FormFeedbackContext = createContext<FormFeedbackValue | null>(null);
@@ -209,6 +219,36 @@ export function summaryFromFields(form: HTMLFormElement, names: readonly string[
   return names.map((name) => ({ label: summaryLabel(form, name), value: summaryValueText(summaryControl(form, name)) }));
 }
 
+/**
+ * The FormData of a submit, built the way react-dom builds it for a form
+ * action (createFormDataWithSubmitter): a temporary input carrying the
+ * pressed button's name and value goes right before the button, the form is
+ * read in tree order, and the input is removed. The server action therefore
+ * receives the same entries, in the same order, as when React dispatched it.
+ */
+export function formDataFor(form: HTMLFormElement, submitter: HTMLElement | null): FormData {
+  if (!submitter) return new FormData(form);
+  const temp = submitter.ownerDocument.createElement('input');
+  temp.name = (submitter as HTMLButtonElement).name;
+  temp.value = (submitter as HTMLButtonElement).value;
+  if (form.id) temp.setAttribute('form', form.id);
+  submitter.parentNode?.insertBefore(temp, submitter);
+  const formData = new FormData(form);
+  temp.parentNode?.removeChild(temp);
+  return formData;
+}
+
+/**
+ * Review M1: hands a submit button whether it must stay disabled — true only
+ * for a form with a confirm dialog that is not hydrated yet (the server
+ * markup and the first client render agree). A disabled default button also
+ * stops the implicit submit from Enter in a text field.
+ */
+export function SubmitLock({ children }: { children: (locked: boolean) => ReactNode }) {
+  const feedback = useContext(FormFeedbackContext);
+  return <>{children(feedback?.submitLocked === true)}</>;
+}
+
 /** Per-field ids and state for a control rendered inside (or outside) a feedback form. */
 export function useFieldFeedback(name: string | undefined, hasHint: boolean) {
   const feedback = useContext(FormFeedbackContext);
@@ -327,9 +367,9 @@ interface FeedbackFormProps {
   /** The action is running: submits are ignored (the buttons are aria-disabled). */
   pending?: boolean | undefined;
   /**
-   * The form's reset (React 19 resets the form after its action). A native
-   * listener: React dispatches no synthetic events during its commit, which is
-   * when it calls form.reset().
+   * The form's reset, which the shell triggers only after a successful result
+   * (review H1). A native listener, so a form.reset() from any effect or
+   * commit reaches it.
    */
   onReset?: (() => void) | undefined;
   confirm?: ConfirmResolver | undefined;
@@ -370,6 +410,15 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
     return () => form.removeEventListener('reset', reset);
   }, []);
 
+  // Review H1: only a success empties the form (once per result); a refusal keeps every value.
+  const resetFor = useRef<ActionState | null>(null);
+  useEffect(() => {
+    const form = formRef.current;
+    if (!form || !shouldResetAfterResult(state, resetFor.current)) return;
+    resetFor.current = state;
+    form.reset();
+  }, [state]);
+
   // A refusal that names a field marks that field and moves focus to it.
   useEffect(() => {
     const form = formRef.current;
@@ -390,20 +439,24 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
     setSummaryCount((count) => (count > 0 ? Object.keys(next).length : 0));
   }
 
+  /** Runs the action with this submit's FormData (React then skips its own dispatch and reset). */
+  function dispatch(form: HTMLFormElement, submitter: HTMLElement | null): void {
+    const formData = formDataFor(form, submitter);
+    startTransition(() => action(formData));
+  }
+
   function onSubmit(event: FormEvent<HTMLFormElement>): void {
+    // Review H1: never React's form-action path, which resets the form even after a refusal.
+    event.preventDefault();
     const form = event.currentTarget;
     const native = event.nativeEvent as SubmitEvent;
     const submitter = native.submitter instanceof HTMLElement ? native.submitter : null;
-    if (pending || gate.state === 'confirmed') {
-      // The confirmed re-submit passes once; anything while pending is dropped.
-      if (gate.submit({ invalid: false, needsConfirm: false, pending }) === 'ignore') event.preventDefault();
-      return;
-    }
     const check = checkForm(form);
-    const dialog = check.count === 0 && confirm ? confirm(form, submitter) : null;
-    const decision = gate.submit({ invalid: check.count > 0, needsConfirm: dialog !== null });
+    const dialog = !pending && check.count === 0 && confirm ? confirm(form, submitter) : null;
+    const decision = gate.submit({ invalid: check.count > 0, needsConfirm: dialog !== null, pending });
+    // While the action runs every submit is dropped.
+    if (decision === 'ignore') return;
     if (decision === 'invalid') {
-      event.preventDefault();
       setErrors(check.errors);
       setSummaryCount(check.count);
       check.focusTarget?.focus();
@@ -412,10 +465,11 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
     setErrors({});
     setSummaryCount(0);
     if (decision === 'confirm' && dialog) {
-      event.preventDefault();
       submitterRef.current = submitter;
       setHeld(dialog);
+      return;
     }
+    dispatch(form, submitter);
   }
 
   // Focus goes back to the button that opened the dialog once it has closed
@@ -432,16 +486,12 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
     target?.focus();
   }, [held]);
 
+  /** The held submit runs once, with the button that opened the dialog (review L3: no requestSubmit). */
   function onConfirm(): void {
     const form = formRef.current;
     if (!form || !gate.confirm()) return;
-    const submitter = submitterRef.current;
     setHeld(null);
-    if (submitter instanceof HTMLButtonElement || submitter instanceof HTMLInputElement) {
-      form.requestSubmit(submitter);
-    } else {
-      form.requestSubmit();
-    }
+    dispatch(form, submitterRef.current);
   }
 
   function onCancel(): void {
@@ -449,7 +499,8 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
     setHeld(null);
   }
 
-  const value = useMemo(() => ({ errors, summaryCount }), [errors, summaryCount]);
+  const submitLocked = Boolean(confirm) && !mounted;
+  const value = useMemo(() => ({ errors, summaryCount, submitLocked }), [errors, summaryCount, submitLocked]);
 
   return (
     <form

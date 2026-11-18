@@ -205,6 +205,8 @@
 .confirm-dialog {
   width: min(480px, calc(100vw - 32px));
   max-height: calc(100vh - 32px);
+  /* Review L6: scrolling a long summary never scrolls the page behind the modal. */
+  overscroll-behavior: contain;
   padding: 0;
   border: 1px solid var(--line-strong);
   border-top: 3px solid var(--primary);
