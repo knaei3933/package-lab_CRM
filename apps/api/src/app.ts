@@ -6,6 +6,7 @@ import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle
 import {
   buildMakerPoSnapshot,
   canPerform,
+  canWriteSevenPoOfficialDate,
   classifyMakerPoCancellation,
   computeMakerPoSnapshotSha256,
   deriveOrderApprovalGate,
@@ -38,6 +39,7 @@ import {
   isArtworkBoundDocumentType,
   isCommissionCalculationAllowed,
   isExceptionFilmSupplyOrderState,
+  isLegacyHoldReleaseTarget,
   isOfficialArtifactDocumentType,
   isTerminalFilmSupplyOrderState,
   japaneseStatusSurface,
@@ -140,6 +142,35 @@ interface OrderLineInput {
 
 /** Thrown when two release calls race; the loser answers without writing. */
 class HoldReleaseStateConflict extends Error {}
+
+class FilmOrderTransitionConflict extends Error {}
+class HoldReleaseOriginUnknown extends Error {}
+class HoldReleaseTargetInvalid extends Error {}
+class HoldReleaseEvidenceMismatch extends Error {}
+
+class OfficialRegistrationForbidden extends Error {}
+class OfficialRegistrationRace extends Error {}
+
+const REASON_MAX_LENGTH = 1000;
+
+/**
+ * Trim ordinary Unicode whitespace and remove zero-width/control characters
+ * before deciding whether a required reason actually says anything.
+ */
+function normalizeRequiredReason(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value
+    .normalize('NFC')
+    .replace(/[\p{C}\s]+/gu, ' ')
+    .trim();
+  return normalized.length > 0 && normalized.length <= REASON_MAX_LENGTH ? normalized : null;
+}
+
+function filmSupplyOrderStateForValue(value: unknown): NormalFilmSupplyOrderState | undefined {
+  if (typeof value !== 'string') return undefined;
+  const index = (FILM_SUPPLY_ORDER_STATES as readonly string[]).indexOf(value);
+  return index >= 0 ? FILM_SUPPLY_ORDER_STATES[index] : undefined;
+}
 
 type OrderLineValidation =
   | { ok: true; line: OrderLineInput }
@@ -272,6 +303,35 @@ function parseRequiredDate(value: unknown): { ok: true; date: Date } | { ok: fal
 
 function optionalText(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/** Executor that can read inside the pool or one open transaction. */
+type TransitionQueryExecutor = Pick<AppDatabase, 'select'>;
+
+/**
+ * Reads the normal status recorded by the latest append-only transition into an
+ * exception. Callers must already hold the order row lock when this decides a
+ * release, so a concurrent re-hold cannot change the origin under them.
+ */
+async function loadExceptionOrigin(
+  executor: TransitionQueryExecutor,
+  orderId: string,
+  exceptionState: 'ON_HOLD' | 'CANCELLATION_REVIEW'
+): Promise<NormalFilmSupplyOrderState | undefined> {
+  const [event] = await executor.select({
+    beforeState: auditEvents.beforeState,
+    afterState: auditEvents.afterState
+  }).from(auditEvents)
+    .where(and(
+      eq(auditEvents.entityType, 'film_supply_order'),
+      eq(auditEvents.entityId, orderId),
+      eq(auditEvents.action, 'FILM_SUPPLY_ORDER_TRANSITIONED'),
+      sql`${auditEvents.afterState} ->> 'status' = ${exceptionState}`
+    ))
+    .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+    .limit(1);
+  if ((event?.afterState as { status?: unknown } | null)?.status !== exceptionState) return undefined;
+  return filmSupplyOrderStateForValue((event?.beforeState as { status?: unknown } | null)?.status);
 }
 
 export function createApp({ db, secureCookies = false }: AppOptions) {
@@ -566,23 +626,67 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const registeredAt = parseRequiredDate(body?.officialRegisteredAt);
     if (!registeredAt.ok) return context.json({ error: '公式登録日が必要です', code: 'OFFICIAL_REGISTRATION_REQUIRED' }, 422);
 
-    const updated = { officialRegisteredAt: registeredAt.date, updatedAt: new Date() };
-    await db.transaction(async (tx) => {
-      await tx.update(sevenPurchaseOrders).set(updated).where(eq(sevenPurchaseOrders.id, poId));
-      await recordAuditEvent(tx, {
-        projectId: current.projectId,
-        id: uuidv7(updated.updatedAt),
-        actorUserId: user.id,
-        action: 'SEVEN_PO_OFFICIALLY_REGISTERED',
-        entityType: 'seven_purchase_order',
-        entityId: poId,
-        beforeState: current,
-        afterState: { ...current, ...updated },
-        occurredAt: updated.updatedAt,
-        requestMetadata: { operation: 'seven_po:register' }
-      });
+    const actor = toActor(user);
+    const initiallyUnregistered = current.officialRegisteredAt === null;
+    let written: typeof current | null = null;
+    let operation: string | null = null;
+    try {
+      await db.transaction(async (tx) => {
+        const [locked] = await tx.select().from(sevenPurchaseOrders)
+          .where(eq(sevenPurchaseOrders.id, poId)).limit(1).for('update');
+        if (!locked) throw new OfficialRegistrationRace();
+        if (initiallyUnregistered && locked.officialRegisteredAt !== null) {
+          throw new OfficialRegistrationRace();
+        }
+        const decision = canWriteSevenPoOfficialDate(
+          actor,
+          locked.officialRegisteredAt,
+          'F1',
+          locked.projectId
+        );
+        if (!decision.allowed) {
+          throw new OfficialRegistrationForbidden();
+        }
+        const isOverwrite = locked.officialRegisteredAt !== null;
+        operation = isOverwrite ? 'seven_po:register_overwrite' : 'seven_po:register';
+        const updated = { officialRegisteredAt: registeredAt.date, updatedAt: new Date() };
+        const updateFilter = isOverwrite
+          ? eq(sevenPurchaseOrders.id, poId)
+          : and(
+            eq(sevenPurchaseOrders.id, poId),
+            isNull(sevenPurchaseOrders.officialRegisteredAt)
+          );
+        const updatedRows = await tx.update(sevenPurchaseOrders).set(updated)
+          .where(updateFilter)
+          .returning();
+        if (updatedRows.length === 0) throw new OfficialRegistrationRace();
+        written = updatedRows[0]!;
+        await recordAuditEvent(tx, {
+          projectId: locked.projectId,
+          id: uuidv7(updated.updatedAt),
+          actorUserId: user.id,
+          action: 'SEVEN_PO_OFFICIALLY_REGISTERED',
+          entityType: 'seven_purchase_order',
+          entityId: poId,
+          beforeState: locked,
+          afterState: written,
+          occurredAt: updated.updatedAt,
+          requestMetadata: { operation }
+        });
     });
-    return context.json({ ...current, ...updated });
+    } catch (error) {
+      if (error instanceof OfficialRegistrationForbidden) {
+        return context.json({ error: '権限がありません' }, 403);
+      }
+      if (error instanceof OfficialRegistrationRace) {
+        return context.json({
+          error: '公式登録日が別の記録で登録されました',
+          code: 'OFFICIAL_DATE_ALREADY_REGISTERED'
+        }, 409);
+      }
+      throw error;
+    }
+    return context.json(written!);
   });
 
   app.post('/api/projects/:projectId/pre-order-references', async (context) => {
@@ -967,7 +1071,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       return context.json({ error: makerChainRefusal.message, code: makerChainRefusal.code }, 422);
     }
 
-    const transition = transitionFilmSupplyOrder(order.status, target);
+    const cancellationOrigin = order.status === 'CANCELLATION_REVIEW'
+      ? await loadExceptionOrigin(db, orderId, 'CANCELLATION_REVIEW')
+      : undefined;
+    const transition = transitionFilmSupplyOrder(order.status, target, cancellationOrigin);
     if (!transition.ok) {
       return context.json({ error: '許可されていない状態遷移です', code: 'INVALID_TRANSITION', from: order.status, to: target }, 422);
     }
@@ -1036,23 +1143,66 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       }
     }
 
+    const holdReason = target === 'ON_HOLD'
+      ? normalizeRequiredReason(body?.holdReason ?? body?.reason)
+      : null;
+    if (target === 'ON_HOLD' && holdReason === null) {
+      const tooLong = typeof (body?.holdReason ?? body?.reason) === 'string'
+        && (body.holdReason ?? body.reason).length > REASON_MAX_LENGTH;
+      return context.json({
+        error: tooLong
+          ? `보류 사유는 ${REASON_MAX_LENGTH}자 이하로 입력해야 합니다`
+          : '보류 사유（holdReason）는 필수입니다',
+        code: tooLong ? 'HOLD_REASON_TOO_LONG' : 'HOLD_REASON_REQUIRED'
+      }, 422);
+    }
+
     const now = new Date();
-    const updated = { status: target, updatedAt: now };
-    await db.transaction(async (tx) => {
-      await tx.update(filmSupplyOrders).set(updated).where(eq(filmSupplyOrders.id, orderId));
-      await recordAuditEvent(tx, {
-        projectId: order.projectId,
-        id: uuidv7(now),
-        actorUserId: user.id,
-        action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
-        entityType: 'film_supply_order',
-        entityId: orderId,
-        beforeState: { status: order.status },
-        afterState: { status: target },
-        occurredAt: now,
-        requestMetadata: { operation: 'film_order:transition' }
+    const updated = { status: target, holdReason, updatedAt: now };
+    try {
+      await db.transaction(async (tx) => {
+        const [current] = await tx.select().from(filmSupplyOrders)
+          .where(eq(filmSupplyOrders.id, orderId)).limit(1).for('update');
+        if (!current || current.deletedAt || current.status !== order.status) {
+          throw new FilmOrderTransitionConflict();
+        }
+        const lockedOrigin = current.status === 'CANCELLATION_REVIEW'
+          ? await loadExceptionOrigin(tx, orderId, 'CANCELLATION_REVIEW')
+          : undefined;
+        if (!transitionFilmSupplyOrder(current.status, target, lockedOrigin).ok) {
+          throw new FilmOrderTransitionConflict();
+        }
+        const updatedRows = await tx.update(filmSupplyOrders).set(updated)
+          .where(and(
+            eq(filmSupplyOrders.id, orderId),
+            eq(filmSupplyOrders.status, current.status)
+          ))
+          .returning({ id: filmSupplyOrders.id });
+        if (updatedRows.length === 0) throw new FilmOrderTransitionConflict();
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+          entityType: 'film_supply_order',
+          entityId: orderId,
+          beforeState: { status: current.status, holdReason: current.holdReason },
+          afterState: { status: target, holdReason },
+          occurredAt: now,
+          requestMetadata: { operation: 'film_order:transition', holdReason }
+        });
       });
-    });
+    } catch (error) {
+      if (error instanceof FilmOrderTransitionConflict) {
+        return context.json({
+          error: '発注状態がすでに変わっています',
+          code: 'FILM_ORDER_STATE_CHANGED',
+          from: order.status,
+          to: target
+        }, 409);
+      }
+      throw error;
+    }
     return context.json({ ...order, ...updated });
   });
 
@@ -1074,45 +1224,89 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     }
 
     const body = await context.req.json().catch(() => null) as any;
-    if (typeof body?.reason !== 'string' || body.reason.trim().length === 0) {
-      return context.json({ error: '保留解除理由（reason）は必須です', code: 'HOLD_RELEASE_REASON_REQUIRED' }, 422);
-    }
-
-    const [holdEvent] = await db.select({
-      beforeState: auditEvents.beforeState,
-      afterState: auditEvents.afterState
-    }).from(auditEvents)
-      .where(and(
-        eq(auditEvents.entityType, 'film_supply_order'),
-        eq(auditEvents.entityId, orderId),
-        eq(auditEvents.action, 'FILM_SUPPLY_ORDER_TRANSITIONED'),
-        sql`${auditEvents.afterState} ->> 'status' = 'ON_HOLD'`
-      ))
-      .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
-      .limit(1);
-    const holdOrigin = (holdEvent?.beforeState as { status?: unknown } | null)?.status;
-    const holdOriginState = typeof holdOrigin === 'string'
-      ? FILM_SUPPLY_ORDER_STATES[(FILM_SUPPLY_ORDER_STATES as readonly string[]).indexOf(holdOrigin)]
-      : undefined;
-    if (
-      holdOriginState === undefined
-      || (holdEvent?.afterState as { status?: unknown } | null)?.status !== 'ON_HOLD'
-      || !transitionFilmSupplyOrder(order.status, holdOriginState, holdOriginState).ok
-    ) {
+    const reason = normalizeRequiredReason(body?.reason);
+    if (reason === null) {
+      const tooLong = typeof body?.reason === 'string' && body.reason.length > REASON_MAX_LENGTH;
       return context.json({
-        error: '保留直前の状態を確認できないため解除できません',
-        code: 'HOLD_ORIGIN_UNKNOWN'
+        error: tooLong
+          ? `保留解除理由は${REASON_MAX_LENGTH}字以下で入力してください`
+          : '保留解除理由（reason）は必須です',
+        code: tooLong ? 'HOLD_RELEASE_REASON_TOO_LONG' : 'HOLD_RELEASE_REASON_REQUIRED'
       }, 422);
     }
+    const requestedResume = body?.resumeStatus;
 
     const now = new Date();
-    const updated = { status: holdOriginState, holdReason: null, updatedAt: now };
+    let releasedStatus: NormalFilmSupplyOrderState | null = null;
+    let holdEventId: string | null = null;
     try {
       await db.transaction(async (tx) => {
         const [current] = await tx.select().from(filmSupplyOrders)
           .where(eq(filmSupplyOrders.id, orderId)).limit(1).for('update');
-        if (!current || current.status !== 'ON_HOLD') throw new HoldReleaseStateConflict();
-        await tx.update(filmSupplyOrders).set(updated).where(eq(filmSupplyOrders.id, orderId));
+        if (!current || current.deletedAt || current.status !== 'ON_HOLD') {
+          throw new HoldReleaseStateConflict();
+        }
+
+        // The append-only hold event is read only after the order row is locked,
+        // so a concurrent re-hold cannot change the origin this decision uses.
+        const [holdEvent] = await tx.select({
+          id: auditEvents.id,
+          beforeState: auditEvents.beforeState,
+          afterState: auditEvents.afterState
+        }).from(auditEvents)
+          .where(and(
+            eq(auditEvents.entityType, 'film_supply_order'),
+            eq(auditEvents.entityId, orderId),
+            eq(auditEvents.action, 'FILM_SUPPLY_ORDER_TRANSITIONED'),
+            sql`${auditEvents.afterState} ->> 'status' = 'ON_HOLD'`
+          ))
+          .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+          .limit(1);
+        const originState = (holdEvent?.afterState as { status?: unknown } | null)?.status === 'ON_HOLD'
+          ? filmSupplyOrderStateForValue((holdEvent?.beforeState as { status?: unknown } | null)?.status)
+          : undefined;
+
+        let targetState: NormalFilmSupplyOrderState;
+        if (originState) {
+          targetState = originState;
+          if (requestedResume !== undefined && requestedResume !== targetState) {
+            throw new HoldReleaseTargetInvalid();
+          }
+        } else {
+          if (requestedResume === undefined || requestedResume === null) {
+            throw new HoldReleaseOriginUnknown();
+          }
+          if (!isLegacyHoldReleaseTarget(requestedResume)) throw new HoldReleaseTargetInvalid();
+          targetState = requestedResume;
+
+          if (targetState === 'APPROVED_FOR_MANUAL_SEND'
+            || targetState === 'MAKER_PO_SENT_MANUALLY'
+            || targetState === 'MAKER_PO_ACCEPTED') {
+            const [activePo] = await tx.select({ status: makerPurchaseOrders.status })
+              .from(makerPurchaseOrders)
+              .where(and(
+                eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
+                ne(makerPurchaseOrders.status, 'CANCELLED')
+              ))
+              .orderBy(desc(makerPurchaseOrders.createdAt), desc(makerPurchaseOrders.id))
+              .limit(1);
+            if (activePo?.status !== targetState) throw new HoldReleaseEvidenceMismatch();
+          }
+        }
+
+        if (!transitionFilmSupplyOrder(current.status, targetState, targetState).ok) {
+          throw new HoldReleaseTargetInvalid();
+        }
+        const updatedRows = await tx.update(filmSupplyOrders)
+          .set({ status: targetState, holdReason: null, updatedAt: now })
+          .where(and(
+            eq(filmSupplyOrders.id, orderId),
+            eq(filmSupplyOrders.status, 'ON_HOLD')
+          ))
+          .returning({ id: filmSupplyOrders.id });
+        if (updatedRows.length === 0) throw new HoldReleaseStateConflict();
+        releasedStatus = targetState;
+        holdEventId = holdEvent?.id ?? null;
         await recordAuditEvent(tx, {
           projectId: order.projectId,
           id: uuidv7(now),
@@ -1121,18 +1315,41 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           entityType: 'film_supply_order',
           entityId: orderId,
           beforeState: { status: current.status, holdReason: current.holdReason },
-          afterState: { status: updated.status, holdReason: null },
+          afterState: { status: targetState, holdReason: null },
           occurredAt: now,
-          requestMetadata: { operation: 'film_order:release_hold', reason: body.reason.trim() }
+          requestMetadata: {
+            operation: 'film_order:release_hold',
+            reason,
+            holdEventId,
+            ...(originState ? {} : { legacyResumeStatus: targetState })
+          }
         });
       });
     } catch (error) {
       if (error instanceof HoldReleaseStateConflict) {
-        return context.json({ error: '保留状態がすでに変わりました', code: 'HOLD_RELEASE_STATE_CONFLICT' }, 422);
+        return context.json({ error: '保留状態がすでに変わりました', code: 'HOLD_RELEASE_STATE_CONFLICT' }, 409);
+      }
+      if (error instanceof HoldReleaseOriginUnknown) {
+        return context.json({
+          error: '保留直前の状態を確認できないため、復帰先（resumeStatus）の指定が必要です',
+          code: 'HOLD_ORIGIN_UNKNOWN'
+        }, 422);
+      }
+      if (error instanceof HoldReleaseTargetInvalid) {
+        return context.json({
+          error: '指定された復帰先はこのレガシー保留解除で許可されていません',
+          code: 'HOLD_RESUME_STATUS_INVALID'
+        }, 422);
+      }
+      if (error instanceof HoldReleaseEvidenceMismatch) {
+        return context.json({
+          error: '復帰先のメーカー発注状態に対応する有効な証跡がありません',
+          code: 'HOLD_RESUME_EVIDENCE_MISMATCH'
+        }, 422);
       }
       throw error;
     }
-    return context.json({ ...order, ...updated });
+    return context.json({ ...order, status: releasedStatus!, holdReason: null, updatedAt: now });
   });
 
   // --------------------------- M5: film receipt assumption and delivery
@@ -2062,7 +2279,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         action: 'DOCUMENT_VERSION_UPLOADED',
         entityType: 'document_version',
         entityId: versionRow.id,
-        afterState: versionRow,
+        afterState: {
+          ...versionRow,
+          documentType: (newDocument ?? existingDocument)?.documentType,
+          filmSupplyOrderId: (newDocument ?? existingDocument)?.filmSupplyOrderId ?? null,
+          designKey: (newDocument ?? existingDocument)?.designKey ?? null
+        },
         occurredAt: now,
         requestMetadata: { operation: 'document:create', documentId }
       });
@@ -2215,32 +2437,74 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!registeredAt.ok) return context.json({ error: '公式登録日が不正です', code: 'INVALID_DATE' }, 422);
 
     const now = new Date();
-    const updated = {
-      officialRegisteredAt: registeredAt.date ?? now,
-      promotedAt: now,
-      promotedByUserId: user.id,
-      updatedAt: now
-    };
-    await db.transaction(async (tx) => {
-      await tx.update(sevenPurchaseOrders).set(updated).where(eq(sevenPurchaseOrders.id, po.id));
-      await recordAuditEvent(tx, {
-        projectId: po.projectId,
-        id: uuidv7(now),
-        actorUserId: user.id,
-        action: 'PRE_ORDER_PROMOTED_OFFICIAL',
-        entityType: 'seven_purchase_order',
-        entityId: po.id,
-        beforeState: {
-          officialRegisteredAt: po.officialRegisteredAt,
-          promotedAt: po.promotedAt,
-          promotedByUserId: po.promotedByUserId
-        },
-        afterState: { ...po, ...updated },
-        occurredAt: now,
-        requestMetadata: { operation: 'pre_order:promote_official', preOrderReferenceId: reference.id }
+    let written: typeof po | null = null;
+    let operation: string | null = null;
+    try {
+      await db.transaction(async (tx) => {
+        const [locked] = await tx.select().from(sevenPurchaseOrders)
+          .where(eq(sevenPurchaseOrders.id, po.id)).limit(1).for('update');
+        if (!locked) throw new OfficialRegistrationRace();
+        const decision = canWriteSevenPoOfficialDate(
+          toActor(user),
+          locked.officialRegisteredAt,
+          'F1',
+          locked.projectId
+        );
+        if (!decision.allowed) throw new OfficialRegistrationForbidden();
+        if (locked.reviewPending) {
+          return context.json({ error: '見積と発注書の突合レビューが未解決です', code: 'PO_REVIEW_PENDING' }, 422);
+        }
+        if (locked.verificationStatus !== 'verified') {
+          return context.json({ error: 'セブン発注書の真正性確認が完了していません', code: 'SEVEN_PO_NOT_VERIFIED' }, 422);
+        }
+
+        const isOverwrite = locked.officialRegisteredAt !== null;
+        operation = isOverwrite
+          ? 'pre_order:promote_official_overwrite'
+          : 'pre_order:promote_official';
+        const updated = {
+          officialRegisteredAt: registeredAt.date ?? now,
+          promotedAt: now,
+          promotedByUserId: user.id,
+          updatedAt: now
+        };
+        const updateFilter = isOverwrite
+          ? eq(sevenPurchaseOrders.id, locked.id)
+          : and(
+            eq(sevenPurchaseOrders.id, locked.id),
+            isNull(sevenPurchaseOrders.officialRegisteredAt)
+          );
+        const updatedRows = await tx.update(sevenPurchaseOrders).set(updated)
+          .where(updateFilter)
+          .returning();
+        if (updatedRows.length === 0) throw new OfficialRegistrationRace();
+        written = updatedRows[0]!;
+        await recordAuditEvent(tx, {
+          projectId: locked.projectId,
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'PRE_ORDER_PROMOTED_OFFICIAL',
+          entityType: 'seven_purchase_order',
+          entityId: locked.id,
+          beforeState: locked,
+          afterState: written,
+          occurredAt: now,
+          requestMetadata: { operation, preOrderReferenceId: reference.id }
+        });
       });
-    });
-    return context.json({ ...po, ...updated });
+    } catch (error) {
+      if (error instanceof OfficialRegistrationForbidden) {
+        return context.json({ error: '権限がありません' }, 403);
+      }
+      if (error instanceof OfficialRegistrationRace) {
+        return context.json({
+          error: '公式登録日が別の記録で登録されました',
+          code: 'OFFICIAL_DATE_ALREADY_REGISTERED'
+        }, 409);
+      }
+      throw error;
+    }
+    return context.json(written);
   });
 
   // Supply-order registration against a seven purchase order (T-04, T-05):
@@ -3503,6 +3767,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const decision = canPerform(toActor(user), 'maker_po:create', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
+    // A hold freezes the whole maker-PO workflow. Letting the paper advance
+    // while the order stays behind makes release unable to catch up (M2).
+    if (order.status === 'ON_HOLD') {
+      return context.json({
+        error: '保留中の発注のメーカー発注書は進められません。解除後に記録してください',
+        code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+
     const creationGate = evaluateMakerPoCreationGate({ orderStatus: order.status });
     if (!creationGate.ok) return context.json({ error: creationGate.message, code: creationGate.code }, 422);
 
@@ -3672,6 +3946,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const decision = canPerform(toActor(user), 'ceo_approve', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '代表者のみ承認できます' }, 403);
 
+    // A hold freezes the whole maker-PO workflow. Letting the paper advance
+    // while the order stays behind makes release unable to catch up (M2).
+    if (order.status === 'ON_HOLD') {
+      return context.json({
+        error: '保留中の発注のメーカー発注書は進められません。解除後に記録してください',
+        code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+
     const poStatus = validateMakerPoStatus(existing.status);
     if (!poStatus.ok) return context.json({ error: poStatus.message, code: poStatus.code }, 422);
     const approval = evaluateMakerPoApproval(poStatus.value);
@@ -3839,6 +4123,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
     const decision = canPerform(toActor(user), 'maker_po:send_evidence', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    // A hold freezes the whole maker-PO workflow. Letting the paper advance
+    // while the order stays behind makes release unable to catch up (M2).
+    if (order.status === 'ON_HOLD') {
+      return context.json({
+        error: '保留中の発注のメーカー発注書は進められません。解除後に記録してください',
+        code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     const sentAt = parseOptionalDate(body?.sentAt);
@@ -4284,6 +4578,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const decision = canPerform(toActor(user), 'maker_po:verify_send', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 
+    // A hold freezes the whole maker-PO workflow. Letting the paper advance
+    // while the order stays behind makes release unable to catch up (M2).
+    if (order.status === 'ON_HOLD') {
+      return context.json({
+        error: '保留中の発注のメーカー発注書は進められません。解除後に記録してください',
+        code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+
     const body = await context.req.json().catch(() => null) as any;
     const resultCheck = validateEvidenceVerificationResult(body?.result);
     if (!resultCheck.ok) return context.json({ error: resultCheck.message, code: resultCheck.code }, 422);
@@ -4467,6 +4771,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const decision = canPerform(toActor(user), 'maker_po:cancel', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '代表者のみ取り消せます' }, 403);
 
+    // A hold freezes the whole maker-PO workflow. Letting the paper advance
+    // while the order stays behind makes release unable to catch up (M2).
+    if (order.status === 'ON_HOLD') {
+      return context.json({
+        error: '保留中の発注のメーカー発注書は進められません。解除後に記録してください',
+        code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.note !== 'string' || body.note.trim().length === 0) {
       return context.json({
@@ -4642,6 +4956,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const decision = canPerform(toActor(user), 'maker_po:cancel', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '代表者のみ承認を記録できます' }, 403);
 
+    // A hold freezes the whole maker-PO workflow. Letting the paper advance
+    // while the order stays behind makes release unable to catch up (M2).
+    if (order.status === 'ON_HOLD') {
+      return context.json({
+        error: '保留中の発注のメーカー発注書は進められません。解除後に記録してください',
+        code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
+
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.note !== 'string' || body.note.trim().length === 0) {
       return context.json({
@@ -4783,6 +5107,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
     const decision = canPerform(toActor(user), 'maker_po:accept_evidence', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    // A hold freezes the whole maker-PO workflow. Letting the paper advance
+    // while the order stays behind makes release unable to catch up (M2).
+    if (order.status === 'ON_HOLD') {
+      return context.json({
+        error: '保留中の発注のメーカー発注書は進められません。解除後に記録してください',
+        code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     const acceptedAt = parseOptionalDate(body?.acceptedAt);
@@ -5040,6 +5374,16 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
     const decision = canPerform(toActor(user), 'maker_po:accept_provisional', 'F1', order.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    // A hold freezes the whole maker-PO workflow. Letting the paper advance
+    // while the order stays behind makes release unable to catch up (M2).
+    if (order.status === 'ON_HOLD') {
+      return context.json({
+        error: '保留中の発注のメーカー発注書は進められません。解除後に記録してください',
+        code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED',
+        orderStatus: order.status
+      }, 409);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     const acceptedAt = parseOptionalDate(body?.acceptedAt);

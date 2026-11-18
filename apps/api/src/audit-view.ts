@@ -51,8 +51,10 @@ const STAFF_STATE_KEYS: readonly string[] = [
   // A staff recorder needs to know that an uploaded version is approval
   // evidence and where it is bound; bytes, amounts and storage paths stay out.
   'documentType',
+  'documentId',
   'filmSupplyOrderId',
   'designKey',
+  'versionNumber',
   'verificationStatus',
   'deliveryKind',
   'confirmationState'

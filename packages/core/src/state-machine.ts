@@ -51,6 +51,19 @@ export type FilmSupplyOrderState = NormalFilmSupplyOrderState | ExceptionFilmSup
 
 export const FILM_SUPPLY_ORDER_TERMINAL_STATE: NormalFilmSupplyOrderState = 'FILM_RECEIPT_ASSUMED_NO_ISSUE';
 
+/**
+ * A legacy hold without an audit trail can be released only to a state at or
+ * before maker acceptance. Later states additionally require accepted paper and
+ * are therefore outside this explicit recovery vocabulary.
+ */
+export const LEGACY_HOLD_RELEASE_TARGETS = FILM_SUPPLY_ORDER_STATES
+  .slice(0, FILM_SUPPLY_ORDER_STATES.indexOf('MAKER_PO_ACCEPTED') + 1) as readonly NormalFilmSupplyOrderState[];
+
+export function isLegacyHoldReleaseTarget(value: unknown): value is NormalFilmSupplyOrderState {
+  return typeof value === 'string'
+    && (LEGACY_HOLD_RELEASE_TARGETS as readonly string[]).includes(value);
+}
+
 const NEXT_NORMAL_STATE: Record<NormalFilmSupplyOrderState, NormalFilmSupplyOrderState | null> = {
   DRAFT: 'SEVEN_PO_VERIFIED',
   SEVEN_PO_VERIFIED: 'ARTWORK_RECEIVED',
@@ -135,20 +148,21 @@ export type FilmSupplyOrderTransitionResult<TFrom extends FilmSupplyOrderState, 
   | { ok: false; from: FilmSupplyOrderState; to: FilmSupplyOrderState };
 
 /**
- * `holdOrigin` is the normal status immediately before the order entered its
- * current hold. Omitting it (unknown legacy data) or naming any other state
- * rejects every release, so a held pre-acceptance order can never use the hold
- * as a shortcut to FILM_IN_PRODUCTION. An order held while already in
- * production resumes exactly that production state.
+ * `exceptionOrigin` is the normal status immediately before the order entered
+ * its current hold or cancellation review. Omitting it (unknown legacy data) or
+ * naming any other state rejects every release, so neither exception can turn a
+ * pre-acceptance interruption into a shortcut to FILM_IN_PRODUCTION. An order
+ * interrupted while already in production resumes exactly that production
+ * state. CHANGE_REVIEW keeps its designed restart targets.
  */
 export function transitionFilmSupplyOrder<TFrom extends FilmSupplyOrderState, TTo extends FilmSupplyOrderState>(
   from: TFrom,
   to: TTo,
-  holdOrigin?: NormalFilmSupplyOrderState | null
+  exceptionOrigin?: NormalFilmSupplyOrderState | null
 ): FilmSupplyOrderTransitionResult<TFrom, TTo> {
   let allowed = FILM_SUPPLY_ORDER_TRANSITIONS[from].includes(to);
-  if (from === 'ON_HOLD') {
-    allowed = allowed && holdOrigin === to;
+  if (from === 'ON_HOLD' || from === 'CANCELLATION_REVIEW') {
+    allowed = allowed && exceptionOrigin === to;
   }
   return allowed ? { ok: true, from, to } : { ok: false, from, to };
 }

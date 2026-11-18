@@ -4,11 +4,13 @@ import {
   FILM_SUPPLY_ORDER_STATES,
   evaluateSevenPoVerificationGate,
   filmSupplyOrderTransitions,
+  isExceptionFilmSupplyOrderState,
   toQuantityString,
   transitionFilmSupplyOrder,
   validateQuantity,
   validateUnit,
-  type FilmSupplyOrderState
+  type FilmSupplyOrderState,
+  type NormalFilmSupplyOrderState
 } from '@kanei/core';
 
 describe('M1 film supply order state machine', () => {
@@ -60,7 +62,7 @@ describe('M1 film supply order state machine', () => {
   it('exception states resolve back into named normal states', () => {
     expect(transitionFilmSupplyOrder('ON_HOLD', 'PROOF_READY', 'PROOF_READY').ok).toBe(true);
     expect(transitionFilmSupplyOrder('ON_HOLD', 'FILM_IN_PRODUCTION', 'FILM_IN_PRODUCTION').ok).toBe(true);
-    expect(transitionFilmSupplyOrder('CANCELLATION_REVIEW', 'MAKER_PO_READY').ok).toBe(true);
+    expect(transitionFilmSupplyOrder('CANCELLATION_REVIEW', 'MAKER_PO_READY', 'MAKER_PO_READY').ok).toBe(true);
     expect(transitionFilmSupplyOrder('CHANGE_REVIEW', 'ARTWORK_RECEIVED').ok).toBe(true);
     expect(transitionFilmSupplyOrder('CHANGE_REVIEW', 'PROOF_READY').ok).toBe(true);
     // CHANGE_REVIEW restarts the artwork/approval chain, not production.
@@ -71,6 +73,50 @@ describe('M1 film supply order state machine', () => {
     expect(transitionFilmSupplyOrder('ON_HOLD', 'FILM_IN_PRODUCTION', 'APPROVED_FOR_MANUAL_SEND').ok).toBe(false);
     expect(transitionFilmSupplyOrder('ON_HOLD', 'APPROVED_FOR_MANUAL_SEND', 'APPROVED_FOR_MANUAL_SEND').ok).toBe(true);
     expect(transitionFilmSupplyOrder('ON_HOLD', 'PROOF_READY').ok).toBe(false);
+  });
+
+  it('a cancellation review releases only to its immediate prior state', () => {
+    expect(transitionFilmSupplyOrder('CANCELLATION_REVIEW', 'FILM_IN_PRODUCTION', 'DRAFT').ok).toBe(false);
+    expect(transitionFilmSupplyOrder('CANCELLATION_REVIEW', 'DRAFT', 'DRAFT').ok).toBe(true);
+    expect(transitionFilmSupplyOrder('CANCELLATION_REVIEW', 'MAKER_PO_READY').ok).toBe(false);
+  });
+
+  it('exhaustively keeps production unreachable without maker acceptance', () => {
+    const chain = FILM_SUPPLY_ORDER_STATES as readonly FilmSupplyOrderState[];
+    const acceptedIndex = chain.indexOf('MAKER_PO_ACCEPTED');
+    const makerChainStates = new Set(['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED']);
+    type Node = { state: FilmSupplyOrderState; origin: NormalFilmSupplyOrderState | null };
+
+    for (const start of chain) {
+      const seen = new Set<string>();
+      const queue: Node[] = [{ state: start, origin: null }];
+      while (queue.length > 0) {
+        const node = queue.shift()!;
+        const key = `${node.state}|${node.origin ?? ''}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        for (const to of filmSupplyOrderTransitions(node.state)) {
+          // The generic transitions endpoint refuses every maker-chain target;
+          // those states are written only by evidence-backed dedicated APIs.
+          if (makerChainStates.has(to)) continue;
+          const nextOrigin = isExceptionFilmSupplyOrderState(node.state)
+            ? node.origin as NormalFilmSupplyOrderState | null
+            : to === 'ON_HOLD' || to === 'CANCELLATION_REVIEW'
+              ? node.state
+              : null;
+          if (!transitionFilmSupplyOrder(node.state, to, nextOrigin).ok) continue;
+          queue.push({ state: to, origin: nextOrigin });
+        }
+      }
+
+      const reachable = [...seen].map((key) => key.split('|')[0]!);
+      const startIndex = chain.indexOf(start);
+      if (startIndex < acceptedIndex) {
+        for (const later of chain.slice(acceptedIndex + 1)) {
+          expect(reachable, `${start} -> ${later}`).not.toContain(later);
+        }
+      }
+    }
   });
 });
 

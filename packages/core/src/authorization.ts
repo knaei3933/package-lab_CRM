@@ -164,3 +164,23 @@ export function canPerform(
 
   return { allowed: true };
 }
+
+/**
+ * The one authorization gate for writing an existing seven-PO official date.
+ * New rows are initial registrations and use the caller's regular permission;
+ * once a date exists, both separate HTTP routes must arrive here.
+ */
+export function canWriteSevenPoOfficialDate(
+  actor: AuthenticatedActor,
+  currentOfficialRegisteredAt: Date | string | null,
+  businessUnit: BusinessUnit,
+  projectId?: string
+): AuthorizationDecision {
+  const isOverwrite = currentOfficialRegisteredAt !== null && currentOfficialRegisteredAt !== undefined;
+  return canPerform(
+    actor,
+    isOverwrite ? 'seven_po:register_overwrite' : 'seven_po:register',
+    businessUnit,
+    projectId
+  );
+}

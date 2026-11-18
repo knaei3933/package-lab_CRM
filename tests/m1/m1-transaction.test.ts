@@ -476,7 +476,10 @@ describe('M1 transaction structure', () => {
         eq(auditEvents.action, 'FILM_SUPPLY_ORDER_TRANSITIONED')
       ))
       .limit(1);
-    expect(transitionAudit?.afterState).toEqual({ status: 'SEVEN_PO_VERIFIED' });
+    expect(transitionAudit?.afterState).toEqual({
+      status: 'SEVEN_PO_VERIFIED',
+      holdReason: null
+    });
   });
 
   it('rejects invalid film supply order transitions with 422 and no state change', async () => {
