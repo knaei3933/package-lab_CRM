@@ -162,6 +162,11 @@ export async function cancelMakerPoAction(_prev: ActionState | null, formData: F
  * was proven (取消承認). It is the record that re-opens the ordering step, so
  * the reason is mandatory; the maker-side proof and the moment are optional,
  * exactly as the endpoint accepts them.
+ *
+ * Recheck 8 Medium-B: the same endpoint keeps decision (a) — the record-only
+ * post-delivery confirmation of an internally cancelled paper. The API decides
+ * which one it recorded (`acknowledgementKind`) and warns when a replacement
+ * paper is already live (`replacementPaperLive`); the message says both.
  */
 export async function acknowledgeMakerPoCancellationAction(
   _prev: ActionState | null,
@@ -178,7 +183,25 @@ export async function acknowledgeMakerPoCancellationAction(
   const body: Record<string, unknown> = { note };
   if (acknowledgedAt.length > 0) body.acknowledgedAt = acknowledgedAt;
   if (evidenceDocumentVersionId.length > 0) body.evidenceDocumentVersionId = evidenceDocumentVersionId;
-  return post(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/cancellation-acknowledgement`, body);
+  const result = await callApi<{ acknowledgementKind?: unknown; replacementPaperLive?: unknown }>(
+    `/api/maker-purchase-orders/${encodeURIComponent(poId)}/cancellation-acknowledgement`,
+    { method: 'POST', body }
+  );
+  if (!result.ok) {
+    return { ok: false, message: result.error ?? `APIがステータス ${result.status} を返しました。` };
+  }
+  return { ok: true, message: acknowledgementRecordedMessage(result.data) };
+}
+
+function acknowledgementRecordedMessage(
+  data: { acknowledgementKind?: unknown; replacementPaperLive?: unknown } | null
+): string {
+  if (data?.acknowledgementKind === 'CANCELLATION_ACKNOWLEDGEMENT') return '取り消し承認を記録しました。';
+  if (data?.acknowledgementKind !== 'POST_DELIVERY_CONFIRMATION') return '記録しました。';
+  const recorded = 'メーカー到達の事後確認を記録しました（記録のみ。発注の状態と新しい発注書の作成可否は変わりません）。';
+  return data.replacementPaperLive === true
+    ? `${recorded}注意: この発注には取り消されていない別の発注書（訂正後の発注書）があります。メーカーが二重に生産しないよう、メーカーへ連絡して対応を確認してください。`
+    : recorded;
 }
 
 /**

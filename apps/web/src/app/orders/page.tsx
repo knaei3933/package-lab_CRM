@@ -28,9 +28,11 @@ import {
   knownStatus,
   labelLookup,
   loadWorkspace,
+  makerCleanupRecords,
   NO_PROJECT_SELECTED_MESSAGE,
   officialRegistrationText,
-  sevenPurchaseOrderChoiceLabel
+  sevenPurchaseOrderChoiceLabel,
+  uncancellableLivePapers
 } from '../../lib/project-data';
 import type { FilmSupplyOrderView } from '../../lib/project-data';
 import type { MakerPaperCleanupSummary } from '../../lib/maker-po-data';
@@ -503,7 +505,12 @@ function makerPaperWarning(cleanup: MakerPaperCleanupSummary | undefined): strin
       ? `送信ずみのまま取り消し、取り消し承認が未記録の発注書が${cleanup.acknowledgementPapers}件あります`
       : null
   ].filter((part): part is string => part !== null);
-  return `注意: ${parts.join('。')}。取消で終了しても、メーカー発注書は自動では取り消されません。終了の前後に、メーカー発注画面で発注書の取り消し・取り消し承認を記録してください。`;
+  const stuck = uncancellableLivePapers(cleanup) > 0
+    ? `そのうち${uncancellableLivePapers(cleanup)}件は取り消せない状態（送信未確認・受入済み）のため、メーカーへの連絡と対応を代表者が判断してください。`
+    : '';
+  const records = makerCleanupRecords(cleanup);
+  return `注意: ${parts.join('。')}。${stuck}取消で終了しても、メーカー発注書は自動では取り消されません。`
+    + (records.length > 0 ? `終了の前後に、メーカー発注画面で${records.join('・')}を記録してください。` : '');
 }
 
 function OrderLinesCell({ order }: { order: FilmSupplyOrderView }) {

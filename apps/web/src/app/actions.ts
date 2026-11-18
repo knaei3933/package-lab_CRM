@@ -5,6 +5,7 @@ import { cookies } from 'next/headers';
 import { FILM_UNITS, FILLING_UNITS } from '@kanei/core';
 import { callApi, PROJECT_COOKIE, readSelectedProjectId } from '../lib/api';
 import { offsetDateTimeField } from '../lib/datetime';
+import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL } from '../lib/maker-po-data';
 import type { ActionState } from '../lib/types';
 
 /**
@@ -58,6 +59,9 @@ function refresh(): void {
 /**
  * Recheck 7 Low-7 (c): API refusals whose message is not Japanese (the hold
  * reason checks answer in Korean) are shown in operator Japanese, by code.
+ * Recheck 8 Low-5: the live-paper artwork block answers 「受入まで完了して
+ * ください」, but accepted paper is live too and keeps the block — the
+ * operator is told the one way out the API takes.
  */
 function localizedRefusal(code: string | null): ActionState | null {
   switch (code) {
@@ -65,6 +69,8 @@ function localizedRefusal(code: string | null): ActionState | null {
       return { ok: false, message: '保留にする理由は必須です。' };
     case 'HOLD_REASON_TOO_LONG':
       return { ok: false, message: '保留にする理由は1000字以内で入力してください。' };
+    case 'MAKER_PO_ACTIVE_ARTWORK_REVISION_BLOCKED':
+      return { ok: false, message: ARTWORK_REVISION_LIVE_PAPER_REFUSAL };
     default:
       return null;
   }

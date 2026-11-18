@@ -98,8 +98,9 @@ describe('Medium-1: a cancelled paper never offers ③′', () => {
     expect(makerPoSendProof(events, [decision('e1', 'confirmed')], new Set(), new Map([['c1', false]]))).toBe('proven');
     // …and an unread decision stays unknown.
     expect(makerPoSendProof(events, [], new Set(['e1']), new Map([['c1', false]]))).toBe('unknown');
-    // The API records a 取り消し承認 only for a proven send.
-    expect(makerPoSendProof([...events, ackEvent('k1')], [])).toBe('proven');
+    // Recheck 8 Medium-B: since 7bd0bca an acknowledgement event does not prove a
+    // send (decision (a) stores the post-delivery confirmation under it too).
+    expect(makerPoSendProof([...events, ackEvent('k1')], [])).toBe('unproven');
   });
 });
 

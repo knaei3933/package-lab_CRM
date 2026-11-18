@@ -23,11 +23,13 @@ import {
   loadApprovalGate,
   loadWorkspace,
   NO_PROJECT_SELECTED_MESSAGE,
+  knownStatus,
   revisionNumberText
 } from '../../lib/project-data';
 import { shortId } from '../../lib/short-id';
 import type {
   ApprovalGateView,
+  FilmSupplyOrderView,
   DesignApprovalGateView,
   PendingManualVerificationView
 } from '../../lib/project-data';
@@ -41,6 +43,8 @@ import {
 } from '../../lib/vocabulary';
 import type { Choice } from '../../lib/types';
 import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
+import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL, liveMakerPapers, MAKER_PO_STATUS_LABELS } from '../../lib/maker-po-data';
+import type { MakerPoViewRow } from '../../lib/maker-po-data';
 
 export const dynamic = 'force-dynamic';
 
@@ -122,6 +126,10 @@ export default async function ApprovalsPage() {
           VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus
         }／ID ${shortId(version.id)}）`
       })));
+
+  const revisionTargets = canRoleOperate(role, 'artwork_revision:create')
+    ? await loadRevisionTargets(workspace.filmOrders)
+    : { registrable: [], blocked: [], unread: [] };
 
   const proofChoices: Choice[] = workspace.documents
     .filter((document) => document.documentType === 'proof')
@@ -260,9 +268,25 @@ export default async function ApprovalsPage() {
         <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>校正ゲラの版を登録する</h2>
         <RoleGate role={role} operation="artwork_revision:create" label="版の登録">
           <p style={noteStyle}>
-            発注が「{stateLabel('SEVEN_PO_VERIFIED')}」以降の状態のとき、校正ゲラの書類のバージョンを版として登録できます。
+            発注が「{stateLabel('SEVEN_PO_VERIFIED')}」以降の状態で、取り消されていないメーカー発注書がないとき、
+            校正ゲラの書類のバージョンを版として登録できます（取消で終了した発注には登録できません）。
             新しい版を登録すると、そのデザインの既存の承認は無効になり承認待ちに戻ります。
           </p>
+          {revisionTargets.blocked.length > 0 ? (
+            <div style={infoBoxStyle}>
+              <strong>版を登録できない発注: </strong>
+              {revisionTargets.blocked.map(({ order, papers }) => `${order.code}（メーカー発注書 ${papers
+                .map((paper) => `${shortId(paper.id)}: ${MAKER_PO_STATUS_LABELS[paper.status] ?? paper.status}`)
+                .join('、')}）`).join('／')}
+              <p style={noteStyle}>{ARTWORK_REVISION_LIVE_PAPER_REFUSAL}</p>
+            </div>
+          ) : null}
+          {revisionTargets.unread.length > 0 ? (
+            <p style={noteStyle}>
+              {`${revisionTargets.unread.map((order) => order.code).join('、')}: メーカー発注書の状態を確認できませんでした。`
+                + '取り消されていないメーカー発注書がある場合、登録はAPIが拒否します。'}
+            </p>
+          ) : null}
           <ActionForm action={registerArtworkRevisionAction} submitLabel="版を登録する">
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
               <SelectField
@@ -270,7 +294,7 @@ export default async function ApprovalsPage() {
                 label="フィルム発注"
                 required
                 width={300}
-                choices={workspace.filmOrders.map((order) => ({
+                choices={[...revisionTargets.registrable, ...revisionTargets.unread].map((order) => ({
                   value: order.id,
                   label: filmOrderChoiceLabel(order, stateLabel)
                 }))}
@@ -471,4 +495,41 @@ function PendingVerificationSection({
 /** Current wall-clock time in Japan, explicitly independent of the server timezone. */
 function nowInputValue(): string {
   return asiaTokyoDatetimeLocalNow();
+}
+
+/**
+ * Recheck 8 Low-5: the orders the revision form offers. The API refuses a
+ * draft order (422 ORDER_NOT_PAST_SEVEN_PO_VERIFIED), a cancelled order (409
+ * FILM_ORDER_CANCELLED) and an order with live maker paper (409
+ * MAKER_PO_ACTIVE_ARTWORK_REVISION_BLOCKED), so those are not choices; the
+ * live-paper ones are named with their paper. An order whose paper list could
+ * not be read stays a choice (the API decides), and is named as unread.
+ */
+async function loadRevisionTargets(orders: ReadonlyArray<FilmSupplyOrderView>): Promise<{
+  registrable: FilmSupplyOrderView[];
+  blocked: Array<{ order: FilmSupplyOrderView; papers: MakerPoViewRow[] }>;
+  unread: FilmSupplyOrderView[];
+}> {
+  const candidates = orders.filter((order) => {
+    const status = knownStatus(order);
+    return status !== 'DRAFT' && status !== 'CANCELLED';
+  });
+  const lists = await Promise.all(candidates.map((order) => callApi<{ makerPurchaseOrders: MakerPoViewRow[] }>(
+    `/api/film-supply-orders/${encodeURIComponent(order.id)}/maker-purchase-orders`
+  )));
+  const out = { registrable: [] as FilmSupplyOrderView[], blocked: [] as Array<{ order: FilmSupplyOrderView; papers: MakerPoViewRow[] }>, unread: [] as FilmSupplyOrderView[] };
+  candidates.forEach((order, index) => {
+    const result = lists[index];
+    const rows = result?.ok && result.data && Array.isArray(result.data.makerPurchaseOrders)
+      ? result.data.makerPurchaseOrders
+      : null;
+    if (rows === null) {
+      out.unread.push(order);
+      return;
+    }
+    const live = liveMakerPapers(rows);
+    if (live.length > 0) out.blocked.push({ order, papers: live });
+    else out.registrable.push(order);
+  });
+  return out;
 }

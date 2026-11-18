@@ -444,9 +444,10 @@ export function makerPoSendProof(
   cancellationFlags: ReadonlyMap<string, boolean> = new Map()
 ): MakerPoSendProof {
   if (hasVerifiedSendEvent(events)) return 'proven';
-  // A cancelled paper: the API records the 取り消し承認 only for a proven send
-  // (else 422 …_ACK_NOT_REQUIRED), and its own cancel classification said so.
-  if (hasCancellationAcknowledgement(events)) return 'proven';
+  // Recheck 8 Medium-B: a MAKER_CANCELLATION_ACKNOWLEDGED event no longer
+  // proves a send. Since 7bd0bca the API stores the representative decision
+  // (a) — a record-only post-delivery confirmation of an internally cancelled
+  // paper — under the same event type (cancellationAcknowledgementKind).
   if (events.some((event) => event.eventType === 'MAKER_PO_CANCELLED' && cancellationFlags.get(event.id) === true)) {
     return 'proven';
   }
@@ -520,8 +521,8 @@ export function cancelSendStateCopy(
       // cannot be recorded first; the cancel is internal (no 取り消し承認 follows).
       return {
         tone: 'warning',
-        status: `送信は記録されていますが、まだ確認されていません（手動確認待ち）。この発注の状態では送信の手動確認を記録できず、取り消しは内部の訂正として扱われます（取り消し承認は記録できません）。メーカーに届いている可能性がある場合は、メーカーへ取り消しを連絡し、その内容を取消理由に書いてください。${closedOrder}`,
-        dialog: `この発注書の送信は手動確認待ちで、まだ確認されていません。取り消すと内部の訂正として扱われ、あとから送信の確認も取り消し承認も記録できません。メーカーに届いている可能性がある場合は、メーカーへの連絡内容を取消理由に書いてください。${closedOrder}${CANCEL_IRREVERSIBLE}`
+        status: `送信は記録されていますが、まだ確認されていません（手動確認待ち）。この発注の状態では送信の手動確認を記録できず、取り消しは内部の訂正として扱われます（取り消し承認の対象ではありません）。メーカーに届いている可能性がある場合は、メーカーへ取り消しを連絡し、その内容を取消理由に書いてください。届いていたと分かったときは、取り消しのあとに「メーカー到達の事後確認（記録のみ）」を残せます。${closedOrder}`,
+        dialog: `この発注書の送信は手動確認待ちで、まだ確認されていません。取り消すと内部の訂正として扱われ、あとから送信の確認は記録できません（取り消し承認の対象にもなりません。届いていたと分かったときは「メーカー到達の事後確認（記録のみ）」だけを残せます）。メーカーに届いている可能性がある場合は、メーカーへの連絡内容を取消理由に書いてください。${closedOrder}${CANCEL_IRREVERSIBLE}`
       };
     }
     return {
@@ -638,6 +639,84 @@ export function hasCancellationAcknowledgement(events: ReadonlyArray<MakerPoEven
 }
 
 /**
+ * Recheck 8 Medium-B: what one MAKER_CANCELLATION_ACKNOWLEDGED record means.
+ * The API (API_CONTRACT recheck8-fix, `acknowledgementKind`) records two acts
+ * under that event type and decides between them by its proven-send rule:
+ * - CANCELLATION_ACKNOWLEDGEMENT: the 取り消し承認 of a proven send — the
+ *   maker took the cancellation back; it lifts the create gate.
+ * - POST_DELIVERY_CONFIRMATION: representative decision (a) — an internally
+ *   cancelled paper (no proven send) is recorded as having reached the maker
+ *   after all. Record only: it never re-opens the order or lifts a gate.
+ */
+export type CancellationAcknowledgementKind = 'CANCELLATION_ACKNOWLEDGEMENT' | 'POST_DELIVERY_CONFIRMATION';
+
+function isAcknowledgementKind(value: unknown): value is CancellationAcknowledgementKind {
+  return value === 'CANCELLATION_ACKNOWLEDGEMENT' || value === 'POST_DELIVERY_CONFIRMATION';
+}
+
+/**
+ * The kind the API stored in each acknowledgement's audit row
+ * (MAKER_CANCELLATION_ACKNOWLEDGED, entity: the acknowledgement event,
+ * afterState.acknowledgementKind), by acknowledgement event id.
+ */
+export function acknowledgementKindsFromAuditEvents(
+  auditEvents: ReadonlyArray<AuditEventView>
+): Map<string, CancellationAcknowledgementKind> {
+  const kinds = new Map<string, CancellationAcknowledgementKind>();
+  for (const auditEvent of auditEvents) {
+    if (auditEvent.action !== 'MAKER_CANCELLATION_ACKNOWLEDGED' || auditEvent.entityType !== 'maker_po_event') continue;
+    const kind = auditEvent.afterState?.acknowledgementKind;
+    if (isAcknowledgementKind(kind)) kinds.set(auditEvent.entityId, kind);
+  }
+  return kinds;
+}
+
+/**
+ * The kind of this paper's recorded acknowledgement, or null when none is
+ * recorded. The audit row says it when the screen could read it; otherwise the
+ * API's own rule is re-applied: the kind is the send proof at recording time,
+ * and since 20d5f70 no send of a cancelled paper can be proven afterwards, so
+ * the proof read now is that proof. 'unknown': neither could be read.
+ */
+export function cancellationAcknowledgementKind(
+  events: ReadonlyArray<MakerPoEventRow>,
+  proof: MakerPoSendProof,
+  auditKinds: ReadonlyMap<string, CancellationAcknowledgementKind> = new Map()
+): CancellationAcknowledgementKind | 'unknown' | null {
+  const acknowledgement = events.find((event) => event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED');
+  if (!acknowledgement) return null;
+  const audited = auditKinds.get(acknowledgement.id);
+  if (audited) return audited;
+  if (proof === 'proven') return 'CANCELLATION_ACKNOWLEDGEMENT';
+  return proof === 'unproven' ? 'POST_DELIVERY_CONFIRMATION' : 'unknown';
+}
+
+/** The label of an acknowledgement record, by its kind. */
+export function cancellationAcknowledgementLabel(kind: CancellationAcknowledgementKind | 'unknown' | null): string {
+  if (kind === 'POST_DELIVERY_CONFIRMATION') return 'メーカー到達の事後確認（記録のみ）';
+  if (kind === 'unknown') return '取り消し承認またはメーカー到達の事後確認';
+  return MAKER_PO_EVENT_TYPE_LABELS.MAKER_CANCELLATION_ACKNOWLEDGED!;
+}
+
+/**
+ * Representative decision (a): the screen offers the post-delivery
+ * confirmation for a cancelled paper whose send was recorded but never proven
+ * (an internal cancel) and that has no acknowledgement yet. A paper with no
+ * send record at all is not offered it — nothing says it ever left (recheck 8
+ * Low-4).
+ */
+export function offersPostDeliveryConfirmation(
+  status: string,
+  proof: MakerPoSendProof,
+  events: ReadonlyArray<MakerPoEventRow>
+): boolean {
+  return status === 'CANCELLED'
+    && proof === 'unproven'
+    && !hasCancellationAcknowledgement(events)
+    && events.some((event) => event.eventType === 'SEND_EVIDENCE_REGISTERED');
+}
+
+/**
  * The statuses a cancellation may leave (transitionMakerPurchaseOrder →
  * CANCELLED in @kanei/core): live paper only. SEND_UNVERIFIED refuses on
  * purpose — the unproven send blocks the paper until a human resolves it —
@@ -693,6 +772,23 @@ export function makerPaperCleanupWork(papers: ReadonlyArray<MakerPaperJudgement>
     cancellablePapers: papers.filter((paper) => isCancellableMakerPoStatus(paper.status)).length,
     acknowledgementPapers: papers.filter((paper) => acknowledgementOwed(paper) !== null).length
   };
+}
+
+/**
+ * Recheck 8 Low-5: the representative decision on the 7th recheck Medium-5 —
+ * while an order has live maker paper (any status but CANCELLED, accepted
+ * paper included) the API refuses a new artwork revision (409
+ * MAKER_PO_ACTIVE_ARTWORK_REVISION_BLOCKED). The only way out is cancelling
+ * that paper; 送信未確認 and 受入済み paper cannot be cancelled.
+ */
+export const ARTWORK_REVISION_LIVE_PAPER_REFUSAL =
+  'この発注には取り消されていないメーカー発注書があるため、新しい版は登録できません。'
+  + '版を変えるには、先にメーカー発注画面で代表者がその発注書を取り消してください。'
+  + '送信未確認・受入済みの発注書は取り消せないため、その発注では版を登録できません（対応は代表者が判断します）。';
+
+/** The maker paper of one order that blocks a new artwork revision. */
+export function liveMakerPapers<T extends { status: string }>(rows: ReadonlyArray<T>): T[] {
+  return rows.filter((row) => row.status !== 'CANCELLED');
 }
 
 export function hasMakerPaperCleanup(work: MakerPaperCleanupWork): boolean {

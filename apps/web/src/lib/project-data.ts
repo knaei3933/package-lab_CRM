@@ -1132,10 +1132,45 @@ export interface NextActionView {
 type NextActionWorkspace = Pick<Workspace, 'labels' | 'sevenPurchaseOrders' | 'revisions'>
   & Partial<Pick<Workspace, 'revisionsWithheld' | 'makerPaperCleanup'>>;
 
+/**
+ * Recheck 8 Low-9: live paper the screen cannot cancel (送信未確認, 受入済み) —
+ * the API refuses the cancel, so the copy must not ask for one. The maker
+ * contact is the representative's call.
+ */
+export function uncancellableLivePapers(work: MakerPaperCleanupSummary): number {
+  return Math.max(0, work.livePapers - work.cancellablePapers);
+}
+
+/**
+ * Recheck 8 Low-9: the action sentence for a closed order's maker cleanup,
+ * naming only the records the API will take (取り消し for cancellable paper,
+ * 取り消し承認 for an owed one) and the maker contact for the rest.
+ */
+export function makerCleanupRecords(work: MakerPaperCleanupSummary): string[] {
+  return [
+    work.cancellablePapers > 0 ? '発注書の取り消し' : null,
+    work.acknowledgementPapers > 0 ? '取り消し承認' : null
+  ].filter((part): part is string => part !== null);
+}
+
+export function makerCleanupActionText(work: MakerPaperCleanupSummary): string {
+  const records = makerCleanupRecords(work);
+  const stuck = uncancellableLivePapers(work) > 0
+    ? '取り消せない発注書（送信未確認・受入済み）は、メーカーへの連絡と対応を代表者が判断する。'
+    : '';
+  return records.length > 0
+    ? `メーカー発注画面で${records.join('・')}を記録する。${stuck}`
+    : stuck;
+}
+
 /** 「取り消されていない発注書 1件・取り消し承認が未記録の発注書 1件」. */
 function cleanupParts(cleanup: MakerPaperCleanupSummary): string {
   const parts = [
-    cleanup.livePapers > 0 ? `取り消されていない発注書 ${cleanup.livePapers}件` : null,
+    cleanup.livePapers > 0
+      ? `取り消されていない発注書 ${cleanup.livePapers}件${uncancellableLivePapers(cleanup) > 0
+        ? `（うち取り消せない発注書 ${uncancellableLivePapers(cleanup)}件）`
+        : ''}`
+      : null,
     cleanup.acknowledgementPapers > 0 ? `取り消し承認が未記録の発注書 ${cleanup.acknowledgementPapers}件` : null
   ].filter((part): part is string => part !== null);
   return parts.join('・');
@@ -1309,7 +1344,7 @@ export function nextActionForOrder(
       }
       if (cleanup?.state === 'cleanup') {
         return nextAction(
-          `この発注は取消で終了していますが、メーカー発注書の整理が残っています（${cleanupParts(cleanup)}）。メーカー発注画面で発注書の取り消し・取り消し承認を記録する。`,
+          `この発注は取消で終了していますが、メーカー発注書の整理が残っています（${cleanupParts(cleanup)}）。${makerCleanupActionText(cleanup)}`,
           OWNER_ADMIN, ['/maker-po'], 'maker_po:cancel', role
         );
       }

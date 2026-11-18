@@ -13,8 +13,11 @@ import { callApi, loadSessionUser, readSelectedProjectId } from '../../lib/api';
 import {
   acknowledgementBlocksCreation,
   acknowledgementEvidenceDocuments,
+  acknowledgementKindsFromAuditEvents,
   acknowledgementOwed,
   cancellationAcknowledgementFlags,
+  cancellationAcknowledgementKind,
+  cancellationAcknowledgementLabel,
   cancellationAcknowledgementMayBeRequired,
   cleanupNextActionForStatus,
   hasMakerPaperCleanup,
@@ -32,6 +35,7 @@ import {
   MAKER_PO_EVENT_TYPE_LABELS,
   MAKER_PO_STATUS_LABELS,
   nextActionForStatus,
+  offersPostDeliveryConfirmation,
   PAYMENT_TERMS_LABELS,
   pendingManualVerificationEvents,
   cancelSendStateCopy,
@@ -41,6 +45,7 @@ import {
   unsettledSendsOfCancelledPaper
 } from '../../lib/maker-po-data';
 import type {
+  CancellationAcknowledgementKind,
   CancelSendStateCopy,
   MakerPaperJudgement,
   MakerPoOrderClosure,
@@ -143,6 +148,7 @@ export default async function MakerPoPage() {
     projectId,
     sendManualVerifications,
     cancellationFlags: cancellationAcknowledgementFlags(audit.events),
+    acknowledgementKinds: acknowledgementKindsFromAuditEvents(audit.events),
     auditWindowComplete: audit.makerEventsComplete
   })));
   // Medium-3: a cancelled or frozen order is on the board only while its
@@ -389,6 +395,10 @@ interface PaperWork extends MakerPoStagePaper {
   /** The API's proven-send rule (VERIFIED or confirmed manual verification); see makerPoSendProof. */
   sendProof: MakerPoSendProof;
   acknowledgementRecorded: boolean;
+  /** Recheck 8 Medium-B: what the recorded acknowledgement is (null: none recorded). */
+  acknowledgementKind: CancellationAcknowledgementKind | 'unknown' | null;
+  /** Representative decision (a): the post-delivery confirmation form is offered. */
+  offersPostDelivery: boolean;
   /** Medium-1: sends of a cancelled paper nobody can settle any more (read-only note, never ③′). */
   unsettledCancelledSends: MakerPoEventRow[];
 }
@@ -426,6 +436,7 @@ async function loadOrderPapers(
     projectId: string;
     sendManualVerifications: MakerPoSendManualVerification[];
     cancellationFlags: ReadonlyMap<string, boolean>;
+    acknowledgementKinds: ReadonlyMap<string, CancellationAcknowledgementKind>;
     auditWindowComplete: boolean;
   }
 ): Promise<OrderCard> {
@@ -438,8 +449,8 @@ async function loadOrderPapers(
   const askable = details.flatMap((detail, index) => {
     const po = list[index];
     if (!po || !detail || detail.error) return [];
-    if (po.status === 'CANCELLED'
-      && makerPoSendProof(detail.events, known, new Set(), context.cancellationFlags) === 'proven') {
+    if (po.status === 'CANCELLED' && (hasCancellationAcknowledgement(detail.events)
+      || makerPoSendProof(detail.events, known, new Set(), context.cancellationFlags) === 'proven')) {
       return [];
     }
     return detail.events;
@@ -461,6 +472,9 @@ async function loadOrderPapers(
       ? 'unknown'
       : makerPoSendProof(events, knownVerifications, targeted.unreadEventIds, context.cancellationFlags);
     const acknowledgementRecorded = hasCancellationAcknowledgement(events);
+    const acknowledgementKind = detail.error
+      ? null
+      : cancellationAcknowledgementKind(events, sendProof, context.acknowledgementKinds);
     return {
       po,
       events,
@@ -473,6 +487,8 @@ async function loadOrderPapers(
         .filter((verification) => eventIds.has(verification.makerPoEventId)),
       sendProof,
       acknowledgementRecorded,
+      acknowledgementKind,
+      offersPostDelivery: !detail.error && offersPostDeliveryConfirmation(po.status, sendProof, events),
       acknowledgementOwed: acknowledgementOwed({ status: po.status, sendProof, acknowledgementRecorded }),
       unsettledCancelledSends: unsettledSendsOfCancelledPaper(events, knownVerifications, po.status)
     };
@@ -523,6 +539,21 @@ function MakerPoStageList({ view }: { view: MakerPoStageView }) {
   );
 }
 
+/**
+ * Recheck 8 Medium-B: what follows the read-only note on a cancelled paper's
+ * unsettled send. Decision (a) gave the representative a record for the
+ * internal cancel that reached the maker after all.
+ */
+function unsettledCancelledSendFollowUp(paper: PaperWork, canCancel: boolean): string {
+  if (paper.acknowledgementRecorded) {
+    return `「${cancellationAcknowledgementLabel(paper.acknowledgementKind)}」は記録済みです。`;
+  }
+  if (!paper.offersPostDelivery) return '';
+  return canCancel
+    ? 'メーカーに届いていたと分かった場合は、下の「メーカー到達の事後確認を記録する（記録のみ）」で記録できます（発注の状態と新しい発注書の作成可否は変わりません）。'
+    : 'メーカーに届いていたと分かった場合は代表者へ伝えてください。代表者が「メーカー到達の事後確認（記録のみ）」を記録します。';
+}
+
 function MakerPoOrderSection({
   card,
   isAdmin,
@@ -568,9 +599,15 @@ function MakerPoOrderSection({
   // 取り消し承認 work of a cancelled paper whose send is proven — by the same
   // rule the API applies (VERIFIED or confirmed manual verification) — or
   // cannot be judged because its decision records could not be read.
-  const cancelWork = canCancel && !pastAcceptance
-    ? papers.filter((paper) => isCancellableMakerPoStatus(paper.po.status)
-      || cancellationAcknowledgementMayBeRequired(paper.po.status, paper.sendProof))
+  // Recheck 8 Medium-B: also a cancelled paper with a recorded acknowledgement
+  // (its kind is shown) and the internally cancelled paper of decision (a).
+  // Past acceptance only those two stay: the internal cancel that reached the
+  // maker while its replacement is in production is the case decision (a) is for.
+  const cancelWork = canCancel
+    ? papers.filter((paper) => (!pastAcceptance && (isCancellableMakerPoStatus(paper.po.status)
+      || cancellationAcknowledgementMayBeRequired(paper.po.status, paper.sendProof)))
+      || paper.offersPostDelivery
+      || (paper.po.status === 'CANCELLED' && paper.acknowledgementRecorded))
     : [];
   const acknowledgementDue = cancelWork.some((paper) =>
     cancellationAcknowledgementMayBeRequired(paper.po.status, paper.sendProof) && !paper.acknowledgementRecorded);
@@ -718,7 +755,7 @@ function MakerPoOrderSection({
             .map((event) => shortId(event.id)).join('、')}）は手動確認待ちのまま残っています。`
             + '取り消し済みの発注書の送信は、確認も却下も記録できません（APIが拒否します）。記録は履歴として残ります。'
             + (paper.sendProof === 'unproven' ? 'この取り消しは内部の訂正として扱われたため、取り消し承認も不要です。' : '')
-            + 'メーカーに届いていたと分かった場合は、代表者へ相談してください（この画面に記録する手段はありません）。'}
+            + unsettledCancelledSendFollowUp(paper, canCancel)}
         </p>
       ))}
 
@@ -847,7 +884,7 @@ function MakerPoHistoryBlock({ papers }: { papers: PaperWork[] }) {
       <p style={noteStyle}>
         受入済みのため、これ以上の承認・送信・受入の記録操作は表示しません。以下は記録の履歴です。
       </p>
-      {papers.map(({ po, events }) => {
+      {papers.map(({ po, events, acknowledgementKind }) => {
         const sentEvent = events.find((event) => event.eventType === 'SEND_EVIDENCE_REGISTERED');
         const acceptedEvent = events.find((event) => event.eventType === 'ACCEPT_EVIDENCE_REGISTERED');
         const provisionalEvents = events.filter((event) => event.provisional === true);
@@ -900,7 +937,9 @@ function MakerPoHistoryBlock({ papers }: { papers: PaperWork[] }) {
                 <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13 }}>
                   {events.map((event) => (
                     <li key={event.id}>
-                      {MAKER_PO_EVENT_TYPE_LABELS[event.eventType] ?? event.eventType} ／{' '}
+                      {event.eventType === 'MAKER_CANCELLATION_ACKNOWLEDGED'
+                        ? cancellationAcknowledgementLabel(acknowledgementKind)
+                        : MAKER_PO_EVENT_TYPE_LABELS[event.eventType] ?? event.eventType} ／{' '}
                       {formatTimestamp(event.recordedAt)}
                       {event.provisional === true ? '（仮の受入記録）' : ''}
                       {event.verificationStatus
@@ -1074,20 +1113,46 @@ function MakerPoCancelWork({
         <MakerPoCancellationAcknowledgementBlock po={po} sendProof={sendProof} closure={closure} evidenceChoices={evidenceChoices} />
       ) : null}
 
-      {acknowledgementMayBeRequired && acknowledgementRecorded ? (
-        <div style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
-          <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>取り消し承認（メーカー取消確認）: 記録済み</h3>
-          <p style={noteStyle}>
-            送信ずみの発注書の取消に対する取り消し承認は記録済みです。
-            {closure === 'cancelled'
-              ? 'この発注は取消で終了しているため、新しい発注書は作成しません。'
-              : closure === 'frozen'
-                ? '新しい発注書は、保留・見直しが解除されてから①の作成フォームで作成します。'
-                : '次のアクション: 訂正後の発注書を新しく作成してください（①の作成フォームから）。'}
-          </p>
-        </div>
+      {paper.offersPostDelivery ? (
+        <MakerPoPostDeliveryConfirmationBlock po={po} closure={closure} evidenceChoices={evidenceChoices} />
+      ) : null}
+
+      {po.status === 'CANCELLED' && acknowledgementRecorded ? (
+        <MakerPoAcknowledgementRecordedNote kind={paper.acknowledgementKind} closure={closure} />
       ) : null}
     </>
+  );
+}
+
+/**
+ * Recheck 8 Medium-B: a recorded acknowledgement, said as what it is. Only the
+ * 取り消し承認 of a proven send speaks of 送信ずみ and of the next paper; the
+ * post-delivery confirmation (decision a) is a record that changed nothing.
+ */
+function MakerPoAcknowledgementRecordedNote({
+  kind,
+  closure
+}: {
+  kind: CancellationAcknowledgementKind | 'unknown' | null;
+  closure: MakerPoOrderClosure | null;
+}) {
+  const nextPaper = closure === 'cancelled'
+    ? 'この発注は取消で終了しているため、新しい発注書は作成しません。'
+    : closure === 'frozen'
+      ? '新しい発注書は、保留・見直しが解除されてから①の作成フォームで作成します。'
+      : '次のアクション: 訂正後の発注書を新しく作成してください（①の作成フォームから）。';
+  return (
+    <div style={{ borderTop: '1px solid var(--line)', marginTop: 16, paddingTop: 12 }}>
+      <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>{cancellationAcknowledgementLabel(kind)}: 記録済み</h3>
+      <p style={noteStyle}>
+        {kind === 'POST_DELIVERY_CONFIRMATION'
+          ? 'この発注書は送信が確認されないまま取り消され（内部の訂正）、そのあとメーカーに届いていたことが記録されています。'
+            + 'この記録は事実を残すだけで、取り消し承認ではありません。発注の状態も、新しい発注書を作成できるかどうかも変えていません。'
+          : kind === 'unknown'
+            ? '取り消し後の記録はありますが、送信の記録を読み込めなかったため、取り消し承認かメーカー到達の事後確認（記録のみ）かを画面で判定できません。画面を再読み込みしてください。'
+            : `送信ずみの発注書の取消に対する取り消し承認は記録済みです。${nextPaper}`}
+      </p>
+    </div>
   );
 }
 
@@ -1246,7 +1311,8 @@ function MakerPoCancelBlock({
  * ordering step: until it exists the create form refuses a replacement paper,
  * so sent paper and its replacement are never in production at the same time.
  * For a paper whose proof could not be read (unknown) the block is offered too:
- * the API itself answers 「取り消し承認は不要です」 when it is not required.
+ * the API decides by its own proven-send rule, and for an unproven send it
+ * keeps the record as the post-delivery confirmation (record only, recheck 8).
  */
 function MakerPoCancellationAcknowledgementBlock({
   po,
@@ -1265,7 +1331,7 @@ function MakerPoCancellationAcknowledgementBlock({
       <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>取り消し承認を記録する（メーカー取消確認・代表者のみ）</h3>
       <p style={noteStyle}>
         {sendProof === 'unknown'
-          ? 'この発注書の送信の記録を読み込めなかったため、この取り消しに取り消し承認が必要かどうかを画面で判定できません。必要でない場合、記録しようとすると API が「取り消し承認は不要です」と返します。'
+          ? 'この発注書の送信の記録を読み込めなかったため、この取り消しに取り消し承認が必要かどうかを画面で判定できません。送信が確認されていなかった場合、API はこの記録を「メーカー到達の事後確認（記録のみ）」として残し、発注の状態は変わりません。'
           : 'この発注書は送信ずみ（送信証跡の確認、または送信の手動確認あり）のまま取り消されています。'}
         発注先（メーカー）が取り消しを受け入れたことを代表者が確認して
         「取り消し承認」を記録してください。
@@ -1281,11 +1347,13 @@ function MakerPoCancellationAcknowledgementBlock({
         hint="承認理由（note）はAPIの必須項目です。証跡の引用は任意で、引用できるのはこの発注書に紐付けて登録し、確認済みにした受領証跡のバージョンだけです。"
         confirm={{
           title: '取り消し承認を記録しますか？',
-          body: `メーカーが発注書 ${shortId(po.id)} の取り消しを受け入れたことを記録します。${closure === 'cancelled'
-            ? 'この発注は取消で終了しているため、新しい発注書は作成されません。'
-            : closure === 'frozen'
-              ? '保留・見直しの解除後に、この発注の新しい発注書を作成できるようになります。'
-              : '記録すると、この発注の新しい発注書を作成できるようになります。'}記録は取り消せません。`,
+          body: `メーカーが発注書 ${shortId(po.id)} の取り消しを受け入れたことを記録します。${sendProof === 'unknown'
+            ? '送信が確認されていなかった場合は「メーカー到達の事後確認（記録のみ）」として残り、新しい発注書の作成可否は変わりません。'
+            : closure === 'cancelled'
+              ? 'この発注は取消で終了しているため、新しい発注書は作成されません。'
+              : closure === 'frozen'
+                ? '保留・見直しの解除後に、この発注の新しい発注書を作成できるようになります。'
+                : '記録すると、この発注の新しい発注書を作成できるようになります。'}記録は取り消せません。`,
           summaryFields: ['note', 'evidenceDocumentVersionId']
         }}
       >
@@ -1312,6 +1380,72 @@ function MakerPoCancellationAcknowledgementBlock({
         ) : null}
       </ActionForm>
     </div>
+  );
+}
+
+/**
+ * Recheck 8 Medium-B, representative decision (a): an internally cancelled
+ * paper (its send was recorded but never proven) that turns out to have
+ * reached the maker. The representative records that fact on the same
+ * endpoint; the API keeps it as POST_DELIVERY_CONFIRMATION — record only: it
+ * never re-opens the order, never lifts a gate, and answers a warning when a
+ * replacement paper is already live (API_CONTRACT recheck8-fix). Folded: it is
+ * not owed work, only an exception the representative may need.
+ */
+function MakerPoPostDeliveryConfirmationBlock({
+  po,
+  closure,
+  evidenceChoices
+}: {
+  po: MakerPoViewRow;
+  closure: MakerPoOrderClosure | null;
+  /** Versions bound to this order and this maker PO only (Low-6). */
+  evidenceChoices: Choice[];
+}) {
+  return (
+    <details style={{ marginTop: 12 }}>
+      <summary style={{ fontSize: 15, fontWeight: 600, cursor: 'pointer' }}>
+        メーカー到達の事後確認を記録する（記録のみ・代表者のみ）— 発注書 {shortId(po.id)}
+      </summary>
+      <p style={noteStyle}>
+        この発注書は送信が確認されないまま取り消されました（内部の訂正。取り消し承認は不要です）。
+        あとからメーカーに届いていたと分かった場合だけ、その事実を記録します。
+        この記録は取り消し承認ではありません。発注の状態も、新しい発注書を作成できるかどうかも変わりません
+        {closure === 'cancelled' ? '（この発注は取消で終了したままです）' : ''}。
+        訂正後の発注書がすでにある場合は、メーカーが二重に生産しないよう、記録とは別にメーカーへ連絡してください。
+        記録は発注書ごとに1回だけで、取り消せません。
+      </p>
+      <ActionForm
+        action={acknowledgeMakerPoCancellationAction}
+        submitLabel="メーカー到達の事後確認を記録する"
+        hint="確認の根拠（note）はAPIの必須項目です。日時を入れる場合は、この発注書の取り消しの記録より後の日時にしてください。"
+        confirm={{
+          title: 'メーカー到達の事後確認を記録しますか？',
+          body: `取り消し済みの発注書 ${shortId(po.id)} がメーカーに届いていたことを記録します。記録のみで、発注の状態と新しい発注書の作成可否は変わりません。記録は取り消せません。`,
+          summaryFields: ['note', 'evidenceDocumentVersionId']
+        }}
+      >
+        <input type="hidden" readOnly name="poId" value={po.id} />
+        <div className="form-row">
+          <TextareaField name="note" label="確認の根拠（メーカーに届いていたと分かった経緯）" required rows={3} width={520} />
+          <OffsetDateTimeField name="acknowledgedAt" label="確認日時（任意）" width={240} />
+          {evidenceChoices.length > 0 ? (
+            <SelectField
+              name="evidenceDocumentVersionId"
+              label="根拠の書類バージョン（任意・この発注書に紐付いた確認済みの受領証跡のみ）"
+              includeBlank
+              choices={evidenceChoices}
+              width={420}
+            />
+          ) : null}
+        </div>
+        {evidenceChoices.length === 0 ? (
+          <p style={noteStyle}>
+            引用できる書類はありません（証跡は任意です）。根拠は「確認の根拠」に書いてください。
+          </p>
+        ) : null}
+      </ActionForm>
+    </details>
   );
 }
 
@@ -1514,7 +1648,9 @@ function AuditDashboardSection({
                 <tr key={event.id}>
                   <td style={tdStyle}>{formatTimestamp(event.occurredAt)}</td>
                   <td style={tdStyle}>
-                    {AUDIT_ACTION_LABELS[event.action] ?? MAKER_PO_EVENT_TYPE_LABELS[event.action] ?? event.action}
+                    {event.action === 'MAKER_CANCELLATION_ACKNOWLEDGED' && after?.acknowledgementKind === 'POST_DELIVERY_CONFIRMATION'
+                      ? cancellationAcknowledgementLabel('POST_DELIVERY_CONFIRMATION')
+                      : AUDIT_ACTION_LABELS[event.action] ?? MAKER_PO_EVENT_TYPE_LABELS[event.action] ?? event.action}
                   </td>
                   <td style={tdStyle}>
                     {AUDIT_ENTITY_LABELS[event.entityType] ?? event.entityType}
