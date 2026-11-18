@@ -429,7 +429,7 @@ describe('① replay: lastNormalStatus and the receipt assumption', () => {
     it('orders (staff): 次にやること for that hold links no maker PO screen (B-M1); the release is the representative\'s', async () => {
       serveAs('staff', [...HEAD, created(ORDER_GAP, 'FSO-GAP'), ...toReady(ORDER_GAP), hold(ORDER_GAP, 'APPROVED_FOR_MANUAL_SEND')]);
       const html = await renderPage(OrdersPage);
-      expect(html).toContain('代表者が理由を記録して保留を解除する（保留にする前の状態に戻ります）。');
+      expect(html).toContain('代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「製造先発注準備完了」に戻ります）。');
       expect(html).toContain('保留の解除は代表者が行います。');
       const links = [...html.matchAll(/<p class="next-links">([\s\S]*?)<\/p>/g)].map((match) => match[1]!);
       expect(links.length).toBeGreaterThan(0);
@@ -525,15 +525,17 @@ describe('① 次にやること: the step, the owner and the reason a role cann
     });
   });
 
-  // B-M1: the maker PO screen does not list an order in a hold or review, so
-  // the step is never a /maker-po link. UI batch D: the hold release and the
+  // B-M1: the maker PO screen does not list an order in a hold or review for
+  // its normal work, so the step is no /maker-po link. Recheck 7 Medium-3: it
+  // is listed (cleanup only) while maker paper is left to clean up — the link
+  // then appears, and only then (tests/web-ui-recheck7.test.tsx). UI batch D: the hold release and the
   // cancellation review resolution are the representative's dedicated
   // operations on /orders (the server resumes the origin, maker chain
   // included); CHANGE_REVIEW keeps the generic restart transition.
   const MAKER_CHAIN_LEFT = ['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED'] as const;
   const EXCEPTION_STEP = {
     ON_HOLD: {
-      text: '代表者が理由を記録して保留を解除する（保留にする前の状態に戻ります）。',
+      text: '代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「製造先発注準備完了」に戻ります）。',
       owner: '代表者', operation: 'film_order:release_hold'
     },
     CANCELLATION_REVIEW: {
@@ -584,14 +586,22 @@ describe('① 次にやること: the step, the owner and the reason a role cann
 
   it('exception, terminal and withheld states', () => {
     expect(nextActionForOrder(order('ON_HOLD'), workspace(), 'staff')).toMatchObject({
-      text: '代表者が理由を記録して保留を解除する（保留にする前の状態に戻ります）。', screens: ['/orders'],
+      text: '代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「製造先発注準備完了」に戻ります）。', screens: ['/orders'],
       refusal: 'この操作は代表者が行います。'
     });
     expect(nextActionForOrder(order('CHANGE_REVIEW'), workspace(), 'staff')).toMatchObject({
       text: '再開する状態を選んで、状態を進める。', screens: ['/orders'], refusal: null
     });
-    expect(nextActionForOrder(order('CANCELLED'), workspace(), 'admin')).toEqual({
+    // Recheck 7 Medium-3: 「これ以上の作業はありません」 only once the maker paper is known to be settled.
+    expect(nextActionForOrder(order('CANCELLED'), {
+      ...workspace(),
+      makerPaperCleanup: { [ORDER_READY]: { state: 'none', livePapers: 0, cancellablePapers: 0, acknowledgementPapers: 0 } }
+    }, 'admin')).toEqual({
       text: 'この発注は取消で終了しています。これ以上の作業はありません。', owner: null, screens: [], operation: null, refusal: null
+    });
+    expect(nextActionForOrder(order('CANCELLED'), workspace(), 'admin')).toMatchObject({
+      text: 'この発注は取消で終了しています。メーカー発注書の整理（取り消し・取り消し承認）が残っていないかは、メーカー発注画面で確認してください。',
+      owner: null, screens: ['/maker-po']
     });
     expect(nextActionForOrder(order('FILM_RECEIPT_ASSUMED_NO_ISSUE'), workspace(), 'admin')).toEqual({
       text: 'この発注は完了しています。', owner: null, screens: [], operation: null, refusal: null
@@ -729,7 +739,8 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
   });
 
   it('CANCELLED (取消終了) offers nothing, with its own reason', () => {
-    expect(transitionChoicesFor('CANCELLED', label)).toMatchObject({
+    // Recheck 7 Medium-3: this plain reason only when the maker paper is settled ('none').
+    expect(transitionChoicesFor('CANCELLED', label, null, 'none')).toMatchObject({
       choices: [], emptyReason: 'この発注は取消で終了しています（キャンセル終了）。これ以上進める先はありません。'
     });
   });

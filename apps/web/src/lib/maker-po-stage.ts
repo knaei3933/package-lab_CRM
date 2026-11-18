@@ -51,6 +51,12 @@ export interface MakerPoStageView {
   primaryPoId: string | null;
   /** One line per earlier cancelled paper of the same order. */
   cancelledPapers: string[];
+  /**
+   * Low-7 (f): every paper is cancelled and one of them still owes its
+   * 取り消し承認 (required), or may (maybe: its send proof could not be read).
+   * The next step is then that record, not a new paper.
+   */
+  acknowledgement?: 'required' | 'maybe' | null | undefined;
 }
 
 export interface MakerPoStagePaper {
@@ -60,6 +66,8 @@ export interface MakerPoStagePaper {
   pendingVerification: boolean;
   /** The representative's confirmation of a send of this paper, if recorded. */
   confirmedVerification: MakerPoSendManualVerification | null;
+  /** A cancelled paper's 取り消し承認 still owed (see acknowledgementOwed); absent = none. */
+  acknowledgementOwed?: 'required' | 'maybe' | null | undefined;
 }
 
 export interface MakerPoStageInput {
@@ -194,6 +202,10 @@ export function makerPoStages(input: MakerPoStageInput): MakerPoStageView {
   const cancelledPapers = papersNewestFirst(input.papers)
     .filter((paper) => paper !== primary && paper.po.status === 'CANCELLED')
     .map(cancelledLine);
+  const owed = input.papers.map((paper) => paper.acknowledgementOwed ?? null);
+  const acknowledgement = primary?.po.status === 'CANCELLED'
+    ? owed.includes('required') ? 'required' : owed.includes('maybe') ? 'maybe' : null
+    : null;
   const view = (
     stages: MakerPoStage[],
     condition: MakerPoStageCondition,
@@ -204,7 +216,8 @@ export function makerPoStages(input: MakerPoStageInput): MakerPoStageView {
     condition,
     unknown,
     primaryPoId: primary?.po.id ?? null,
-    cancelledPapers
+    cancelledPapers,
+    acknowledgement
   });
   const lines = primary ? summaries(primary) : null;
   const withVerify = primary ? hadManualCheck(primary) : false;
@@ -274,11 +287,23 @@ export function makerPoStages(input: MakerPoStageInput): MakerPoStageView {
  * table does not know → a neutral 「状態を確認できません」 (never a claim that
  * the paper was cancelled).
  */
-export function stageHeadline(view: Pick<MakerPoStageView, 'current' | 'condition'> & { unknown?: MakerPoStageUnknown | null }): string {
+export function stageHeadline(
+  view: Pick<MakerPoStageView, 'current' | 'condition'> & {
+    unknown?: MakerPoStageUnknown | null;
+    acknowledgement?: 'required' | 'maybe' | null | undefined;
+  }
+): string {
   if (view.unknown === 'list-error') return 'メーカー発注書を取得できませんでした（再読み込みしてください）';
   if (view.unknown === 'missing-paper') return 'メーカー発注書を確認できません（発注の状態と一致しません）';
   if (view.current) return stageLabel(view.current);
   if (view.condition === 'complete') return '完了（受入確認済み）';
+  // Low-7 (f): the create gate refuses a new paper until the 取り消し承認.
+  if (view.condition === 'halted' && view.acknowledgement === 'required') {
+    return '取り消し済み（取り消し承認の記録待ち。新しい発注書はその後に作成）';
+  }
+  if (view.condition === 'halted' && view.acknowledgement === 'maybe') {
+    return '取り消し済み（取り消し承認が必要かどうか確認できません）';
+  }
   if (view.condition === 'halted') return '取り消し済み（新しい発注書の作成待ち）';
   return '状態を確認できません';
 }

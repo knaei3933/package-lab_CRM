@@ -43,6 +43,18 @@ export const HOLD_RELEASE_NOTICE =
 export const CANCELLATION_REVIEW_NOTICE =
   '取消レビューは下の「取消レビューを処理する（代表者のみ）」で、再開するか取消で終了するかを決めます。';
 export const CANCELLED_ORDER_NOTICE = 'この発注は取消で終了しています（キャンセル終了）。これ以上進める先はありません。';
+/**
+ * Recheck 7 Medium-3: a cancelled order whose maker paper still needs
+ * cleaning up (live paper, an owed 取り消し承認), or whose paper could not be
+ * read — the plain notice above is then never shown.
+ */
+export const CANCELLED_ORDER_CLEANUP_NOTICE =
+  'この発注は取消で終了しています（キャンセル終了）。状態はこれ以上進みませんが、メーカー発注書の整理（取り消し・取り消し承認）が残っています。メーカー発注画面で代表者が記録してください。';
+export const CANCELLED_ORDER_UNREAD_NOTICE =
+  'この発注は取消で終了しています（キャンセル終了）。状態はこれ以上進みません。メーカー発注書の整理が残っていないかは、メーカー発注画面で確認してください。';
+
+/** none: the maker paper is settled; cleanup: some is left; unknown (or not read): cannot tell. */
+export type MakerCleanupHint = 'none' | 'cleanup' | 'unknown';
 
 export interface TransitionChoiceSet {
   choices: Choice[];
@@ -65,10 +77,16 @@ export function isFilmSupplyOrderState(value: string): value is FilmSupplyOrderS
 export function transitionChoicesFor(
   status: string,
   label: (key: string) => string,
-  lastNormalStatus: string | null = null
+  lastNormalStatus: string | null = null,
+  makerCleanup: MakerCleanupHint = 'unknown'
 ): TransitionChoiceSet {
   if (status === FILM_ORDER_CANCELLATION_STATE) {
-    return { choices: [], makerChainNotice: false, hint: null, resumeNotice: null, emptyReason: CANCELLED_ORDER_NOTICE };
+    const emptyReason = makerCleanup === 'none'
+      ? CANCELLED_ORDER_NOTICE
+      : makerCleanup === 'cleanup'
+        ? CANCELLED_ORDER_CLEANUP_NOTICE
+        : CANCELLED_ORDER_UNREAD_NOTICE;
+    return { choices: [], makerChainNotice: false, hint: null, resumeNotice: null, emptyReason };
   }
   if (!isFilmSupplyOrderState(status)) {
     return { choices: [], makerChainNotice: false, hint: null, resumeNotice: null, emptyReason: 'この状態からの進め方は画面に表示できません。' };

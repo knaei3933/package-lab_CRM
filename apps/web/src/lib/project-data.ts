@@ -1,10 +1,16 @@
-import { FILM_ORDER_CANCELLATION_STATE, FILM_SUPPLY_ORDER_STATES, FILM_SUPPLY_ORDER_TERMINAL_STATE } from '@kanei/core';
+import {
+  FILM_ORDER_CANCELLATION_STATE,
+  FILM_SUPPLY_ORDER_EXCEPTION_STATES as EXCEPTION_ORDER_STATES,
+  FILM_SUPPLY_ORDER_STATES,
+  FILM_SUPPLY_ORDER_TERMINAL_STATE
+} from '@kanei/core';
 import type { FilmSupplyOrderState, Operation } from '@kanei/core';
 import { callApi } from './api';
 import { operationRefusal } from './permissions';
 import { shortId } from './short-id';
 import { codeWithStatus, displayText, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT, isFieldHiddenByRole, isStateWithheld } from './redaction';
 import { formatTimestamp } from './vocabulary';
+import type { MakerPaperCleanupSummary } from './maker-po-data';
 
 /**
  * M6 operator UI data assembly.
@@ -317,6 +323,12 @@ export interface Workspace {
   documentVersionsWithheld: boolean;
   /** Proof revisions whose film order link the role may not read. */
   revisionsWithheld: number;
+  /**
+   * Recheck 7 Medium-3: the maker paper still to clean up on each cancelled or
+   * frozen order (by order id). Absent for an order means "not read" — the
+   * screens then never say there is nothing left to do.
+   */
+  makerPaperCleanup?: Record<string, MakerPaperCleanupSummary> | undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -445,7 +457,10 @@ export async function loadSelectableProjects(): Promise<ProjectSummary[]> {
   return Array.isArray(result.data.projects) ? result.data.projects : [];
 }
 
-export async function loadWorkspace(projectId: string): Promise<Workspace> {
+export async function loadWorkspace(
+  projectId: string,
+  options: { makerPaperCleanup?: boolean } = {}
+): Promise<Workspace> {
   const [projectResult, labelResult, filmOrderEvents, filmLineEvents, fillingOrderEvents, fillingLineEvents, poEvents, documentEvents, versionEvents, revisionEvents, approvalEvents, filmDeliveryEvents, fillingDeliveryEvents, confirmationEvents, readinessEvents] =
     await Promise.all([
       loadProject(projectId),
@@ -753,10 +768,28 @@ export async function loadWorkspace(projectId: string): Promise<Workspace> {
     };
   }
 
+  // Medium-3: what the maker paper of a cancelled or frozen order still needs
+  // (live paper, an owed 取り消し承認). Dynamic import: maker-po-data imports
+  // this module. The /maker-po board reads the same paper itself and passes
+  // makerPaperCleanup: false, then fills it from its own read.
+  const closedOrderIds = options.makerPaperCleanup === false
+    ? []
+    : [...filmOrders.values()]
+      .filter((order) => {
+        const status = knownStatus(order);
+        return status !== null && (status === FILM_ORDER_CANCELLATION_STATE
+          || (EXCEPTION_ORDER_STATES as readonly string[]).includes(status));
+      })
+      .map((order) => order.id);
+  const makerPaperCleanup = closedOrderIds.length > 0
+    ? await (await import('./maker-po-data')).loadMakerPaperCleanup(projectId, closedOrderIds)
+    : {};
+
   return {
     error: firstError,
     project: projectResult.project,
     labels: labelResult.labels,
+    makerPaperCleanup,
     filmOrders: [...filmOrders.values()],
     fillingOrders: [...fillingOrders.values()],
     sevenPurchaseOrders: [...sevenPurchaseOrders.values()],
@@ -1097,7 +1130,23 @@ export interface NextActionView {
 }
 
 type NextActionWorkspace = Pick<Workspace, 'labels' | 'sevenPurchaseOrders' | 'revisions'>
-  & Partial<Pick<Workspace, 'revisionsWithheld'>>;
+  & Partial<Pick<Workspace, 'revisionsWithheld' | 'makerPaperCleanup'>>;
+
+/** 「取り消されていない発注書 1件・取り消し承認が未記録の発注書 1件」. */
+function cleanupParts(cleanup: MakerPaperCleanupSummary): string {
+  const parts = [
+    cleanup.livePapers > 0 ? `取り消されていない発注書 ${cleanup.livePapers}件` : null,
+    cleanup.acknowledgementPapers > 0 ? `取り消し承認が未記録の発注書 ${cleanup.acknowledgementPapers}件` : null
+  ].filter((part): part is string => part !== null);
+  return parts.join('・');
+}
+
+/** For a frozen order: the maker cleanup the representative may record before the release. */
+function frozenCleanupLine(cleanup: MakerPaperCleanupSummary | undefined): string {
+  return cleanup?.state === 'cleanup'
+    ? `（メーカー発注書の整理が残っています: ${cleanupParts(cleanup)}。解除の前でも、メーカー発注画面で取り消し・取り消し承認を記録できます）`
+    : '';
+}
 
 function nextAction(
   text: string,
@@ -1227,20 +1276,51 @@ export function nextActionForOrder(
     // endpoints (reason required); the server resumes the state the order
     // left, so the screen names no target. No /maker-po link: a held order is
     // not on the maker PO board (B-M1).
-    case 'ON_HOLD':
+    // Low-7 (b): a hold whose maker paper was all cancelled meanwhile resumes at
+    // MAKER_PO_READY, not at the maker step it left (server hold-release).
+    case 'ON_HOLD': {
+      const cleanup = workspace.makerPaperCleanup?.[order.id];
       return nextAction(
-        '代表者が理由を記録して保留を解除する（保留にする前の状態に戻ります）。',
-        OWNER_ADMIN, ['/orders'], 'film_order:release_hold', role
+        `代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「${label('MAKER_PO_READY')}」に戻ります）。${frozenCleanupLine(cleanup)}`,
+        OWNER_ADMIN, cleanup?.state === 'cleanup' ? ['/orders', '/maker-po'] : ['/orders'], 'film_order:release_hold', role
       );
-    case 'CANCELLATION_REVIEW':
+    }
+    case 'CANCELLATION_REVIEW': {
+      const cleanup = workspace.makerPaperCleanup?.[order.id];
       return nextAction(
-        '代表者が理由を記録して取消レビューを処理する（再開するか、取消で終了するか）。',
-        OWNER_ADMIN, ['/orders'], 'film_order:resolve_cancellation_review', role
+        `代表者が理由を記録して取消レビューを処理する（再開するか、取消で終了するか）。${frozenCleanupLine(cleanup)}`,
+        OWNER_ADMIN, cleanup?.state === 'cleanup' ? ['/orders', '/maker-po'] : ['/orders'],
+        'film_order:resolve_cancellation_review', role
       );
-    case 'CHANGE_REVIEW':
-      return nextAction('再開する状態を選んで、状態を進める。', both, ['/orders'], 'film_order:transition', role);
-    case FILM_ORDER_CANCELLATION_STATE:
-      return { text: 'この発注は取消で終了しています。これ以上の作業はありません。', owner: null, screens: [], operation: null, refusal: null };
+    }
+    case 'CHANGE_REVIEW': {
+      const cleanup = workspace.makerPaperCleanup?.[order.id];
+      return nextAction(
+        `再開する状態を選んで、状態を進める。${frozenCleanupLine(cleanup)}`,
+        both, cleanup?.state === 'cleanup' ? ['/orders', '/maker-po'] : ['/orders'], 'film_order:transition', role
+      );
+    }
+    // Medium-3: 「これ以上の作業はありません」 only when the maker paper is known
+    // to be settled — a cancelled order can keep live paper the maker may produce.
+    case FILM_ORDER_CANCELLATION_STATE: {
+      const cleanup = workspace.makerPaperCleanup?.[order.id];
+      if (cleanup?.state === 'none') {
+        return { text: 'この発注は取消で終了しています。これ以上の作業はありません。', owner: null, screens: [], operation: null, refusal: null };
+      }
+      if (cleanup?.state === 'cleanup') {
+        return nextAction(
+          `この発注は取消で終了していますが、メーカー発注書の整理が残っています（${cleanupParts(cleanup)}）。メーカー発注画面で発注書の取り消し・取り消し承認を記録する。`,
+          OWNER_ADMIN, ['/maker-po'], 'maker_po:cancel', role
+        );
+      }
+      return {
+        text: 'この発注は取消で終了しています。メーカー発注書の整理（取り消し・取り消し承認）が残っていないかは、メーカー発注画面で確認してください。',
+        owner: null,
+        screens: ['/maker-po'],
+        operation: null,
+        refusal: null
+      };
+    }
     default:
       return {
         text: `この状態（${label(status)}）の次の作業は画面に表示できません。`,

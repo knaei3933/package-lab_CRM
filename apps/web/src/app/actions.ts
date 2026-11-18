@@ -55,11 +55,34 @@ function refresh(): void {
   revalidatePath('/', 'layout');
 }
 
+/**
+ * Recheck 7 Low-7 (c): API refusals whose message is not Japanese (the hold
+ * reason checks answer in Korean) are shown in operator Japanese, by code.
+ */
+function localizedRefusal(code: string | null): ActionState | null {
+  switch (code) {
+    case 'HOLD_REASON_REQUIRED':
+      return { ok: false, message: '保留にする理由は必須です。' };
+    case 'HOLD_REASON_TOO_LONG':
+      return { ok: false, message: '保留にする理由は1000字以内で入力してください。' };
+    default:
+      return null;
+  }
+}
+
+function apiCode(data: unknown): string | null {
+  return typeof data === 'object' && data !== null && typeof (data as { code?: unknown }).code === 'string'
+    ? (data as { code: string }).code
+    : null;
+}
+
 async function post(path: string, body: unknown): Promise<ActionState> {
   const result = await callApi(path, { method: 'POST', body });
   if (result.ok) {
     return { ok: true, message: '記録しました。' };
   }
+  const localized = localizedRefusal(apiCode(result.data));
+  if (localized) return localized;
   return { ok: false, message: result.error ?? `APIがステータス ${result.status} を返しました。` };
 }
 
@@ -267,7 +290,8 @@ export async function transitionFilmSupplyOrderAction(_prev: ActionState | null,
   // the other targets take none, so the field is sent only for ON_HOLD.
   if (to === 'ON_HOLD') {
     const holdReason = reasonField(formData, 'holdReason', '保留にする理由');
-    if (!holdReason.ok) return holdReason.state;
+    // The literal (not the reasonField template) so the form can map it to its field.
+    if (!holdReason.ok) return { ok: false, message: '保留にする理由は必須です。' };
     return post(`/api/film-supply-orders/${encodeURIComponent(orderId)}/transitions`, { to, holdReason: holdReason.text });
   }
   return post(`/api/film-supply-orders/${encodeURIComponent(orderId)}/transitions`, { to });

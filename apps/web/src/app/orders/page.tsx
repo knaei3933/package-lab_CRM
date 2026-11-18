@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { LEGACY_HOLD_RELEASE_TARGETS } from '@kanei/core';
 import { ActionForm } from '../../components/ActionForm';
+import { ChoiceDisclosure, ChoiceToneActionForm } from '../../components/ChoiceDrivenForm';
 import { OrderCreateForm } from '../../components/OrderCreateForm';
 import { ProjectProgress } from '../../components/ProjectProgress';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
@@ -32,6 +33,7 @@ import {
   sevenPurchaseOrderChoiceLabel
 } from '../../lib/project-data';
 import type { FilmSupplyOrderView } from '../../lib/project-data';
+import type { MakerPaperCleanupSummary } from '../../lib/maker-po-data';
 import { MAKER_CHAIN_NOTICE, transitionChoicesFor } from '../../lib/transitions';
 import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
 import { cardStyle, infoBoxStyle, noteStyle, tdStyle, thStyle } from '../../lib/ui';
@@ -165,7 +167,13 @@ export default async function OrdersPage() {
                     {showOrderOperations ? (
                       <td style={{ ...tdStyle, minWidth: 'min(260px, 80vw)' }}>
                         {status === null ? null : (
-                          <TransitionCell order={order} status={status} stateLabel={stateLabel} role={role} />
+                          <TransitionCell
+                            order={order}
+                            status={status}
+                            stateLabel={stateLabel}
+                            role={role}
+                            makerCleanup={workspace.makerPaperCleanup?.[order.id]}
+                          />
                         )}
                         {status === 'DRAFT' ? (
                           <RoleGate role={role} operation="film_order:update_payment_terms" label="決済条件の記録">
@@ -278,14 +286,17 @@ function TransitionCell({
   order,
   status,
   stateLabel,
-  role
+  role,
+  makerCleanup
 }: {
   order: FilmSupplyOrderView;
   status: string;
   stateLabel: (key: string) => string;
   role: string | null;
+  /** Medium-3: the maker paper left on a cancelled or frozen order (absent: not read). */
+  makerCleanup: MakerPaperCleanupSummary | undefined;
 }) {
-  const set = transitionChoicesFor(status, stateLabel, order.lastNormalStatus);
+  const set = transitionChoicesFor(status, stateLabel, order.lastNormalStatus, makerCleanup?.state ?? 'unknown');
   const offersHold = set.choices.some((choice) => choice.value === 'ON_HOLD');
   return (
     <>
@@ -317,25 +328,28 @@ function TransitionCell({
           />
           {offersHold ? (
             // The API refuses a hold without a reason (HOLD_REASON_REQUIRED);
-            // the other targets take none, so the field is not marked required
-            // and stays folded (one per row would double every row's height).
-            <details>
-              <summary style={{ fontSize: 13, cursor: 'pointer' }}>
-                「{stateLabel('ON_HOLD')}」にするときの理由（必須）
-              </summary>
+            // the other targets take none, so the field stays folded (one per
+            // row would double every row's height). Low-7 (d): choosing
+            // 「保留中」 opens it and makes it required; a refusal focuses it.
+            <ChoiceDisclosure
+              selectName="to"
+              value="ON_HOLD"
+              fieldName="holdReason"
+              summary={`「${stateLabel('ON_HOLD')}」にするときの理由（必須）`}
+            >
               <TextareaField
                 name="holdReason"
                 label={`保留にする理由（「${stateLabel('ON_HOLD')}」を選ぶときは必須）`}
                 rows={2}
                 width={280}
               />
-            </details>
+            </ChoiceDisclosure>
           ) : null}
         </ActionForm>
       )}
       {status === 'ON_HOLD' ? <HoldReleaseForm order={order} role={role} stateLabel={stateLabel} /> : null}
       {status === 'CANCELLATION_REVIEW' ? (
-        <CancellationReviewForm order={order} role={role} stateLabel={stateLabel} />
+        <CancellationReviewForm order={order} role={role} stateLabel={stateLabel} makerCleanup={makerCleanup} />
       ) : null}
     </>
   );
@@ -389,10 +403,10 @@ function HoldReleaseForm({
         <ActionForm
           action={releaseFilmOrderHoldAction}
           submitLabel="保留を解除する"
-          hint="理由は必須です（1000字以内）。発注は保留にする前の状態に戻ります。その段階のメーカー発注書が取り消されている場合は「発注書の作成」から再開します（送信ずみの発注書の取消なら、先にメーカー発注画面で「取り消し承認」の記録が必要です）。"
+          hint={`理由は必須です（1000字以内）。発注は原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「${stateLabel('MAKER_PO_READY')}」（発注書の作成）から再開します。解除に取り消し承認は要りませんが、送信ずみの発注書を取り消した場合、新しい発注書の作成の前に「取り消し承認」の記録が必要です（保留中でもメーカー発注画面で記録できます）。`}
           confirm={{
             title: '保留を解除しますか？',
-            body: `発注 ${order.code} の保留を解除し、保留にする前の状態に戻します。解除の理由と結果は履歴に記録されます（記録は消えません）。`,
+            body: `発注 ${order.code} の保留を解除し、原則として保留にする前の状態に戻します（保留中にメーカー発注書がすべて取り消された場合は「${stateLabel('MAKER_PO_READY')}」に戻ります）。解除の理由と結果は履歴に記録されます（記録は消えません）。`,
             tone: 'primary',
             summaryFields: ['reason', 'resumeStatus']
           }}
@@ -422,25 +436,31 @@ const CANCELLATION_OUTCOME_CHOICES = [
 function CancellationReviewForm({
   order,
   role,
-  stateLabel
+  stateLabel,
+  makerCleanup
 }: {
   order: FilmSupplyOrderView;
   role: string | null;
   stateLabel: (key: string) => string;
+  makerCleanup: MakerPaperCleanupSummary | undefined;
 }) {
+  const body = `発注 ${order.code} の取消レビューを、選んだ処理で終えます。「取消で終了する」は元に戻せません（以後、状態の変更・保留の解除・メーカー発注書の作成はできません）。「再開する」は取消レビュー前の状態に戻します。`;
+  const warning = makerPaperWarning(makerCleanup);
   return (
     <RoleGate role={role} operation="film_order:resolve_cancellation_review" label="取消レビューの処理">
       <details style={{ marginTop: 8 }} open>
         <summary style={{ fontSize: 13, cursor: 'pointer' }}>取消レビューを処理する（代表者のみ）</summary>
-        <ActionForm
+        {warning ? <p className="role-notice">{warning}</p> : null}
+        <ChoiceToneActionForm
+          selectName="outcome"
+          dangerValue="cancel"
+          dangerConfirmBody={warning ? `${body}${warning}` : undefined}
           action={resolveCancellationReviewAction}
           submitLabel="取消レビューを処理する"
-          tone="danger"
           hint={`理由は必須です（1000字以内）。「取消で終了する」を選ぶと状態は「${stateLabel('CANCELLED')}」になり、以後この発注は進められません。`}
           confirm={{
             title: '取消レビューを処理しますか？',
-            body: `発注 ${order.code} の取消レビューを、選んだ処理で終えます。「取消で終了する」は元に戻せません（以後、状態の変更・保留の解除・メーカー発注書の作成はできません）。「再開する」は取消レビュー前の状態に戻します。`,
-            tone: 'danger',
+            body,
             summaryFields: ['outcome', 'reason', 'resumeStatus']
           }}
         >
@@ -459,10 +479,31 @@ function CancellationReviewForm({
             stateLabel={stateLabel}
             hint="「再開する」で、取消レビュー前の状態が記録から分からない場合だけ選んでください（「取消で終了する」では使いません）。"
           />
-        </ActionForm>
+        </ChoiceToneActionForm>
       </details>
     </RoleGate>
   );
+}
+
+/**
+ * Recheck 7 Medium-3: ending the order does not touch its maker paper (the
+ * server resolves the review without retiring it), so the dialog says what
+ * is left before 「取消で終了する」 is confirmed.
+ */
+function makerPaperWarning(cleanup: MakerPaperCleanupSummary | undefined): string | null {
+  if (cleanup === undefined || cleanup.state === 'unknown') {
+    return '注意: この発注のメーカー発注書の状態を確認できませんでした。取消で終了しても、メーカー発注書は自動では取り消されません。メーカー発注画面で残っている発注書がないか確認してください。';
+  }
+  if (cleanup.state === 'none') return null;
+  const parts = [
+    cleanup.livePapers > 0
+      ? `取り消されていないメーカー発注書が${cleanup.livePapers}件あります（メーカーが生産する可能性があります）`
+      : null,
+    cleanup.acknowledgementPapers > 0
+      ? `送信ずみのまま取り消し、取り消し承認が未記録の発注書が${cleanup.acknowledgementPapers}件あります`
+      : null
+  ].filter((part): part is string => part !== null);
+  return `注意: ${parts.join('。')}。取消で終了しても、メーカー発注書は自動では取り消されません。終了の前後に、メーカー発注画面で発注書の取り消し・取り消し承認を記録してください。`;
 }
 
 function OrderLinesCell({ order }: { order: FilmSupplyOrderView }) {

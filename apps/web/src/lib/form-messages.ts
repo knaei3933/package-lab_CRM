@@ -62,6 +62,9 @@ export const ACTION_MESSAGE_FIELDS: readonly ActionMessageField[] = [
     source: 'actions'
   },
   { message: '遷移先の状態を選択してください。', match: 'exact', field: 'to', source: 'actions' },
+  // Recheck 7 Low-7 (d): the hold reason sits in a folded section; the refusal opens and focuses it.
+  { message: '保留にする理由は必須です。', match: 'exact', field: 'holdReason', source: 'actions' },
+  { message: '保留にする理由は1000字以内で入力してください。', match: 'exact', field: 'holdReason', source: 'actions' },
   { message: '受領確認のメモは必須です。', match: 'exact', field: 'note', source: 'actions' },
   {
     message: '「証跡なしで問題なしとみなす」の確認にチェックを入れてください。',
