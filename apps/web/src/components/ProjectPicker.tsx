@@ -32,8 +32,9 @@ export function ProjectPicker({
   // B-M3: the switch remounts the select (key below), which drops focus to the
   // body. After a switch submitted here succeeds, focus goes to the page's
   // main region (tabIndex -1, no ring); never on page load or after a refusal.
+  // UI batch C (1-⑦): preventScroll — the header stays where the operator was.
   useEffect(() => {
-    if (intent.settled(state)) document.getElementById(MAIN_REGION_ID)?.focus();
+    if (intent.settled(state)) document.getElementById(MAIN_REGION_ID)?.focus({ preventScroll: true });
   }, [intent, state]);
 
   function submitIfChosen(select: HTMLSelectElement): void {
@@ -53,7 +54,19 @@ export function ProjectPicker({
   }
 
   return (
-    <form action={formAction} className="project-picker" onSubmit={() => intent.submitted()}>
+    <form
+      action={formAction}
+      className="project-picker"
+      onSubmit={(event) => {
+        // UI batch C (review M3): the button is aria-disabled, not disabled, while
+        // a switch runs, so it keeps focus; a second submit is dropped here.
+        if (pending) {
+          event.preventDefault();
+          return;
+        }
+        intent.submitted();
+      }}
+    >
       <div className="project-picker-row">
         <label className="project-picker-field">
           <span>案件</span>
@@ -76,7 +89,7 @@ export function ProjectPicker({
             ))}
           </select>
         </label>
-        <button type="submit" className="project-picker-submit" disabled={pending}>
+        <button type="submit" className="project-picker-submit" aria-disabled={pending || undefined}>
           {pending ? '切り替え中…' : '切り替え'}
         </button>
         {/* Always present so assistive tech hears the result when it appears. */}

@@ -1,12 +1,17 @@
 'use client';
 
-import { useActionState, useRef, useState } from 'react';
+import { useActionState, useId, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { FormAction } from './ActionForm';
+import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, resolverFromOptions } from './form-feedback';
+import type { ConfirmOptions } from './form-feedback';
 import type { Choice } from '../lib/types';
 import { isMakerPoBoundDocumentType } from '../lib/document-maker-po';
 import type { MakerPoChoice } from '../lib/document-maker-po';
-import { buttonStyle, errorMessageStyle, inputStyle, noteStyle, okMessageStyle, subtleButtonStyle } from '../lib/ui';
+import { FILE_FIELD } from '../lib/form-messages';
+import { FILE_READ_FAILED_MESSAGE, FILE_READING_MESSAGE, fileReadIssue } from '../lib/form-validation';
+import type { FileReadState } from '../lib/form-validation';
+import { buttonStyle, inputStyle, noteStyle, subtleButtonStyle } from '../lib/ui';
 
 interface DocumentUploadFormProps {
   action: FormAction;
@@ -16,7 +21,13 @@ interface DocumentUploadFormProps {
   sevenPurchaseOrderChoices: Choice[];
   filmSupplyOrderChoices: Choice[];
   makerPurchaseOrderChoices?: MakerPoChoice[];
+  /** UI batch C: optional confirmation before the upload. */
+  confirm?: ConfirmOptions | undefined;
+  /** Appended after 「記録しました。」. */
+  successHint?: string | undefined;
 }
+
+const SUBMIT_LABEL = '書類をアップロードする';
 
 /** Filename suffix → the content types the API accepts. */
 const EXTENSION_CONTENT_TYPES: Record<string, string> = {
@@ -44,6 +55,11 @@ const ACCEPT_ATTRIBUTE = Object.keys(EXTENSION_CONTENT_TYPES)
  * checks it against its allow-list before persisting anything. The optional
  * order / design bindings follow the API's intake rules: proof and approval
  * evidence need a design key when they are bound to an order.
+ *
+ * UI batch C (review M5): while the file is still being read, or after the
+ * read failed, the file input carries a custom error, so the form shell holds
+ * the submit and explains it on the file field — an empty contentBase64 never
+ * reaches the server under a visibly selected file.
  */
 export function DocumentUploadForm({
   action,
@@ -52,7 +68,9 @@ export function DocumentUploadForm({
   contentTypeChoices,
   sevenPurchaseOrderChoices,
   filmSupplyOrderChoices,
-  makerPurchaseOrderChoices = []
+  makerPurchaseOrderChoices = [],
+  confirm,
+  successHint
 }: DocumentUploadFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   const [contentBase64, setContentBase64] = useState('');
@@ -63,48 +81,88 @@ export function DocumentUploadForm({
   const [filmSupplyOrderId, setFilmSupplyOrderId] = useState('');
   const showMakerPo = isMakerPoBoundDocumentType(documentType);
   const makerPoOptions = makerPurchaseOrderChoices.filter((choice) => choice.filmSupplyOrderId === filmSupplyOrderId);
-  const [message, setMessage] = useState<string | null>(null);
+  const [readState, setReadState] = useState<FileReadState>('idle');
+  /** Only the latest picked file may fill the hidden field (a slower earlier read is dropped). */
+  const readToken = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
+  const readNoteId = useId();
+  const wide = (max: number) => ({ ...inputStyle, width: '100%', maxWidth: max });
+  /** UI batch C (1-④): the label keeps the old width as its flex basis and shrinks on narrow screens. */
+  const fieldLabel = (basis?: number) =>
+    ({ display: 'grid', gap: 4, maxWidth: '100%', minWidth: 'min(200px, 100%)', ...(basis ? { flex: `0 1 ${basis}px` } : {}) }) as const;
+  /** Review L5: the <label> wraps the caption + control only; error and notes follow it. */
+  const labelOnly = { display: 'grid', gap: 4 } as const;
+
+  /** The read state is also the file input's custom validity (checked by the shell on submit), set at once. */
+  function markRead(next: FileReadState): void {
+    setReadState(next);
+    fileInput.current?.setCustomValidity(fileReadIssue(next) ?? '');
+  }
 
   function onFileChange(event: ChangeEvent<HTMLInputElement>): void {
     const file = event.target.files?.[0];
-    setMessage(null);
+    const token = ++readToken.current;
+    setContentBase64('');
     if (!file) {
-      setContentBase64('');
       setFilename('');
+      markRead('idle');
       return;
     }
     setFilename(file.name);
+    markRead('reading');
     const suffix = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : '';
     const guessed = EXTENSION_CONTENT_TYPES[suffix];
     if (guessed) setContentType(guessed);
     const reader = new FileReader();
     reader.onload = () => {
+      if (token !== readToken.current) return;
       const result = typeof reader.result === 'string' ? reader.result : '';
       const commaIndex = result.indexOf(',');
       setContentBase64(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
+      markRead('read');
     };
     reader.onerror = () => {
-      setMessage('ファイルを読み取れませんでした。別のファイルを試してください。');
+      if (token !== readToken.current) return;
       setContentBase64('');
+      markRead('failed');
     };
     reader.readAsDataURL(file);
   }
 
-  function clearFile(): void {
+  /** Drops the picked file's state (ファイルを外す, and the form reset, which empties the file input). */
+  function forgetFile(): void {
+    readToken.current += 1;
     setContentBase64('');
     setFilename('');
+    markRead('idle');
+  }
+
+  function clearFile(): void {
+    forgetFile();
     if (fileInput.current) fileInput.current.value = '';
   }
 
+  /** The file field's message: the shell's (submit / server) first, else a failed read. */
+  const fileErrorFor = (shellError: string | undefined) => shellError ?? (readState === 'failed' ? FILE_READ_FAILED_MESSAGE : undefined);
+  const fileDescribedBy = (errorId: string, error: string | undefined) =>
+    [error ? errorId : null, readState === 'reading' ? readNoteId : null].filter((id): id is string => id !== null).join(' ') || undefined;
+
   return (
-    <form action={formAction} style={{ display: 'grid', gap: 10 }}>
+    <FeedbackForm
+      action={formAction}
+      state={state}
+      pending={pending}
+      onReset={forgetFile}
+      confirm={resolverFromOptions(confirm, SUBMIT_LABEL)}
+      dialogDefaults={confirm ? { options: confirm, confirmLabel: confirm.confirmLabel ?? SUBMIT_LABEL } : undefined}
+      style={{ display: 'grid', gap: 10 }}
+    >
       <input type="hidden" readOnly name="contentBase64" value={contentBase64} />
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-        <label style={{ display: 'grid', gap: 4 }}>
+        <label className="field" style={fieldLabel(260)}>
           <span style={{ fontSize: 13 }}>書類種別<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
-          <select name="documentType" required value={documentType} onChange={(event) => setDocumentType(event.target.value)} style={{ ...inputStyle, width: 260 }}>
+          <select name="documentType" required value={documentType} onChange={(event) => setDocumentType(event.target.value)} style={wide(260)}>
             {documentTypeChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
                 {choice.label}
@@ -112,9 +170,9 @@ export function DocumentUploadForm({
             ))}
           </select>
         </label>
-        <label style={{ display: 'grid', gap: 4 }}>
+        <label className="field" style={fieldLabel(220)}>
           <span style={{ fontSize: 13 }}>発行主体<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
-          <select name="issuerEntity" required style={{ ...inputStyle, width: 220 }}>
+          <select name="issuerEntity" required style={wide(220)}>
             {issuerEntityChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
                 {choice.label}
@@ -122,13 +180,13 @@ export function DocumentUploadForm({
             ))}
           </select>
         </label>
-        <label style={{ display: 'grid', gap: 4 }}>
+        <label className="field" style={fieldLabel(220)}>
           <span style={{ fontSize: 13 }}>書類の形式<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
           <select
             name="contentType"
             value={contentType}
             onChange={(event) => setContentType(event.target.value)}
-            style={{ ...inputStyle, width: 220 }}
+            style={wide(220)}
           >
             {contentTypeChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
@@ -140,20 +198,55 @@ export function DocumentUploadForm({
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
-        <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>ファイル<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
-          <input ref={fileInput} type="file" accept={ACCEPT_ATTRIBUTE} onChange={onFileChange} style={inputStyle} />
-        </label>
-        <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>ファイル名（書類の表示名）<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
-          <input
-            name="filename"
-            value={filename}
-            required
-            onChange={(event) => setFilename(event.target.value)}
-            style={{ ...inputStyle, width: 320 }}
-          />
-        </label>
+        <FieldFeedback name={FILE_FIELD}>
+          {(fileFeedback) => {
+            const fileError = fileErrorFor(fileFeedback.error);
+            return (
+              <div className="field" style={fieldLabel()}>
+                <label style={labelOnly}>
+                  <span style={{ fontSize: 13 }}>ファイル<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
+                  {/* UI batch C: required so the empty case is explained instead of a disabled button. */}
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    accept={ACCEPT_ATTRIBUTE}
+                    required
+                    onChange={onFileChange}
+                    aria-describedby={fileDescribedBy(fileFeedback.errorId, fileError)}
+                    aria-invalid={fileError ? true : undefined}
+                    data-feedback-name={FILE_FIELD}
+                    data-feedback-label="ファイル"
+                    style={inputStyle}
+                  />
+                </label>
+                <FieldError id={fileFeedback.errorId} message={fileError} />
+                <span id={readNoteId} aria-live="polite" className="form-live" style={noteStyle}>
+                  {readState === 'reading' ? FILE_READING_MESSAGE : ''}
+                </span>
+              </div>
+            );
+          }}
+        </FieldFeedback>
+        <FieldFeedback name="filename">
+          {(filenameFeedback) => (
+            <div className="field" style={fieldLabel(320)}>
+              <label style={labelOnly}>
+                <span style={{ fontSize: 13 }}>ファイル名（書類の表示名）<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
+                <input
+                  name="filename"
+                  value={filename}
+                  required
+                  onChange={(event) => setFilename(event.target.value)}
+                  aria-describedby={filenameFeedback.describedBy}
+                  aria-invalid={filenameFeedback.invalid}
+                  data-feedback-label="ファイル名"
+                  style={wide(320)}
+                />
+              </label>
+              <FieldError id={filenameFeedback.errorId} message={filenameFeedback.error} />
+            </div>
+          )}
+        </FieldFeedback>
         {contentBase64 ? (
           <button type="button" style={subtleButtonStyle} onClick={clearFile}>
             ファイルを外す
@@ -167,9 +260,9 @@ export function DocumentUploadForm({
       </p>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-        <label style={{ display: 'grid', gap: 4 }}>
+        <label className="field" style={fieldLabel(300)}>
           <span style={{ fontSize: 13 }}>セブン化学発注書の紐付け（任意）</span>
-          <select name="sevenPurchaseOrderId" style={{ ...inputStyle, width: 300 }}>
+          <select name="sevenPurchaseOrderId" style={wide(300)}>
             <option value="">紐付けない</option>
             {sevenPurchaseOrderChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
@@ -178,9 +271,9 @@ export function DocumentUploadForm({
             ))}
           </select>
         </label>
-        <label style={{ display: 'grid', gap: 4 }}>
+        <label className="field" style={fieldLabel(300)}>
           <span style={{ fontSize: 13 }}>フィルム発注の紐付け（任意）</span>
-          <select name="filmSupplyOrderId" value={filmSupplyOrderId} onChange={(event) => setFilmSupplyOrderId(event.target.value)} style={{ ...inputStyle, width: 300 }}>
+          <select name="filmSupplyOrderId" value={filmSupplyOrderId} onChange={(event) => setFilmSupplyOrderId(event.target.value)} style={wide(300)}>
             <option value="">紐付けない</option>
             {filmSupplyOrderChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
@@ -190,44 +283,68 @@ export function DocumentUploadForm({
           </select>
         </label>
         {showMakerPo ? (
-          <label style={{ display: 'grid', gap: 4 }}>
-            <span style={{ fontSize: 13 }}>メーカー発注書の紐付け（受入証跡・送信証跡では必須）</span>
-            <select name="makerPurchaseOrderId" required style={{ ...inputStyle, width: 360 }}>
-              <option value="">
-                {filmSupplyOrderId ? '選択してください' : '先にフィルム発注を選んでください'}
-              </option>
-              {makerPoOptions.map((choice) => (
-                <option key={choice.value} value={choice.value}>
-                  {choice.label}
-                </option>
-              ))}
-            </select>
-          </label>
+          <FieldFeedback name="makerPurchaseOrderId">
+            {(makerPoFeedback) => (
+              <div className="field" style={fieldLabel(360)}>
+                <label style={labelOnly}>
+                  <span style={{ fontSize: 13 }}>メーカー発注書の紐付け（受入証跡・送信証跡では必須）</span>
+                  <select
+                    name="makerPurchaseOrderId"
+                    required
+                    aria-describedby={makerPoFeedback.describedBy}
+                    aria-invalid={makerPoFeedback.invalid}
+                    data-feedback-label="メーカー発注書の紐付け"
+                    style={wide(360)}
+                  >
+                    <option value="">
+                      {filmSupplyOrderId ? '選択してください' : '先にフィルム発注を選んでください'}
+                    </option>
+                    {makerPoOptions.map((choice) => (
+                      <option key={choice.value} value={choice.value}>
+                        {choice.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <FieldError id={makerPoFeedback.errorId} message={makerPoFeedback.error} />
+              </div>
+            )}
+          </FieldFeedback>
         ) : null}
-        <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>デザインキー（校正ゲラ・承認証跡を発注に紐付ける場合は必須）</span>
-          <input
-            name="designKey"
-            value={designKey}
-            onChange={(event) => setDesignKey(event.target.value)}
-            placeholder="例：T-35"
-            style={{ ...inputStyle, width: 200 }}
-          />
-        </label>
+        <FieldFeedback name="designKey">
+          {(designKeyFeedback) => (
+            <div className="field" style={fieldLabel(200)}>
+              <label style={labelOnly}>
+                <span style={{ fontSize: 13 }}>デザインキー（校正ゲラ・承認証跡を発注に紐付ける場合は必須）</span>
+                <input
+                  name="designKey"
+                  value={designKey}
+                  onChange={(event) => setDesignKey(event.target.value)}
+                  placeholder="例：T-35"
+                  aria-describedby={designKeyFeedback.describedBy}
+                  aria-invalid={designKeyFeedback.invalid}
+                  data-feedback-label="デザインキー"
+                  style={wide(200)}
+                />
+              </label>
+              <FieldError id={designKeyFeedback.errorId} message={designKeyFeedback.error} />
+            </div>
+          )}
+        </FieldFeedback>
       </div>
 
-      <label style={{ display: 'grid', gap: 4 }}>
+      <label className="field" style={fieldLabel(360)}>
         <span style={{ fontSize: 13 }}>備考（任意）</span>
-        <textarea name="note" rows={2} style={{ ...inputStyle, width: 360 }} />
+        <textarea name="note" rows={2} style={wide(360)} />
       </label>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button type="submit" disabled={pending || contentBase64.length === 0} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
-          {pending ? 'アップロード中…' : '書類をアップロードする'}
+      <div className="form-actions">
+        <button type="submit" aria-disabled={pending || undefined} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
+          {pending ? 'アップロード中…' : SUBMIT_LABEL}
         </button>
-        {message ? <span style={errorMessageStyle}>{message}</span> : null}
-        {state ? <span style={state.ok ? okMessageStyle : errorMessageStyle}>{state.message}</span> : null}
+        <FormErrorSummary />
+        <FormResult state={state} successHint={successHint} />
       </div>
-    </form>
+    </FeedbackForm>
   );
 }

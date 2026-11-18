@@ -1,7 +1,8 @@
 'use client';
 
+import '../app/forms.css';
 import { useRouter } from 'next/navigation';
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { FormEvent } from 'react';
 import { buttonStyle, errorMessageStyle, inputStyle } from '../lib/ui';
 
@@ -17,9 +18,15 @@ export function LoginForm() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  // UI batch C: the refusal is announced (role="alert") and both fields point at it.
+  const errorId = useId();
+  const invalid = error ? (true as const) : undefined;
+  const describedBy = error ? errorId : undefined;
 
   async function onSubmit(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault();
+    // The button stays focusable while pending (aria-disabled), so a second submit is dropped here.
+    if (pending) return;
     setPending(true);
     setError(null);
     try {
@@ -44,7 +51,7 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={onSubmit} style={{ display: 'grid', gap: 12, maxWidth: 360 }}>
+    <form onSubmit={onSubmit} className="login-form" style={{ display: 'grid', gap: 12, maxWidth: 360 }}>
       <label style={{ display: 'grid', gap: 4 }}>
         <span style={{ fontSize: 13 }}>ユーザー名</span>
         <input
@@ -53,6 +60,8 @@ export function LoginForm() {
           autoComplete="username"
           required
           onChange={(event) => setUsername(event.target.value)}
+          aria-invalid={invalid}
+          aria-describedby={describedBy}
           style={inputStyle}
         />
       </label>
@@ -65,14 +74,18 @@ export function LoginForm() {
           autoComplete="current-password"
           required
           onChange={(event) => setPassword(event.target.value)}
+          aria-invalid={invalid}
+          aria-describedby={describedBy}
           style={inputStyle}
         />
       </label>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button type="submit" disabled={pending} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
+        <button type="submit" aria-disabled={pending || undefined} style={{ ...buttonStyle, minHeight: 36, opacity: pending ? 0.6 : 1 }}>
           {pending ? '確認中…' : 'ログイン'}
         </button>
-        {error ? <span style={errorMessageStyle}>{error}</span> : null}
+        <span id={errorId} role="alert" className="form-live" style={errorMessageStyle}>
+          {error ?? ''}
+        </span>
       </div>
     </form>
   );

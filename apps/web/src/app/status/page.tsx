@@ -40,6 +40,8 @@ const sectionTitles: Array<{ heading: string; note: string; key: keyof StatusLab
 const cardStyle = { border: '1px solid var(--line)', borderRadius: 'var(--radius)', padding: 16 } as const;
 const rowStyle = {
   display: 'flex',
+  // UI batch C (2-⑥): the code and its label stack at 390px instead of overflowing.
+  flexWrap: 'wrap' as const,
   justifyContent: 'space-between',
   gap: 16,
   padding: '8px 0',
@@ -93,7 +95,7 @@ export default async function StatusPage() {
               <div>
                 {labels.payload[section.key].map((entry) => (
                   <div key={entry.key} style={rowStyle}>
-                    <code style={{ color: 'var(--ink-sub)' }}>{entry.key}</code>
+                    <code style={{ color: 'var(--ink-sub)', overflowWrap: 'anywhere' }}>{entry.key}</code>
                     <span>{entry.label}</span>
                   </div>
                 ))}

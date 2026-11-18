@@ -36,7 +36,7 @@ export default function OperatorScreenError({
         {error.digest ? (
           <p style={noteStyle}>
             エラーID（問い合わせ用）:{' '}
-            <span style={{ fontFamily: 'ui-monospace, monospace' }}>{error.digest}</span>
+            <span style={{ fontFamily: 'var(--font-mono)', overflowWrap: 'anywhere' }}>{error.digest}</span>
           </p>
         ) : null}
         <button type="button" onClick={reset} style={buttonStyle}>

@@ -1,10 +1,15 @@
 'use client';
 
-import { useActionState, useRef, useState } from 'react';
+import { useActionState, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import type { FormAction } from './ActionForm';
+import { DateTimeInputs } from './DateTimeInputs';
 import { SelectField, TextField } from './fields';
+import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, resolverFromOptions } from './form-feedback';
+import type { ConfirmOptions, ConfirmResolver } from './form-feedback';
+import { MAKER_PO_SEND_CONFIRM_TITLE, MAKER_PO_SEND_SUBMIT_LABEL, makerPoSendConfirmSpec } from '../lib/confirm-summary';
 import { datetimeLocalToIso } from '../lib/datetime';
+import { FILE_FIELD } from '../lib/form-messages';
 import type { EmlFormEditedFields, EmlFormValues } from '../lib/eml-form';
 import {
   insertMakerPoMailSubject,
@@ -15,16 +20,7 @@ import {
   utf8TextToBase64
 } from '../lib/eml-form';
 import type { Choice } from '../lib/types';
-import {
-  buttonStyle,
-  errorMessageStyle,
-  infoBoxStyle,
-  inputStyle,
-  monoStyle,
-  noteStyle,
-  okMessageStyle,
-  subtleButtonStyle
-} from '../lib/ui';
+import { buttonStyle, infoBoxStyle, inputStyle, monoStyle, noteStyle, subtleButtonStyle } from '../lib/ui';
 
 interface MakerPoSendEvidenceFormProps {
   action: FormAction;
@@ -37,11 +33,28 @@ interface MakerPoSendEvidenceFormProps {
   ceoApprovedAt?: string | null;
   /** G3: the frozen CRM order code inserted at the front of the mail subject. */
   orderCode?: string | null;
+  /** UI batch C: replaces the built-in 「手動送信を記録しますか？」 confirmation. */
+  confirm?: ConfirmOptions | undefined;
+  /** Appended after 「記録しました。」. */
+  successHint?: string | undefined;
 }
+
+const SUBMIT_LABEL = MAKER_PO_SEND_SUBMIT_LABEL;
 
 interface MakerPoEmlFormState {
   values: EmlFormValues;
   edited: EmlFormEditedFields;
+}
+
+const INITIAL_FORM_STATE: MakerPoEmlFormState = {
+  values: { senderAddress: '', sentAt: '' },
+  edited: { senderAddress: false, sentAt: false }
+};
+
+/** A line next to the button about the picked file: a notice (auto-fill, subject) or an error (wrong / unreadable file). */
+interface FileNotice {
+  text: string;
+  tone: 'note' | 'error';
 }
 
 /**
@@ -64,21 +77,47 @@ export function MakerPoSendEvidenceForm({
   sendEvidenceChoices,
   recipientAddress,
   ceoApprovedAt,
-  orderCode
+  orderCode,
+  confirm,
+  successHint
 }: MakerPoSendEvidenceFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   const [contentBase64, setContentBase64] = useState('');
   const [emlFilename, setEmlFilename] = useState('');
-  const [formState, setFormState] = useState<MakerPoEmlFormState>({
-    values: { senderAddress: '', sentAt: '' },
-    edited: { senderAddress: false, sentAt: false }
-  });
-  const [message, setMessage] = useState<string | null>(null);
+  const [formState, setFormState] = useState<MakerPoEmlFormState>(INITIAL_FORM_STATE);
+  const [message, setMessage] = useState<FileNotice | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  /** Only the latest picked file may fill the form (a read finishing after a reset is dropped). */
+  const readToken = useRef(0);
   const [selectedSubject, setSelectedSubject] = useState<string | null>(null);
+
+  /** Forgets the EML held for the submit: bytes, file name, subject and its notices (review Q1). */
+  function forgetEml(): void {
+    readToken.current += 1;
+    setContentBase64('');
+    setEmlFilename('');
+    setSelectedSubject(null);
+    setMessage(null);
+  }
+
+  // Review Q1: after a recorded send the previous EML must not be sent again
+  // (nor named in the next confirmation).
+  useEffect(() => {
+    if (state?.ok) forgetEml();
+  }, [state]);
+
+  /** The form's reset (React 19, after the action): the file input is emptied natively, so is the held EML. */
+  function onFormReset(): void {
+    forgetEml();
+    setFormState((current) => ({
+      values: { ...current.values, senderAddress: INITIAL_FORM_STATE.values.senderAddress },
+      edited: { ...current.edited, senderAddress: false }
+    }));
+  }
 
   function onFileChange(event: ChangeEvent<HTMLInputElement>): void {
     const file = event.target.files?.[0];
+    const token = ++readToken.current;
     setMessage(null);
     if (!file) {
       setContentBase64('');
@@ -87,7 +126,10 @@ export function MakerPoSendEvidenceForm({
     }
     const suffix = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : '';
     if (suffix !== 'eml') {
-      setMessage('送信証跡には送信済みメールの原本（.eml）を選んでください。PDFやスクリーンショットでは送信は確認できません。');
+      setMessage({
+        text: '送信証跡には送信済みメールの原本（.eml）を選んでください。PDFやスクリーンショットでは送信は確認できません。',
+        tone: 'error'
+      });
       setContentBase64('');
       setEmlFilename('');
       if (fileInput.current) fileInput.current.value = '';
@@ -96,6 +138,7 @@ export function MakerPoSendEvidenceForm({
     setEmlFilename(file.name);
     const reader = new FileReader();
     reader.onload = () => {
+      if (token !== readToken.current) return;
       const result = typeof reader.result === 'string' ? reader.result : '';
       const commaIndex = result.indexOf(',');
       setContentBase64(commaIndex >= 0 ? result.slice(commaIndex + 1) : result);
@@ -104,6 +147,7 @@ export function MakerPoSendEvidenceForm({
       // more as text solely to inspect the header block in the browser.
       const headerReader = new FileReader();
       headerReader.onload = () => {
+        if (token !== readToken.current) return;
         const emlText = typeof headerReader.result === 'string' ? headerReader.result : '';
         const defaults = readEmlFormDefaults(emlText);
         let outgoingEml = emlText;
@@ -132,15 +176,17 @@ export function MakerPoSendEvidenceForm({
         } else {
           notices.push('EMLのDateヘッダーを読み取れませんでした。送信日時は手動で入力してください。');
         }
-        setMessage(notices.join(' '));
+        setMessage({ text: notices.join(' '), tone: 'note' });
       };
       headerReader.onerror = () => {
-        setMessage('EMLヘッダーを読み取れませんでした。送信日時と送信元は手動で確認してください。');
+        if (token !== readToken.current) return;
+        setMessage({ text: 'EMLヘッダーを読み取れませんでした。送信日時と送信元は手動で確認してください。', tone: 'note' });
       };
       headerReader.readAsText(file);
     };
     reader.onerror = () => {
-      setMessage('ファイルを読み取れませんでした。別のファイルを試してください。');
+      if (token !== readToken.current) return;
+      setMessage({ text: 'ファイルを読み取れませんでした。別のファイルを試してください。', tone: 'error' });
       setContentBase64('');
     };
     reader.readAsDataURL(file);
@@ -153,22 +199,64 @@ export function MakerPoSendEvidenceForm({
     if (fileInput.current) fileInput.current.value = '';
   }
 
+  // UI batch C (1-③): what will be recorded, read back before the send is filed (texts: lib/confirm-summary).
+  const builtInConfirm: ConfirmResolver = (form) => {
+    const read = (name: string): string => {
+      const item = form.elements.namedItem(name);
+      return item instanceof HTMLInputElement || item instanceof HTMLSelectElement ? item.value : '';
+    };
+    const versionSelect = form.elements.namedItem('evidenceDocumentVersionId');
+    const versionText = versionSelect instanceof HTMLSelectElement && versionSelect.value.length > 0
+      ? versionSelect.selectedOptions[0]?.textContent?.trim() ?? versionSelect.value
+      : '';
+    return makerPoSendConfirmSpec({
+      senderAddress: read('senderAddress'),
+      recipients: read('recipients'),
+      sentAtLocal: formState.values.sentAt,
+      emlFilename,
+      hasEmlContent: contentBase64.length > 0,
+      versionText
+    });
+  };
+
   return (
-    <form action={formAction} style={{ display: 'grid', gap: 10 }}>
+    <FeedbackForm
+      action={formAction}
+      state={state}
+      pending={pending}
+      onReset={onFormReset}
+      confirm={resolverFromOptions(confirm, SUBMIT_LABEL) ?? builtInConfirm}
+      dialogDefaults={{
+        options: confirm ?? { title: MAKER_PO_SEND_CONFIRM_TITLE, body: '' },
+        confirmLabel: confirm?.confirmLabel ?? SUBMIT_LABEL
+      }}
+      style={{ display: 'grid', gap: 10 }}
+    >
       <input type="hidden" readOnly name="poId" value={poId} />
       <input type="hidden" readOnly name="contentBase64" value={contentBase64} />
 
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
-        <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>送信済みメールの原本（.eml）</span>
-          <input
-            ref={fileInput}
-            type="file"
-            accept=".eml,message/rfc822"
-            onChange={onFileChange}
-            style={inputStyle}
-          />
-        </label>
+        <FieldFeedback name={FILE_FIELD}>
+          {(fileFeedback) => (
+            <div className="field" style={{ display: 'grid', gap: 4, maxWidth: '100%' }}>
+              <label style={{ display: 'grid', gap: 4 }}>
+                <span style={{ fontSize: 13 }}>送信済みメールの原本（.eml）</span>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept=".eml,message/rfc822"
+                  onChange={onFileChange}
+                  aria-describedby={fileFeedback.describedBy}
+                  aria-invalid={fileFeedback.invalid}
+                  data-feedback-name={FILE_FIELD}
+                  data-feedback-label="送信済みメールの原本（.eml）"
+                  style={inputStyle}
+                />
+              </label>
+              <FieldError id={fileFeedback.errorId} message={fileFeedback.error} />
+            </div>
+          )}
+        </FieldFeedback>
         {contentBase64 ? (
           <>
             <span style={noteStyle}>読み込み済み: {emlFilename}</span>
@@ -223,20 +311,26 @@ export function MakerPoSendEvidenceForm({
           defaultValue={recipientAddress ?? undefined}
           width={260}
         />
-        <TextField
-          name="sentAtLocal"
+        {/* UI batch C (1-②): text date + time; the posted sentAtLocal / sentAt stay as before. */}
+        <input readOnly type="hidden" name="sentAtLocal" value={formState.values.sentAt} />
+        <DateTimeInputs
+          name="sentAt"
           label="送信日時"
-          type="datetime-local"
           required
           value={formState.values.sentAt}
-          onChange={(event) => {
-            const sentAt = event.target.value;
+          onChange={(sentAt) => {
             setFormState((current) => ({
               values: { ...current.values, sentAt },
               edited: { ...current.edited, sentAt: true }
             }));
           }}
-          width={240}
+          onReset={(sentAt) => {
+            // Back to the empty start, not an operator edit: the next EML may fill it again.
+            setFormState((current) => ({
+              values: { ...current.values, sentAt },
+              edited: { ...current.edited, sentAt: false }
+            }));
+          }}
         />
       </div>
 
@@ -249,13 +343,18 @@ export function MakerPoSendEvidenceForm({
 
       <input readOnly type="hidden" name="sentAt" value={datetimeLocalToIso(formState.values.sentAt) ?? ''} />
 
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
-        <button type="submit" disabled={pending} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
-          {pending ? '送信中…' : '手動送信を記録する'}
+      <div className="form-actions">
+        <button type="submit" aria-disabled={pending || undefined} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
+          {pending ? '送信中…' : SUBMIT_LABEL}
         </button>
-        {message ? <span aria-live="polite" style={errorMessageStyle}>{message}</span> : null}
-        {state ? <span aria-live="polite" style={state.ok ? okMessageStyle : errorMessageStyle}>{state.message}</span> : null}
+        <FormErrorSummary />
+        {/* File-reading notices (EML header, subject insertion): polite, always present;
+            notices in the note colour, only a wrong or unreadable file in red (review L11). */}
+        <span aria-live="polite" className={`form-result form-result--${message?.tone ?? 'note'}`}>
+          {message?.text ?? ''}
+        </span>
+        <FormResult state={state} successHint={successHint} />
       </div>
-    </form>
+    </FeedbackForm>
   );
 }

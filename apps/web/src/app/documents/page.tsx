@@ -3,6 +3,8 @@ import { ActionForm } from '../../components/ActionForm';
 import { DocumentUploadForm } from '../../components/DocumentUploadForm';
 import { ProjectProgress } from '../../components/ProjectProgress';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
+import { DataTable } from '../../components/DataTable';
+import { StatusBadge } from '../../components/StatusBadge';
 import { TechDetails } from '../../components/TechDetails';
 import { SelectField, TextField } from '../../components/fields';
 import { uploadDocumentAction, verifyDocumentAction } from '../actions';
@@ -11,15 +13,7 @@ import { loadMakerPoChoices } from '../../lib/document-maker-po-server';
 import { canRoleOperate } from '../../lib/permissions';
 import { filmOrderChoiceLabel, labelLookup, loadWorkspace, NO_PROJECT_SELECTED_MESSAGE } from '../../lib/project-data';
 import { shortId } from '../../lib/short-id';
-import {
-  cardStyle,
-  infoBoxStyle,
-  monoStyle,
-  noteStyle,
-  tableStyle,
-  tdStyle,
-  thStyle
-} from '../../lib/ui';
+import { cardStyle, infoBoxStyle, monoStyle, noteStyle, tdStyle, thStyle } from '../../lib/ui';
 import {
   DOCUMENT_TYPE_LABELS,
   formatTimestamp,
@@ -105,16 +99,16 @@ export default async function DocumentsPage() {
         {workspace.documents.length === 0 ? (
           <p style={noteStyle}>書類はまだありません。</p>
         ) : (
-          <table style={tableStyle}>
+          <DataTable caption="書類の一覧" captionHidden>
             <thead>
               <tr>
-                <th style={thStyle}>書類種別</th>
-                <th style={thStyle}>発行主体</th>
-                <th style={thStyle}>ファイル名</th>
-                <th style={thStyle}>紐付け</th>
-                <th style={thStyle}>検証状態</th>
-                <th style={thStyle}>登録</th>
-                {showVerifyColumn ? <th style={thStyle}>確認を記録する</th> : null}
+                <th scope="col" style={thStyle}>書類種別</th>
+                <th scope="col" style={thStyle}>発行主体</th>
+                <th scope="col" style={thStyle}>ファイル名</th>
+                <th scope="col" style={thStyle}>紐付け</th>
+                <th scope="col" style={thStyle}>検証状態</th>
+                <th scope="col" style={thStyle}>登録</th>
+                {showVerifyColumn ? <th scope="col" style={thStyle}>確認を記録する</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -169,19 +163,30 @@ export default async function DocumentsPage() {
                         : '—'
                       : null}
                   </td>
-                  <td style={tdStyle}>
+                  <td style={tdStyle} className="status-cell">
                     {document.verificationHidden
-                      ? HIDDEN_BY_ROLE_LABEL
-                      : VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus}
+                      ? <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} />
+                      : (
+                        <StatusBadge
+                          domain="verification"
+                          status={document.verificationStatus}
+                          label={VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus}
+                        />
+                      )}
                     {document.verificationNote ? <div style={noteStyle}>{document.verificationNote}</div> : null}
                   </td>
                   <td style={tdStyle}>{formatTimestamp(document.createdAt)}</td>
                   {showVerifyColumn ? (
-                    <td style={{ ...tdStyle, minWidth: 240 }}>
+                    <td style={{ ...tdStyle, minWidth: 'min(240px, 80vw)' }}>
                       <ActionForm
                         action={verifyDocumentAction}
                         submitLabel="確認を記録する"
                         hint="確認結果は書類ごとに上書き記録されます（実施者と日時も記録されます）。"
+                        confirm={{
+                          title: '書類の確認結果を記録しますか？',
+                          body: `「${document.filename}」の確認結果を記録します。前の確認結果は上書きされ、実施者と日時が記録されます。`,
+                          summaryFields: ['verificationStatus', 'verificationNote']
+                        }}
                       >
                         <input type="hidden" readOnly name="documentId" value={document.id} />
                         <SelectField name="verificationStatus" label="確認結果" required choices={verificationChoices} width={180} />
@@ -192,7 +197,7 @@ export default async function DocumentsPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </DataTable>
         )}
       </div>
     </section>

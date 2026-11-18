@@ -1,9 +1,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { ChangeEvent } from 'react';
 import { datetimeLocalToIso } from '../lib/datetime';
-import { inputStyle, noteStyle } from '../lib/ui';
+import { DateTimeInputs } from './DateTimeInputs';
 
 interface OffsetDateTimeFieldProps {
   /** The form/API field name carrying the explicit-offset value. */
@@ -12,21 +11,18 @@ interface OffsetDateTimeFieldProps {
   required?: boolean | undefined;
   hint?: string | undefined;
   defaultValue?: string | undefined;
+  /** Kept for call-site compatibility; the date and time inputs size themselves (UI batch C). */
   width?: number | undefined;
 }
 
 /**
- * Shows datetime-local to the operator while submits carry UTC ISO. The visible
- * field uses `...Local` so the browser cannot submit an ambiguous duplicate.
+ * Shows plain date and time text inputs (UI batch C: no locale-bound
+ * datetime-local picker) while submits carry UTC ISO. The posted fields are
+ * unchanged: hidden `name` = the browser-side UTC conversion, hidden
+ * `${name}Local` = the datetime-local wall clock the server action falls back
+ * to (as Asia/Tokyo) when the explicit value is empty.
  */
-export function OffsetDateTimeField({
-  name,
-  label,
-  required,
-  hint,
-  defaultValue,
-  width = 240
-}: OffsetDateTimeFieldProps) {
+export function OffsetDateTimeField({ name, label, required, hint, defaultValue }: OffsetDateTimeFieldProps) {
   const [localValue, setLocalValue] = useState(defaultValue ?? '');
   // SSR must not convert a naive default using the server timezone. Keep the
   // hidden field empty until mounted; a pre-hydration submit uses the action's
@@ -37,10 +33,6 @@ export function OffsetDateTimeField({
     setMounted(true);
   }, []);
 
-  function onChange(event: ChangeEvent<HTMLInputElement>): void {
-    setLocalValue(event.target.value);
-  }
-
   return (
     <>
       <input
@@ -49,21 +41,9 @@ export function OffsetDateTimeField({
         name={name}
         value={mounted ? datetimeLocalToIso(localValue) ?? '' : ''}
       />
-      <label style={{ display: 'grid', gap: 2, minWidth: 220 }}>
-        <span style={{ fontSize: 13, color: 'var(--ink)' }}>
-          {label}
-          {required ? <span style={{ color: 'var(--danger)' }}>（必須）</span> : null}
-        </span>
-        <input
-          name={`${name}Local`}
-          type="datetime-local"
-          value={localValue}
-          onChange={onChange}
-          required={required}
-          style={{ ...inputStyle, width }}
-        />
-        {hint ? <span style={noteStyle}>{hint}</span> : null}
-      </label>
+      <input readOnly type="hidden" name={`${name}Local`} value={localValue} />
+      {/* On the form's reset DateTimeInputs hands back the starting value (the default) through onChange. */}
+      <DateTimeInputs name={name} label={label} required={required} hint={hint} value={localValue} onChange={setLocalValue} />
     </>
   );
 }

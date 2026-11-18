@@ -30,9 +30,10 @@ const MARK_TEXT: Record<Exclude<ProgressStepMark, 'unmarked' | 'upcoming'>, stri
   interrupted: '中断'
 };
 
-function Stepper({ marks }: { marks: ProgressStepMark[] }) {
+/** UI batch C (2-⑦): each stepper is named, so several on one screen stay apart. */
+function Stepper({ marks, label }: { marks: ProgressStepMark[]; label: string }) {
   return (
-    <ol className="stepper">
+    <ol className="stepper" aria-label={label}>
       {PROGRESS_STEPS.map((name, index) => {
         const mark = marks[index] ?? 'unmarked';
         return (
@@ -60,7 +61,7 @@ function OrderProgressRow({ order, stateLabel }: { order: FilmSupplyOrderView; s
           <span>{stateLabel(progress.status)}</span>
         )}
       </p>
-      <Stepper marks={progress.marks} />
+      <Stepper marks={progress.marks} label={`${order.code} の進み具合`} />
       {progress.phase === 'exception' && progress.interruptedStep === null ? (
         <p className="progress-note">中断した段階は記録から分かりません。</p>
       ) : null}
@@ -142,7 +143,7 @@ export function ProjectProgress({
       {workspace.filmOrders.length === 0 ? (
         <div className="progress-row">
           <p className="progress-head">フィルム発注はまだありません</p>
-          <Stepper marks={PROGRESS_STEPS.map((): ProgressStepMark => 'upcoming')} />
+          <Stepper marks={PROGRESS_STEPS.map((): ProgressStepMark => 'upcoming')} label="発注の進み具合" />
         </div>
       ) : null}
       {active.map((order) => (
@@ -151,7 +152,7 @@ export function ProjectProgress({
       {hidden.length > 0 ? (
         <div className="progress-row">
           <p className="progress-head">フィルム発注 {hidden.length}件</p>
-          <Stepper marks={PROGRESS_STEPS.map((): ProgressStepMark => 'unmarked')} />
+          <Stepper marks={PROGRESS_STEPS.map((): ProgressStepMark => 'unmarked')} label="フィルム発注の進み具合" />
           <p className="progress-note">{STATUS_HIDDEN_NOTICE}</p>
         </div>
       ) : null}

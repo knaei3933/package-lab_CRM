@@ -3,6 +3,8 @@ import { ActionForm } from '../../components/ActionForm';
 import { DeliveryRecordForm } from '../../components/DeliveryRecordForm';
 import { ProjectProgress } from '../../components/ProjectProgress';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
+import { DataTable } from '../../components/DataTable';
+import { StatusBadge } from '../../components/StatusBadge';
 import { TechDetails } from '../../components/TechDetails';
 import { SelectField, TextField } from '../../components/fields';
 import { confirmDeliveryAction, evaluateCommissionReadinessAction, recordDeliveryAction } from '../actions';
@@ -12,15 +14,7 @@ import { labelLookup, loadWorkspace, NO_PROJECT_SELECTED_MESSAGE } from '../../l
 import { shortId } from '../../lib/short-id';
 import type { DeliveryView } from '../../lib/project-data';
 import { HIDDEN_BY_ROLE_LABEL } from '../../lib/redaction';
-import {
-  badgeStyle,
-  cardStyle,
-  infoBoxStyle,
-  noteStyle,
-  tableStyle,
-  tdStyle,
-  thStyle
-} from '../../lib/ui';
+import { cardStyle, infoBoxStyle, noteStyle, tdStyle, thStyle } from '../../lib/ui';
 import { formatTimestamp, READINESS_BLOCKING_LABELS, unitChoices, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary';
 
 export const dynamic = 'force-dynamic';
@@ -119,32 +113,36 @@ export default async function DeliveriesPage() {
       <div style={cardStyle}>
         <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>手数料計算の準備状態</h2>
         {readiness ? (
-          <table style={tableStyle}>
+          <DataTable caption="手数料計算の準備状態" captionHidden>
             <tbody>
               <tr>
-                <th style={thStyle}>準備状態</th>
+                <th scope="row" style={thStyle}>準備状態</th>
                 <td style={tdStyle}>
-                  {readiness.hidden ? HIDDEN_BY_ROLE_LABEL : (
+                  {readiness.hidden ? <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} /> : (
                     <>
-                      {readinessStateLabel(readiness.readinessState)}
+                      <StatusBadge
+                        domain="readiness"
+                        status={readiness.readinessState}
+                        label={readinessStateLabel(readiness.readinessState)}
+                      />
                       <TechDetails context="コード">{readiness.readinessState}</TechDetails>
                     </>
                   )}
                 </td>
               </tr>
               <tr>
-                <th style={thStyle}>準備完了</th>
+                <th scope="row" style={thStyle}>準備完了</th>
                 <td style={tdStyle}>{readiness.hidden ? HIDDEN_BY_ROLE_LABEL : readinessIsReady ? 'はい' : 'いいえ'}</td>
               </tr>
               <tr>
-                <th style={thStyle}>手数料計算</th>
+                <th scope="row" style={thStyle}>手数料計算</th>
                 <td style={tdStyle}>
                   {readiness.hidden ? HIDDEN_BY_ROLE_LABEL : readinessIsReady ? '可能です' : 'まだできません'}
                   <span style={noteStyle}>（「{readinessStateLabel('READY')}」のときだけ手数料計算ができます）</span>
                 </td>
               </tr>
               <tr>
-                <th style={thStyle}>未達の要件</th>
+                <th scope="row" style={thStyle}>未達の要件</th>
                 <td style={tdStyle}>
                   {readiness.hidden
                     ? HIDDEN_BY_ROLE_LABEL
@@ -163,11 +161,11 @@ export default async function DeliveriesPage() {
                 </td>
               </tr>
               <tr>
-                <th style={thStyle}>評価日時</th>
+                <th scope="row" style={thStyle}>評価日時</th>
                 <td style={tdStyle}>{formatTimestamp(readiness.evaluatedAt)}</td>
               </tr>
             </tbody>
-          </table>
+          </DataTable>
         ) : (
           <p style={noteStyle}>まだ評価されていません。納品と公式登録がそろったら「準備状態を再評価する」を実行してください。</p>
         )}
@@ -190,17 +188,17 @@ export default async function DeliveriesPage() {
         {workspace.deliveries.length === 0 ? (
           <p style={noteStyle}>納品の記録はまだありません。</p>
         ) : (
-          <table style={tableStyle}>
+          <DataTable caption="納品の一覧" captionHidden>
             <thead>
               <tr>
-                <th style={thStyle}>種別</th>
-                <th style={thStyle}>発注</th>
-                <th style={thStyle}>数量／単位</th>
-                <th style={thStyle}>連番</th>
-                <th style={thStyle}>納品日</th>
-                <th style={thStyle}>確認状態</th>
-                <th style={thStyle}>引用した証跡</th>
-                {showConfirmColumn ? <th style={thStyle}>確認を記録する</th> : null}
+                <th scope="col" style={thStyle}>種別</th>
+                <th scope="col" style={thStyle}>発注</th>
+                <th scope="col" style={thStyle}>数量／単位</th>
+                <th scope="col" style={thStyle}>連番</th>
+                <th scope="col" style={thStyle}>納品日</th>
+                <th scope="col" style={thStyle}>確認状態</th>
+                <th scope="col" style={thStyle}>引用した証跡</th>
+                {showConfirmColumn ? <th scope="col" style={thStyle}>確認を記録する</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -214,13 +212,15 @@ export default async function DeliveriesPage() {
                   <td style={tdStyle}>{hiddenOr(delivery, `${delivery.deliveredQuantity} ${delivery.unit}`)}</td>
                   <td style={tdStyle}>{hiddenOr(delivery, delivery.deliverySequence === null ? '未記録' : String(delivery.deliverySequence))}</td>
                   <td style={tdStyle}>{hiddenOr(delivery, delivery.deliveredAt ? formatTimestamp(delivery.deliveredAt) : '未記録')}</td>
-                  <td style={tdStyle}>
+                  <td style={tdStyle} className="status-cell">
                     {delivery.confirmationHidden ? (
-                      HIDDEN_BY_ROLE_LABEL
+                      <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} />
                     ) : (
-                      <span style={{ ...badgeStyle, borderColor: delivery.confirmed ? 'var(--ok)' : 'var(--warn)', color: delivery.confirmed ? 'var(--ok)' : 'var(--warn)' }}>
-                        {confirmationLabel(delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION')}
-                      </span>
+                      <StatusBadge
+                        domain="deliveryConfirmation"
+                        status={delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION'}
+                        label={confirmationLabel(delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION')}
+                      />
                     )}
                   </td>
                   <td style={tdStyle}>
@@ -237,13 +237,18 @@ export default async function DeliveriesPage() {
                     {delivery.confirmedAt ? <div>確認 {formatTimestamp(delivery.confirmedAt)}</div> : null}
                   </td>
                   {showConfirmColumn ? (
-                    <td style={{ ...tdStyle, minWidth: 260 }}>
+                    <td style={{ ...tdStyle, minWidth: 'min(260px, 80vw)' }}>
                       {delivery.confirmed ? (
                         <span style={noteStyle}>確認済みです（確認は1回だけ記録できます）。</span>
                       ) : (
                         <ActionForm
                           action={confirmDeliveryAction}
                           submitLabel="納品を確認する"
+                          confirm={{
+                            title: '納品を確認済みにしますか？',
+                            body: `${orderText(delivery)} の納品を、選んだ受領証跡を引用して確認済みにします。確認は1回だけ記録でき、取り消せません。`,
+                            summaryFields: ['evidenceDocumentVersionId', 'note']
+                          }}
                           hint={
                             acceptanceChoices(delivery).length === 0
                               ? '確認済みの受領証跡がまだありません。文書画面でアップロードして確認を記録してください。'
@@ -267,7 +272,7 @@ export default async function DeliveriesPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </DataTable>
         )}
       </div>
 

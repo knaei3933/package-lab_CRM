@@ -1,0 +1,292 @@
+/*
+ * UI batch C (part 1): form feedback, locale-free date entry and the confirm
+ * dialog. Imported by components/form-feedback.tsx so every form shell loads
+ * it. Only batch A tokens (globals.css); no new colours or fonts. Every state
+ * carries a text mark (✕ / ✓ / 「入力エラー」), never colour alone.
+ */
+
+/* ---- form shell ---------------------------------------------------------- */
+
+.form-shell button {
+  min-height: 36px;
+  white-space: normal;
+}
+
+/* Controls never push the page wider than the viewport (390px included). */
+.form-shell input:not([type='checkbox']):not([type='radio']),
+.form-shell select,
+.form-shell textarea {
+  max-width: 100%;
+}
+
+/* A field: the <label> wraps only the caption and the control (its accessible
+   name); the error and the hint follow outside it and are linked through
+   aria-describedby. align-content: start keeps every control at its natural
+   height when a flex row stretches the field to a taller neighbour (e.g. a
+   field with a hint line next to one without). */
+.field {
+  align-content: start;
+}
+
+.field-label {
+  display: grid;
+  gap: inherit;
+  min-width: 0;
+}
+
+/* Pending submit: the button stays focusable (aria-disabled, not disabled) so
+   focus is not dropped to <body>; the shell ignores submits meanwhile. */
+.form-shell button[aria-disabled='true'],
+.login-form button[aria-disabled='true'] {
+  cursor: progress;
+}
+
+.form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+}
+
+/* ---- field errors ---------------------------------------------------------- */
+
+/* Inline control styles set the border shorthand, so the invalid edge needs
+   !important on the colour; the 1px inset ring makes it read as 2px without
+   shifting the layout. */
+.form-shell [aria-invalid='true'],
+.login-form [aria-invalid='true'] {
+  border-color: var(--danger) !important;
+  box-shadow: 0 0 0 1px var(--danger);
+}
+
+.field-error {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  margin: 2px 0 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--danger);
+}
+
+.field-error-mark,
+.form-result-mark {
+  flex: none;
+  font-weight: 700;
+}
+
+.form-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- summary and result lines (always present live regions) --------------- */
+
+/* Empty regions stay in the DOM and the accessibility tree (no display:none)
+   so screen readers keep watching them, but they take no space: out of the
+   flex flow, so the button row has no empty gap slots. */
+.form-summary:empty,
+.form-result:empty,
+.form-live:empty {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.form-summary {
+  margin: 0;
+  padding: 2px var(--space-2);
+  border-left: 3px solid var(--danger);
+  background: var(--danger-tint);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--danger);
+}
+
+.form-result {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.form-result--error {
+  color: var(--danger);
+}
+
+.form-result--ok {
+  color: var(--ok);
+}
+
+/* Informational notices (EML auto-fill, subject insertion): not errors. */
+.form-result--note {
+  color: var(--ink-sub);
+}
+
+.form-result-hint {
+  color: var(--ink);
+}
+
+/* ---- date + time text inputs --------------------------------------------- */
+
+.datetime-field {
+  min-width: min(220px, 100%);
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.datetime-field > legend {
+  padding: 0;
+  margin-bottom: 2px;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.datetime-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.datetime-part {
+  display: grid;
+  gap: 2px;
+  font-size: var(--text-xs);
+  color: var(--ink-sub);
+}
+
+.datetime-part input {
+  font-variant-numeric: tabular-nums;
+}
+
+.datetime-part--date input {
+  width: 9.5em;
+}
+
+.datetime-part--time input {
+  width: 5.5em;
+}
+
+.datetime-confirm {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--ink-sub);
+  font-variant-numeric: tabular-nums;
+}
+
+.datetime-confirm:empty {
+  margin: 0;
+}
+
+.date-text-field input {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- confirm dialog: a voucher slip ---------------------------------------- */
+
+.confirm-dialog {
+  width: min(480px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-top: 3px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.confirm-dialog--danger {
+  border-top-color: var(--danger);
+}
+
+.confirm-dialog::backdrop {
+  background: color-mix(in srgb, var(--ink) 45%, transparent);
+}
+
+.confirm-dialog-body {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.confirm-dialog h2 {
+  margin: 0;
+  font-size: var(--text-md);
+  line-height: 1.5;
+}
+
+.confirm-dialog-text {
+  margin: 0;
+  font-size: var(--text-sm);
+  max-width: 60ch;
+}
+
+/* Entered values as ledger rows: label column, value column, hairline rules. */
+.confirm-dialog-summary {
+  display: grid;
+  grid-template-columns: minmax(6em, max-content) 1fr;
+  margin: 0;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.confirm-dialog-summary > div {
+  display: contents;
+}
+
+.confirm-dialog-summary dt,
+.confirm-dialog-summary dd {
+  margin: 0;
+  padding: 6px var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.confirm-dialog-summary dt {
+  color: var(--ink-sub);
+  background: var(--surface-sub);
+}
+
+.confirm-dialog-summary dd {
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.confirm-dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.confirm-dialog-actions button {
+  min-height: 36px;
+}
+
+@media (max-width: 420px) {
+  .confirm-dialog-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .confirm-dialog-summary dt {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+}

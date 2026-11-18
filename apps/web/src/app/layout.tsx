@@ -55,22 +55,15 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     <html lang="ja" suppressHydrationWarning>
       <body suppressHydrationWarning>
         <a className="skip-link" href="#main">本文へ移動</a>
-        <header style={{ borderBottom: '1px solid var(--line)', background: 'var(--surface)' }}>
-          <div style={{ maxWidth: 1100, margin: '0 auto', padding: '12px 24px', display: 'grid', gap: 10 }}>
-            <div
-              style={{
-                display: 'flex',
-                flexWrap: 'wrap',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 12
-              }}
-            >
-              <Link href="/" style={{ fontSize: 18, color: 'var(--ink)', textDecoration: 'none', fontWeight: 700 }}>
+        {/* UI batch C (2-⑥): gutters 24px → 16px under 768px (globals.css .app-*). */}
+        <header className="app-header">
+          <div className="app-header-inner">
+            <div className="app-header-top">
+              <Link href="/" className="app-brand">
                 KANEI CRM オペレーター画面（F1）
               </Link>
               {user ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, fontSize: 13 }}>
+                <div className="app-user">
                   <span>
                     {operatorName(user, rememberedName)}
                     <span style={{ color: 'var(--ink-sub)' }}>（{roleLabel(user.role)}）</span>
@@ -88,7 +81,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             ) : null}
           </div>
         </header>
-        <main id="main" tabIndex={-1} style={{ maxWidth: 1100, margin: '32px auto', padding: '0 24px 64px', display: 'grid', gap: 24 }}>
+        <main id="main" tabIndex={-1} className="app-main">
           {children}
         </main>
       </body>

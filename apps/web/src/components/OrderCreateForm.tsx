@@ -1,9 +1,21 @@
 'use client';
 
-import { useActionState, useState } from 'react';
+import { useActionState, useContext, useId, useState } from 'react';
 import type { FormAction } from './ActionForm';
+import {
+  FeedbackForm,
+  FieldError,
+  FieldFeedback,
+  FormErrorSummary,
+  FormFeedbackContext,
+  FormResult,
+  resolverFromOptions
+} from './form-feedback';
+import type { ConfirmOptions } from './form-feedback';
+import { lineField } from '../lib/form-messages';
+import { normalizeQuantityText } from '../lib/form-validation';
 import type { Choice } from '../lib/types';
-import { buttonStyle, errorMessageStyle, inputStyle, noteStyle, okMessageStyle, subtleButtonStyle } from '../lib/ui';
+import { buttonStyle, inputStyle, noteStyle, subtleButtonStyle } from '../lib/ui';
 
 interface LineRow {
   description: string;
@@ -22,6 +34,93 @@ interface OrderCreateFormProps {
    * supply chain only.
    */
   paymentTermsChoices?: Choice[];
+  /** UI batch C: optional confirmation before the order is created. */
+  confirm?: ConfirmOptions | undefined;
+  /** Appended after 「記録しました。」. */
+  successHint?: string | undefined;
+}
+
+const SUBMIT_LABEL = '発注を作成する';
+
+/** The description / quantity / unit inputs of one line, with their field errors. */
+function LineInputs({
+  index,
+  line,
+  unitChoices,
+  onChange
+}: {
+  index: number;
+  line: LineRow;
+  unitChoices: Choice[];
+  onChange: (patch: Partial<LineRow>) => void;
+}) {
+  const feedback = useContext(FormFeedbackContext);
+  const baseId = useId();
+  const parts = ['description', 'quantity', 'unit'] as const;
+  const state = Object.fromEntries(
+    parts.map((part) => {
+      const error = feedback?.errors[lineField(index, part)];
+      return [part, { error, errorId: `${baseId}${part}`, describedBy: error ? `${baseId}${part}` : undefined, invalid: error ? (true as const) : undefined }];
+    })
+  ) as Record<(typeof parts)[number], { error: string | undefined; errorId: string; describedBy: string | undefined; invalid: true | undefined }>;
+  return (
+    <>
+      <span style={{ display: 'grid', gap: 2, flex: '0 1 260px', minWidth: 'min(160px, 100%)' }}>
+        <input
+          value={line.description}
+          placeholder="説明"
+          aria-label={`明細${index + 1}の説明`}
+          required
+          onChange={(event) => onChange({ description: event.target.value })}
+          aria-describedby={state.description.describedBy}
+          aria-invalid={state.description.invalid}
+          data-feedback-name={lineField(index, 'description')}
+          style={{ ...inputStyle, width: '100%' }}
+        />
+        <FieldError id={state.description.errorId} message={state.description.error} />
+      </span>
+      <span style={{ display: 'grid', gap: 2, flex: '0 1 120px', minWidth: 96 }}>
+        <input
+          value={line.quantity}
+          placeholder="数量"
+          aria-label={`明細${index + 1}の数量`}
+          inputMode="decimal"
+          required
+          pattern="\d+(\.\d+)?"
+          onChange={(event) => onChange({ quantity: event.target.value })}
+          onBlur={(event) => {
+            const normalized = normalizeQuantityText(event.currentTarget.value);
+            if (normalized !== line.quantity) onChange({ quantity: normalized });
+          }}
+          aria-describedby={state.quantity.describedBy}
+          aria-invalid={state.quantity.invalid}
+          data-feedback-name={lineField(index, 'quantity')}
+          data-quantity-text=""
+          data-feedback-format="正の数（例 1000、12.5）"
+          style={{ ...inputStyle, width: '100%' }}
+        />
+        <FieldError id={state.quantity.errorId} message={state.quantity.error} />
+      </span>
+      <span style={{ display: 'grid', gap: 2, flex: '0 1 140px', minWidth: 96 }}>
+        <select
+          value={line.unit}
+          aria-label={`明細${index + 1}の単位`}
+          onChange={(event) => onChange({ unit: event.target.value })}
+          aria-describedby={state.unit.describedBy}
+          aria-invalid={state.unit.invalid}
+          data-feedback-name={lineField(index, 'unit')}
+          style={{ ...inputStyle, width: '100%' }}
+        >
+          {unitChoices.map((choice) => (
+            <option key={choice.value} value={choice.value}>
+              {choice.label}
+            </option>
+          ))}
+        </select>
+        <FieldError id={state.unit.errorId} message={state.unit.error} />
+      </span>
+    </>
+  );
 }
 
 /**
@@ -35,7 +134,9 @@ export function OrderCreateForm({
   unitChoices,
   orderKind,
   sevenPurchaseOrderChoices,
-  paymentTermsChoices
+  paymentTermsChoices,
+  confirm,
+  successHint
 }: OrderCreateFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   const [lines, setLines] = useState<LineRow[]>([{ description: '', quantity: '', unit: unitChoices[0]?.value ?? '' }]);
@@ -43,7 +144,8 @@ export function OrderCreateForm({
   const [sevenPurchaseOrderId, setSevenPurchaseOrderId] = useState('');
 
   const serialized = JSON.stringify(
-    lines.map((line) => ({ description: line.description, orderedQuantity: line.quantity, unit: line.unit }))
+    // A quantity typed with spaces or full-width digits still posts ASCII digits.
+    lines.map((line) => ({ description: line.description, orderedQuantity: normalizeQuantityText(line.quantity), unit: line.unit }))
   );
 
   function updateLine(index: number, patch: Partial<LineRow>): void {
@@ -51,30 +153,47 @@ export function OrderCreateForm({
   }
 
   return (
-    <form action={formAction} style={{ display: 'grid', gap: 10 }}>
+    <FeedbackForm
+      action={formAction}
+      state={state}
+      pending={pending}
+      confirm={resolverFromOptions(confirm, SUBMIT_LABEL)}
+      dialogDefaults={confirm ? { options: confirm, confirmLabel: confirm.confirmLabel ?? SUBMIT_LABEL } : undefined}
+      style={{ display: 'grid', gap: 10 }}
+    >
       <input type="hidden" readOnly name="lines" value={serialized} />
-      <label style={{ display: 'grid', gap: 4 }}>
-        <span style={{ fontSize: 13 }}>
-          発注コード<span style={{ color: 'var(--danger)' }}>（必須）</span>
-        </span>
-        <input
-          name="code"
-          value={code}
-          required
-          onChange={(event) => setCode(event.target.value)}
-          placeholder={orderKind === 'film' ? 'FSO-...' : 'FLO-...'}
-          style={{ ...inputStyle, width: 280 }}
-        />
-      </label>
+      <FieldFeedback name="code">
+        {(codeFeedback) => (
+          <div className="field" style={{ display: 'grid', gap: 4, maxWidth: '100%' }}>
+            <label className="field-label">
+              <span style={{ fontSize: 13 }}>
+                発注コード<span style={{ color: 'var(--danger)' }}>（必須）</span>
+              </span>
+              <input
+                name="code"
+                value={code}
+                required
+                onChange={(event) => setCode(event.target.value)}
+                placeholder={orderKind === 'film' ? 'FSO-...' : 'FLO-...'}
+                aria-describedby={codeFeedback.describedBy}
+                aria-invalid={codeFeedback.invalid}
+                data-feedback-label="発注コード"
+                style={{ ...inputStyle, width: '100%', maxWidth: 280 }}
+              />
+            </label>
+            <FieldError id={codeFeedback.errorId} message={codeFeedback.error} />
+          </div>
+        )}
+      </FieldFeedback>
 
       {sevenPurchaseOrderChoices && sevenPurchaseOrderChoices.length > 0 ? (
-        <label style={{ display: 'grid', gap: 4 }}>
+        <label className="field" style={{ display: 'grid', gap: 4, maxWidth: '100%' }}>
           <span style={{ fontSize: 13 }}>セブン化学発注書の紐付け（任意）</span>
           <select
             name="sevenPurchaseOrderId"
             value={sevenPurchaseOrderId}
             onChange={(event) => setSevenPurchaseOrderId(event.target.value)}
-            style={{ ...inputStyle, width: 340 }}
+            style={{ ...inputStyle, width: '100%', maxWidth: 340 }}
           >
             <option value="">紐付けない</option>
             {sevenPurchaseOrderChoices.map((choice) => (
@@ -87,56 +206,44 @@ export function OrderCreateForm({
       ) : null}
 
       {paymentTermsChoices && paymentTermsChoices.length > 0 ? (
-        <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>
-            決済条件（G6）<span style={{ color: 'var(--danger)' }}>（必須）</span>
-          </span>
-          <select name="paymentTerms" defaultValue="undetermined" style={{ ...inputStyle, width: 340 }}>
-            {paymentTermsChoices.map((choice) => (
-              <option key={choice.value} value={choice.value}>
-                {choice.label}
-              </option>
-            ))}
-          </select>
-          <span style={noteStyle}>
-            発注が下書きの間だけ変更できます。ここでの記録は入金確認ではありません —
-            入金の確認は別の手動ステップです。
-          </span>
-        </label>
+        <FieldFeedback name="paymentTerms" hasHint>
+          {(paymentFeedback) => (
+            <div className="field" style={{ display: 'grid', gap: 4, maxWidth: '100%' }}>
+              <label className="field-label">
+                <span style={{ fontSize: 13 }}>
+                  決済条件（G6）<span style={{ color: 'var(--danger)' }}>（必須）</span>
+                </span>
+                <select
+                  name="paymentTerms"
+                  defaultValue="undetermined"
+                  aria-describedby={paymentFeedback.describedBy}
+                  aria-invalid={paymentFeedback.invalid}
+                  data-feedback-label="決済条件"
+                  style={{ ...inputStyle, width: '100%', maxWidth: 340 }}
+                >
+                  {paymentTermsChoices.map((choice) => (
+                    <option key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <FieldError id={paymentFeedback.errorId} message={paymentFeedback.error} />
+              <span id={paymentFeedback.hintId} style={noteStyle}>
+                発注が下書きの間だけ変更できます。ここでの記録は入金確認ではありません —
+                入金の確認は別の手動ステップです。
+              </span>
+            </div>
+          )}
+        </FieldFeedback>
       ) : null}
 
       <div style={{ display: 'grid', gap: 8 }}>
         <span style={{ fontSize: 13 }}>明細（説明・数量・単位）</span>
         {lines.map((line, index) => (
-          <div key={index} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8 }}>
+          <div key={index} style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', gap: 8 }}>
             <span style={noteStyle}>明細{index + 1}</span>
-            <input
-              value={line.description}
-              placeholder="説明"
-              aria-label={`明細${index + 1}の説明`}
-              onChange={(event) => updateLine(index, { description: event.target.value })}
-              style={{ ...inputStyle, width: 260 }}
-            />
-            <input
-              value={line.quantity}
-              placeholder="数量"
-              aria-label={`明細${index + 1}の数量`}
-              inputMode="decimal"
-              onChange={(event) => updateLine(index, { quantity: event.target.value })}
-              style={{ ...inputStyle, width: 120 }}
-            />
-            <select
-              value={line.unit}
-              aria-label={`明細${index + 1}の単位`}
-              onChange={(event) => updateLine(index, { unit: event.target.value })}
-              style={{ ...inputStyle, width: 140 }}
-            >
-              {unitChoices.map((choice) => (
-                <option key={choice.value} value={choice.value}>
-                  {choice.label}
-                </option>
-              ))}
-            </select>
+            <LineInputs index={index} line={line} unitChoices={unitChoices} onChange={(patch) => updateLine(index, patch)} />
             {lines.length > 1 ? (
               <button
                 type="button"
@@ -159,12 +266,13 @@ export function OrderCreateForm({
         </div>
       </div>
 
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button type="submit" disabled={pending} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
-          {pending ? '作成中…' : '発注を作成する'}
+      <div className="form-actions">
+        <button type="submit" aria-disabled={pending || undefined} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
+          {pending ? '作成中…' : SUBMIT_LABEL}
         </button>
-        {state ? <span style={state.ok ? okMessageStyle : errorMessageStyle}>{state.message}</span> : null}
+        <FormErrorSummary />
+        <FormResult state={state} successHint={successHint} />
       </div>
-    </form>
+    </FeedbackForm>
   );
 }

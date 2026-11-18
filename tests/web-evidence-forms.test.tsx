@@ -42,7 +42,7 @@ describe('evidence form accessibility and G3 subject action', () => {
     );
     const helpCount = html.match(/Message-IDはシステムが自動抽出します/g)?.length ?? 0;
     expect(helpCount).toBe(1);
-    expect(html.match(/aria-describedby=/g)?.length).toBe(2);
+    expect(html.match(/<(?:select|input|textarea)\b[^>]*aria-describedby=/g)?.length).toBe(2);
     expect(html).toContain('value="&lt;approval@example.test&gt;"');
   });
 });

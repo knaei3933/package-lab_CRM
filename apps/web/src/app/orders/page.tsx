@@ -4,7 +4,9 @@ import { OrderCreateForm } from '../../components/OrderCreateForm';
 import { ProjectProgress } from '../../components/ProjectProgress';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
 import { TechDetails } from '../../components/TechDetails';
-import { CheckboxField, SelectField, TextField } from '../../components/fields';
+import { DataTable } from '../../components/DataTable';
+import { StatusBadge } from '../../components/StatusBadge';
+import { CheckboxField, DateTextField, SelectField, TextField } from '../../components/fields';
 import {
   assumeFilmReceiptAction,
   createFilmSupplyOrderAction,
@@ -29,14 +31,7 @@ import {
 import type { FilmSupplyOrderView } from '../../lib/project-data';
 import { MAKER_CHAIN_NOTICE, transitionChoicesFor } from '../../lib/transitions';
 import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
-import {
-  cardStyle,
-  infoBoxStyle,
-  noteStyle,
-  tableStyle,
-  tdStyle,
-  thStyle
-} from '../../lib/ui';
+import { cardStyle, infoBoxStyle, noteStyle, tdStyle, thStyle } from '../../lib/ui';
 import { formatTimestamp, unitChoices, unitLabel, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary';
 
 export const dynamic = 'force-dynamic';
@@ -126,16 +121,16 @@ export default async function OrdersPage() {
         {workspace.filmOrders.length === 0 ? (
           <p style={noteStyle}>フィルム発注はまだありません。</p>
         ) : (
-          <table style={tableStyle}>
+          <DataTable caption="フィルム発注の一覧" captionHidden>
             <thead>
               <tr>
-                <th style={thStyle}>発注コード</th>
-                <th style={thStyle}>状態</th>
-                <th style={thStyle}>セブン発注書</th>
-                <th style={thStyle}>明細</th>
-                <th style={thStyle}>作成</th>
-                <th style={thStyle}>更新</th>
-                {showOrderOperations ? <th style={thStyle}>操作</th> : null}
+                <th scope="col" style={thStyle}>発注コード</th>
+                <th scope="col" style={thStyle}>状態</th>
+                <th scope="col" style={thStyle}>セブン発注書</th>
+                <th scope="col" style={thStyle}>明細</th>
+                <th scope="col" style={thStyle}>作成</th>
+                <th scope="col" style={thStyle}>更新</th>
+                {showOrderOperations ? <th scope="col" style={thStyle}>操作</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -147,7 +142,11 @@ export default async function OrdersPage() {
                       {order.code}
                       <TechDetails context="ID">{order.id}</TechDetails>
                     </td>
-                    <td style={tdStyle}>{status === null ? HIDDEN_BY_ROLE_LABEL : stateLabel(status)}</td>
+                    <td style={tdStyle} className="status-cell">
+                      {status === null
+                        ? <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} />
+                        : <StatusBadge domain="filmOrder" status={status} label={stateLabel(status)} />}
+                    </td>
                     <td style={tdStyle}>
                       {order.sevenPurchaseOrderId
                         ? poLabelById.get(order.sevenPurchaseOrderId) ?? '紐付けあり'
@@ -161,7 +160,7 @@ export default async function OrdersPage() {
                     <td style={tdStyle}>{formatTimestamp(order.createdAt)}</td>
                     <td style={tdStyle}>{formatTimestamp(order.updatedAt)}</td>
                     {showOrderOperations ? (
-                      <td style={{ ...tdStyle, minWidth: 260 }}>
+                      <td style={{ ...tdStyle, minWidth: 'min(260px, 80vw)' }}>
                         {status === null ? null : (
                           <TransitionCell order={order} status={status} stateLabel={stateLabel} />
                         )}
@@ -178,6 +177,11 @@ export default async function OrdersPage() {
                                 action={assumeFilmReceiptAction}
                                 submitLabel="受領確認を記録する"
                                 hint={`証跡の代わりに問題なしとみなす記録です。メモは必須で、状態は「${stateLabel('FILM_RECEIPT_ASSUMED_NO_ISSUE')}」になります。`}
+                                confirm={{
+                                  title: '受領確認（問題なしとみなす）を記録しますか？',
+                                  body: `発注 ${order.code} を、証跡なしで問題なしとみなした記録として残し、状態を「${stateLabel('FILM_RECEIPT_ASSUMED_NO_ISSUE')}」にします。この状態は最終の状態で、記録は取り消せません。`,
+                                  summaryFields: ['note', 'acknowledgeNoEvidence']
+                                }}
                               >
                                 <input type="hidden" readOnly name="orderId" value={order.id} />
                                 <TextField name="note" label="確認メモ" required width={280} />
@@ -192,7 +196,7 @@ export default async function OrdersPage() {
                 );
               })}
             </tbody>
-          </table>
+          </DataTable>
         )}
       </div>
 
@@ -221,12 +225,12 @@ export default async function OrdersPage() {
         {workspace.fillingOrders.length === 0 ? (
           <p style={noteStyle}>充填発注はまだありません。</p>
         ) : (
-          <table style={tableStyle}>
+          <DataTable caption="充填発注の一覧" captionHidden>
             <thead>
               <tr>
-                <th style={thStyle}>発注コード</th>
-                <th style={thStyle}>明細</th>
-                <th style={thStyle}>作成</th>
+                <th scope="col" style={thStyle}>発注コード</th>
+                <th scope="col" style={thStyle}>明細</th>
+                <th scope="col" style={thStyle}>作成</th>
               </tr>
             </thead>
             <tbody>
@@ -250,7 +254,7 @@ export default async function OrdersPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </DataTable>
         )}
         <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '16px 0' }} />
         <RoleGate role={role} operation="filling_order:create" label="充填発注の作成">
@@ -288,6 +292,11 @@ function TransitionCell({
           action={transitionFilmSupplyOrderAction}
           submitLabel="状態を進める"
           hint="条件がそろっていない場合は、理由がここに表示されます。"
+          confirm={{
+            title: '発注の状態を変更しますか？',
+            body: `状態を変更します。発注 ${order.code} の状態を、選んだ「進める先の状態」に変更し、変更は履歴に記録されます（記録は消えません）。`,
+            summaryFields: ['to']
+          }}
         >
           <input type="hidden" readOnly name="orderId" value={order.id} />
           <SelectField
@@ -380,13 +389,13 @@ function SevenPurchaseOrderSection({
       {orders.length === 0 ? (
         <p style={noteStyle}>セブン化学発注書はまだありません。</p>
       ) : (
-        <table style={tableStyle}>
+        <DataTable caption="セブン化学発注書の一覧" captionHidden>
           <thead>
             <tr>
-              <th style={thStyle}>発注番号</th>
-              <th style={thStyle}>公式登録</th>
-              <th style={thStyle}>真性確認</th>
-              {showOperations ? <th style={thStyle}>操作</th> : null}
+              <th scope="col" style={thStyle}>発注番号</th>
+              <th scope="col" style={thStyle}>公式登録</th>
+              <th scope="col" style={thStyle}>真性確認</th>
+              {showOperations ? <th scope="col" style={thStyle}>操作</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -399,23 +408,29 @@ function SevenPurchaseOrderSection({
                 <td style={tdStyle}>
                   {officialRegistrationText(po)}
                 </td>
-                <td style={tdStyle}>
+                <td style={tdStyle} className="status-cell">
                   {po.verificationStatus
-                    ? verificationLabel[po.verificationStatus] ?? po.verificationStatus
+                    ? (
+                      <StatusBadge
+                        domain="verification"
+                        status={po.verificationStatus}
+                        label={verificationLabel[po.verificationStatus] ?? po.verificationStatus}
+                      />
+                    )
                     : po.verificationHidden
-                      ? HIDDEN_BY_ROLE_LABEL
-                      : '未記録'}
+                      ? <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} />
+                      : <StatusBadge tone="waiting" label="未記録" />}
                   {po.reviewPending ? <div style={noteStyle}>確認中（不一致レビュー）</div> : null}
                 </td>
                 {showOperations ? (
-                  <td style={{ ...tdStyle, minWidth: 280 }}>
+                  <td style={{ ...tdStyle, minWidth: 'min(280px, 80vw)' }}>
                     {po.officiallyRegistered ? null : (
                       <RoleGate role={role} operation="seven_po:register" label="公式登録日の記録">
                         <details style={{ marginBottom: 8 }}>
                           <summary style={{ fontSize: 13, cursor: 'pointer' }}>公式登録日を記録する</summary>
                           <ActionForm action={registerSevenPurchaseOrderAction} submitLabel="公式登録する">
                             <input type="hidden" readOnly name="poId" value={po.id} />
-                            <TextField name="officialRegisteredAt" label="公式登録日" type="date" required width={200} />
+                            <DateTextField name="officialRegisteredAt" label="公式登録日" required width={200} />
                           </ActionForm>
                         </details>
                       </RoleGate>
@@ -435,7 +450,7 @@ function SevenPurchaseOrderSection({
                             <CheckboxField name="documentNumberRecorded" label="文書番号を確認した" />
                             <TextField name="documentNumber" label="文書番号" width={160} />
                             <CheckboxField name="issueDateRecorded" label="発行日を確認した" />
-                            <TextField name="issueDate" label="発行日" type="date" width={170} />
+                            <DateTextField name="issueDate" label="発行日" width={170} />
                             <CheckboxField name="sendingChannelRecorded" label="送信経路を確認した" />
                             <TextField name="sendingChannel" label="送信経路" width={180} />
                             <CheckboxField name="pastTransactionCompared" label="過去取引と突合した" />
@@ -457,7 +472,7 @@ function SevenPurchaseOrderSection({
               </tr>
             ))}
           </tbody>
-        </table>
+        </DataTable>
       )}
 
       <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '16px 0' }} />
@@ -470,7 +485,7 @@ function SevenPurchaseOrderSection({
         >
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
             <TextField name="poNumber" label="発注番号" required width={240} />
-            <TextField name="officialRegisteredAt" label="公式登録日（任意）" type="date" width={200} />
+            <DateTextField name="officialRegisteredAt" label="公式登録日（任意）" width={200} />
           </div>
         </ActionForm>
       </RoleGate>

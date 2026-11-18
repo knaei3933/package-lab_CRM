@@ -2,10 +2,14 @@
 
 import { useActionState } from 'react';
 import type { ReactNode } from 'react';
+import { dangerButtonStyle } from './ConfirmDialog';
+import { FeedbackForm, FormErrorSummary, FormResult, resolverFromOptions } from './form-feedback';
+import type { ConfirmOptions, FormTone } from './form-feedback';
 import type { ActionState } from '../lib/types';
-import { buttonStyle, errorMessageStyle, noteStyle, okMessageStyle } from '../lib/ui';
+import { buttonStyle, noteStyle } from '../lib/ui';
 
 export type FormAction = (state: ActionState | null, formData: FormData) => Promise<ActionState>;
+export type { ConfirmOptions, FormTone } from './form-feedback';
 
 interface ActionFormProps {
   action: FormAction;
@@ -13,27 +17,42 @@ interface ActionFormProps {
   children?: ReactNode;
   /** Explains what the form records, shown under the fields. */
   hint?: string | undefined;
+  /** UI batch C (1-③): ask before the action runs (serializable; passed from server pages). */
+  confirm?: ConfirmOptions | undefined;
+  /** The submit button's colour: danger for cancellations and similar. */
+  tone?: FormTone | undefined;
+  /** Appended after 「記録しました。」, e.g. 「次の手順: …」. */
+  successHint?: string | undefined;
 }
 
 /**
  * One form + one server action + one status line. Every mutation screen uses
  * this shell, so the API's Japanese message is always visible next to the
- * button that produced it.
+ * button that produced it. UI batch C: field-level errors, a result line that
+ * is always a live region, and an optional confirm dialog (form-feedback).
  */
-export function ActionForm({ action, submitLabel, children, hint }: ActionFormProps) {
+export function ActionForm({ action, submitLabel, children, hint, confirm, tone, successHint }: ActionFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
+  const style = tone === 'danger' ? dangerButtonStyle : buttonStyle;
   return (
-    <form action={formAction} style={{ display: 'grid', gap: 10 }}>
+    <FeedbackForm
+      action={formAction}
+      state={state}
+      pending={pending}
+      confirm={resolverFromOptions(confirm, submitLabel)}
+      dialogDefaults={confirm ? { options: confirm, confirmLabel: confirm.confirmLabel ?? submitLabel } : undefined}
+      style={{ display: 'grid', gap: 10 }}
+    >
       {children}
       {hint ? <p style={noteStyle}>{hint}</p> : null}
-      <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
-        <button type="submit" disabled={pending} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
+      <div className="form-actions">
+        {/* aria-disabled (not disabled) while pending: focus stays on the button after a confirm. */}
+        <button type="submit" aria-disabled={pending || undefined} style={{ ...style, opacity: pending ? 0.6 : 1 }}>
           {pending ? '送信中…' : submitLabel}
         </button>
-        {state ? (
-          <span style={state.ok ? okMessageStyle : errorMessageStyle}>{state.message}</span>
-        ) : null}
+        <FormErrorSummary />
+        <FormResult state={state} successHint={successHint} />
       </div>
-    </form>
+    </FeedbackForm>
   );
 }

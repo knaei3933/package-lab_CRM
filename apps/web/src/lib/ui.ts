@@ -7,7 +7,8 @@
 export const cardStyle = {
   border: '1px solid var(--line)',
   borderRadius: 'var(--radius)',
-  padding: 'var(--space-4)',
+  // UI batch C (2-⑥): narrower under 768px (globals.css --card-pad).
+  padding: 'var(--card-pad)',
   background: 'var(--surface)'
 } as const;
 
@@ -76,11 +77,3 @@ export const infoBoxStyle = {
   fontSize: 'var(--text-sm)'
 } as const;
 export const monoStyle = { fontFamily: 'var(--font-mono)', fontSize: 'var(--text-xs)', color: 'var(--ink-sub)' } as const;
-export const badgeStyle = {
-  display: 'inline-block',
-  padding: '2px 8px',
-  borderRadius: 999,
-  border: '1px solid var(--line-strong)',
-  fontSize: 'var(--text-xs)',
-  whiteSpace: 'nowrap' as const
-} as const;

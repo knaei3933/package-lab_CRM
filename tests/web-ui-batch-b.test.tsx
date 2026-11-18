@@ -1111,8 +1111,9 @@ describe('② ProjectPicker', () => {
     expect(source).toMatch(/if \(!intent\.keyDown\(event\.key\)\) return;/);
     expect(source).toMatch(/onPointerDown=\{[^}]*intent\.pointerDown\(event\.timeStamp\)/);
     expect(source).toMatch(/onBlur=\{\(\) => intent\.blur\(\)\}/);
-    expect(source).toMatch(/onSubmit=\{\(\) => intent\.submitted\(\)\}/);
-    expect(source).toMatch(/if \(intent\.settled\(state\)\) document\.getElementById\(MAIN_REGION_ID\)\?\.focus\(\)/);
+    // UI batch C (review M3): a submit while a switch runs is dropped (the button is aria-disabled, not disabled).
+    expect(source).toMatch(/onSubmit=\{\(event\) => \{[\s\S]*?if \(pending\) \{\s*event\.preventDefault\(\);\s*return;\s*\}\s*intent\.submitted\(\);/);
+    expect(source).toMatch(/if \(intent\.settled\(state\)\) document\.getElementById\(MAIN_REGION_ID\)\?\.focus\(\{ preventScroll: true \}\)/);
     expect(source).not.toMatch(/pointerChoice/);
   });
 

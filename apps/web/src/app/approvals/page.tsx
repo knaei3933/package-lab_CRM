@@ -4,6 +4,8 @@ import { ApprovalDecisionForm } from '../../components/ApprovalDecisionForm';
 import { OffsetDateTimeField } from '../../components/OffsetDateTimeField';
 import { ProjectProgress } from '../../components/ProjectProgress';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
+import { DataTable } from '../../components/DataTable';
+import { StatusBadge } from '../../components/StatusBadge';
 import { TechDetails } from '../../components/TechDetails';
 import { SelectField, TextField } from '../../components/fields';
 import {
@@ -28,7 +30,7 @@ import type {
   DesignApprovalGateView,
   PendingManualVerificationView
 } from '../../lib/project-data';
-import { badgeStyle, cardStyle, infoBoxStyle, noteStyle, tableStyle, tdStyle, thStyle } from '../../lib/ui';
+import { cardStyle, infoBoxStyle, noteStyle, tdStyle, thStyle } from '../../lib/ui';
 import {
   APPROVAL_DECISION_LABELS,
   EVIDENCE_SOURCE_LABELS,
@@ -167,14 +169,14 @@ export default async function ApprovalsPage() {
               </p>
 
               {gate ? (
-                <table style={tableStyle}>
+                <DataTable caption={`${orderCode(orderId)} のデザインごとの承認状況`}>
                   <thead>
                     <tr>
-                      <th style={thStyle}>デザインキー</th>
-                      <th style={thStyle}>現在の版</th>
-                      <th style={thStyle}>顧客の承認</th>
-                      <th style={thStyle}>セブン化学の承認</th>
-                      <th style={thStyle}>ダブル承認</th>
+                      <th scope="col" style={thStyle}>デザインキー</th>
+                      <th scope="col" style={thStyle}>現在の版</th>
+                      <th scope="col" style={thStyle}>顧客の承認</th>
+                      <th scope="col" style={thStyle}>セブン化学の承認</th>
+                      <th scope="col" style={thStyle}>ダブル承認</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -184,11 +186,15 @@ export default async function ApprovalsPage() {
                         <td style={tdStyle}>版{design.currentRevisionNo}</td>
                         <td style={tdStyle}>{organizationStateText(design.customer)}</td>
                         <td style={tdStyle}>{organizationStateText(design.seven)}</td>
-                        <td style={tdStyle}>{design.dualApproved ? '済み（校了）' : '未達'}</td>
+                        <td style={tdStyle} className="status-cell">
+                          {design.dualApproved
+                            ? <StatusBadge tone="done" label="済み（校了）" />
+                            : <StatusBadge tone="waiting" label="未達" />}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
-                </table>
+                </DataTable>
               ) : (
                 <div style={infoBoxStyle}>
                   この発注の承認の状況を取得できませんでした。
@@ -291,17 +297,17 @@ export default async function ApprovalsPage() {
         {workspace.approvalEvents.length === 0 ? (
           <p style={noteStyle}>記録された承認はまだありません。</p>
         ) : (
-          <table style={tableStyle}>
+          <DataTable caption="承認の記録履歴" captionHidden>
             <thead>
               <tr>
-                <th style={thStyle}>デザイン</th>
-                <th style={thStyle}>版</th>
-                <th style={thStyle}>組織</th>
-                <th style={thStyle}>決定</th>
-                <th style={thStyle}>入手経路</th>
-                <th style={thStyle}>引用した証跡バージョン</th>
-                <th style={thStyle}>承認日時</th>
-                <th style={thStyle}>記録</th>
+                <th scope="col" style={thStyle}>デザイン</th>
+                <th scope="col" style={thStyle}>版</th>
+                <th scope="col" style={thStyle}>組織</th>
+                <th scope="col" style={thStyle}>決定</th>
+                <th scope="col" style={thStyle}>入手経路</th>
+                <th scope="col" style={thStyle}>引用した証跡バージョン</th>
+                <th scope="col" style={thStyle}>承認日時</th>
+                <th scope="col" style={thStyle}>記録</th>
               </tr>
             </thead>
             <tbody>
@@ -340,7 +346,7 @@ export default async function ApprovalsPage() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </DataTable>
         )}
       </div>
     </section>
@@ -400,7 +406,7 @@ function PendingVerificationSection({
       {pending.map((entry) => (
         <div key={entry.approvalEventId} style={{ marginBottom: 16 }}>
           <div style={{ ...infoBoxStyle, borderColor: 'var(--warn)', color: 'var(--warn)', background: 'var(--warn-tint)' }}>
-            <span style={badgeStyle}>手動確認待ち</span>{' '}
+            <StatusBadge tone="waiting" label="手動確認待ち" />{' '}
             <strong>{organizationText(entry.organization)}</strong> の承認（デザイン {entry.designKey}／版
             {entry.revisionNo}）は手動確認待ちです。
             <div style={noteStyle}>
@@ -425,6 +431,11 @@ function PendingVerificationSection({
               action={verifyEvidenceManualAction}
               submitLabel="手動確認を記録する"
               hint="確認の記録は新しい追記型イベントです。元の承認イベントとその監査記録は書き換えられません。"
+              confirm={{
+                title: '承認証跡の手動確認を記録しますか？',
+                body: `${organizationText(entry.organization)} の承認（デザイン ${entry.designKey}／版${entry.revisionNo}）に、選んだ結果を記録します。「確認」は二重承認に算入されます。記録は追記型で、あとから書き換えられません。`,
+                summaryFields: ['result', 'verifierName', 'verifiedAt', 'reasonNote']
+              }}
             >
               <input type="hidden" readOnly name="approvalEventId" value={entry.approvalEventId} />
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>

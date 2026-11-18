@@ -2,9 +2,10 @@
 
 import { useActionState, useState } from 'react';
 import type { FormAction } from './ActionForm';
+import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, normalizeQuantityInput } from './form-feedback';
 import { OffsetDateTimeField } from './OffsetDateTimeField';
 import type { Choice } from '../lib/types';
-import { buttonStyle, errorMessageStyle, inputStyle, noteStyle, okMessageStyle } from '../lib/ui';
+import { buttonStyle, inputStyle, noteStyle } from '../lib/ui';
 
 export interface DeliveryOrderOption {
   id: string;
@@ -17,14 +18,22 @@ interface DeliveryRecordFormProps {
   kind: 'film' | 'filling';
   orders: DeliveryOrderOption[];
   unitChoices: Choice[];
+  /** Appended after 「記録しました。」. */
+  successHint?: string | undefined;
 }
+
+/** UI batch C (1-④): the old fixed width becomes the flex basis; the control fills it up to that width. */
+const fieldLabel = (basis: number) => ({ display: 'grid', gap: 4, maxWidth: '100%', flex: `0 1 ${basis}px` }) as const;
+/** UI batch C (review L5): the label wraps the caption + control; the error sits after it. */
+const labelOnly = { display: 'grid', gap: 4 } as const;
+const control = (max: number) => ({ ...inputStyle, width: '100%', maxWidth: max });
 
 /**
  * Criterion 6 (recording side): a delivery row has to exist before it can be
  * confirmed, so the confirmation screen also records deliveries. The line
  * select follows the selected order.
  */
-export function DeliveryRecordForm({ action, kind, orders, unitChoices }: DeliveryRecordFormProps) {
+export function DeliveryRecordForm({ action, kind, orders, unitChoices, successHint }: DeliveryRecordFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   const [orderId, setOrderId] = useState(orders[0]?.id ?? '');
   const [lineId, setLineId] = useState('');
@@ -41,51 +50,91 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices }: Delive
   }
 
   return (
-    <form action={formAction} style={{ display: 'grid', gap: 10 }}>
+    <FeedbackForm action={formAction} state={state} pending={pending} style={{ display: 'grid', gap: 10 }}>
       <input type="hidden" readOnly name="kind" value={kind} />
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-        <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>発注<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
-          <select
-            name="orderId"
-            value={orderId}
-            onChange={(event) => {
-              setOrderId(event.target.value);
-              setLineId('');
-            }}
-            style={{ ...inputStyle, width: 300 }}
-          >
-            {orders.map((order) => (
-              <option key={order.id} value={order.id}>
-                {order.code}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>明細<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
-          <select
-            name="lineId"
-            value={lineId}
-            onChange={(event) => setLineId(event.target.value)}
-            required
-            style={{ ...inputStyle, width: 300 }}
-          >
-            <option value="">明細を選択</option>
-            {lines.map((line) => (
-              <option key={line.value} value={line.value}>
-                {line.label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label style={{ display: 'grid', gap: 4 }}>
-          <span style={{ fontSize: 13 }}>納品数量<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
-          <input name="deliveredQuantity" inputMode="decimal" required style={{ ...inputStyle, width: 140 }} />
-        </label>
-        <label style={{ display: 'grid', gap: 4 }}>
+        <FieldFeedback name="orderId">
+          {(orderFeedback) => (
+            <div className="field" style={fieldLabel(300)}>
+              <label style={labelOnly}>
+                <span style={{ fontSize: 13 }}>発注<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
+                <select
+                  name="orderId"
+                  value={orderId}
+                  onChange={(event) => {
+                    setOrderId(event.target.value);
+                    setLineId('');
+                  }}
+                  aria-describedby={orderFeedback.describedBy}
+                  aria-invalid={orderFeedback.invalid}
+                  data-feedback-label="発注"
+                  style={control(300)}
+                >
+                  {orders.map((order) => (
+                    <option key={order.id} value={order.id}>
+                      {order.code}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <FieldError id={orderFeedback.errorId} message={orderFeedback.error} />
+            </div>
+          )}
+        </FieldFeedback>
+        <FieldFeedback name="lineId">
+          {(lineFeedback) => (
+            <div className="field" style={fieldLabel(300)}>
+              <label style={labelOnly}>
+                <span style={{ fontSize: 13 }}>明細<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
+                <select
+                  name="lineId"
+                  value={lineId}
+                  onChange={(event) => setLineId(event.target.value)}
+                  required
+                  aria-describedby={lineFeedback.describedBy}
+                  aria-invalid={lineFeedback.invalid}
+                  data-feedback-label="明細"
+                  style={control(300)}
+                >
+                  <option value="">明細を選択</option>
+                  {lines.map((line) => (
+                    <option key={line.value} value={line.value}>
+                      {line.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <FieldError id={lineFeedback.errorId} message={lineFeedback.error} />
+            </div>
+          )}
+        </FieldFeedback>
+        <FieldFeedback name="deliveredQuantity">
+          {(quantityFeedback) => (
+            <div className="field" style={fieldLabel(140)}>
+              <label style={labelOnly}>
+                <span style={{ fontSize: 13 }}>納品数量<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
+                {/* Review L7: spaces and full-width digits are normalized on blur (and before the check). */}
+                <input
+                  name="deliveredQuantity"
+                  inputMode="decimal"
+                  required
+                  pattern="\d+(\.\d+)?"
+                  onBlur={(event) => normalizeQuantityInput(event.currentTarget)}
+                  aria-describedby={quantityFeedback.describedBy}
+                  aria-invalid={quantityFeedback.invalid}
+                  data-quantity-text=""
+                  data-feedback-label="納品数量"
+                  data-feedback-format="正の数（例 1000、12.5）"
+                  style={control(140)}
+                />
+              </label>
+              <FieldError id={quantityFeedback.errorId} message={quantityFeedback.error} />
+            </div>
+          )}
+        </FieldFeedback>
+        <label className="field" style={fieldLabel(140)}>
           <span style={{ fontSize: 13 }}>単位<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
-          <select name="unit" value={unit} onChange={(event) => setUnit(event.target.value)} style={{ ...inputStyle, width: 140 }}>
+          <select name="unit" value={unit} onChange={(event) => setUnit(event.target.value)} style={control(140)}>
             {unitChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
                 {choice.label}
@@ -94,21 +143,22 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices }: Delive
           </select>
         </label>
         <OffsetDateTimeField name="deliveredAt" label="納品日（任意・未入力は現在日時）" width={240} />
-        <label style={{ display: 'grid', gap: 4 }}>
+        <label className="field" style={fieldLabel(200)}>
           <span style={{ fontSize: 13 }}>運送業者参照（任意）</span>
-          <input name="carrierReference" style={{ ...inputStyle, width: 200 }} />
+          <input name="carrierReference" style={control(200)} />
         </label>
-        <label style={{ display: 'grid', gap: 4 }}>
+        <label className="field" style={fieldLabel(220)}>
           <span style={{ fontSize: 13 }}>備考（任意）</span>
-          <input name="note" style={{ ...inputStyle, width: 220 }} />
+          <input name="note" style={control(220)} />
         </label>
       </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-        <button type="submit" disabled={pending} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
+      <div className="form-actions">
+        <button type="submit" aria-disabled={pending || undefined} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
           {pending ? '記録中…' : '納品を記録する'}
         </button>
-        {state ? <span style={state.ok ? okMessageStyle : errorMessageStyle}>{state.message}</span> : null}
+        <FormErrorSummary />
+        <FormResult state={state} successHint={successHint} />
       </div>
-    </form>
+    </FeedbackForm>
   );
 }

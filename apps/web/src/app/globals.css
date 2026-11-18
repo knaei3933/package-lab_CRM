@@ -41,6 +41,10 @@
 
   --radius: 6px;
   --focus-ring: 2px solid var(--primary);
+
+  /* UI batch C: page gutter and card padding, narrowed under 768px. */
+  --gutter: var(--space-5);
+  --card-pad: var(--space-4);
 }
 
 *,
@@ -90,6 +94,8 @@ textarea {
 
 summary {
   cursor: pointer;
+  /* UI batch C (2-⑦): a touch target of at least 24px for every 「詳細」. */
+  min-height: 24px;
 }
 
 /* The skip link moves focus to <main tabindex=-1>; no ring around the whole page. */
@@ -140,7 +146,9 @@ h3 {
 }
 
 .app-nav a {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
   padding: var(--space-1) 0 6px;
   font-size: var(--text-sm);
   color: var(--ink-sub);
@@ -385,6 +393,7 @@ h3 {
 
 .tech-details > summary {
   width: fit-content;
+  padding: 2px 0;
   font-size: var(--text-xs);
   color: var(--ink-sub);
 }
@@ -416,6 +425,8 @@ h3 {
 
 .project-picker-field {
   display: inline-flex;
+  flex-wrap: wrap;
+  max-width: 100%;
   align-items: center;
   gap: var(--space-2);
   font-size: 13px;
@@ -436,11 +447,11 @@ h3 {
 }
 
 .project-picker-field select {
-  width: 380px;
+  width: min(380px, 100%);
 }
 
 .project-picker-field input {
-  width: 340px;
+  width: min(340px, 100%);
   font-family: var(--font-mono);
 }
 
@@ -455,14 +466,16 @@ h3 {
   cursor: pointer;
 }
 
-.project-picker-submit:hover:not(:disabled) {
+.project-picker-submit:hover:not(:disabled):not([aria-disabled='true']) {
   border-color: var(--primary);
   background: var(--primary-tint);
 }
 
-.project-picker-submit:disabled {
+/* While a switch runs the button is aria-disabled (it keeps focus), not disabled. */
+.project-picker-submit:disabled,
+.project-picker-submit[aria-disabled='true'] {
   opacity: 0.6;
-  cursor: default;
+  cursor: progress;
 }
 
 .project-picker-ok {
@@ -477,6 +490,307 @@ h3 {
 
 .project-picker-details .tech-details-body {
   font-family: var(--font-sans);
+}
+
+/* ------------------------------------------------------------------------
+ * UI batch C: layout gutters, tables, status badges and the maker-PO stages.
+ * Only tints of the batch A tokens; every mark carries its own text.
+ * ---------------------------------------------------------------------- */
+.app-header {
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.app-header-inner {
+  display: grid;
+  gap: 10px;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: var(--space-3) var(--gutter);
+}
+
+.app-header-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.app-brand {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.app-user {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: 13px;
+}
+
+.app-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-5);
+  max-width: 1100px;
+  margin: var(--space-6) auto;
+  padding: 0 var(--gutter) 64px;
+  overflow-wrap: break-word;
+}
+
+/* A page's own grid never grows wider than the screen (wide tables scroll). */
+.app-main > section {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.app-main > section > *,
+.app-main details {
+  min-width: 0;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Tables scroll sideways inside their card, never the page. */
+.table-scroll {
+  /* Containing block for absolutely positioned descendants (visually hidden
+     captions, empty live regions inside row forms). Without it they escape the
+     horizontal scroll clip and widen the whole page at 390px. */
+  position: relative;
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: var(--radius);
+}
+
+.table-scroll:focus-visible {
+  outline-offset: 0;
+}
+
+.table-caption {
+  caption-side: top;
+  padding: 0 0 var(--space-1);
+  text-align: left;
+  font-size: var(--text-xs);
+  color: var(--ink-sub);
+}
+
+/* Status badge: symbol + label, a tint of the tone's token. */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px var(--space-2);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-sub);
+  color: var(--ink-sub);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.status-badge-mark {
+  font-weight: 700;
+}
+
+.status-badge--done {
+  border-color: var(--ok);
+  background: var(--ok-tint);
+  color: var(--ok);
+}
+
+.status-badge--active {
+  border-color: var(--primary);
+  background: var(--primary-tint);
+  color: var(--primary);
+}
+
+.status-badge--waiting {
+  border-color: var(--warn);
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+
+.status-badge--blocked {
+  border-color: var(--danger);
+  background: var(--danger-tint);
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.status-badge--hidden {
+  border-style: dashed;
+  background: var(--surface);
+}
+
+.status-cell {
+  white-space: nowrap;
+}
+
+/* A note under the badge (確認メモ・次のアクション) still wraps. */
+.status-cell > div {
+  white-space: normal;
+}
+
+/* Maker PO stages: the batch B stepper, plus a mark for a stage not reached. */
+.step--skipped .step-mark {
+  border-style: dashed;
+  background: var(--surface-sub);
+}
+
+.step--skipped .step-label {
+  color: var(--ink-sub);
+  text-decoration: line-through;
+}
+
+.card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-lg);
+}
+
+.gate-line {
+  margin: var(--space-2) 0;
+  font-size: 13px;
+  color: var(--ink-sub);
+}
+
+/* The gate's block reason is plain wrapping text after the (nowrap) badge. */
+.gate-line-reason {
+  overflow-wrap: anywhere;
+}
+
+/* The one open block on the card: いまの段階. */
+.stage-current {
+  margin-top: var(--space-4);
+  padding: var(--space-1) 0 var(--space-1) var(--space-4);
+  border-left: 3px solid var(--primary);
+}
+
+.stage-current--halted {
+  border-left-color: var(--danger);
+}
+
+.stage-current--attention {
+  border-left-color: var(--warn);
+}
+
+.stage-current-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-1) var(--space-3);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-md);
+}
+
+.stage-now {
+  font-size: var(--text-xs);
+  font-weight: 700;
+  color: var(--primary);
+}
+
+.stage-current--halted .stage-now {
+  color: var(--danger);
+}
+
+.stage-current--attention .stage-now {
+  color: var(--warn);
+}
+
+/* Inside the current block the batch B sub-blocks lose their top rule. */
+.stage-current > .stage-block:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}
+
+.stage-done {
+  margin-top: var(--space-3);
+}
+
+.stage-done > summary,
+.collapsed-card > summary {
+  font-size: 13px;
+  color: var(--ink-sub);
+}
+
+.stage-done ul {
+  margin: var(--space-2) 0 0;
+  padding-left: 20px;
+  font-size: 13px;
+}
+
+.stage-next {
+  margin: var(--space-3) 0 0;
+  font-size: 13px;
+  color: var(--ink-sub);
+}
+
+.collapsed-card > summary {
+  font-size: var(--text-md);
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.collapsed-card[open] > summary {
+  margin-bottom: var(--space-2);
+}
+
+/* Cancellation work: apart at the bottom, behind its own danger border. */
+.danger-zone {
+  margin-top: var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.danger-zone > summary {
+  font-size: var(--text-sm);
+  font-weight: 700;
+  color: var(--danger);
+}
+
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+@media (max-width: 768px) {
+  :root {
+    --gutter: var(--space-4);
+    --card-pad: var(--space-3);
+  }
+
+  .app-main {
+    margin: var(--space-5) auto;
+  }
+
+  .app-nav {
+    gap: 0 var(--space-4);
+  }
+
+  .stage-current {
+    padding-left: var(--space-3);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -110,8 +110,8 @@ export const MAKER_PO_EVENT_VERIFICATION_LABELS: Readonly<Record<string, string>
 export const MAKER_PO_MANUAL_VERIFICATION_RESULTS = ['confirmed', 'rejected'] as const;
 
 export const MAKER_PO_MANUAL_VERIFICATION_RESULT_LABELS: Readonly<Record<string, string>> = {
-  confirmed: '確認（納品を断定する）',
-  rejected: '却下（納品を断定しない）'
+  confirmed: '確認（送信を確定する）',
+  rejected: '却下（送信を確定しない）'
 };
 
 export const APPROVAL_DECISION_LABELS: Readonly<Record<string, string>> = {
