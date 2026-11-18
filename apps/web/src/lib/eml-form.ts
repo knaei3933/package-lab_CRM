@@ -125,12 +125,29 @@ export function makerPoMailSubject(orderCode: string, subject = '製造先発注
     : `${orderCode} ${trimmedSubject}`;
 }
 
-/** Token-boundary order-code match; FSO-1 is not FSO-10 or FSO-12. */
+/**
+ * Token-boundary order-code match with M9 case normalization. Code constituents
+ * are ASCII letters, digits and hyphens, so FSO-1 never matches FSO-10,
+ * FSO-1_2 or FSO-1.5.
+ */
 export function hasOrderCodeToken(subject: string, orderCode: string): boolean {
   const normalizedCode = orderCode.trim().toUpperCase();
   if (normalizedCode.length === 0) return false;
-  const escaped = normalizedCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`).test(subject.toUpperCase());
+  const haystack = subject.toUpperCase();
+  // A dot/underscore can be an external separator but never extends a token;
+  // hyphen can be an internal code constituent. All three block a partial match.
+  const isCodeNeighbor = (character: string | undefined): boolean =>
+    character !== undefined && /[A-Za-z0-9_.-]/.test(character);
+  let index = haystack.indexOf(normalizedCode);
+  while (index >= 0) {
+    const before = index === 0 ? undefined : haystack[index - 1];
+    const after = index + normalizedCode.length >= haystack.length
+      ? undefined
+      : haystack[index + normalizedCode.length];
+    if (!isCodeNeighbor(before) && !isCodeNeighbor(after)) return true;
+    index = haystack.indexOf(normalizedCode, index + 1);
+  }
+  return false;
 }
 
 export interface MakerPoSubjectEdit {

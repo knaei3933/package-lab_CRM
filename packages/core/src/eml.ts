@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { inflateSync } from 'node:zlib';
+import { inflateRawSync } from 'node:zlib';
 
 /**
  * M8-HARDEN FIX C1: the send evidence of a maker purchase order is the
@@ -404,10 +404,11 @@ export interface PdfTextLayerPage {
 }
 
 /**
- * G5/G7: inspect each content stream separately so one bad page cannot hide
- * behind a matching page. Only raw and Flate streams are decoded. Every other
- * filter (ASCIIHex, ASCII85, LZW, image codecs, ...) is indeterminate, never a
- * "scan": an undecodable text layer must keep a human in the loop.
+ * G5/G7: classify only streams that actually contain text operators as text.
+ * Font and ToUnicode CMap streams are auxiliary data and have no Tj/TJ; when a
+ * text content stream exists they are ignored. If no text stream exists, a
+ * decodable non-text page is a scan and needs a human. Any unsupported filter
+ * remains indeterminate, even beside a valid stream: we never infer its safety.
  */
 export function inspectPdfTextLayers(bytes: Buffer): PdfTextLayerPage[] {
   if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') return [];
@@ -442,7 +443,7 @@ export function inspectPdfTextLayers(bytes: Buffer): PdfTextLayerPage[] {
     }
     let text = '';
     try {
-      text = extractPdfContentText(inflateSync(stream).toString('latin1'));
+      text = extractPdfContentText(inflateRawSync(stream).toString('latin1'));
     } catch {
       pages.push({ state: 'indeterminate', text: '' });
       cursor = end + endToken.length;
@@ -451,7 +452,12 @@ export function inspectPdfTextLayers(bytes: Buffer): PdfTextLayerPage[] {
     pages.push({ state: text.trim().length > 0 ? 'text' : 'scan', text });
     cursor = end + endToken.length;
   }
-  return pages.length > 0 ? pages : [{ state: 'scan', text: '' }];
+  const indeterminate = pages.filter((page) => page.state === 'indeterminate');
+  if (indeterminate.length > 0) return indeterminate;
+  const text = pages.filter((page) => page.state === 'text');
+  if (text.length > 0) return text;
+  const scans = pages.filter((page) => page.state === 'scan');
+  return scans.length > 0 ? scans : [{ state: 'scan', text: '' }];
 }
 
 /** Compatibility helper for callers that only need the supported text. */
@@ -510,13 +516,27 @@ export function normalizeMessageId(value: string | null | undefined): string | n
 
 /**
  * Normalized, token-boundary comparison shared by subject matching and G7.
- * Case is normalized, but FSO-1 can never satisfy FSO-10 or FSO-12.
+ * Case is normalized. Code constituents are ASCII letters, digits and hyphens;
+ * therefore FSO-1 never satisfies FSO-10, FSO-1_2 or FSO-1.5.
  */
 export function hasNormalizedToken(text: string, token: string): boolean {
   const normalizedToken = token.trim().toUpperCase();
   if (normalizedToken.length === 0) return false;
-  const escaped = normalizedToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`).test(text.toUpperCase());
+  const haystack = text.toUpperCase();
+  // A dot/underscore can be an external separator but never extends a token;
+  // hyphen can be an internal code constituent. All three block a partial match.
+  const isCodeNeighbor = (character: string | undefined): boolean =>
+    character !== undefined && /[A-Za-z0-9_.-]/.test(character);
+  let index = haystack.indexOf(normalizedToken);
+  while (index >= 0) {
+    const before = index === 0 ? undefined : haystack[index - 1];
+    const after = index + normalizedToken.length >= haystack.length
+      ? undefined
+      : haystack[index + normalizedToken.length];
+    if (!isCodeNeighbor(before) && !isCodeNeighbor(after)) return true;
+    index = haystack.indexOf(normalizedToken, index + 1);
+  }
+  return false;
 }
 
 /**

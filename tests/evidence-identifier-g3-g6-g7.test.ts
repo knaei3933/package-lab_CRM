@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { deflateRawSync } from 'node:zlib';
 import { describe, expect, it } from 'vitest';
 import {
   evaluateMakerPoEmlEvidence,
@@ -73,6 +74,54 @@ function mailWithPdf(pdf: Buffer, subject = `製造先発注書 ${ORDER_CODE}`):
   return Buffer.from(lines.join('\r\n'), 'utf8');
 }
 
+function flatePdfWithFontAndCMap(): Buffer {
+  const content = `BT (${ORDER_CODE}) Tj ET`;
+  const compressedBody = deflateRawSync(Buffer.from(content, 'utf8'));
+  const font = Buffer.from([0x00, 0x01, 0xca, 0xfe, 0x00, 0x10]);
+  const cmap = Buffer.from('/CIDSystemInfo << /Registry (Adobe) >>\nbeginbfchar\nendbfchar\n', 'latin1');
+  return Buffer.concat([
+    Buffer.from('%PDF-1.4\n', 'latin1'),
+    Buffer.from([
+      '1 0 obj << /Length ' + font.length + ' >>',
+      'stream',
+      ''
+    ].join('\n'), 'latin1'),
+    font,
+    Buffer.from('\nendstream\nendobj\n', 'latin1'),
+    Buffer.from([
+      '2 0 obj << /Length ' + cmap.length + ' >>',
+      'stream',
+      ''
+    ].join('\n'), 'latin1'),
+    cmap,
+    Buffer.from('\nendstream\nendobj\n', 'latin1'),
+    Buffer.from([
+      '3 0 obj << /Filter /FlateDecode /Length ' + compressedBody.length + ' >>',
+      'stream',
+      ''
+    ].join('\n'), 'latin1'),
+    compressedBody,
+    Buffer.from('\nendstream\nendobj\n%%EOF\n', 'latin1')
+  ]);
+}
+
+function imageOnlyScanPdf(): Buffer {
+  const content = 'BT /Im0 Do ET';
+  return Buffer.from(
+    [
+      '%PDF-1.4',
+      '1 0 obj << /Length ' + content.length + ' >>',
+      'stream',
+      content,
+      'endstream',
+      'endobj',
+      '%%EOF',
+      ''
+    ].join('\n'),
+    'utf8'
+  );
+}
+
 function evaluate(pdf: Buffer, subject?: string) {
   return evaluateMakerPoEmlEvidence({
     bytes: mailWithPdf(pdf, subject),
@@ -124,6 +173,14 @@ describe('evidence identifier decisions G3/G6/G7', () => {
     expect(extractStoredEmlMessageId(mail)).toBeNull();
   });
 
+  it('M9 mutation: order-code comparison normalizes case but keeps code-character boundaries', () => {
+    expect(hasNormalizedToken('fso-1', 'FSO-1')).toBe(true);
+    expect(hasNormalizedToken('FSO-1_2', 'FSO-1')).toBe(false);
+    expect(hasNormalizedToken('FSO-1.5', 'FSO-1')).toBe(false);
+    expect(hasNormalizedToken('FSO-1-2', 'FSO-1')).toBe(false);
+    expect(hasNormalizedToken('(FSO-1)', 'FSO-1')).toBe(true);
+  });
+
   it('subject matching is normalized only at token boundaries', () => {
     expect(hasNormalizedToken('fso-1 の発注書', 'FSO-1')).toBe(true);
     expect(hasNormalizedToken('FSO-10 の発注書', 'FSO-1')).toBe(false);
@@ -141,12 +198,40 @@ describe('evidence identifier decisions G3/G6/G7', () => {
     expect(extractPdfText(pdfWithText(`発注コード ${ORDER_CODE}`))).toContain(ORDER_CODE);
   });
 
+  it('G5 ignores FontFile and ToUnicode auxiliary streams when a text page exists', () => {
+    const pdf = flatePdfWithFontAndCMap();
+    const layers = inspectPdfTextLayers(pdf);
+    expect(layers).toHaveLength(1);
+    expect(layers[0]).toMatchObject({ state: 'text' });
+    expect(layers[0]?.text).toContain(ORDER_CODE);
+    expect(evaluate(pdf)).toMatchObject({ verificationStatus: 'VERIFIED' });
+  });
+
+  it('G5 keeps an image XObject page pending as a true scan', () => {
+    const result = evaluate(imageOnlyScanPdf());
+    expect(inspectPdfTextLayers(imageOnlyScanPdf())).toMatchObject([
+      { state: 'scan', text: '' }
+    ]);
+    expect(result).toMatchObject({
+      verificationStatus: 'PENDING_MANUAL_VERIFICATION',
+      pendingCode: 'SCAN_PDF_MANUAL_VERIFICATION_REQUIRED',
+      pendingCodes: ['SCAN_PDF_MANUAL_VERIFICATION_REQUIRED']
+    });
+  });
+
   it('G7 rejects FSO-1 when the PDF token is FSO-10 even though it is a substring', () => {
     const result = evaluate(pdfWithText('FSO-10'));
     expect(result).toMatchObject({
       verificationStatus: 'PENDING_MANUAL_VERIFICATION',
       pendingCode: 'EVIDENCE_CODE_MISMATCH'
     });
+  });
+
+  it('P4c boundary mutation: underscore and dot are not code constituents', () => {
+    expect(evaluate(pdfWithText('FSO-1_2'), `${ORDER_CODE} 発注`))
+      .toMatchObject({ verificationStatus: 'PENDING_MANUAL_VERIFICATION' });
+    expect(evaluate(pdfWithText('FSO-1.5'), `${ORDER_CODE} 発注`))
+      .toMatchObject({ verificationStatus: 'PENDING_MANUAL_VERIFICATION' });
   });
 
   it('G7 verifies a text PDF whose printed code matches the mail subject', () => {
@@ -220,7 +305,7 @@ describe('evidence identifier decisions G3/G6/G7', () => {
     });
   });
 
-  it('G7 blocks a mixed multi-page PDF and exposes scan plus mismatch reasons', () => {
+  it('G7 blocks a multi-page PDF when any text page mismatches', () => {
     const pdf = Buffer.concat([
       multiPagePdf([ORDER_CODE, 'WRONG-987654']).subarray(0, -7),
       Buffer.from(
@@ -239,7 +324,36 @@ describe('evidence identifier decisions G3/G6/G7', () => {
     const result = evaluate(pdf);
     expect(result).toMatchObject({ verificationStatus: 'PENDING_MANUAL_VERIFICATION' });
     if (result.verificationStatus !== 'PENDING_MANUAL_VERIFICATION') return;
-    expect(result.pendingCodes).toContain('EVIDENCE_CODE_MISMATCH');
+    expect(result.pendingCodes).toEqual(['EVIDENCE_CODE_MISMATCH']);
+    expect(result.checks.find((entry) => entry.key === 'code_consistency')).toMatchObject({
+      status: 'failed',
+      detail: expect.stringContaining('page(s) 2')
+    });
+  });
+
+  it('exposes every pending code when subject and scan both fail', () => {
+    const scanned = Buffer.from('%PDF-1.4\nsingle page JPEG with no text stream\n%%EOF\n', 'utf8');
+    const bytes = mailWithPdf(scanned);
+    const scannedHash = createHash('sha256').update(scanned).digest('hex');
+    const result = evaluateMakerPoEmlEvidence({
+      bytes,
+      sentAt: new Date('2026-11-17T09:00:00+09:00'),
+      ceoApprovedAt: new Date('2026-11-16T09:00:00+09:00'),
+      now: new Date('2026-11-17T09:10:00+09:00'),
+      expectedRecipientAddress: 'maker-po@example.test',
+      recordedSenderAddress: 'staff@kanei.example',
+      subjectIdentifiers: ['OTHER-G7'],
+      subjectCode: 'OTHER-G7',
+      documentCode: ORDER_CODE,
+      artworkFileSha256s: [scannedHash]
+    });
+    if (result.verificationStatus !== 'PENDING_MANUAL_VERIFICATION') {
+      throw new Error('a missing subject plus a scan must stay pending');
+    }
+    expect(result).toMatchObject({
+      verificationStatus: 'PENDING_MANUAL_VERIFICATION',
+      pendingCodes: ['EML_SUBJECT_IDENTIFIER_MISSING', 'SCAN_PDF_MANUAL_VERIFICATION_REQUIRED']
+    });
     expect(result.checks.find((entry) => entry.key === 'pending_codes')).toMatchObject({
       status: 'failed',
       detail: result.pendingCodes.join(',')

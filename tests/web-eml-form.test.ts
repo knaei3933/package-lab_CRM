@@ -42,6 +42,8 @@ describe('maker PO manual-send EML defaults', () => {
     expect(makerPoMailSubject('FSO-001', 'FSO-001 製造依頼')).toBe('FSO-001 製造依頼');
     expect(hasOrderCodeToken('fso-001 依頼', 'FSO-001')).toBe(true);
     expect(hasOrderCodeToken('FSO-0010 依頼', 'FSO-001')).toBe(false);
+    expect(hasOrderCodeToken('FSO-001_2 依頼', 'FSO-001')).toBe(false);
+    expect(hasOrderCodeToken('FSO-001.5 依頼', 'FSO-001')).toBe(false);
     const edited = insertMakerPoMailSubject(
       'From: staff@example.test\r\nSubject:  製造依頼\r\n\r\nbody',
       'FSO-001'
@@ -49,6 +51,28 @@ describe('maker PO manual-send EML defaults', () => {
     expect(edited.inserted).toBe(true);
     expect(edited.eml).toContain('Subject: FSO-001 製造依頼');
     expect(edited.eml.endsWith('body')).toBe(true);
+  });
+
+  it('G3 replaces only the Subject header and preserves an 8bit UTF-8 body byte-for-byte', () => {
+    const body = '8bit本文：日本語と絵文字 ✅ はそのまま残ります。';
+    const original = [
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: 8bit',
+      'Subject:  製造依頼',
+      '',
+      body
+    ].join('\r\n');
+    const edited = insertMakerPoMailSubject(original, 'FSO-001');
+    const expected = [
+      'Content-Type: text/plain; charset=UTF-8',
+      'Content-Transfer-Encoding: 8bit',
+      'Subject: FSO-001 製造依頼',
+      '',
+      body
+    ].join('\r\n');
+    expect(edited.inserted).toBe(true);
+    expect(edited.eml).toBe(expected);
+    expect(Buffer.from(edited.eml, 'utf8')).toEqual(Buffer.from(expected, 'utf8'));
   });
 
   it('flags only a valid send time earlier than CEO approval', () => {
