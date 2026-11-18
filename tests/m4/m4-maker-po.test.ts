@@ -939,7 +939,10 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect([sendOne.status, sendTwo.status].sort()).toEqual([200, 422]);
     const sendWinner = sendOne.status === 200 ? sendOne : sendTwo;
     const sendLoser = sendOne.status === 200 ? sendTwo : sendOne;
-    expect((sendLoser.body as { code: string }).code).toBe('MAKER_PO_TRANSITION_BLOCKED');
+    // Order-first locking can report either the paper transition refusal or the
+    // whole concurrent order-state conflict; both are write-neutral 422 results.
+    expect(['MAKER_PO_TRANSITION_BLOCKED', 'MAKER_PO_STATE_CHANGED'])
+      .toContain((sendLoser.body as { code: string }).code);
     expect((sendWinner.body as { status: string }).status).toBe('MAKER_PO_SENT_MANUALLY');
     expect((await makerPoRow(sendContext.po.id))?.status).toBe('MAKER_PO_SENT_MANUALLY');
     const sendEvents = (await listEvents(sendContext.po.id))

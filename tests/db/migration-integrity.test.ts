@@ -268,4 +268,66 @@ describe('drizzle migration ordering and 0021', () => {
       await pool.end();
     }
   });
+
+  it('raises on payment-terms definition drift and avoids an equivalent duplicate', async () => {
+    const name = await createScratchDatabase('kanei_crm_mvp_migration_0015_drift');
+    await readFile(path.join(tempRoot, 'scratch-dbs.txt'), 'utf8')
+      .catch(() => '')
+      .then((old) => writeFile(path.join(tempRoot, 'scratch-dbs.txt'), `${old}${name}\n`));
+    const url = await scratchUrl(name);
+    const pool = new Pool({ connectionString: url });
+    const staged = path.join(tempRoot, 'drift-run');
+    const migrationSql = await readFile(
+      path.resolve(process.cwd(), 'packages/db/drizzle/0015_m7_sec3_payment_terms.sql'),
+      'utf8'
+    );
+    try {
+      await cp(path.resolve(process.cwd(), 'packages/db/drizzle'), staged, { recursive: true });
+      await migrate(drizzle(pool), { migrationsFolder: staged });
+
+      const query = async (text: string) => {
+        const client = new pg.Client({ connectionString: url });
+        await client.connect();
+        try {
+          return await client.query(text);
+        } finally {
+          await client.end();
+        }
+      };
+
+      const run0015 = async () => {
+        const client = new pg.Client({ connectionString: url });
+        await client.connect();
+        try {
+          for (const statement of migrationSql.split('--> statement-breakpoint\n')) {
+            await client.query(statement);
+          }
+          await client.query('commit');
+        } finally {
+          await client.end();
+        }
+      };
+
+      await query('alter table film_supply_orders drop constraint film_supply_orders_payment_terms_vocabulary');
+      await query('alter table film_supply_orders add constraint film_supply_orders_payment_terms_vocabulary check (false)');
+
+      await expect(run0015()).rejects.toThrow(/payment_terms constraint definition drift/);
+
+      await query('alter table film_supply_orders drop constraint film_supply_orders_payment_terms_vocabulary');
+      await query(`alter table film_supply_orders add constraint payment_terms_equivalent_check check ("payment_terms" is null or "payment_terms" in ('prepaid', 'on_delivery', 'undetermined'))`);
+      await run0015();
+      const constraintPool = new Pool({ connectionString: url });
+      const constraints = await constraintPool.query(`
+        select conname, pg_get_constraintdef(oid) as definition
+        from pg_constraint
+        where conrelid = 'film_supply_orders'::regclass
+          and pg_get_constraintdef(oid) like '%payment_terms%'
+      `);
+      await constraintPool.end();
+      expect(constraints.rows).toHaveLength(1);
+      expect(constraints.rows[0]?.conname).toBe('payment_terms_equivalent_check');
+    } finally {
+      await pool.end();
+    }
+  });
 });

@@ -11,11 +11,45 @@
 -- the pre-migration state of existing orders and reads as 'undetermined'.
 ALTER TABLE "film_supply_orders" ADD COLUMN IF NOT EXISTS "payment_terms" text DEFAULT 'undetermined';
 DO $$
+DECLARE
+  actual_column_default text;
+  named_constraint_definition text;
+  expected_constraint_definition text := 'CHECK (((payment_terms IS NULL) OR (payment_terms = ANY (ARRAY[''prepaid''::text, ''on_delivery''::text, ''undetermined''::text]))))';
 BEGIN
   IF NOT EXISTS (
-    SELECT 1 FROM pg_constraint
-    WHERE conname = 'film_supply_orders_payment_terms_vocabulary'
-      AND conrelid = '"public"."film_supply_orders"'::regclass
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'film_supply_orders'
+      AND column_name = 'payment_terms'
+  ) THEN
+    ALTER TABLE "film_supply_orders" ADD COLUMN "payment_terms" text DEFAULT 'undetermined';
+  ELSE
+    SELECT column_default INTO actual_column_default
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'film_supply_orders'
+      AND column_name = 'payment_terms';
+    IF actual_column_default IS DISTINCT FROM '''undetermined''::text' THEN
+      RAISE EXCEPTION 'payment_terms column definition drift: expected text DEFAULT ''undetermined''::text, found %', actual_column_default;
+    END IF;
+  END IF;
+
+  SELECT pg_get_constraintdef(con.oid) INTO named_constraint_definition
+  FROM pg_constraint con
+  WHERE con.conname = 'film_supply_orders_payment_terms_vocabulary'
+    AND con.conrelid = '"public"."film_supply_orders"'::regclass;
+  IF named_constraint_definition IS NOT NULL
+    AND named_constraint_definition IS DISTINCT FROM expected_constraint_definition THEN
+    RAISE EXCEPTION 'payment_terms constraint definition drift: expected %, found %', expected_constraint_definition, named_constraint_definition;
+  END IF;
+
+  -- A functionally identical manually named CHECK is accepted, but never
+  -- duplicated. Any other foreign CHECK on this column remains untouched.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint con
+    WHERE con.conrelid = '"public"."film_supply_orders"'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(con.oid) = expected_constraint_definition
   ) THEN
     ALTER TABLE "film_supply_orders"
       ADD CONSTRAINT "film_supply_orders_payment_terms_vocabulary"
