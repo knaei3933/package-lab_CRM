@@ -120,9 +120,59 @@ export function readEmlFormDefaults(text: string): EmlFormDefaults {
  */
 export function makerPoMailSubject(orderCode: string, subject = '製造先発注書'): string {
   const trimmedSubject = subject.trim();
-  return trimmedSubject.toLowerCase().startsWith(orderCode.toLowerCase())
+  return hasOrderCodeToken(trimmedSubject, orderCode)
     ? trimmedSubject
     : `${orderCode} ${trimmedSubject}`;
+}
+
+/** Token-boundary order-code match; FSO-1 is not FSO-10 or FSO-12. */
+export function hasOrderCodeToken(subject: string, orderCode: string): boolean {
+  const normalizedCode = orderCode.trim().toUpperCase();
+  if (normalizedCode.length === 0) return false;
+  const escaped = normalizedCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`).test(subject.toUpperCase());
+}
+
+export interface MakerPoSubjectEdit {
+  eml: string;
+  subject: string;
+  inserted: boolean;
+}
+
+/**
+ * G3: edit the EML's actual Subject header before it is submitted. This is a
+ * deliberate form action (not an API repair) and preserves the MIME body; only
+ * the subject header lines are replaced.
+ */
+export function insertMakerPoMailSubject(eml: string, orderCode: string): MakerPoSubjectEdit {
+  const parsedSubject = parseEmlHeaders(eml).subject?.join(' ') ?? '';
+  const subject = makerPoMailSubject(orderCode, parsedSubject || '製造先発注書');
+  if (orderCode.length === 0 || hasOrderCodeToken(parsedSubject, orderCode)) {
+    return { eml, subject: parsedSubject || subject, inserted: false };
+  }
+  const lineBreak = eml.includes('\r\n') ? '\r\n' : '\n';
+  const lines = eml.split(/\r\n|\n|\r/);
+  const subjectIndex = lines.findIndex((line) => /^subject:/i.test(line));
+  if (subjectIndex < 0) {
+    return { eml, subject, inserted: false };
+  }
+  let subjectEnd = subjectIndex + 1;
+  while (
+    subjectEnd < lines.length
+    && (lines[subjectEnd]!.startsWith(' ') || lines[subjectEnd]!.startsWith('\t'))
+  ) subjectEnd += 1;
+  lines.splice(subjectIndex, subjectEnd - subjectIndex, `Subject: ${subject}`);
+  return { eml: lines.join(lineBreak), subject, inserted: true };
+}
+
+/** Browser-safe UTF-8 Base64 so the edited EML keeps its original text bytes. */
+export function utf8TextToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return btoa(binary);
 }
 
 /**

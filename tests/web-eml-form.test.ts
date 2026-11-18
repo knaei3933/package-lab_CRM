@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   isSentAtBeforeCeoApproval,
+  hasOrderCodeToken,
+  insertMakerPoMailSubject,
   makerPoMailSubject,
   parseDatetimeLocalValue,
   parseEmlHeaders,
@@ -33,11 +35,20 @@ describe('maker PO manual-send EML defaults', () => {
     expect(defaults.sentAt).toBe(toDatetimeLocalValue(new Date('2026-11-17T09:54:00+00:00')));
   });
 
-  it('reads the raw subject and keeps G3 code insertion client-side only', () => {
+  it('reads the raw subject and G3 inserts the actual code token', () => {
     const defaults = readEmlFormDefaults('Subject:  製造依頼\r\n\r\nbody');
     expect(defaults.subject).toBe('製造依頼');
     expect(makerPoMailSubject('FSO-001', defaults.subject)).toBe('FSO-001 製造依頼');
     expect(makerPoMailSubject('FSO-001', 'FSO-001 製造依頼')).toBe('FSO-001 製造依頼');
+    expect(hasOrderCodeToken('fso-001 依頼', 'FSO-001')).toBe(true);
+    expect(hasOrderCodeToken('FSO-0010 依頼', 'FSO-001')).toBe(false);
+    const edited = insertMakerPoMailSubject(
+      'From: staff@example.test\r\nSubject:  製造依頼\r\n\r\nbody',
+      'FSO-001'
+    );
+    expect(edited.inserted).toBe(true);
+    expect(edited.eml).toContain('Subject: FSO-001 製造依頼');
+    expect(edited.eml.endsWith('body')).toBe(true);
   });
 
   it('flags only a valid send time earlier than CEO approval', () => {

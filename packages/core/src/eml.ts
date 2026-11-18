@@ -396,9 +396,22 @@ function extractPdfContentText(content: string): string {
  * checks. Compressed content streams are inflated; an image-only scan yields an
  * empty string and deliberately stays on its existing manual-verification path.
  */
-export function extractPdfText(bytes: Buffer): string {
-  if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') return '';
-  const chunks: string[] = [];
+/** The fail-closed classification of one PDF content stream. */
+export type PdfTextLayerState = 'text' | 'scan' | 'indeterminate';
+export interface PdfTextLayerPage {
+  state: PdfTextLayerState;
+  text: string;
+}
+
+/**
+ * G5/G7: inspect each content stream separately so one bad page cannot hide
+ * behind a matching page. Only raw and Flate streams are decoded. Every other
+ * filter (ASCIIHex, ASCII85, LZW, image codecs, ...) is indeterminate, never a
+ * "scan": an undecodable text layer must keep a human in the loop.
+ */
+export function inspectPdfTextLayers(bytes: Buffer): PdfTextLayerPage[] {
+  if (bytes.subarray(0, 5).toString('latin1') !== '%PDF-') return [];
+  const pages: PdfTextLayerPage[] = [];
   let cursor = 0;
   const streamToken = Buffer.from('stream', 'latin1');
   const endToken = Buffer.from('endstream', 'latin1');
@@ -412,19 +425,41 @@ export function extractPdfText(bytes: Buffer): string {
     if (end < 0) break;
     const stream = bytes.subarray(bodyStart, end);
     const dictionary = bytes.subarray(Math.max(0, start - 1024), start).toString('latin1');
-    const content = dictionary.includes('/FlateDecode')
-      ? (() => {
-        try {
-          return inflateSync(stream).toString('latin1');
-        } catch {
-          return '';
-        }
-      })()
-      : stream.toString('latin1');
-    chunks.push(extractPdfContentText(content));
+    const filterStart = dictionary.lastIndexOf('<<', Math.max(0, dictionary.length - 1));
+    const filterDictionary = filterStart >= 0 ? dictionary.slice(filterStart) : dictionary;
+    const hasFlate = filterDictionary.includes('/FlateDecode');
+    const hasOtherFilter = /\/(?:ASCIIHexDecode|ASCII85Decode|LZWDecode|RunLengthDecode|CCITTFaxDecode|DCTDecode|JPXDecode|JBIG2Decode)\b/.test(filterDictionary);
+    if (hasOtherFilter || (hasFlate && /\/FlateDecode[^>]*\/(?!FlateDecode\b)[A-Z][A-Za-z]+Decode/.test(filterDictionary))) {
+      pages.push({ state: 'indeterminate', text: '' });
+      cursor = end + endToken.length;
+      continue;
+    }
+    if (!hasFlate) {
+      const text = extractPdfContentText(stream.toString('latin1'));
+      pages.push({ state: text.trim().length > 0 ? 'text' : 'scan', text });
+      cursor = end + endToken.length;
+      continue;
+    }
+    let text = '';
+    try {
+      text = extractPdfContentText(inflateSync(stream).toString('latin1'));
+    } catch {
+      pages.push({ state: 'indeterminate', text: '' });
+      cursor = end + endToken.length;
+      continue;
+    }
+    pages.push({ state: text.trim().length > 0 ? 'text' : 'scan', text });
     cursor = end + endToken.length;
   }
-  return chunks.join('\n');
+  return pages.length > 0 ? pages : [{ state: 'scan', text: '' }];
+}
+
+/** Compatibility helper for callers that only need the supported text. */
+export function extractPdfText(bytes: Buffer): string {
+  return inspectPdfTextLayers(bytes)
+    .filter((page) => page.state === 'text')
+    .map((page) => page.text)
+    .join('\n');
 }
 
 /**
@@ -471,6 +506,17 @@ export function normalizeMessageId(value: string | null | undefined): string | n
   const at = inner.lastIndexOf('@');
   if (at <= 0 || at === inner.length - 1 || /[\s<>]/.test(inner)) return null;
   return `${inner.slice(0, at)}@${inner.slice(at + 1).toLowerCase()}`;
+}
+
+/**
+ * Normalized, token-boundary comparison shared by subject matching and G7.
+ * Case is normalized, but FSO-1 can never satisfy FSO-10 or FSO-12.
+ */
+export function hasNormalizedToken(text: string, token: string): boolean {
+  const normalizedToken = token.trim().toUpperCase();
+  if (normalizedToken.length === 0) return false;
+  const escaped = normalizedToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`).test(text.toUpperCase());
 }
 
 /**
@@ -544,6 +590,10 @@ export type MakerPoAttachmentPendingCode =
   | 'attachment_missing'
   | 'attachment_hash_mismatch'
   | 'attachment_link_only'
+  // G5: hash equality proves bytes, not the human-readable number on a scan.
+  | 'SCAN_PDF_MANUAL_VERIFICATION_REQUIRED'
+  // G5/P10: a stream using an unsupported filter must not be treated as a scan.
+  | 'PDF_TEXT_LAYER_INDETERMINATE'
   // G7: the approved bytes match, but a readable text layer names another code.
   | 'EVIDENCE_CODE_MISMATCH';
 
@@ -568,6 +618,12 @@ export interface MakerPoEmlEvidenceInput {
    * text layer before a send can verify.
    */
   documentCode?: string | undefined;
+  /**
+   * G7: the code actually matched in the subject. PDF checks require both the
+   * frozen order code and this subject code, so a stale subject cannot pass by
+   * merely quoting the snapshot's code.
+   */
+  subjectCode?: string | undefined;
   /**
    * The approved artifact hashes the snapshot freezes — the approved PO /
    * artwork revision documents. Since M8-HARDEN2 FIX 1 at least one attachment
@@ -595,6 +651,8 @@ export type MakerPoEmlEvidenceEvaluation =
       verificationMethod: typeof MAKER_PO_SEND_VERIFICATION_METHOD_EML_HEADER_CHECK;
       checks: MakerPoEmlCheck[];
       pendingCode: MakerPoEmlPendingCode;
+      /** Every blocking reason, in check order; `pendingCode` stays the first. */
+      pendingCodes: MakerPoEmlPendingCode[];
       reasonNote: string;
       messageId: string | null;
       senderAddress: string | null;
@@ -623,6 +681,8 @@ const PENDING_MESSAGES: Record<MakerPoEmlPendingCode, string> = {
   attachment_missing: '送信証跡に添付ファイルがないため、承認済み成果物（発注書・版下）との一致を確認できませんでした。原本のEMLに発注書を添付して登録してください',
   attachment_hash_mismatch: '送信証跡の添付ファイルが承認済み成果物（発注書・版下）のハッシュと一致しませんでした。Thunderbirdから原本のEMLを書き出して登録してください（再出力したPDFも自動確認の対象になりません）',
   attachment_link_only: '送信証跡に添付ファイルがなく、ダウンロードリンクのみが記載されているため、承認済み成果物との一致を確認できませんでした。ファイルを添付した原本のEMLを登録してください',
+  SCAN_PDF_MANUAL_VERIFICATION_REQUIRED: 'スキャンPDFはハッシュが一致しても自動確認できません。人がPDF番号と件名を確認するまで承認待ちにします',
+  PDF_TEXT_LAYER_INDETERMINATE: 'PDFテキスト層を安全に判定できないフィルターのため、自動確認を停止しました。人が原本を確認してください',
   EVIDENCE_CODE_MISMATCH: 'コード不一致：件名の発注コードがPDFテキスト内の番号と一致しません。自動確認は禁止し、人が原本PDFとメール件名を確認する必要があります'
 };
 
@@ -651,6 +711,7 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
       verificationMethod: MAKER_PO_SEND_VERIFICATION_METHOD_EML_HEADER_CHECK,
       checks: [check('eml_parse', 'failed', parsed.reason)],
       pendingCode: 'EML_UNPARSABLE',
+      pendingCodes: ['EML_UNPARSABLE'],
       reasonNote: PENDING_MESSAGES.EML_UNPARSABLE,
       messageId: null,
       senderAddress: null,
@@ -720,7 +781,7 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
   const subject = eml.subject ?? '';
   const matchedIdentifier = input.subjectIdentifiers
     .filter((identifier) => identifier.length > 0)
-    .find((identifier) => subject.toLowerCase().includes(identifier.toLowerCase()));
+    .find((identifier) => hasNormalizedToken(subject, identifier));
   if (matchedIdentifier !== undefined) {
     checks.push(check('subject_identifier', 'passed', matchedIdentifier));
   } else {
@@ -775,37 +836,59 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
   }
   if (attachmentFailure !== null) pendingCodes.push(attachmentFailure);
 
-  // G7: an exact hash match proves the approved bytes were carried; it does not
-  // prove the printed number agrees with the code in the subject. A readable
-  // text layer must agree. A scan has no such layer and keeps its existing
-  // human/manual path (G5), so an empty extraction is not treated as mismatch.
+  // G5/G7: an exact hash match proves the approved bytes were carried; it does
+  // not prove the printed number agrees with the codes. A supported, readable
+  // text layer must agree on every page. A scan, or a stream whose filter we
+  // cannot decode, remains a mandatory human check (fail closed).
   const matchedAttachments = eml.attachments.filter((attachment) =>
     input.artworkFileSha256s.includes(attachment.sha256)
   );
   if (matchedAttachments.length > 0) {
-    const textLayers = matchedAttachments
+    const pdfPages = matchedAttachments
       .filter((attachment) => attachment.bytes.subarray(0, 5).toString('latin1') === '%PDF-')
-      .map((attachment) => extractPdfText(attachment.bytes))
-      .filter((text) => text.trim().length > 0);
-    if (textLayers.length > 0) {
-      const documentCode = input.documentCode ?? input.subjectIdentifiers[0] ?? '';
-      const codeConsistent = documentCode.length > 0
-        && textLayers.some((text) => text.includes(documentCode));
-      if (codeConsistent) {
-        checks.push(check('code_consistency', 'passed', documentCode));
-      } else {
-        checks.push(check(
-          'code_consistency',
-          'failed',
-          `subject/document code=${documentCode || '(none)'}`
-        ));
-        pendingCodes.push('EVIDENCE_CODE_MISMATCH');
-      }
-    } else {
-      checks.push(check('code_consistency', 'skipped', 'scan'));
+      .flatMap((attachment) => inspectPdfTextLayers(attachment.bytes));
+    const hasIndeterminateLayer = pdfPages.some((page) => page.state === 'indeterminate');
+    const hasScanLayer = pdfPages.some((page) => page.state === 'scan');
+    const textLayers = pdfPages.filter((page) => page.state === 'text');
+    const requiredCodes = [...new Set([
+      input.documentCode ?? input.subjectIdentifiers[0] ?? '',
+      input.subjectCode ?? matchedIdentifier ?? ''
+    ])].filter((code) => code.length > 0);
+    const mismatchedPages = textLayers
+      .map((page, index) => ({ page, index }))
+      .filter(({ page }) => !requiredCodes.every((code) => hasNormalizedToken(page.text, code)));
+
+    if (hasScanLayer) {
+      checks.push(check('code_consistency', 'skipped', 'scan: human verification required'));
+      pendingCodes.push('SCAN_PDF_MANUAL_VERIFICATION_REQUIRED');
+    }
+    if (hasIndeterminateLayer) {
+      checks.push(check('code_consistency', 'failed', 'PDF text layer filter could not be decoded'));
+      pendingCodes.push('PDF_TEXT_LAYER_INDETERMINATE');
+    }
+    if (textLayers.length > 0 && mismatchedPages.length > 0) {
+      checks.push(check(
+        'code_consistency',
+        'failed',
+        `page(s) ${mismatchedPages.map(({ index }) => index + 1).join(',')}; required=${requiredCodes.join(',')}`
+      ));
+      pendingCodes.push('EVIDENCE_CODE_MISMATCH');
+    }
+    if (pdfPages.length > 0 && !hasScanLayer && !hasIndeterminateLayer && textLayers.length > 0 && mismatchedPages.length === 0) {
+      checks.push(check('code_consistency', 'passed', requiredCodes.join(',')));
+    }
+    if (pdfPages.length === 0) {
+      checks.push(check('code_consistency', 'skipped', 'no PDF attachment'));
     }
   } else {
     checks.push(check('code_consistency', 'skipped', 'no approved attachment'));
+  }
+
+  const uniquePendingCodes = [...new Set(pendingCodes)];
+  if (uniquePendingCodes.length > 1) {
+    // Keep the machine-readable full list in the persisted JSON checks as well;
+    // `pendingCode` remains a stable scalar for older readers.
+    checks.push(check('pending_codes', 'failed', uniquePendingCodes.join(',')));
   }
 
   const shared = {
@@ -819,13 +902,14 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
     matchedAttachmentHashes: matched
   };
 
-  if (pendingCodes.length > 0) {
-    const code = pendingCodes[0]!;
+  if (uniquePendingCodes.length > 0) {
+    const code = uniquePendingCodes[0]!;
     return {
       ok: true,
       verificationStatus: 'PENDING_MANUAL_VERIFICATION',
       ...shared,
       pendingCode: code,
+      pendingCodes: uniquePendingCodes,
       reasonNote: PENDING_MESSAGES[code]
     };
   }

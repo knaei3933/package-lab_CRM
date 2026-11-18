@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useState } from 'react';
+import { useActionState, useId, useState } from 'react';
 import type { FormAction } from './ActionForm';
 import { OffsetDateTimeField } from './OffsetDateTimeField';
 import type { Choice } from '../lib/types';
@@ -36,6 +36,7 @@ export function ApprovalDecisionForm({
   const [selectedEvidenceVersionId, setSelectedEvidenceVersionId] = useState(
     evidenceChoices[0]?.value ?? ''
   );
+  const evidenceHelpId = useId();
 
   function onEvidenceChange(value: string): void {
     const selected = evidenceChoices.find((choice) => choice.value === value);
@@ -63,6 +64,8 @@ export function ApprovalDecisionForm({
           <select
             name="evidenceDocumentVersionId"
             required
+            aria-describedby={evidenceHelpId}
+            autoComplete="off"
             onChange={(event) => onEvidenceChange(event.target.value)}
             style={{ ...inputStyle, width: 380 }}
           >
@@ -72,9 +75,9 @@ export function ApprovalDecisionForm({
               </option>
             ))}
           </select>
-          <span style={noteStyle}>
+          <p id={evidenceHelpId} style={noteStyle}>
             保存済みEMLのMessage-IDはシステムが自動抽出します。PDF・画像などEML以外だけ入力できます。
-          </span>
+          </p>
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>
@@ -85,14 +88,13 @@ export function ApprovalDecisionForm({
             required
             value={evidenceIdentifier}
             onChange={(event) => setEvidenceIdentifier(event.target.value)}
+            aria-describedby={evidenceHelpId}
             readOnly={Boolean(evidenceChoices.find((choice) => choice.value === selectedEvidenceVersionId)?.autoEvidenceIdentifier)}
             minLength={8}
             placeholder="例：メールは自動入力、PDFは署名ブロックのハッシュ"
+            spellCheck={false}
             style={{ ...inputStyle, width: 300 }}
           />
-          <span style={noteStyle}>
-            保存済みEMLのMessage-IDはシステムが自動抽出します。PDF・画像などEML以外だけ入力できます。
-          </span>
         </label>
         <label style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 13 }}>証跡の入手経路<span style={{ color: '#b91c1c' }}>（必須）</span></span>

@@ -643,6 +643,7 @@ export type MakerPoSendEvidenceEvaluation =
       attachmentHashes: string[];
       evidenceDocumentVersionId: string | null;
       pendingCode: MakerPoEmlPendingCode;
+      pendingCodes: MakerPoEmlPendingCode[];
       reasonNote: string;
       verification: MakerPoSendVerification;
     }
@@ -903,6 +904,7 @@ export function evaluateMakerPoSendEvidence(
       attachmentHashes: provenAttachmentHashes,
       evidenceDocumentVersionId,
       pendingCode: emlEvaluation.pendingCode,
+      pendingCodes: emlEvaluation.pendingCodes,
       reasonNote: emlEvaluation.reasonNote,
       verification
     };

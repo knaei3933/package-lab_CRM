@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  formatMakerPoVerificationChecks,
   pendingManualVerificationEvents,
   rejectedSendManualVerifications,
   sendManualVerificationsFromAuditEvents
@@ -38,6 +39,19 @@ function verificationAudit(
 }
 
 describe('maker PO pending manual-verification list', () => {
+  it('exposes every pending code and detail from persisted verification checks', () => {
+    expect(formatMakerPoVerificationChecks([
+      { key: 'code_consistency', status: 'failed', detail: 'page(s) 1; required=FSO-1' },
+      { key: 'pending_codes', status: 'failed', detail: 'SCAN...,EVIDENCE_CODE_MISMATCH' },
+      { key: 'message_id', status: 'passed', detail: null }
+    ])).toEqual([
+      'code_consistency:page(s) 1; required=FSO-1',
+      'pending_codes:SCAN...,EVIDENCE_CODE_MISMATCH',
+      'message_id'
+    ]);
+    expect(formatMakerPoVerificationChecks(null)).toEqual([]);
+  });
+
   it('reads rejected and confirmed decisions from maker-PO audit rows', () => {
     const verifications = sendManualVerificationsFromAuditEvents([
       verificationAudit('audit-rejected', 'event-rejected', 'rejected'),

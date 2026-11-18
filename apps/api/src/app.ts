@@ -2867,6 +2867,9 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     const versionId = context.req.param('versionId');
     const [evidence] = await db.select({
       projectId: documents.projectId,
+      documentId: documents.id,
+      documentType: documents.documentType,
+      versionNumber: documentVersions.versionNumber,
       storagePath: documentVersions.storagePath
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
@@ -2874,6 +2877,22 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     if (!evidence) return context.json({ error: '書類バージョンが見つかりません' }, 404);
     const readDecision = canPerform(toActor(user), 'document:read', 'F1', evidence.projectId);
     if (!readDecision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (evidence.documentType !== 'approval_evidence') {
+      return context.json({
+        error: 'Message-IDの自動抽出は承認証跡（approval_evidence）だけが対象です',
+        code: 'EVIDENCE_DOCUMENT_TYPE_INVALID'
+      }, 422);
+    }
+    const [currentVersion] = await db.select({ id: documentVersions.id })
+      .from(documentVersions)
+      .where(eq(documentVersions.documentId, evidence.documentId))
+      .orderBy(desc(documentVersions.versionNumber)).limit(1);
+    if (!currentVersion || currentVersion.id !== versionId) {
+      return context.json({
+        error: '最新版の承認証跡だけがMessage-ID自動抽出の対象です',
+        code: 'EVIDENCE_VERSION_NOT_CURRENT'
+      }, 422);
+    }
     let bytes: Buffer;
     try {
       bytes = await readFile(evidence.storagePath);
@@ -3971,7 +3990,8 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
             verificationMethod: null as string | null,
             verificationChecks: null as unknown,
             verificationNote: null as string | null,
-            pendingCode: null as string | null
+            pendingCode: null as string | null,
+            pendingCodes: [] as string[]
           }
           : {
             evidenceDocumentVersionId: evaluation.evidenceDocumentVersionId,
@@ -3985,7 +4005,10 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
               : null,
             pendingCode: evaluation.verificationStatus === 'PENDING_MANUAL_VERIFICATION'
               ? evaluation.pendingCode
-              : null
+              : null,
+            pendingCodes: evaluation.verificationStatus === 'PENDING_MANUAL_VERIFICATION'
+              ? evaluation.pendingCodes
+              : []
           };
         const sendEvent = {
           id: uuidv7(now),
@@ -4074,6 +4097,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
           verificationChecks: evidenceFacts.verificationChecks,
           verificationNote: evidenceFacts.verificationNote,
           pendingCode: evidenceFacts.pendingCode,
+          pendingCodes: evidenceFacts.pendingCodes,
           event: sendEvent,
           // M8-OPERATOR FIX 1: staff register the send, so their answer carries
           // the work view; an admin caller still gets the whole frozen paper.
@@ -4120,6 +4144,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         verificationChecks: outcome.verificationChecks,
         verificationNote: outcome.verificationNote,
         pendingCode: outcome.pendingCode,
+        pendingCodes: outcome.pendingCodes,
         // Storing the EML is not proof of delivery: VERIFIED means the email
         // content and its recipient were verified against the frozen paper.
         // Delivery is asserted only by the representative's manual verification.

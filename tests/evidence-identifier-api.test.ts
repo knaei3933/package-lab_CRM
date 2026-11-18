@@ -34,6 +34,7 @@ const orderId = uuidv7();
 const proofVersionId = uuidv7();
 const proofDocumentId = uuidv7();
 const emlDocumentId = uuidv7();
+const oldEmlVersionId = uuidv7();
 const emlVersionId = uuidv7();
 const textVersionId = uuidv7();
 const textDocumentId = uuidv7();
@@ -150,6 +151,8 @@ beforeAll(async () => {
   const proofBytes = Buffer.from('proof bytes\n', 'utf8');
   const proofPath = path.join(storageRoot, 'documents', 'proof.bin');
   await writeFile(proofPath, proofBytes, { mode: 0o600 });
+  const oldEmlPath = path.join(storageRoot, 'documents', 'approval-old.bin');
+  await writeFile(oldEmlPath, Buffer.from('superseded non-message\n', 'utf8'), { mode: 0o600 });
 
   const baseVersion = (input: {
     id: string;
@@ -216,7 +219,8 @@ beforeAll(async () => {
   ]);
   await db.insert(documentVersions).values([
     baseVersion({ id: proofVersionId, documentId: proofDocumentId, versionNumber: 1, path: proofPath, bytes: proofBytes, mime: 'text/plain' }),
-    baseVersion({ id: emlVersionId, documentId: emlDocumentId, versionNumber: 1, path: emlPath, bytes: emlBytes, mime: 'message/rfc822' }),
+    baseVersion({ id: oldEmlVersionId, documentId: emlDocumentId, versionNumber: 1, path: oldEmlPath, bytes: Buffer.from('superseded non-message\n', 'utf8'), mime: 'message/rfc822' }),
+    baseVersion({ id: emlVersionId, documentId: emlDocumentId, versionNumber: 2, path: emlPath, bytes: emlBytes, mime: 'message/rfc822' }),
     baseVersion({ id: textVersionId, documentId: textDocumentId, versionNumber: 1, path: textPath, bytes: textBytes, mime: 'text/plain' })
   ]);
   await db.insert(artworkRevisions).values({
@@ -273,12 +277,21 @@ describe('stored EML evidence identifier (G6)', () => {
     expect(result.body).toMatchObject({ code: 'EVIDENCE_IDENTIFIER_NOT_EXTRACTABLE' });
   });
 
+  it('limits extraction to the current approval_evidence version', async () => {
+    const proof = await getAs(staffToken, `/api/document-versions/${proofVersionId}/evidence-message-id`);
+    expect(proof.status).toBe(422);
+    expect(proof.body).toMatchObject({ code: 'EVIDENCE_DOCUMENT_TYPE_INVALID' });
+    const oldVersion = await getAs(staffToken, `/api/document-versions/${oldEmlVersionId}/evidence-message-id`);
+    expect(oldVersion.status).toBe(422);
+    expect(oldVersion.body).toMatchObject({ code: 'EVIDENCE_VERSION_NOT_CURRENT' });
+  });
+
   it('server-side approval replaces client text with the stored mail own Message-ID', async () => {
     const approval = await postAs(staffToken, `/api/artwork-revisions/${revisionId}/approvals`, {
       organization: 'customer',
       decision: 'APPROVE',
       evidenceSource: 'email',
-      eventTime: '2026-11-17T09:00:00.000Z',
+      eventTime: '2026-11-17T18:00:00+09:00',
       evidenceIdentifier: PARENT_ID,
       evidenceDocumentVersionId: emlVersionId
     });

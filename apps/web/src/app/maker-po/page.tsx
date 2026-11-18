@@ -7,6 +7,7 @@ import { callApi, loadSessionUser, readSelectedProjectId } from '../../lib/api';
 import {
   hasCancellationAcknowledgement,
   hasVerifiedSendEvent,
+  formatMakerPoVerificationChecks,
   isCancellableMakerPoStatus,
   isOrderPastMakerAcceptance,
   loadMakerPoBoard,
@@ -699,12 +700,9 @@ function MakerPoManualVerificationBlock({ poId, events }: { poId: string; events
           {Array.isArray(event.verificationChecks) && event.verificationChecks.length > 0 ? (
             <p style={noteStyle}>
               自動チェックの結果: {event.verificationChecks.length}件
-              <span style={monoStyle}>
-                {' '}（{event.verificationChecks
-                  .map((check) => String(check?.check ?? check?.code ?? check?.id ?? ''))
-                  .filter((entry) => entry.length > 0)
-                  .join('、')}）
-              </span>
+	              <span style={monoStyle}>
+	                {' '}（{formatMakerPoVerificationChecks(event.verificationChecks).join('、')}）
+	              </span>
             </p>
           ) : null}
           <ActionForm

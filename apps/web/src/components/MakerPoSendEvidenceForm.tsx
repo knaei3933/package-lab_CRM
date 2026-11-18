@@ -6,7 +6,14 @@ import type { FormAction } from './ActionForm';
 import { SelectField, TextField } from './fields';
 import { datetimeLocalToIso } from '../lib/datetime';
 import type { EmlFormEditedFields, EmlFormValues } from '../lib/eml-form';
-import { isSentAtBeforeCeoApproval, makerPoMailSubject, mergeEmlFormValues, readEmlFormDefaults } from '../lib/eml-form';
+import {
+  insertMakerPoMailSubject,
+  isSentAtBeforeCeoApproval,
+  makerPoMailSubject,
+  mergeEmlFormValues,
+  readEmlFormDefaults,
+  utf8TextToBase64
+} from '../lib/eml-form';
 import type { Choice } from '../lib/types';
 import {
   buttonStyle,
@@ -99,20 +106,33 @@ export function MakerPoSendEvidenceForm({
       headerReader.onload = () => {
         const emlText = typeof headerReader.result === 'string' ? headerReader.result : '';
         const defaults = readEmlFormDefaults(emlText);
-      setSelectedSubject(defaults.subject ?? '製造先発注書');
+        let outgoingEml = emlText;
+        let outgoingSubject = defaults.subject ?? '製造先発注書';
+        const notices: string[] = [];
+        if (orderCode) {
+          const subjectEdit = insertMakerPoMailSubject(emlText, orderCode);
+          outgoingEml = subjectEdit.eml;
+          outgoingSubject = subjectEdit.subject;
+          notices.push(subjectEdit.inserted
+            ? `件名の先頭に発注コード（${orderCode}）を挿入しました。`
+            : `件名には発注コード（${orderCode}）が既にあります。`);
+        }
+        setContentBase64(utf8TextToBase64(outgoingEml));
+        setSelectedSubject(outgoingSubject);
         setFormState((current) => ({
           values: mergeEmlFormValues(current.values, current.edited, defaults),
           edited: current.edited
         }));
         if (defaults.sentAt !== undefined) {
-          setMessage(
+          notices.push(
             formState.edited.sentAt
               ? `EMLのDateヘッダーを読み取りました（${defaults.sentAt}）。編集済みの送信日時は保持します。`
               : `EMLのDateヘッダーから送信日時を既定値として設定しました（${defaults.sentAt}）。必要なら修正できます。`
           );
         } else {
-          setMessage('EMLのDateヘッダーを読み取れませんでした。送信日時は手動で入力してください。');
+          notices.push('EMLのDateヘッダーを読み取れませんでした。送信日時は手動で入力してください。');
         }
+        setMessage(notices.join(' '));
       };
       headerReader.onerror = () => {
         setMessage('EMLヘッダーを読み取れませんでした。送信日時と送信元は手動で確認してください。');
@@ -161,13 +181,15 @@ export function MakerPoSendEvidenceForm({
       <p style={noteStyle}>
         原本をここで渡す場合は、下の「送信証跡の書類バージョン」は「（選択なし）」のままで構いません
         （APIが send_evidence 書類として保存して検証します）。Thunderbirdの送信済みフォルダから
-        書き出した .eml をそのまま選んでください。
+        書き出した .eml を選ぶと、このフォームが件名の先頭に発注コードを挿入して送信します。
       </p>
 
       {orderCode ? (
         <div style={noteStyle}>
-          送信前の件名テンプレート（先頭の発注コードは自動挿入）:
-          <div style={monoStyle}>{makerPoMailSubject(orderCode, selectedSubject ?? undefined)}</div>
+          送信するEMLの件名（先頭の発注コードは自動挿入されます）:
+          <div data-testid="maker-po-subject-preview" style={monoStyle} translate="no">
+            {makerPoMailSubject(orderCode, selectedSubject ?? undefined)}
+          </div>
         </div>
       ) : null}
 
@@ -231,8 +253,8 @@ export function MakerPoSendEvidenceForm({
         <button type="submit" disabled={pending} style={{ ...buttonStyle, opacity: pending ? 0.6 : 1 }}>
           {pending ? '送信中…' : '手動送信を記録する'}
         </button>
-        {message ? <span style={errorMessageStyle}>{message}</span> : null}
-        {state ? <span style={state.ok ? okMessageStyle : errorMessageStyle}>{state.message}</span> : null}
+        {message ? <span aria-live="polite" style={errorMessageStyle}>{message}</span> : null}
+        {state ? <span aria-live="polite" style={state.ok ? okMessageStyle : errorMessageStyle}>{state.message}</span> : null}
       </div>
     </form>
   );

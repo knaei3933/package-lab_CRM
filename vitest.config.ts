@@ -1,9 +1,10 @@
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  esbuild: { jsx: 'automatic' },
   test: {
     environment: 'node',
-    include: ['tests/**/*.test.ts'],
+    include: ['tests/**/*.test.ts', 'tests/**/*.test.tsx'],
     setupFiles: ['tests/setup.ts'],
     testTimeout: 30000,
     hookTimeout: 60000,

@@ -105,6 +105,21 @@ export function isOrderPastMakerAcceptance(orderStatus: string): boolean {
   return isFilmOrderPastMakerAcceptance(orderStatus);
 }
 
+/**
+ * Shows every machine-readable check, including the aggregated pending_codes
+ * row used when a PDF has several blocking reasons.
+ */
+export function formatMakerPoVerificationChecks(
+  checks: Array<Record<string, unknown>> | null | undefined
+): string[] {
+  if (!Array.isArray(checks)) return [];
+  return checks.map((check) => {
+    const key = typeof check?.key === 'string' ? check.key : '';
+    const detail = typeof check?.detail === 'string' ? check.detail : '';
+    return detail.length > 0 ? `${key}:${detail}` : key;
+  }).filter((entry) => entry.length > 0);
+}
+
 export interface OrderMakerPoBoard {
   order: FilmSupplyOrderView;
   makerPurchaseOrders: MakerPoViewRow[];
