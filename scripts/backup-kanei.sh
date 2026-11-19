@@ -46,49 +46,59 @@ trap cleanup EXIT
 [[ -r "$BACKUP_GPG_PUBLIC_KEY" ]] || { echo "BACKUP_GPG_PUBLIC_KEY is not readable" >&2; exit 2; }
 retention_days=${BACKUP_RETENTION_DAYS:-35}
 
-# Generate libpq's 0600 pgpass file and export all connection fields. pg_dump
-# receives only the database name, never a credential-bearing URL.
-node --input-type=module - "$pgpass" <<'JS'
-import { open } from 'node:fs/promises';
-import pg from 'pg';
-const [pgpassPath] = process.argv.slice(2);
-const url = new URL(process.env.DATABASE_URL);
-if (!url.hostname || !url.pathname.slice(1)) throw new Error('DATABASE_URL is not parseable');
+parse_database_url="$work/connection.tsv"
+if ! node --input-type=module - "$pgpass" "$parse_database_url" <<'JS'
+import { writeFile } from 'node:fs/promises';
+const [pgpassPath, connectionPath] = process.argv.slice(2);
+let url;
+try {
+  url = new URL(process.env.DATABASE_URL);
+  if (!url.hostname || !url.pathname.slice(1)) throw new Error('missing host or database');
+} catch {
+  console.error('DATABASE_URL is invalid; connection details were not printed');
+  process.exit(2);
+}
 const escapePgpass = (value) => value.replaceAll('\\', '\\\\').replaceAll(':', '\\:');
-const line = [
+const pgpass = [
   escapePgpass(url.hostname),
   url.port || '5432',
   escapePgpass(decodeURIComponent(url.pathname.slice(1))),
   escapePgpass(decodeURIComponent(url.username || '')),
   escapePgpass(decodeURIComponent(url.password || ''))
 ].join(':') + '\n';
-const handle = await open(pgpassPath, 'wx', 0o600);
-await handle.writeFile(line, { mode: 0o600 });
-await handle.close();
-JS
-readarray -t connection < <(node --input-type=module - <<'JS'
-import pg from 'pg';
-const url = new URL(process.env.DATABASE_URL);
-const values = [
+const connection = [
   url.hostname,
   url.port || '5432',
   decodeURIComponent(url.pathname.slice(1)),
   decodeURIComponent(url.username || '')
-];
-for (const value of values) process.stdout.write(`${value}\n`);
+].join('\t') + '\n';
+await writeFile(pgpassPath, pgpass, { mode: 0o600, flag: 'w' });
+await writeFile(connectionPath, connection, { mode: 0o600, flag: 'w' });
 JS
-)
+then
+  echo 'DATABASE_URL is invalid; connection details were not printed' >&2
+  exit 2
+fi
+IFS=$'\t' read -r connection_host connection_port connection_database connection_user < "$parse_database_url"
 export PGPASSFILE="$pgpass"
-export PGHOST="${connection[0]}"
-export PGPORT="${connection[1]}"
-export PGDATABASE="${connection[2]}"
-export PGUSER="${connection[3]}"
+export PGHOST="$connection_host"
+export PGPORT="$connection_port"
+export PGDATABASE="$connection_database"
+export PGUSER="$connection_user"
 chmod 0600 "$PGPASSFILE"
 
 pg_dump_cmd=${PG_DUMP_CMD:-pg_dump}
+# The default path must produce a pg_restore-compatible archive. Wrappers may
+# accept this explicit option too; duplicate identical options are harmless.
+client_major=$("$pg_dump_cmd" --version | awk '{split($3, version, "."); print version[1]}')
+server_major=$(psql --tuples-only --no-align -c 'show server_version_num' | awk '{printf "%d\n", int($1/10000)}')
+if [[ ! "$client_major" =~ ^[0-9]+$ || ! "$server_major" =~ ^[0-9]+$ || "$client_major" -lt "$server_major" ]]; then
+  echo "pg_dump major ($client_major) is older than server major ($server_major); install a version-matched PostgreSQL client" >&2
+  exit 2
+fi
 db_gpg="$work/database.dump.gpg"
 # Stream custom dump directly into encryption. No plaintext dump file exists.
-"$pg_dump_cmd" "$PGDATABASE" \
+"$pg_dump_cmd" --format=custom "$PGDATABASE" \
   | gpg --batch --yes --trust-model always --recipient-file "$BACKUP_GPG_PUBLIC_KEY" \
     --output "$db_gpg" --encrypt
 [[ -s "$db_gpg" ]] || { echo 'encrypted database segment is empty' >&2; exit 2; }

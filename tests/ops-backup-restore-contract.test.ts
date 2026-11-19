@@ -12,6 +12,8 @@ describe('backup/restore operational contract', () => {
     }
     expect(backup).not.toContain('mkfifo');
     expect(backup).not.toContain('"$DATABASE_URL"');
+    expect(backup).toContain('"$pg_dump_cmd" --format=custom "$PGDATABASE"');
+    expect(backup).toContain('client_major=$("$pg_dump_cmd" --version');
   });
 
   it('restores via stdin and libpq environment without a credential URL argument', () => {
@@ -25,5 +27,17 @@ describe('backup/restore operational contract', () => {
 
   it('requires the restore source so hashes cannot silently read the live storage', () => {
     expect(restore).toContain('RESTORE_SOURCE_STORAGE_DIR; do');
+    expect(restoreNode).toContain('const mapped = relative(sourceRoot, recorded);');
+    expect(restoreNode).toContain("if (isAbsolute(mapped) || mapped.startsWith('..'))");
+    expect(restoreNode).toContain('const candidate = join(restoredRoot, mapped);');
+    expect(restore).toContain("[[ \"$db_magic\" == 'PGDMP' ]]");
+    expect(restore).toContain('database backup is not pg_dump custom format');
+  });
+
+  it('keeps generated restore credentials inside the trapped cleanup directory', () => {
+    expect(restore).toContain('work=$(mktemp -d "${TMPDIR:-/tmp}/kanei-restore-XXXXXX")');
+    expect(restore).toContain('trap cleanup EXIT');
+    expect(restore).toContain('PGPASSFILE="$work/pgpass"');
+    expect(restore).not.toContain("mktemp \"${TMPDIR:-/tmp}/kanei-restore-pgpass");
   });
 });

@@ -42,6 +42,14 @@ if (web?.environment?.KANEI_WEB_BEHIND_TRUSTED_PROXY !== '1') {
 if (!api?.environment?.TRUSTED_PROXY_CIDRS || String(api.environment.TRUSTED_PROXY_CIDRS).trim().length === 0) {
   errors.push('api TRUSTED_PROXY_CIDRS must be non-empty');
 }
+for (const cidr of String(api.environment.TRUSTED_PROXY_CIDRS ?? '').split(',')) {
+  const [network, prefix] = cidr.trim().split('/');
+  const bits = network?.includes(':') ? 128 : 32;
+  if (!network || prefix === undefined || !/^[1-9][0-9]*$/.test(prefix)
+    || Number(prefix) > bits) {
+    errors.push(`invalid api TRUSTED_PROXY_CIDRS entry: ${cidr}`);
+  }
+}
 const published = [];
 for (const service of Object.entries(services)) {
   for (const port of service[1].ports ?? []) {

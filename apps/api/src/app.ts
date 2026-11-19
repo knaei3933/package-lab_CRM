@@ -622,7 +622,7 @@ export function createApp({
         // Only a trusted forwarded source rotates identities; serialize the
         // source first so username rotation cannot bypass its count.
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${sourceEntityId}, 215469))`);
-        const sourceEvents = await tx.select({
+          const sourceEvents = await tx.select({
           action: auditEvents.action,
           occurredAt: auditEvents.occurredAt,
           entityId: auditEvents.entityId
@@ -648,8 +648,7 @@ export function createApp({
         }
       }
 
-      // A representative reset starts a new identity epoch; append-only failed
-      // attempts before it never count again.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${guardEntityId}, 215468))`);
       const identityEvents = await tx.select({
         action: auditEvents.action,
         occurredAt: auditEvents.occurredAt,
@@ -669,7 +668,6 @@ export function createApp({
         event.action === 'LOGIN_FAILED'
         && (!identityResetAt || event.occurredAt > identityResetAt)
       );
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${guardEntityId}, 215468))`);
       const latestFailureAt = recentFailures[0]?.occurredAt;
       if (recentFailures.length >= LOGIN_FAILURE_LIMIT && latestFailureAt) {
         const lockDuration = loginLockDurationMs(recentFailures.length);

@@ -1,3 +1,5 @@
+import { validateTrustedProxyCidrs } from './login-guard.js';
+
 export interface ApiEnv {
   databaseUrl: string;
   port: number;
@@ -8,6 +10,7 @@ export interface ApiEnv {
   trustedProxyConfigured: boolean;
   isProduction: boolean;
 }
+
 
 /**
  * Production is fail-closed: an operator must explicitly name the trusted web
@@ -24,6 +27,8 @@ export function loadApiEnv(
     .split(',')
     .map((cidr) => cidr.trim())
     .filter(Boolean);
+  const cidrErrors = validateTrustedProxyCidrs(configuredCidrs);
+  if (cidrErrors.length > 0) throw new Error(`Invalid TRUSTED_PROXY_CIDRS: ${cidrErrors.join('; ')}`);
   if (isProduction && configuredCidrs.length === 0) {
     throw new Error('TRUSTED_PROXY_CIDRS is required when NODE_ENV=production');
   }

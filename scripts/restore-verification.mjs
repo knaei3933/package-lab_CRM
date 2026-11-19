@@ -2,7 +2,7 @@
 // Verification runs from libpq environment fields; no credential URL is passed.
 import { createHash } from 'node:crypto';
 import { readFile, writeFileSync } from 'node:fs';
-import { isAbsolute, join, relative } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import pg from 'pg';
 
@@ -40,13 +40,15 @@ const versions = (await client.query('select storage_path, sha256 from document_
 let checked = 0;
 const missingOrMismatch = [];
 for (const row of versions) {
-  let candidate = row.storage_path;
-  if (candidate.startsWith(source)) candidate = join(restored, relative(source, candidate));
-  else if (!isAbsolute(candidate)) candidate = join(restored, candidate);
-  if (!isAbsolute(candidate) || !(candidate.startsWith('/tmp/') || candidate.startsWith('/var/lib/kanei/'))) {
-    missingOrMismatch.push(candidate);
+  const recorded = resolve(row.storage_path);
+  const sourceRoot = resolve(source);
+  const restoredRoot = resolve(restored);
+  const mapped = relative(sourceRoot, recorded);
+  if (isAbsolute(mapped) || mapped.startsWith('..')) {
+    missingOrMismatch.push(recorded);
     continue;
   }
+  const candidate = join(restoredRoot, mapped);
   try {
     const actual = createHash('sha256').update(await readFileAsync(candidate)).digest('hex');
     if (actual === row.sha256) checked += 1; else missingOrMismatch.push(candidate);

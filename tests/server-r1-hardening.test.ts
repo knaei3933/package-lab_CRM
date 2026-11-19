@@ -166,6 +166,21 @@ describe('R1 hardening', () => {
     }).host).toBe('192.0.2.10');
   });
 
+  it('refuses malformed production proxy CIDRs instead of trusting every peer', () => {
+    for (const cidr of ['172.28.28.0/', '172.28.28.0/0', '172.28.28.0/33', 'not-a-cidr', '10.0.0.0/8;10.1.0.0/16']) {
+      expect(() => loadApiEnv({
+        DATABASE_URL: databaseUrl,
+        NODE_ENV: 'production',
+        TRUSTED_PROXY_CIDRS: cidr
+      })).toThrow(/Invalid TRUSTED_PROXY_CIDRS/);
+    }
+    expect(loadApiEnv({
+      DATABASE_URL: databaseUrl,
+      NODE_ENV: 'production',
+      TRUSTED_PROXY_CIDRS: '172.28.28.0/24'
+    }).trustedProxyCidrs).toEqual(['172.28.28.0/24']);
+  });
+
   it('rejects a browser cross-origin mutation while accepting the configured same origin', async () => {
     const cross = await hardeningApp.request('/api/auth/login', {
       method: 'POST',
@@ -300,6 +315,13 @@ describe('R1 hardening', () => {
   });
 
   it('survives parallel guesses with one atomic lock decision', async () => {
+    // This shape guard is the deterministic counterpart to the parallel race:
+    // reads must happen only after the identity advisory lock is acquired.
+    const appSource = await readFile(path.resolve(process.cwd(), 'apps/api/src/app.ts'), 'utf8');
+    const lockIndex = appSource.indexOf('pg_advisory_xact_lock(hashtextextended(${guardEntityId}, 215468))');
+    const queryIndex = appSource.indexOf('const identityEvents = await tx.select');
+    expect(lockIndex).toBeGreaterThan(-1);
+    expect(queryIndex).toBeGreaterThan(lockIndex);
     const responses = await Promise.all(Array.from({ length: 30 }, (_, index) =>
       hardeningApp.request('/api/auth/login', {
         method: 'POST',

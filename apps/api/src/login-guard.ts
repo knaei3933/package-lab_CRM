@@ -107,6 +107,27 @@ export function peerIsTrusted(remoteAddress: string, trustedCidrs: readonly stri
   return trustedCidrs.some((cidr) => ipMatchesCidr(remoteAddress, cidr));
 }
 
+export function validateTrustedProxyCidrs(values: readonly string[]): string[] {
+  const errors: string[] = [];
+  for (const raw of values) {
+    const cidr = raw.trim();
+    const slashCount = (cidr.match(/\//g) ?? []).length;
+    const [network, prefixText] = cidr.split('/');
+    const prefix = prefixText === undefined ? NaN : Number(prefixText);
+    const bits = network?.includes(':') ? 128 : 32;
+    if (!network || slashCount !== 1 || prefixText === '' || !Number.isInteger(prefix)
+      || prefix < 1 || prefix > bits) {
+      errors.push(`invalid trusted proxy CIDR "${raw}"`);
+      continue;
+    }
+    const parts = network.split('.');
+    if (bits === 32 && (parts.length !== 4 || parts.some(part => !/^\d{1,3}$/.test(part) || Number(part) > 255))) {
+      errors.push(`invalid trusted proxy CIDR "${raw}"`);
+    }
+  }
+  return errors;
+}
+
 export interface ResolvedClientAddress {
   address: string;
   source: 'forwarded' | 'socket' | 'unknown';
