@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { hasApprovalHistoryForDesign, type ApprovalEventView, type ArtworkRevisionView } from '@kanei/core';
 
 /**
  * UI batch F (demo-eml/ui-batch-f/REPORT.md): the web side of the server R1/R2
@@ -396,6 +397,28 @@ describe('registerArtworkRevisionAction: change request facts (R1-9 / F2)', () =
       message: '印刷開始後の変更は代表者だけが登録できます。代表者に登録を依頼してください（版も状態も記録されていません）。'
     });
   });
+
+  // server-batch-f4 M-6: the API is the authority on whether the facts were stored.
+  it('facts sent but the API saw no approval history (invalidatedApprovals false): says the change facts were not recorded', async () => {
+    captured.answer = { ok: true, status: 201, data: { id: 'r2', status: 'APPROVAL_PENDING', invalidatedApprovals: false }, error: null };
+    expect(await registerArtworkRevisionAction(null, revisionForm(COMPLETE))).toEqual({
+      ok: true,
+      message: '版を記録しました。このデザインには承認の記録（承認・取消）がないため、変更依頼の項目（依頼組織・理由・証憑・影響・実費）は記録されていません（通常の版として登録されました）。'
+    });
+    expect(captured.bodies[0]!.body).toHaveProperty('changeRequest');
+  });
+
+  it('facts sent and the API invalidated approvals (controlled change): the plain recorded message', async () => {
+    captured.answer = { ok: true, status: 201, data: { id: 'r2', status: 'CHANGE_REVIEW', invalidatedApprovals: true }, error: null };
+    expect(await registerArtworkRevisionAction(null, revisionForm(COMPLETE))).toEqual({ ok: true, message: '記録しました。' });
+  });
+
+  it('no facts sent: an ordinary revision keeps the plain message whatever the API says about history', async () => {
+    captured.answer = { ok: true, status: 201, data: { id: 'r1', invalidatedApprovals: false }, error: null };
+    expect(await registerArtworkRevisionAction(null, revisionForm({ lotMarking: 'L1' }))).toEqual({ ok: true, message: '記録しました。' });
+    captured.answer = { ok: true, status: 201, data: null, error: null };
+    expect(await registerArtworkRevisionAction(null, revisionForm(COMPLETE))).toEqual({ ok: true, message: '記録しました。' });
+  });
 });
 
 describe('lib/change-request: what the form knows before the API answers', () => {
@@ -430,6 +453,48 @@ describe('lib/change-request: what the form knows before the API answers', () =>
       changeRequest.changeRequestKey('o2', 'C')
     ]));
     expect(changeRequest.changeRequestKey('o1', ' A ')).toBe(changeRequest.changeRequestKey('o1', 'A'));
+  });
+
+  // server-batch-f4 M-6 / API_CONTRACT.md: any recorded APPROVE or REVOKE on any
+  // revision of the design within the order — the core rule the API applies.
+  const record = (id: string, artworkRevisionId: string, decision: string, detailsHidden = false) => ({
+    id, artworkRevisionId, organization: detailsHidden ? '—' : 'customer', decision: detailsHidden ? '—' : decision,
+    designKey: '—', revisionNo: null, evidenceDocumentVersionId: '—', evidenceSource: '—', eventTime: null, recordedAt: 'x', detailsHidden
+  });
+
+  it('a REVOKE-only history is approval history, as the API counts it', () => {
+    const keys = changeRequest.approvalHistoryKeys([revision('r1', 'o1', 'A')], [record('e1', 'r1', 'REVOKE')], []);
+    expect(keys).toEqual([changeRequest.changeRequestKey('o1', 'A')]);
+  });
+
+  it('agrees with the API rule (core hasApprovalHistoryForDesign) for every order and design of a mixed history', () => {
+    const revisions = [
+      revision('a1', 'o1', 'A'), revision('a2', 'o1', 'A'),
+      revision('b1', 'o1', 'B'),
+      revision('c1', 'o1', 'C'),
+      revision('a9', 'o2', 'A'),
+      revision('d1', 'o2', 'D'), revision('d2', 'o2', 'D')
+    ];
+    const records = [
+      record('e1', 'a1', 'APPROVE'), record('e2', 'a1', 'REVOKE'), // o1/A: approve then revoke on an older revision
+      record('e3', 'b1', 'REVOKE'), //                                  o1/B: REVOKE only
+      record('e4', 'd1', 'APPROVE', true) //                            o2/D: decision value unreadable ('—'): still a record
+      //                                                                o1/C and o2/A: no record (o2/A shares A's key name only)
+    ];
+    const keys = new Set(changeRequest.approvalHistoryKeys(revisions, records, []));
+    const coreRevisions = revisions.map((r) => ({ id: r.id, designKey: r.designKey, revisionNo: r.revisionNo, fileSha256: 'x' }));
+    const coreEvents = records.map((e) => ({
+      id: e.id, artworkRevisionId: e.artworkRevisionId, organization: 'customer', decision: e.decision === 'REVOKE' ? 'REVOKE' : 'APPROVE',
+      approvedFileSha256: 'x', eventTime: new Date('2026-11-19T00:00:00Z'), recordedAt: new Date('2026-11-19T00:00:00Z')
+    })) as unknown as ApprovalEventView[];
+    const pairs = [['o1', 'A'], ['o1', 'B'], ['o1', 'C'], ['o2', 'A'], ['o2', 'D']] as const;
+    const expected = pairs.map(([orderId, designKey]) => hasApprovalHistoryForDesign(
+      coreRevisions.filter((r) => revisions.find((x) => x.id === r.id)!.filmSupplyOrderId === orderId) as unknown as ArtworkRevisionView[],
+      coreEvents,
+      designKey
+    ));
+    expect(expected).toEqual([true, true, false, false, true]);
+    expect(pairs.map(([orderId, designKey]) => keys.has(changeRequest.changeRequestKey(orderId, designKey)))).toEqual(expected);
   });
 
   it('printing has started from FILM_IN_PRODUCTION on; a hold or cancellation review reads the state it left', () => {

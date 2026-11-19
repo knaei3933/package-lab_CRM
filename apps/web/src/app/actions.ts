@@ -104,11 +104,12 @@ function deliveryUnitMismatchRefusal(data: unknown, submittedUnit: string): Acti
 async function post(
   path: string,
   body: unknown,
-  refusal?: (code: string | null, data: unknown) => ActionState | null
+  refusal?: (code: string | null, data: unknown) => ActionState | null,
+  success?: (data: unknown) => ActionState | null
 ): Promise<ActionState> {
   const result = await callApi(path, { method: 'POST', body });
   if (result.ok) {
-    return { ok: true, message: '記録しました。' };
+    return success?.(result.data) ?? { ok: true, message: '記録しました。' };
   }
   const specific = refusal?.(apiCode(result.data), result.data);
   if (specific) return specific;
@@ -487,9 +488,27 @@ export async function registerArtworkRevisionAction(_prev: ActionState | null, f
   return post(
     `/api/film-supply-orders/${encodeURIComponent(orderId)}/artwork-revisions`,
     body,
-    changeRequestRefusal
+    changeRequestRefusal,
+    'changeRequest' in body ? changeRequestNotStored : undefined
   );
 }
+
+/**
+ * Server-batch-f4 M-6: the API decides whether a revision is a controlled
+ * change (`invalidatedApprovals`). Without approval history it records the
+ * revision and drops the change facts, so the operator must not read
+ * 「記録しました」 as "the change request was recorded".
+ */
+function changeRequestNotStored(data: unknown): ActionState | null {
+  const invalidated = typeof data === 'object' && data !== null
+    ? (data as { invalidatedApprovals?: unknown }).invalidatedApprovals
+    : undefined;
+  if (invalidated !== false) return null;
+  return { ok: true, message: CHANGE_REQUEST_NOT_STORED_MESSAGE };
+}
+
+const CHANGE_REQUEST_NOT_STORED_MESSAGE =
+  '版を記録しました。このデザインには承認の記録（承認・取消）がないため、変更依頼の項目（依頼組織・理由・証憑・影響・実費）は記録されていません（通常の版として登録されました）。';
 
 // ---------------------------------------------------------------------------
 // UI batch F: the controlled change request (CHANGE_REVIEW facts, Q-A4).

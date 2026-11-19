@@ -22,7 +22,8 @@ const ORGANIZATION_CHOICES = [
 /**
  * UI batch F (server R1-9 / F2, representative Q-A4): the controlled change
  * request of the revision form. A new revision of a design that already has
- * approval history invalidates those approvals, and the API then requires the
+ * approval history (any APPROVE or REVOKE, server-batch-f4 M-6) invalidates
+ * those approvals, and the API then requires the
  * change facts: 依頼組織・変更理由・証憑・納期／数量／金額への影響・実費 (zero
  * stated explicitly) and the new lot marking. The fields open — and become
  * required — when the order and design typed above have approval history on
@@ -98,7 +99,7 @@ export function ChangeRequestFields({
             {/* Posted like the checkbox would be; the operator cannot opt out of what the API requires. */}
             <input type="hidden" readOnly name="changeRequest" value="on" />
             <p style={noteStyle}>
-              このデザインには承認の記録があるため、新しい版は変更依頼として登録されます（既存の承認は無効になります）。
+              このデザインには承認の記録（承認または取消）があるため、新しい版は変更依頼として登録されます（既存の承認は無効になります）。
               次の項目とロット表記はすべて必須です。
             </p>
           </>
@@ -106,7 +107,7 @@ export function ChangeRequestFields({
           <CheckboxField
             name="changeRequest"
             label="変更依頼として登録する"
-            hint="承認の記録があるデザインに新しい版を登録するときは必須です。初回の版では入力しても記録されません。"
+            hint="承認の記録（承認または取消）があるデザインに新しい版を登録するときは必須です。承認の記録がないデザインでは、入力しても記録されません。"
           />
         )}
         {open ? (

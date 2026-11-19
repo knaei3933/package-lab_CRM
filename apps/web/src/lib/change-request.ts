@@ -9,16 +9,29 @@ export { changeRequestKey };
 /**
  * UI batch F (server R1-9 / F2, representative Q-A4): which revision form
  * submissions are a controlled change request, read from what the screen
- * already loaded. This is a convenience for the form only — the API decides
- * (`invalidatedApprovals`: the design has approval history), and the form
- * still lets the operator open the change fields by hand.
+ * already loaded. The API decides (server-batch-f4 M-6, core
+ * `hasApprovalHistoryForDesign`) and answers it as `invalidatedApprovals`; the
+ * form mirrors that rule and still lets the operator open the change fields by
+ * hand, and the action reads the API's answer back (actions.ts).
  */
 
 /**
- * Designs with approval history: any approval decision recorded on any of the
- * design's revisions (the gate's per-organization state, or an approval record
- * — whose decision may be withheld from staff, so any record counts), or a
- * revision that already invalidated approvals (the history never goes away).
+ * Designs with approval history, by the API contract (server-batch-f4 M-6):
+ * any recorded approval decision — APPROVE or REVOKE — on any revision of the
+ * design within the order. A REVOKE-only history counts. The rule is read on
+ * the approval records the screen loaded, whatever their decision value (the
+ * API counts every decision; staff, the role that registers revisions, sees
+ * artworkRevisionId on every record).
+ *
+ * Two more signals are read only as proof that such a record exists, for when
+ * the record list did not reach the screen (the audit read is capped at 500
+ * rows): a revision that already invalidated approvals (admin only — the flag
+ * is off the staff audit allowlist), and a gate state that saw a decision on
+ * the current revision (valid, latest decision, revoked, invalidated by a
+ * newer revision, pending identifier — each needs a recorded decision).
+ * Neither can make the form stricter than the API: a stricter form would send
+ * change facts that the API does not store. A looser form is answered by the
+ * API's 422 CHANGE_REQUEST_ORGANIZATION_REQUIRED, which the action reads back.
  */
 export function approvalHistoryKeys(
   revisions: readonly ArtworkRevisionView[],

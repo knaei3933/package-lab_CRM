@@ -81,6 +81,8 @@ const { default: ApprovalsPage } = await import('../apps/web/src/app/approvals/p
 const { default: DocumentsPage } = await import('../apps/web/src/app/documents/page.js');
 const { registerArtworkRevisionAction } = await import('../apps/web/src/app/actions.js');
 const { GET: downloadRelay } = await import('../apps/web/src/app/api/document-versions/[versionId]/download/route.js');
+const { loadWorkspace } = await import('../apps/web/src/lib/project-data.js');
+const { approvalHistoryKeys, changeRequestKey } = await import('../apps/web/src/lib/change-request.js');
 
 function signIn(role: Role) {
   signedIn.role = role;
@@ -130,8 +132,14 @@ async function uploadDocument(input: { documentType: string; issuerEntity: strin
   return response.body as unknown as { document: { id: string }; version: { id: string } };
 }
 
-/** An order whose design `label-front` is dual approved (the real chain, no maker paper). */
-async function dualApprovedOrder() {
+/**
+ * An order whose design `label-front` is dual approved (the real chain, no
+ * maker paper) — or, given `decisions`, carries exactly those recorded
+ * decisions on its first revision (server-batch-f4 M-6 history shapes).
+ */
+async function dualApprovedOrder(
+  decisions: ReadonlyArray<readonly ['customer' | 'seven', 'APPROVE' | 'REVOKE']> = [['customer', 'APPROVE'], ['seven', 'APPROVE']]
+) {
   const tag = nextTag();
   const sevenPo = await postAs('staff', `/api/projects/${projectId}/seven-purchase-orders`, { poNumber: `SEVEN-UF-${tag}` });
   const sevenPoId = sevenPo.body.id as string;
@@ -160,14 +168,14 @@ async function dualApprovedOrder() {
     designKey: 'label-front', fileDocumentVersionId: proof.version.id
   });
   expect(revision.status).toBe(201);
-  for (const organization of ['customer', 'seven'] as const) {
+  for (const [organization, decision] of decisions) {
     const identifier = `MSG-UF-${organization.toUpperCase()}-${nextTag()}`;
     const evidence = await uploadDocument({
       documentType: 'approval_evidence', issuerEntity: organization === 'seven' ? 'seven' : 'customer_generated',
       designKey: 'label-front', orderId, sevenPoId, content: `composite approval evidence\nidentifier: ${identifier}\n`
     });
     expect((await postAs('staff', `/api/artwork-revisions/${revision.body.id as string}/approvals`, {
-      organization, decision: 'APPROVE', evidenceSource: 'email', eventTime: '2026-11-15T10:00:00.000Z',
+      organization, decision, evidenceSource: 'email', eventTime: '2026-11-15T10:00:00.000Z',
       evidenceIdentifier: identifier, evidenceDocumentVersionId: evidence.version.id
     })).status).toBe(201);
   }
@@ -450,5 +458,82 @@ describe('review M5: /approvals reads Message-IDs only for evidence an open appr
       expect(after.added).toBe(0);
       expect(after.reads).not.toContain(readOf(backVersions[1]?.id));
     }
+  });
+});
+
+describe('server-batch-f4 M-6: the web approval-history judgement equals the API contract', () => {
+  const SHAPES = [
+    ['APPROVE by both organizations', [['customer', 'APPROVE'], ['seven', 'APPROVE']]],
+    ['REVOKE only', [['customer', 'REVOKE']]],
+    ['APPROVE then REVOKE', [['customer', 'APPROVE'], ['customer', 'REVOKE']]],
+    ['no recorded decision', []]
+  ] as const;
+
+  it.each(['staff', 'admin'] as const)('as %s: every history shape is judged the same by the screen data and by the API', async (role) => {
+    const chains = [];
+    for (const [label, decisions] of SHAPES) chains.push({ label, chain: await dualApprovedOrder(decisions) });
+    signIn(role);
+    const workspace = await loadWorkspace(projectId);
+    // Approval records alone (no gate fallback): the rule the API applies.
+    const keys = new Set(approvalHistoryKeys(workspace.revisions, workspace.approvalEvents, []));
+    const verdicts = [];
+    for (const { label, chain } of chains) {
+      const web = keys.has(changeRequestKey(chain.orderId, 'label-front'));
+      const bare = await postAs(role, `/api/film-supply-orders/${chain.orderId}/artwork-revisions`, {
+        designKey: 'label-front', fileDocumentVersionId: chain.newProofVersionId
+      });
+      const api = bare.status === 422 && bare.body.code === 'CHANGE_REQUEST_ORGANIZATION_REQUIRED';
+      if (!api) expect(bare.status, JSON.stringify(bare.body)).toBe(201);
+      verdicts.push({ label, web, api });
+    }
+    expect(verdicts).toEqual([
+      { label: 'APPROVE by both organizations', web: true, api: true },
+      { label: 'REVOKE only', web: true, api: true },
+      { label: 'APPROVE then REVOKE', web: true, api: true },
+      { label: 'no recorded decision', web: false, api: false }
+    ]);
+  });
+
+  it('REVOKE-only design through the form: refused without facts, stored with them, the order enters CHANGE_REVIEW', async () => {
+    const chain = await dualApprovedOrder([['customer', 'REVOKE']]);
+    signIn('staff');
+    const bare = await registerArtworkRevisionAction(null, form({
+      orderId: chain.orderId, designKey: 'label-front', fileDocumentVersionId: chain.newProofVersionId
+    }));
+    expect(bare).toEqual({
+      ok: false,
+      message: 'このデザインには承認の記録があるため、変更依頼として登録する必要があります。「変更依頼として登録する」にチェックを入れ、各項目を入力してください。'
+    });
+    const recorded = await registerArtworkRevisionAction(null, form({
+      orderId: chain.orderId, designKey: 'label-front', fileDocumentVersionId: chain.newProofVersionId,
+      ...FACTS, changeEvidenceDocumentVersionId: chain.changeEvidenceVersionId
+    }));
+    expect(recorded).toEqual({ ok: true, message: '記録しました。' });
+    const stored = (await revisionsOf(chain.orderId)).find((row) => row.revisionNo === 2)!;
+    expect(stored).toMatchObject({ changeRequestedOrganization: 'customer', changeReason: '顧客依頼：成分表示の修正', lotMarking: 'LOT-UF-B' });
+    const [order] = await db.select({ status: filmSupplyOrders.status }).from(filmSupplyOrders).where(eq(filmSupplyOrders.id, chain.orderId));
+    expect(order?.status).toBe('CHANGE_REVIEW');
+  });
+
+  it('facts opened by hand on a design without history: the API stores none of them and the form says so', async () => {
+    const chain = await dualApprovedOrder([]);
+    signIn('staff');
+    const workspace = await loadWorkspace(projectId);
+    expect(approvalHistoryKeys(workspace.revisions, workspace.approvalEvents, [])).not.toContain(changeRequestKey(chain.orderId, 'label-front'));
+    const result = await registerArtworkRevisionAction(null, form({
+      orderId: chain.orderId, designKey: 'label-front', fileDocumentVersionId: chain.newProofVersionId,
+      ...FACTS, changeEvidenceDocumentVersionId: chain.changeEvidenceVersionId
+    }));
+    expect(result).toEqual({
+      ok: true,
+      message: '版を記録しました。このデザインには承認の記録（承認・取消）がないため、変更依頼の項目（依頼組織・理由・証憑・影響・実費）は記録されていません（通常の版として登録されました）。'
+    });
+    const stored = (await revisionsOf(chain.orderId)).find((row) => row.revisionNo === 2)!;
+    expect(stored).toMatchObject({
+      changeRequestedOrganization: null, changeReason: null, changeEvidenceDocumentVersionId: null,
+      impactSchedule: null, impactQuantity: null, impactAmount: null, actualCost: null
+    });
+    const [order] = await db.select({ status: filmSupplyOrders.status }).from(filmSupplyOrders).where(eq(filmSupplyOrders.id, chain.orderId));
+    expect(order?.status).toBe('APPROVAL_PENDING');
   });
 });
