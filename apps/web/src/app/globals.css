@@ -380,6 +380,13 @@ h3 {
   color: var(--ink-sub);
 }
 
+/* UI batch E (W2, DESIGN_RULES §12): the 「○○画面を開く」 links are touch targets too. */
+.next-card .next-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+}
+
 .next-list {
   display: grid;
   gap: var(--space-3);
@@ -848,6 +855,31 @@ h3 {
 
   .app-main {
     margin-top: var(--space-4);
+  }
+
+  /* The project selector on one line: 案件 + select (fills the row) + 切り替え. The
+     live status line stays in the tree (announcements) but takes no room while empty. */
+  .project-picker-row {
+    row-gap: 0;
+  }
+
+  .project-picker-field {
+    flex: 1 1 0;
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+
+  .project-picker-field select {
+    width: 100%;
+  }
+
+  .project-picker-row > [role='status'] {
+    flex-basis: 100%;
+  }
+
+  .project-picker-row > [role='status']:empty {
+    height: 0;
+    overflow: hidden;
   }
 
   .stepper {

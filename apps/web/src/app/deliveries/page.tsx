@@ -16,7 +16,7 @@ import { shortId } from '../../lib/short-id';
 import type { DeliveryView } from '../../lib/project-data';
 import { HIDDEN_BY_ROLE_LABEL } from '../../lib/redaction';
 import { cardStyle, infoBoxStyle, noteStyle, tdStyle, thStyle } from '../../lib/ui';
-import { formatTimestamp, READINESS_BLOCKING_LABELS, unitChoices, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary';
+import { formatTimestamp, READINESS_BLOCKING_LABELS, unitChoices, unitLabel, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary';
 
 export const dynamic = 'force-dynamic';
 
@@ -76,7 +76,8 @@ export default async function DeliveriesPage() {
     code: order.code,
     lines: order.lines.map((line) => ({
       value: line.id,
-      label: `明細${line.lineNumber}：${line.description}（${line.orderedQuantity}${line.unit}）`
+      label: `明細${line.lineNumber}：${line.description}（${line.orderedQuantity}${unitLabel(line.unit)}）`,
+      unit: line.unit
     }))
   }));
   const fillingOrderOptions = workspace.fillingOrders.map((order) => ({
@@ -84,7 +85,8 @@ export default async function DeliveriesPage() {
     code: order.code,
     lines: order.lines.map((line) => ({
       value: line.id,
-      label: `明細${line.lineNumber}：${line.description}（${line.orderedQuantity}${line.unit}）`
+      label: `明細${line.lineNumber}：${line.description}（${line.orderedQuantity}${unitLabel(line.unit)}）`,
+      unit: line.unit
     }))
   }));
 

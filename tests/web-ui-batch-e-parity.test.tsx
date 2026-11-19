@@ -410,7 +410,7 @@ describe('F-00 (server batch E 9972e99) on the screen: the delivery line choice 
     const order = workspace.filmOrders.find((candidate) => candidate.id === orderId)!;
     expect(order.lines).toHaveLength(1);
     const lineId = order.lines[0]!.id;
-    // What deliveries/page.tsx turns into 「明細1：合成フィルム本体（納品検証）（1000.000sheets）」 (the select
+    // What deliveries/page.tsx turns into 「明細1：合成フィルム本体（納品検証）（1000.000枚）」 (the select
     // fills after an order is chosen in the client form; the browser check covers that step).
     expect(order.lines[0]).toMatchObject({ lineNumber: 1, description: '合成フィルム本体（納品検証）', orderedQuantity: '1000.000', unit: 'sheets' });
     expect(order.detailsHidden).toBe(false);

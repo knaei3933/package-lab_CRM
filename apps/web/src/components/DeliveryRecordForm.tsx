@@ -23,10 +23,15 @@ import {
 import type { Choice } from '../lib/types';
 import { buttonStyle, inputStyle, noteStyle } from '../lib/ui';
 
+/** UI batch E: a line choice carries its ordered unit, so the 単位 follows the line. */
+export interface DeliveryLineChoice extends Choice {
+  unit?: string | undefined;
+}
+
 export interface DeliveryOrderOption {
   id: string;
   code: string;
-  lines: Choice[];
+  lines: DeliveryLineChoice[];
 }
 
 interface DeliveryRecordFormProps {
@@ -121,7 +126,13 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices, successH
                 <select
                   name="lineId"
                   value={lineId}
-                  onChange={(event) => setLineId(event.target.value)}
+                  onChange={(event) => {
+                    setLineId(event.target.value);
+                    // UI batch E: a delivery is recorded in its line's unit (the API's line key
+                    // includes the unit), so choosing the line sets it; it stays changeable.
+                    const lineUnit = lines.find((line) => line.value === event.target.value)?.unit;
+                    if (lineUnit && unitChoices.some((choice) => choice.value === lineUnit)) setUnit(lineUnit);
+                  }}
                   required
                   aria-describedby={lineFeedback.describedBy}
                   aria-invalid={lineFeedback.invalid}
