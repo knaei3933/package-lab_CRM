@@ -204,7 +204,7 @@ describe('official registration date overwrite rule', () => {
 });
 
 describe('staff approval evidence selection contract', () => {
-  it('exposes document type and artwork binding, but not raw upload snapshots', () => {
+  it('exposes document identity and artwork binding, but not raw upload snapshots', () => {
     const row = {
       id: 'audit-1',
       action: 'DOCUMENT_VERSION_UPLOADED',
@@ -217,6 +217,8 @@ describe('staff approval evidence selection contract', () => {
         versionNumber: 1,
         documentType: 'approval_evidence',
         filmSupplyOrderId: 'order-1',
+        issuerEntity: 'customer_generated',
+        originalFilename: 'approval-evidence.eml',
         designKey: 'label-front',
         sha256: 'secret-hash',
         storagePath: '/secret/path',
@@ -236,6 +238,8 @@ describe('staff approval evidence selection contract', () => {
       versionNumber: 1,
       documentType: 'approval_evidence',
       filmSupplyOrderId: 'order-1',
+      issuerEntity: 'customer_generated',
+      originalFilename: 'approval-evidence.eml',
       designKey: 'label-front'
     });
     expect(staffView.requestMetadata).toEqual({ operation: 'document:create' });
@@ -246,7 +250,7 @@ describe('staff approval evidence selection contract', () => {
     expect(viewerView).not.toHaveProperty('requestMetadata');
   });
 
-  it('carries a real upload through staff audit selection into approval recording', async () => {
+  it('carries a real upload identity through staff audit selection into approval recording', async () => {
     const checklist = {
       issuerNameRecorded: true,
       issuerName: '合成セブン',
@@ -308,11 +312,13 @@ describe('staff approval evidence selection contract', () => {
       versionNumber: 1,
       documentType: 'approval_evidence',
       filmSupplyOrderId: heldOrderId,
+      issuerEntity: 'customer_generated',
+      originalFilename: 'approval_evidence-real-selection.txt',
       designKey: 'label-front'
     });
     expect(staffEvent.afterState).not.toHaveProperty('sha256');
     expect(staffEvent.afterState).not.toHaveProperty('storagePath');
-    expect(staffEvent.afterState).not.toHaveProperty('originalFilename');
+    expect(staffEvent.afterState).not.toHaveProperty('byteSize');
 
     const approval = await postAs(staffToken, `/api/artwork-revisions/${revision.id}/approvals`, {
       organization: 'customer',

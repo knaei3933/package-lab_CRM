@@ -83,6 +83,8 @@ const STAFF_STATE_KEYS: readonly string[] = [
   // evidence and where it is bound; bytes, amounts and storage paths stay out.
   'documentType',
   'documentId',
+  'originalFilename',
+  'issuerEntity',
   'filmSupplyOrderId',
   'designKey',
   'versionNumber',

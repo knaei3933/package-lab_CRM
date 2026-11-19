@@ -1252,6 +1252,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         eq(filmSupplyOrderLines.filmSupplyOrderId, orderId)
       )).limit(1);
     if (!line) return context.json({ error: '明細が見つかりません', code: 'FILM_ORDER_LINE_NOT_FOUND' }, 422);
+    if (unitCheck.unit !== line.unit) {
+      return context.json({
+        error: `納品単位は明細単位（${line.unit}）と一致させてください`,
+        code: 'DELIVERY_UNIT_MISMATCH'
+      }, 422);
+    }
 
     const [existing] = await db.select({ maxSequence: sql<number>`coalesce(max(${filmDeliveries.deliverySequence}), 0)` })
       .from(filmDeliveries)
@@ -2397,6 +2403,12 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         eq(fillingOrderLines.fillingOrderId, orderId)
       )).limit(1);
     if (!line) return context.json({ error: '明細が見つかりません', code: 'FILLING_ORDER_LINE_NOT_FOUND' }, 422);
+    if (unitCheck.unit !== line.unit) {
+      return context.json({
+        error: `納品単位は明細単位（${line.unit}）と一致させてください`,
+        code: 'DELIVERY_UNIT_MISMATCH'
+      }, 422);
+    }
 
     const [existing] = await db.select({ maxSequence: sql<number>`coalesce(max(${fillingDeliveries.deliverySequence}), 0)` })
       .from(fillingDeliveries)
@@ -2893,6 +2905,7 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         afterState: {
           ...versionRow,
           documentType: (newDocument ?? existingDocument)?.documentType,
+          issuerEntity: (newDocument ?? existingDocument)?.issuerEntity ?? null,
           filmSupplyOrderId: (newDocument ?? existingDocument)?.filmSupplyOrderId ?? null,
           designKey: (newDocument ?? existingDocument)?.designKey ?? null
         },
@@ -3202,14 +3215,29 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     await db.transaction(async (tx) => {
       await tx.insert(filmSupplyOrders).values(order);
       if (lines.length > 0) {
-        await tx.insert(filmSupplyOrderLines).values(lines.map((line) => ({
+        const insertedLines = await tx.insert(filmSupplyOrderLines).values(lines.map((line) => ({
           id: uuidv7(now),
           filmSupplyOrderId: orderId,
           lineNumber: line.lineNumber,
           description: line.description,
           orderedQuantity: line.orderedQuantity,
           unit: line.unit
-        })));
+        }))).returning();
+        // F-00 contract parity: the Seven-PO-bound creation endpoint and the
+        // project creation endpoint must both make every line selectable on the
+        // deliveries screen. operation distinguishes the creation path.
+        for (const line of insertedLines) {
+          await recordAuditEvent(tx, {
+            projectId: po.projectId,
+            actorUserId: user.id,
+            action: 'FILM_SUPPLY_ORDER_LINE_CREATED',
+            entityType: 'film_supply_order_line',
+            entityId: line.id,
+            afterState: line,
+            occurredAt: now,
+            requestMetadata: { operation: 'supply_order:create', filmSupplyOrderId: orderId }
+          });
+        }
       }
       await recordAuditEvent(tx, {
         projectId: po.projectId,
@@ -4579,7 +4607,11 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       action: 'DOCUMENT_VERSION_UPLOADED',
       entityType: 'document_version',
       entityId: versionRow.id,
-      afterState: { ...versionRow, makerPurchaseOrderId: input.makerPurchaseOrderId },
+      afterState: {
+        ...versionRow,
+        issuerEntity: 'kanei',
+        makerPurchaseOrderId: input.makerPurchaseOrderId
+      },
       occurredAt: now,
       requestMetadata: { operation: 'maker_po:send_evidence', documentId }
     });
