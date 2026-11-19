@@ -644,7 +644,7 @@ describe('S3: the audit history answer is filtered by role, the rows never are',
       for (const stateKey of ['beforeState', 'afterState']) {
         const state = event[stateKey] as Record<string, unknown> | null | undefined;
         if (state && typeof state === 'object') {
-          expect(Object.keys(state).every((key) => ['status', 'readinessState', 'isReady'].includes(key))).toBe(true);
+          expect(Object.keys(state).every((key) => ['status', 'readinessState', 'isReady', 'paymentTerms'].includes(key))).toBe(true);
         }
       }
     }

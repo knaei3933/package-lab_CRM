@@ -242,7 +242,7 @@ describe('server batch E follow-ups', () => {
       actor: null
     };
     const viewer = buildAuditViewForRole('viewer', [orderRow])[0]!;
-    expect(viewer.afterState).toEqual({ status: 'DRAFT' });
+    expect(viewer.afterState).toEqual({ status: 'DRAFT', paymentTerms: 'prepaid' });
     expect(JSON.stringify(viewer)).not.toContain('FSO-SECRET-E2');
     expect(viewer).not.toHaveProperty('requestMetadata');
   });

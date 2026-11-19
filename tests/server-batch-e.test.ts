@@ -179,9 +179,20 @@ describe('persona friction batch E', () => {
       orderedQuantity: '100000.000',
       unit: 'sheets'
     });
-    for (const forbiddenKey of ['unitPrice', 'price', 'amount', 'commissionAmount', 'paymentTerms']) {
+    for (const forbiddenKey of ['unitPrice', 'price', 'amount', 'commissionAmount']) {
       expect(staffLine?.afterState).not.toHaveProperty(forbiddenKey);
     }
+
+    const staffOrderAudit = await requestAs(staffToken, 'GET', `/api/projects/${projectId}/audit-history?entityType=film_supply_order`);
+    expect(staffOrderAudit.status).toBe(200);
+    const staffOrder = (staffOrderAudit.body as {
+      events: Array<{ action: string; afterState: Record<string, unknown> | null }>
+    })
+      .events.find((event) => event.action === 'FILM_SUPPLY_ORDER_CREATED');
+    expect(staffOrder?.afterState).toMatchObject({
+      status: 'DRAFT',
+      paymentTerms: 'prepaid'
+    });
 
     const viewerAudit = await requestAs(viewerToken, 'GET', `/api/projects/${projectId}/audit-history?entityType=film_supply_order`);
     expect(viewerAudit.status).toBe(200);
@@ -189,7 +200,7 @@ describe('persona friction batch E', () => {
       events: Array<{ action: string; afterState: Record<string, unknown> | null }>
     })
       .events.find((event) => event.action === 'FILM_SUPPLY_ORDER_CREATED');
-    expect(viewerOrder?.afterState).toEqual({ status: 'DRAFT' });
+    expect(viewerOrder?.afterState).toEqual({ status: 'DRAFT', paymentTerms: 'prepaid' });
 
     // The order row remains selectable as the delivery form's line parent.
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId));
@@ -332,5 +343,42 @@ describe('persona friction batch E', () => {
       blocking: ['FILM_DELIVERY_CONFIRMED']
     });
     expect(staffReadiness.afterState).not.toHaveProperty('commissionAmount');
+  });
+
+  it('shows payment terms to staff and viewer while keeping amounts excluded', () => {
+    const row: AuditHistoryRow = {
+      id: 'payment-term-event-1',
+      action: 'FILM_SUPPLY_ORDER_PAYMENT_TERMS_UPDATED',
+      entityType: 'film_supply_order',
+      entityId: 'order-1',
+      beforeState: { paymentTerms: 'undetermined' },
+      afterState: {
+        paymentTerms: 'prepaid',
+        unitPrice: '1000',
+        totalAmount: '100000',
+        commissionAmount: '5000'
+      },
+      occurredAt: new Date('2026-11-19T10:00:00.000Z'),
+      requestMetadata: { operation: 'film_order:update_payment_terms' },
+      actor: null
+    };
+    const expectedState = { paymentTerms: 'prepaid' };
+    const staff = buildAuditViewForRole('staff', [row])[0]!;
+    const viewer = buildAuditViewForRole('viewer', [row])[0]!;
+    expect(staff.beforeState).toEqual({ paymentTerms: 'undetermined' });
+    expect(staff.afterState).toEqual(expectedState);
+    expect(viewer.beforeState).toEqual({ paymentTerms: 'undetermined' });
+    expect(viewer.afterState).toEqual(expectedState);
+    for (const view of [staff, viewer]) {
+      for (const forbiddenKey of ['unitPrice', 'totalAmount', 'commissionAmount']) {
+        expect(view.afterState).not.toHaveProperty(forbiddenKey);
+        expect(view.beforeState).not.toHaveProperty(forbiddenKey);
+      }
+      expect(view).not.toHaveProperty('unitPrice');
+      expect(view).not.toHaveProperty('totalAmount');
+      expect(view).not.toHaveProperty('commissionAmount');
+    }
+    expect(staff.requestMetadata).toEqual({ operation: 'film_order:update_payment_terms' });
+    expect(viewer).not.toHaveProperty('requestMetadata');
   });
 });

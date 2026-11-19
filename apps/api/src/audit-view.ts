@@ -50,7 +50,10 @@ const STAFF_STATE_KEYS: readonly string[] = [
   'name',
   // Seventh-persona visibility decision: staff can identify the business work
   // (orders, POs, lines and approval evidence), but monetary amounts, unit
-  // prices and commission amounts stay off this allowlist.
+  // prices and commission amounts stay off this allowlist. The 2026-11-19
+  // representative decision classifies paymentTerms as a transaction term
+  // (not an amount), so staff and viewer may see it.
+  'paymentTerms',
   'poNumber',
   'officialRegisteredAt',
   'sevenPurchaseOrderId',
@@ -100,13 +103,15 @@ const STAFF_STATE_KEYS: readonly string[] = [
 const STAFF_REQUEST_METADATA_KEYS: readonly string[] = ['operation'];
 
 /**
- * Viewer is read-only and sees only lifecycle/readiness state, never business
- * identifiers, evidence details, or the fields needed to submit a write.
+ * Viewer is read-only and sees lifecycle/readiness state plus the approved
+ * public payment term. Business identifiers, evidence details, and fields
+ * needed to submit a write remain absent.
  */
 const VIEWER_STATE_KEYS: readonly string[] = [
   'status',
   'readinessState',
-  'isReady'
+  'isReady',
+  'paymentTerms'
 ];
 
 function allowlistObject(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
