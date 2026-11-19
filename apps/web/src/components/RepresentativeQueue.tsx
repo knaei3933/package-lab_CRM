@@ -43,7 +43,7 @@ export function RepresentativeQueuePanel({
             {queue.tasks.map((task) => (
               <tr key={`${task.projectId}-${task.orderId}`}>
                 <td style={tdStyle}>{task.projectLabel}</td>
-                <td style={tdStyle}>{task.orderCode}</td>
+                <td style={tdStyle} translate="no">{task.orderCode}</td>
                 <td style={tdStyle}>{task.work}</td>
                 <td style={tdStyle}>
                   {task.projectId === currentProjectId ? (

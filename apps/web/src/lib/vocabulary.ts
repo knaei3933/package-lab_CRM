@@ -215,8 +215,9 @@ export function formatMoney(currency: string | null | undefined, amount: string 
   const code = (currency ?? '').trim().toUpperCase();
   if (raw.length === 0) return '—';
   if (!/^\d+(\.\d+)?$/.test(raw)) return code ? `${code} ${raw}` : raw;
-  const [whole, fraction] = raw.split('.') as [string, string | undefined];
-  const grouped = `${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${fraction !== undefined ? `.${fraction}` : ''}`;
+  // Web Interface Guidelines: Intl.NumberFormat, keeping the recorded number of decimals.
+  const decimals = raw.split('.')[1]?.length ?? 0;
+  const grouped = new Intl.NumberFormat('ja-JP', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(Number(raw));
   if (code === 'JPY' || code === '') return code === 'JPY' ? `¥${grouped}` : grouped;
   return `${code} ${grouped}`;
 }

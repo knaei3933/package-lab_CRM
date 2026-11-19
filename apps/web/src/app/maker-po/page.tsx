@@ -811,7 +811,7 @@ function MakerPoOrderSection({
                 </td>
                 <td style={tdStyle}>{po.orderCode ?? po.snapshot?.order?.code ?? '—'}</td>
                 {isAdmin ? (
-                  <td style={tdStyle}>
+                  <td style={{ ...tdStyle, fontVariantNumeric: 'tabular-nums' }}>
                     {po.snapshot?.amounts
                       ? formatMoney(po.snapshot.amounts.currency, po.snapshot.amounts.totalAmount)
                       : '—'}
