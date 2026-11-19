@@ -436,7 +436,10 @@ export function hasApprovalHistoryForDesign(
   const revisionIds = new Set(
     revisions.filter((revision) => revision.designKey === designKey).map((revision) => revision.id)
   );
-  return events.some((event) => revisionIds.has(event.artworkRevisionId) && event.decision === 'APPROVE');
+  // Any recorded decision (including a REVOKE-only history) starts a
+  // controlled change epoch. This is the authoritative API contract mirrored
+  // by the web form; it avoids assuming a revoked-only design is unchanged.
+  return events.some((event) => revisionIds.has(event.artworkRevisionId));
 }
 
 const NORMAL_STATES_BEFORE_DUAL_APPROVAL: readonly string[] = [

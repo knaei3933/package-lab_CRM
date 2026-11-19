@@ -4,14 +4,29 @@ export interface ApiEnv {
   host: string;
   allowedOrigins: readonly string[];
   trustedProxyCidrs: readonly string[];
+  /** True only when the API expects a web relay and trusts its explicit CIDRs. */
+  trustedProxyConfigured: boolean;
   isProduction: boolean;
 }
 
+/**
+ * Production is fail-closed: an operator must explicitly name the trusted web
+ * relay network. A silent loopback fallback could count an entire shared
+ * relay as one source and lock unrelated accounts.
+ */
 export function loadApiEnv(
   env: Record<string, string | undefined> = process.env
 ): ApiEnv {
   const databaseUrl = env.DATABASE_URL;
   if (!databaseUrl) throw new Error('DATABASE_URL is required');
+  const isProduction = env.NODE_ENV === 'production';
+  const configuredCidrs = (env.TRUSTED_PROXY_CIDRS ?? '')
+    .split(',')
+    .map((cidr) => cidr.trim())
+    .filter(Boolean);
+  if (isProduction && configuredCidrs.length === 0) {
+    throw new Error('TRUSTED_PROXY_CIDRS is required when NODE_ENV=production');
+  }
   return {
     databaseUrl,
     port: Number(env.API_PORT ?? '3081'),
@@ -20,10 +35,10 @@ export function loadApiEnv(
       .split(',')
       .map((origin) => origin.trim())
       .filter(Boolean),
-    trustedProxyCidrs: (env.TRUSTED_PROXY_CIDRS ?? '127.0.0.1/32,::1/128')
-      .split(',')
-      .map((cidr) => cidr.trim())
-      .filter(Boolean),
-    isProduction: env.NODE_ENV === 'production'
+    trustedProxyCidrs: configuredCidrs.length > 0
+      ? configuredCidrs
+      : ['127.0.0.1/32', '::1/128'],
+    trustedProxyConfigured: configuredCidrs.length > 0,
+    isProduction
   };
 }

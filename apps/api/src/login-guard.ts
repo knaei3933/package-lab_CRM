@@ -6,6 +6,10 @@ export const LOGIN_BASE_LOCK_MS = 60 * 1000;
 export const LOGIN_MAX_LOCK_MS = 60 * 60 * 1000;
 export const LOGIN_IP_FAILURE_LIMIT = 10;
 
+export function loginGuardSourceEntity(remoteAddress: string) {
+  return `source:${remoteAddress}`;
+}
+
 export function loginGuardIdentity(username: string, remoteAddress: string) {
   return createHash('sha256')
     .update(['login_guard_v2', username.trim().toLowerCase(), remoteAddress].join('\0'))

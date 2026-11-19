@@ -69,7 +69,8 @@ beforeAll(async () => {
   hardeningApp = createApp({
     db,
     allowedOrigins: ['http://127.0.0.1:3081'],
-    trustedProxyCidrs: ["127.0.0.1/32", "::1/128"]
+    trustedProxyCidrs: ["127.0.0.1/32", "::1/128"],
+    trustedProxyConfigured: true
   });
   const now = new Date();
   await db.execute(`

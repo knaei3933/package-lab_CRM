@@ -209,19 +209,17 @@ describe('M3 revision registration gate', () => {
     }
   });
 
-  it('counts approval history only from APPROVE events of the same design', () => {
+  it('counts any recorded decision of the same design as controlled history', () => {
     const first = revision({ designKey: 'label-front' });
     const otherDesign = revision({ designKey: 'label-back' });
     const revocations = [
       event(first.id, { organization: 'customer', decision: 'REVOKE' }),
       event(otherDesign.id, { organization: 'seven' })
     ];
-    expect(hasApprovalHistoryForDesign([first, otherDesign], revocations, 'label-front')).toBe(false);
-    expect(hasApprovalHistoryForDesign(
-      [first, otherDesign],
-      [...revocations, event(first.id, { organization: 'customer' })],
-      'label-front'
-    )).toBe(true);
+    // A REVOKE-only design is still a recorded approval decision, so the
+    // authoritative API contract requires the same Q-A4 facts the web shows.
+    expect(hasApprovalHistoryForDesign([first, otherDesign], revocations, 'label-front')).toBe(true);
+    expect(hasApprovalHistoryForDesign([otherDesign], revocations, 'label-front')).toBe(false);
   });
 });
 

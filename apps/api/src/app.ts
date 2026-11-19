@@ -120,6 +120,7 @@ import {
   LOGIN_MAX_LOCK_MS,
   resolveClientAddress as resolveTrustedClientAddress,
   loginGuardIdentity,
+  loginGuardSourceEntity,
   loginIpDelayDurationMs,
   loginLockDurationMs
 } from './login-guard.js';
@@ -136,6 +137,8 @@ export interface AppOptions {
   secureCookies?: boolean;
   allowedOrigins?: readonly string[];
   trustedProxyCidrs?: readonly string[];
+  /** True only when operators explicitly configured relay CIDRs. */
+  trustedProxyConfigured?: boolean;
 }
 
 interface AuthContext {
@@ -512,7 +515,7 @@ export function isBrowserOriginAllowed(
 function clientAddress(
   context: { req: { raw: Request }; env?: unknown },
   trustedCidrs: readonly string[]
-): string {
+) {
   const incoming = (context as {
     env?: { incoming?: { socket?: { remoteAddress?: string } } };
   }).env?.incoming;
@@ -520,7 +523,7 @@ function clientAddress(
     peerAddress: incoming?.socket?.remoteAddress ?? null,
     forwardedFor: context.req.raw.headers.get('x-forwarded-for'),
     trustedCidrs
-  }).address;
+  });
 }
 
 /** Executor that can read inside the pool or one open transaction. */
@@ -556,7 +559,8 @@ export function createApp({
   db,
   secureCookies = false,
   allowedOrigins = [],
-  trustedProxyCidrs = ['127.0.0.1/32', '::1/128']
+  trustedProxyCidrs = ['127.0.0.1/32', '::1/128'],
+  trustedProxyConfigured = false
 }: AppOptions) {
   const app = new Hono<AuthContext>();
 
@@ -596,8 +600,11 @@ export function createApp({
       return context.json({ error: 'ユーザー名とパスワードが必要です' }, 400);
     }
 
-    const remoteAddress = clientAddress(context, trustedProxyCidrs);
+    const client = clientAddress(context, trustedProxyCidrs);
+    const remoteAddress = client.address;
+    const enforceSourceLimit = client.source === 'forwarded' && trustedProxyConfigured;
     const guardEntityId = loginGuardIdentity(body.username, remoteAddress);
+    const sourceEntityId = loginGuardSourceEntity(remoteAddress);
     const now = new Date();
 
     const [user] = await db.select().from(users).where(eq(users.username, body.username)).limit(1);
@@ -610,29 +617,59 @@ export function createApp({
     // The guard lookup, password work, and append-only failure write share one
     // identity lock. Parallel guesses cannot all pass the count check.
     const outcome = await db.transaction(async (tx) => {
-      // Serialize every identity guarded by this source first; otherwise an
-      // attacker can rotate usernames around the per-identity count.
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ip:${remoteAddress}`}, 215469))`);
-      const sourceFailures = await tx.select({
-        occurredAt: auditEvents.occurredAt,
-        entityId: auditEvents.entityId,
-        requestMetadata: auditEvents.requestMetadata
-      }).from(auditEvents)
-        .where(and(
-          eq(auditEvents.action, 'LOGIN_FAILED'),
-          eq(auditEvents.entityType, 'login_guard'),
-          sql`${auditEvents.occurredAt} > now() - interval '${sql.raw(String(Math.round(LOGIN_FAILURE_WINDOW_MS / 1000)))} seconds'`,
-          sql`${auditEvents.requestMetadata} ->> 'remoteAddress' = ${remoteAddress}`
-        ))
-        .orderBy(desc(auditEvents.occurredAt));
-      if (sourceFailures.length >= LOGIN_IP_FAILURE_LIMIT) {
-        const ipLatest = sourceFailures[0]?.occurredAt ?? now;
-        const ipRetry = ipLatest.getTime() + loginIpDelayDurationMs(sourceFailures.length) - now.getTime();
-        if (ipRetry > 0) return { outcome: 'locked' as const, retryAfterSeconds: Math.max(1, Math.ceil(ipRetry / 1000)) };
+      let sourceFailures: Array<{ occurredAt: Date; entityId: string }> = [];
+      if (enforceSourceLimit) {
+        // Only a trusted forwarded source rotates identities; serialize the
+        // source first so username rotation cannot bypass its count.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${sourceEntityId}, 215469))`);
+        const sourceEvents = await tx.select({
+          action: auditEvents.action,
+          occurredAt: auditEvents.occurredAt,
+          entityId: auditEvents.entityId
+        }).from(auditEvents)
+          .where(and(
+            eq(auditEvents.entityType, 'login_guard'),
+            sql`${auditEvents.occurredAt} > now() - interval '${sql.raw(String(Math.round(LOGIN_FAILURE_WINDOW_MS / 1000)))} seconds'`,
+            sql`${auditEvents.requestMetadata} ->> 'remoteAddress' = ${remoteAddress}`
+          ))
+          .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id));
+        const sourceResetAt = sourceEvents
+          .filter((event) => event.action === 'LOGIN_GUARD_RESET' && event.entityId === sourceEntityId)
+          .map((event) => event.occurredAt)
+          .sort((left, right) => right.getTime() - left.getTime())[0];
+        sourceFailures = sourceEvents.filter((event) =>
+          event.action === 'LOGIN_FAILED'
+          && (!sourceResetAt || event.occurredAt > sourceResetAt)
+        );
+        if (sourceFailures.length >= LOGIN_IP_FAILURE_LIMIT) {
+          const ipLatest = sourceFailures[0]?.occurredAt ?? now;
+          const ipRetry = ipLatest.getTime() + loginIpDelayDurationMs(sourceFailures.length) - now.getTime();
+          if (ipRetry > 0) return { outcome: 'locked' as const, retryAfterSeconds: Math.max(1, Math.ceil(ipRetry / 1000)) };
+        }
       }
 
+      // A representative reset starts a new identity epoch; append-only failed
+      // attempts before it never count again.
+      const identityEvents = await tx.select({
+        action: auditEvents.action,
+        occurredAt: auditEvents.occurredAt,
+        entityId: auditEvents.entityId
+      }).from(auditEvents)
+        .where(and(
+          eq(auditEvents.entityType, 'login_guard'),
+          eq(auditEvents.entityId, guardEntityId),
+          sql`${auditEvents.occurredAt} > now() - interval '${sql.raw(String(Math.round(LOGIN_FAILURE_WINDOW_MS / 1000)))} seconds'`
+        ))
+        .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id));
+      const identityResetAt = identityEvents
+        .filter((event) => event.action === 'LOGIN_GUARD_RESET')
+        .map((event) => event.occurredAt)
+        .sort((left, right) => right.getTime() - left.getTime())[0];
+      const recentFailures = identityEvents.filter((event) =>
+        event.action === 'LOGIN_FAILED'
+        && (!identityResetAt || event.occurredAt > identityResetAt)
+      );
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${guardEntityId}, 215468))`);
-      const recentFailures = sourceFailures.filter((failure) => failure.entityId === guardEntityId);
       const latestFailureAt = recentFailures[0]?.occurredAt;
       if (recentFailures.length >= LOGIN_FAILURE_LIMIT && latestFailureAt) {
         const lockDuration = loginLockDurationMs(recentFailures.length);
