@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
@@ -113,6 +113,15 @@ import {
   type DocumentContentCheck
 } from './document-storage.js';
 import { hashPassword, verifyPassword } from './password.js';
+import {
+  LOGIN_FAILURE_LIMIT,
+  LOGIN_FAILURE_WINDOW_MS,
+  LOGIN_IP_FAILURE_LIMIT,
+  LOGIN_MAX_LOCK_MS,
+  resolveClientAddress as resolveTrustedClientAddress,
+  loginGuardIdentity,
+  loginLockDurationMs
+} from './login-guard.js';
 import { buildAuditViewForRole, type AuditHistoryRow } from './audit-view.js';
 import {
   buildMakerPoEventViewForRole,
@@ -125,7 +134,7 @@ export interface AppOptions {
   db: AppDatabase;
   secureCookies?: boolean;
   allowedOrigins?: readonly string[];
-  trustProxy?: boolean;
+  trustedProxyCidrs?: readonly string[];
 }
 
 interface AuthContext {
@@ -495,28 +504,18 @@ export function isBrowserOriginAllowed(
   return options.allowedOrigins?.includes(origin) ?? false;
 }
 
-const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
-const LOGIN_FAILURE_LIMIT = 5;
-const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
-
-function loginGuardIdentity(username: string, remoteAddress: string) {
-  return createHash('sha256')
-    .update(['login_guard_v1', username.trim().toLowerCase(), remoteAddress].join('\0'))
-    .digest('hex');
-}
-
-function clientAddress(context: { req: { raw: Request } }, trustProxy: boolean): string {
-  if (trustProxy) {
-    const forwarded = context.req.raw.headers.get('x-forwarded-for');
-    if (forwarded) return forwarded.split(',')[0]?.trim() ?? 'unknown';
-    const real = context.req.raw.headers.get('x-real-ip');
-    if (real) return real.trim();
-  }
-  // In Hono's test client no socket is exposed; production uses the socket
-  // through the node adapter. A stable unknown value cannot split one source
-  // into many identities, so the account-side limit still applies.
-  return (context as { env?: { incoming?: { socket?: { remoteAddress?: string } } } })
-    .env?.incoming?.socket?.remoteAddress ?? 'unknown';
+function clientAddress(
+  context: { req: { raw: Request }; env?: unknown },
+  trustedCidrs: readonly string[]
+): string {
+  const incoming = (context as {
+    env?: { incoming?: { socket?: { remoteAddress?: string } } };
+  }).env?.incoming;
+  return resolveTrustedClientAddress({
+    peerAddress: incoming?.socket?.remoteAddress ?? null,
+    forwardedFor: context.req.raw.headers.get('x-forwarded-for'),
+    trustedCidrs
+  }).address;
 }
 
 /** Executor that can read inside the pool or one open transaction. */
@@ -552,13 +551,13 @@ export function createApp({
   db,
   secureCookies = false,
   allowedOrigins = [],
-  trustProxy = false
+  trustedProxyCidrs = ['127.0.0.1/32', '::1/128']
 }: AppOptions) {
   const app = new Hono<AuthContext>();
 
   app.use('*', async (context, next) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(context.req.method)) return next();
-    if (isBrowserOriginAllowed(context.req.raw, { allowedOrigins, trustProxy })) return next();
+    if (isBrowserOriginAllowed(context.req.raw, { allowedOrigins, trustProxy: trustedProxyCidrs.length > 0 })) return next();
     return context.json({
       error: 'オリジンが許可されていません',
       code: 'CSRF_ORIGIN_REJECTED'
@@ -592,56 +591,88 @@ export function createApp({
       return context.json({ error: 'ユーザー名とパスワードが必要です' }, 400);
     }
 
-    const remoteAddress = clientAddress(context, trustProxy);
+    const remoteAddress = clientAddress(context, trustedProxyCidrs);
     const guardEntityId = loginGuardIdentity(body.username, remoteAddress);
     const now = new Date();
-    const recentFailures = await db.select({
-      occurredAt: auditEvents.occurredAt
-    }).from(auditEvents)
-      .where(and(
-        eq(auditEvents.action, 'LOGIN_FAILED'),
-        eq(auditEvents.entityType, 'login_guard'),
-        eq(auditEvents.entityId, guardEntityId),
-        sql`${auditEvents.occurredAt} > now() - interval '${sql.raw(String(Math.round(LOGIN_FAILURE_WINDOW_MS / 1000)))} seconds'`
-      ))
-      .orderBy(desc(auditEvents.occurredAt));
-    const latestFailureAt = recentFailures[0]?.occurredAt;
-    if (recentFailures.length >= LOGIN_FAILURE_LIMIT
-      && latestFailureAt
-      && now.getTime() - latestFailureAt.getTime() < LOGIN_LOCKOUT_MS) {
-      const retryAfterSeconds = Math.max(
-        1,
-        Math.ceil((latestFailureAt.getTime() + LOGIN_LOCKOUT_MS - now.getTime()) / 1000)
-      );
+
+    const [user] = await db.select().from(users).where(eq(users.username, body.username)).limit(1);
+    const credentialMatches = user !== undefined && user.isActive && user.deletedAt === null
+      ? await verifyPassword(body.password, user.passwordHash)
+      : false;
+
+    // The guard lookup, password work, and append-only failure write share one
+    // identity lock. Parallel guesses cannot all pass the count check.
+    const outcome = await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${guardEntityId}, 215468))`);
+      const recentFailures = await tx.select({
+        occurredAt: auditEvents.occurredAt,
+        requestMetadata: auditEvents.requestMetadata
+      }).from(auditEvents)
+        .where(and(
+          eq(auditEvents.action, 'LOGIN_FAILED'),
+          eq(auditEvents.entityType, 'login_guard'),
+          eq(auditEvents.entityId, guardEntityId),
+          sql`${auditEvents.occurredAt} > now() - interval '${sql.raw(String(Math.round(LOGIN_FAILURE_WINDOW_MS / 1000)))} seconds'`
+        ))
+        .orderBy(desc(auditEvents.occurredAt));
+
+      const sameIpFailures = recentFailures.filter((failure) => {
+        const metadata = failure.requestMetadata as { remoteAddress?: unknown } | null;
+        return metadata?.remoteAddress === remoteAddress;
+      });
+      if (sameIpFailures.length >= LOGIN_IP_FAILURE_LIMIT) {
+        const ipLatest = sameIpFailures[0]?.occurredAt ?? now;
+        const ipExcess = sameIpFailures.length - LOGIN_IP_FAILURE_LIMIT;
+        const ipRetry = ipLatest.getTime() + Math.min(LOGIN_MAX_LOCK_MS, 60_000 * 2 ** ipExcess) - now.getTime();
+        if (ipRetry > 0) {
+          return { outcome: 'locked' as const, retryAfterSeconds: Math.max(1, Math.ceil(ipRetry / 1000)) };
+        }
+      }
+
+      const latestFailureAt = recentFailures[0]?.occurredAt;
+      if (recentFailures.length >= LOGIN_FAILURE_LIMIT && latestFailureAt) {
+        const lockDuration = loginLockDurationMs(recentFailures.length);
+        const retryAfterMs = latestFailureAt.getTime() + lockDuration - now.getTime();
+        if (retryAfterMs > 0) {
+          return { outcome: 'locked' as const, retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)) };
+        }
+      }
+
+      if (!credentialMatches) {
+        await recordAuditEvent(tx, {
+          projectId: null,
+          actorUserId: null,
+          action: 'LOGIN_FAILED',
+          entityType: 'login_guard',
+          entityId: guardEntityId,
+          beforeState: null,
+          afterState: {
+            reason: 'invalid_credentials_or_inactive_user',
+            observedAt: now.toISOString(),
+            failureCount: recentFailures.length + 1
+          },
+          occurredAt: now,
+          requestMetadata: { operation: 'auth:login_failed', remoteAddress }
+        });
+        return { outcome: 'invalid_credentials' as const };
+      }
+      return { outcome: 'authenticated' as const, userId: user!.id, role: user!.role, displayName: user!.displayName };
+    });
+
+    if (outcome.outcome === 'locked') {
       return context.json({
         error: '試行回数が多いため、しばらくしてから再試行してください',
         code: 'LOGIN_TEMPORARILY_LOCKED',
-        retryAfterSeconds
+        retryAfterSeconds: outcome.retryAfterSeconds
       }, 429);
     }
-
-    const [user] = await db.select().from(users).where(eq(users.username, body.username)).limit(1);
-    if (!user || !user.isActive || user.deletedAt || !(await verifyPassword(body.password, user.passwordHash))) {
-      await recordAuditEvent(db, {
-        projectId: null,
-        actorUserId: null,
-        action: 'LOGIN_FAILED',
-        entityType: 'login_guard',
-        entityId: guardEntityId,
-        beforeState: null,
-        afterState: {
-          reason: 'invalid_credentials_or_inactive_user',
-          observedAt: now.toISOString()
-        },
-        occurredAt: now,
-        requestMetadata: { operation: 'auth:login_failed', remoteAddress }
-      });
+    if (outcome.outcome === 'invalid_credentials') {
       return context.json({ error: '認証情報が正しくありません' }, 401);
     }
 
     const { token, tokenHash } = issueToken();
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-    await db.insert(sessions).values({ id: uuidv7(), userId: user.id, tokenHash, expiresAt });
+    await db.insert(sessions).values({ id: uuidv7(), userId: outcome.userId, tokenHash, expiresAt });
     setCookie(context, 'kanei_mvp_session', token, {
       httpOnly: true,
       sameSite: 'Lax',
@@ -649,7 +680,7 @@ export function createApp({
       path: '/',
       expires: expiresAt
     });
-    return context.json({ id: user.id, role: user.role, displayName: user.displayName }, 201);
+    return context.json({ id: outcome.userId, role: outcome.role, displayName: outcome.displayName }, 201);
   });
 
   app.post('/api/auth/logout', async (context) => {
@@ -3727,6 +3758,10 @@ export function createApp({
       && order.status !== 'CHANGE_REVIEW'
       && !isExceptionFilmSupplyOrderState(order.status)
       && !isTerminalFilmSupplyOrderState(order.status);
+    // Q-A4 facts are required for every superseding revision, including one
+    // recorded while ON_HOLD or an existing review. Entering CHANGE_REVIEW is
+    // only the state-machine decision and may happen after the hold is released.
+    const requiresChangeFacts = invalidatedApprovals;
     const statusAfter = entersChangeReview ? 'CHANGE_REVIEW' as const : order.status;
 
     let changeRequestFields: {
@@ -3740,7 +3775,7 @@ export function createApp({
       printedChangeApprovedByUserId?: string;
       printedChangeApprovedAt?: Date;
     } | null = null;
-    if (entersChangeReview) {
+    if (requiresChangeFacts) {
       const request = body?.changeRequest;
       const organization = request?.requestedOrganization;
       if (organization !== 'customer' && organization !== 'seven') {
@@ -3809,10 +3844,21 @@ export function createApp({
             code: 'CHANGE_REQUEST_NUMERIC_FIELD_INVALID'
           }, 422);
         }
-        if (Math.abs(value) > 999_999_999_999.99) {
+        const decimalPlaces = typeof value === 'number' && Number.isInteger(value)
+          ? 0
+          : (String(value).split('.')[1]?.length ?? 0);
+        const maximum = key === 'impactQuantity' ? 99_999_999_999.999 : 999_999_999_999.99;
+        const allowedScale = key === 'impactQuantity' ? 3 : 2;
+        if (Math.abs(value) > maximum) {
           return context.json({
             error: `${key} が数値範囲を超えています`,
             code: 'CHANGE_REQUEST_NUMERIC_FIELD_TOO_LARGE'
+          }, 422);
+        }
+        if (decimalPlaces > allowedScale) {
+          return context.json({
+            error: `${key} の小数点以下は${allowedScale}桁までです`,
+            code: 'CHANGE_REQUEST_DECIMAL_SCALE_INVALID'
           }, 422);
         }
         numericValues[key] = value;
@@ -3825,8 +3871,16 @@ export function createApp({
         }, 422);
       }
 
+      // A hold/review's print-start authority comes from its audited origin,
+      // not from the exception state itself.
+      const holdOrigin = order.status === 'ON_HOLD'
+        ? await loadExceptionOrigin(db, orderId, 'ON_HOLD')
+        : order.status === 'CANCELLATION_REVIEW'
+          ? await loadExceptionOrigin(db, orderId, 'CANCELLATION_REVIEW')
+          : undefined;
+      const effectiveStatus = holdOrigin ?? order.status;
       const printedStartIndex = FILM_SUPPLY_ORDER_STATES.indexOf('FILM_IN_PRODUCTION');
-      const currentIndex = FILM_SUPPLY_ORDER_STATES.indexOf(order.status as typeof FILM_SUPPLY_ORDER_STATES[number]);
+      const currentIndex = FILM_SUPPLY_ORDER_STATES.indexOf(effectiveStatus as typeof FILM_SUPPLY_ORDER_STATES[number]);
       const printingStarted = currentIndex >= printedStartIndex;
       if (printingStarted && user.role !== 'admin') {
         return context.json({
@@ -4257,12 +4311,8 @@ export function createApp({
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(documentVersions.id, versionId)).limit(1);
     if (!evidence) return context.json({ error: '書類バージョンが見つかりません' }, 404);
-    // Assignment is checked before any type-specific metadata is sent. A
-    // foreign project gets the same missing-resource answer whether the id
-    // exists or not.
-    if (!user.assignedProjectIds.includes(evidence.projectId)) {
-      return context.json({ error: '書類バージョンが見つかりません' }, 404);
-    }
+    // canPerform preserves admin's global recovery access while foreign
+    // staff/viewer still cannot learn whether the version exists (403).
     const readDecision = canPerform(toActor(user), 'document:read', 'F1', evidence.projectId);
     if (!readDecision.allowed) return context.json({ error: '権限がありません' }, 403);
     if (evidence.documentType !== 'approval_evidence') {
@@ -4337,9 +4387,6 @@ export function createApp({
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(documentVersions.id, versionId)).limit(1);
     if (!row) return context.json({ error: '書類バージョンが見つかりません' }, 404);
-    if (!user.assignedProjectIds.includes(row.projectId)) {
-      return context.json({ error: '書類バージョンが見つかりません' }, 404);
-    }
     const decision = canPerform(toActor(user), 'document:read', 'F1', row.projectId);
     if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
 

@@ -7,5 +7,6 @@ FROM node:22-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app /app
+USER node
 EXPOSE 3080
 CMD ["npm", "--workspace", "@kanei/web", "exec", "--", "next", "start", "--hostname", "0.0.0.0", "--port", "3080"]

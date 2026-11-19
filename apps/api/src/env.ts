@@ -3,7 +3,7 @@ export interface ApiEnv {
   port: number;
   host: string;
   allowedOrigins: readonly string[];
-  trustProxy: boolean;
+  trustedProxyCidrs: readonly string[];
   isProduction: boolean;
 }
 
@@ -20,7 +20,10 @@ export function loadApiEnv(
       .split(',')
       .map((origin) => origin.trim())
       .filter(Boolean),
-    trustProxy: env.TRUST_PROXY === '1',
+    trustedProxyCidrs: (env.TRUSTED_PROXY_CIDRS ?? '127.0.0.1/32,::1/128')
+      .split(',')
+      .map((cidr) => cidr.trim())
+      .filter(Boolean),
     isProduction: env.NODE_ENV === 'production'
   };
 }

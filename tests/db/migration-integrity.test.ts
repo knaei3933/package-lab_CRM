@@ -46,6 +46,13 @@ async function dropScratchDatabase(name: string): Promise<void> {
   }
 }
 
+async function copyMigrationsIgnoringLocalState(source: string, target: string): Promise<void> {
+  await cp(source, target, {
+    recursive: true,
+    filter: (candidate) => !candidate.split(path.sep).includes('.omc')
+  });
+}
+
 async function scratchUrl(name: string): Promise<string> {
   const source = new URL(sourceUrl);
   source.pathname = `/${name}`;
@@ -101,7 +108,7 @@ let tempRoot = '';
 
 beforeAll(async () => {
   tempRoot = await mkdtemp(path.join(tmpdir(), 'kanei-migration-test-'));
-  await cp(path.resolve(process.cwd(), 'packages/db/drizzle'), path.join(tempRoot, 'drizzle'), { recursive: true });
+  await copyMigrationsIgnoringLocalState(path.resolve(process.cwd(), 'packages/db/drizzle'), path.join(tempRoot, 'drizzle'));
 });
 
 afterAll(async () => {
@@ -146,14 +153,14 @@ describe('drizzle migration ordering and 0021', () => {
     const journal = JSON.parse(
       await readFile(path.resolve(process.cwd(), 'packages/db/drizzle/meta/_journal.json'), 'utf8')
     ) as { entries: Array<{ idx: number; when: number; tag: string }> };
-    expect(journal.entries).toHaveLength(24);
+    expect(journal.entries).toHaveLength(25);
     for (let index = 1; index < journal.entries.length; index += 1) {
       expect(journal.entries[index]!.when, journal.entries[index]!.tag)
         .toBeGreaterThan(journal.entries[index - 1]!.when);
     }
     expect(journal.entries.at(-1)).toMatchObject({
-      idx: 23,
-      tag: '0023_r1_change_review_fields',
+      idx: 24,
+      tag: '0024_lot_change_check_fix',
       when: expect.any(Number)
     });
     expect(journal.entries.at(-1)!.when).toBeGreaterThan(1795731560000);
@@ -176,15 +183,15 @@ describe('drizzle migration ordering and 0021', () => {
       // additions followed by checks cannot use ADD VALUE in a fresh run. Mirror
       // the committed-before-use requirement with two transaction phases.
       const staged = path.join(tempRoot, 'through-0020');
-      await cp(path.resolve(process.cwd(), 'packages/db/drizzle'), staged, { recursive: true });
+      await copyMigrationsIgnoringLocalState(path.resolve(process.cwd(), 'packages/db/drizzle'), staged);
       await runThrough0020(staged, url);
       await migrate(drizzle(pool), { migrationsFolder: path.join(tempRoot, 'drizzle') });
 
       expect(await enumValues(url)).toContain('CANCELLED');
       expect(await enumValues(url)).toEqual(expect.arrayContaining(['CANCELLATION_REVIEW', 'CANCELLED']));
       const rows = await migrationRows(url);
-      expect(rows).toHaveLength(24);
-      expect(rows.at(-1)).toMatchObject({ created_at: '1795991160000' });
+      expect(rows).toHaveLength(25);
+      expect(rows.at(-1)).toMatchObject({ created_at: '1796077560000' });
     } finally {
       await pool.end();
     }
@@ -202,7 +209,7 @@ describe('drizzle migration ordering and 0021', () => {
       encoding: 'utf8'
     });
     expect(result.stdout).toContain('migrations applied successfully');
-    expect(await migrationRows(url)).toHaveLength(24);
+    expect(await migrationRows(url)).toHaveLength(25);
     const functionClient = new pg.Client({ connectionString: url });
     await functionClient.connect();
     const functionConfig = await functionClient.query(`
@@ -225,15 +232,15 @@ describe('drizzle migration ordering and 0021', () => {
     const pool = new Pool({ connectionString: url });
     const staged = path.join(tempRoot, 'through-0020-existing');
     try {
-      await cp(path.resolve(process.cwd(), 'packages/db/drizzle'), staged, { recursive: true });
+      await copyMigrationsIgnoringLocalState(path.resolve(process.cwd(), 'packages/db/drizzle'), staged);
       await runThrough0020(staged, url);
       expect(await migrationRows(url)).toHaveLength(21);
       expect(await enumValues(url)).not.toContain('CANCELLED');
 
       await migrate(drizzle(pool), { migrationsFolder: path.join(tempRoot, 'drizzle') });
       const rows = await migrationRows(url);
-      expect(rows).toHaveLength(24);
-      expect(rows.at(-1)).toMatchObject({ created_at: '1795991160000' });
+      expect(rows).toHaveLength(25);
+      expect(rows.at(-1)).toMatchObject({ created_at: '1796077560000' });
       const values = await enumValues(url);
       expect(values).toContain('CANCELLED');
       expect(values.indexOf('CANCELLED')).toBe(values.length - 1);
@@ -251,7 +258,7 @@ describe('drizzle migration ordering and 0021', () => {
     const pool = new Pool({ connectionString: url });
     const staged = path.join(tempRoot, 'through-0020-search-path');
     try {
-      await cp(path.resolve(process.cwd(), 'packages/db/drizzle'), staged, { recursive: true });
+      await copyMigrationsIgnoringLocalState(path.resolve(process.cwd(), 'packages/db/drizzle'), staged);
       await runThrough0020(staged, url);
 
       const query = async (text: string) => {
@@ -282,7 +289,7 @@ describe('drizzle migration ordering and 0021', () => {
 
       await migrate(drizzle(pool), { migrationsFolder: path.join(tempRoot, 'drizzle') });
 
-      expect(await migrationRows(url)).toHaveLength(24);
+      expect(await migrationRows(url)).toHaveLength(25);
       const afterColumns = await tableSchema();
       const unchangedColumns = (rows: unknown) => (rows as Array<{ table_name:string; column_name:string }>).filter(
         (column) => column.table_name !== 'artwork_revisions'
@@ -296,7 +303,8 @@ describe('drizzle migration ordering and 0021', () => {
           'printed_change_approved_by_user_id', 'printed_change_approved_at'
         ]));
       const constraints = await query(`
-        select conname from pg_constraint
+        select conname, pg_get_constraintdef(oid) as definition
+        from pg_constraint
         where conrelid = 'artwork_revisions'::regclass
           and conname like 'artwork_revisions_%'
         order by conname
@@ -307,6 +315,8 @@ describe('drizzle migration ordering and 0021', () => {
         'artwork_revisions_impact_quantity_nonnegative', 'artwork_revisions_actual_cost_nonnegative',
         'artwork_revisions_printed_change_approval_pair'
       ]));
+      expect(constraints.rows.find((row: any) => row.conname === 'artwork_revisions_lot_change_marking_required')?.definition)
+        .toContain('lot_marking IS NOT NULL');
       const afterFunction = await query(`
         select pg_get_functiondef(oid) as definition, proconfig
         from pg_proc
@@ -331,7 +341,7 @@ describe('drizzle migration ordering and 0021', () => {
     const pool = new Pool({ connectionString: url });
     const staged = path.join(tempRoot, 'partial-run');
     try {
-      await cp(path.resolve(process.cwd(), 'packages/db/drizzle'), staged, { recursive: true });
+      await copyMigrationsIgnoringLocalState(path.resolve(process.cwd(), 'packages/db/drizzle'), staged);
       const failingFile = path.join(staged, '0017_m8_oper2_evidence_manual_verification.sql');
       const original = await readFile(failingFile, 'utf8');
       await writeFile(failingFile, `${original}\nSELECT 1 / 0;\n`);
@@ -350,7 +360,7 @@ describe('drizzle migration ordering and 0021', () => {
       // and guarded constraint let the same pending migration replay safely.
       await writeFile(failingFile, original);
       await migrate(drizzle(pool), { migrationsFolder: staged });
-      expect(await migrationRows(url)).toHaveLength(24);
+      expect(await migrationRows(url)).toHaveLength(25);
       expect(await enumValues(url)).toContain('CANCELLED');
     } finally {
       await pool.end();
@@ -370,7 +380,7 @@ describe('drizzle migration ordering and 0021', () => {
       'utf8'
     );
     try {
-      await cp(path.resolve(process.cwd(), 'packages/db/drizzle'), staged, { recursive: true });
+      await copyMigrationsIgnoringLocalState(path.resolve(process.cwd(), 'packages/db/drizzle'), staged);
       await migrate(drizzle(pool), { migrationsFolder: staged });
 
       const query = async (text: string) => {

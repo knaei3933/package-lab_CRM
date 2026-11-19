@@ -169,6 +169,13 @@
       "when": 1795991160000,
       "tag": "0023_r1_change_review_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1796077560000,
+      "tag": "0024_lot_change_check_fix",
+      "breakpoints": true
     }
   ]
 }

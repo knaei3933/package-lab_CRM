@@ -19,6 +19,7 @@ import {
 import { createApp, isBrowserOriginAllowed } from '../apps/api/src/app.js';
 import { documentStorageRoot, validateDocumentStorageRoot } from '../apps/api/src/document-storage.js';
 import { loadApiEnv } from '../apps/api/src/env.js';
+import { loginGuardIdentity, resolveClientAddress } from '../apps/api/src/login-guard.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 
@@ -68,7 +69,7 @@ beforeAll(async () => {
   hardeningApp = createApp({
     db,
     allowedOrigins: ['http://127.0.0.1:3081'],
-    trustProxy: true
+    trustedProxyCidrs: ["127.0.0.1/32", "::1/128"]
   });
   const now = new Date();
   await db.execute(`
@@ -203,14 +204,14 @@ describe('R1 hardening', () => {
         origin: 'http://127.0.0.1:3081',
         'x-forwarded-for': ip
       },
-      body: JSON.stringify({ username: 'r1_admin', password })
+      body: JSON.stringify({ username: 'rate_lock_admin', password })
     });
 
     for (let index = 0; index < 5; index += 1) {
-      const failed = await login('192.0.2.50', `wrong-${index}`);
+      const failed = await login('203.0.113.50', `wrong-${index}`);
       expect(failed.status).toBe(401);
     }
-    const locked = await login('192.0.2.50', 'composite-admin-pass');
+    const locked = await login('203.0.113.50', 'composite-admin-pass');
     expect(locked.status).toBe(429);
     expect(await locked.json()).toMatchObject({
       code: 'LOGIN_TEMPORARILY_LOCKED',
@@ -222,10 +223,8 @@ describe('R1 hardening', () => {
         eq(auditEvents.action, 'LOGIN_FAILED'),
         eq(auditEvents.entityType, 'login_guard')
       ));
-    const rateFailures = failures.filter((failure) => {
-      const metadata = failure.requestMetadata as { remoteAddress?: string } | null;
-      return metadata?.remoteAddress === '192.0.2.50';
-    });
+    const rateIdentity = loginGuardIdentity('rate_lock_admin', 'unknown');
+    const rateFailures = failures.filter((failure) => failure.entityId === rateIdentity);
     expect(rateFailures).toHaveLength(5);
     for (const failure of rateFailures) {
       expect(failure.projectId).toBeNull();
@@ -234,11 +233,45 @@ describe('R1 hardening', () => {
       expect(JSON.stringify(failure)).not.toContain('r1_admin');
     }
 
-    const otherIp = await login('198.51.100.20', 'composite-admin-pass');
-    expect(otherIp.status).toBe(201);
-    const failureCountAfter = await db.select().from(auditEvents)
-      .where(eq(auditEvents.action, 'LOGIN_FAILED'));
-    expect(failureCountAfter).toHaveLength(6);
+    const otherAccount = await hardeningApp.request('/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        origin: 'http://127.0.0.1:3081',
+        'x-forwarded-for': '198.51.100.20'
+      },
+      body: JSON.stringify({ username: 'r1_staff', password: 'composite-staff-pass' })
+    });
+    expect(otherAccount.status).toBe(201);
+
+    // An untrusted direct peer cannot make a forwarded address credible.
+    expect(resolveClientAddress({
+      peerAddress: '203.0.113.99',
+      forwardedFor: '198.51.100.7',
+      trustedCidrs: ['127.0.0.1/32']
+    })).toMatchObject({ address: '203.0.113.99', source: 'socket', trustedPeer: false });
+    expect(resolveClientAddress({
+      peerAddress: '127.0.0.1',
+      forwardedFor: '198.51.100.7',
+      trustedCidrs: ['127.0.0.1/32']
+    })).toMatchObject({ address: '198.51.100.7', source: 'forwarded', trustedPeer: true });
+  });
+
+  it('survives parallel guesses with one atomic lock decision', async () => {
+    const responses = await Promise.all(Array.from({ length: 30 }, (_, index) =>
+      hardeningApp.request('/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'http://127.0.0.1:3081',
+          'x-forwarded-for': '198.51.100.70'
+        },
+        body: JSON.stringify({ username: 'parallel_lock_admin', password: `wrong-${index}` })
+      })
+    ));
+    const statuses = responses.map(response => response.status).sort();
+    expect(statuses.filter(status => status === 401)).toHaveLength(5);
+    expect(statuses.filter(status => status === 429)).toHaveLength(25);
   });
 
   it('logs document views and downloads, authorizes project membership and role, and never exposes hash or storage metadata', async () => {
@@ -311,14 +344,24 @@ describe('R1 hardening', () => {
     expect(JSON.stringify(viewerDownload.body)).not.toContain(localDocument.version.storagePath);
 
     const foreignDownload = await requestJson(foreignStaffToken, 'GET', `/api/document-versions/${localDocument.version.id}/download`);
-    expect(foreignDownload.status).toBe(404);
-    expect(foreignDownload.body).toEqual({ error: '書類バージョンが見つかりません' });
+    expect(foreignDownload.status).toBe(403);
+    expect(foreignDownload.body).toEqual({ error: '権限がありません' });
+
+    // An admin without a project assignment remains globally authorized.
+    await db.delete(projectAssignments).where(and(
+      eq(projectAssignments.userId, adminId),
+      eq(projectAssignments.projectId, localProjectId)
+    ));
+    const adminDownload = await app.request(`/api/document-versions/${localDocument.version.id}/download`, {
+      headers: cookie(adminToken)
+    });
+    expect(adminDownload.status).toBe(200);
 
     const accessEvents = await db.select().from(auditEvents)
       .where(eq(auditEvents.entityType, 'document_version'));
     const downloadedEvents = accessEvents.filter((event) => event.action === 'DOCUMENT_VERSION_DOWNLOADED');
     const viewedEvents = accessEvents.filter((event) => event.action === 'DOCUMENT_VERSION_VIEWED');
-    expect(downloadedEvents).toHaveLength(1);
+    expect(downloadedEvents).toHaveLength(2);
     expect(viewedEvents).toHaveLength(1);
     for (const event of [...downloadedEvents, ...viewedEvents]) {
       expect(event.actorUserId).toBeDefined();

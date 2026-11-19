@@ -271,6 +271,12 @@ afterAll(async () => {
 
 describe('R1-9 controlled lot CHANGE_REVIEW (T-28)', () => {
   it('rejects an incomplete change request before persistence', async () => {
+    const hold = await app.request(`/api/film-supply-orders/${orderId}/transitions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...cookie(staffToken) },
+      body: JSON.stringify({ to: 'ON_HOLD', reason: 'scope review before revision' })
+    });
+    expect(hold.status).toBe(200);
     const missing = await requestAs(staffToken, {
       designKey,
       fileDocumentVersionId: proofVersionId,
@@ -281,11 +287,33 @@ describe('R1-9 controlled lot CHANGE_REVIEW (T-28)', () => {
     expect(missing.body).toMatchObject({ code: 'CHANGE_REQUEST_ORGANIZATION_REQUIRED' });
 
     const [revisionCount] = await db.select({ count: artworkRevisions.id }).from(artworkRevisions)
-      .where(and(eq(artworkRevisions.filmSupplyOrderId, orderId), eq(artworkRevisions.revisionNo, 2)));
+      .where(and(eq(artworkRevisions.filmSupplyOrderId, orderId), eq(artworkRevisions.revisionNo, 3)));
     expect(revisionCount).toBeUndefined();
     const [order] = await db.select({ status: filmSupplyOrders.status }).from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, orderId));
-    expect(order?.status).toBe('FILM_IN_PRODUCTION');
+    expect(order?.status).toBe('ON_HOLD');
+
+    const approvedDuringHold = await requestAs(adminToken, {
+      designKey,
+      fileDocumentVersionId: proofVersionId,
+      lotMarking: 'LOT-T28-HOLD-NEW',
+      changeRequest: {
+        requestedOrganization: 'customer',
+        reason: 'hold supersession requires the complete audit record',
+        evidenceDocumentVersionId: requestEvidenceVersionId,
+        impactSchedule: '1日遅延',
+        impactQuantity: 0,
+        impactAmount: 0,
+        actualCost: 0
+      }
+    });
+    expect(approvedDuringHold.status).toBe(201);
+    expect(approvedDuringHold.body).toMatchObject({
+      status: 'ON_HOLD',
+      invalidatedApprovals: true,
+      changeReason: 'hold supersession requires the complete audit record',
+      lotMarking: 'LOT-T28-HOLD-NEW'
+    });
   });
 
   it('requires admin approval and explicit actual cost after printing starts', async () => {
@@ -321,9 +349,44 @@ describe('R1-9 controlled lot CHANGE_REVIEW (T-28)', () => {
     });
     expect(withoutCost.status).toBe(422);
     expect(withoutCost.body).toMatchObject({ code: 'CHANGE_REQUEST_NUMERIC_FIELD_REQUIRED' });
+
+    const tooLargeQuantity = await requestAs(adminToken, {
+      designKey,
+      fileDocumentVersionId: proofVersionId,
+      lotMarking: 'LOT-T28-NEW',
+      changeRequest: {
+        requestedOrganization: 'customer',
+        reason: 'scale boundary',
+        evidenceDocumentVersionId: requestEvidenceVersionId,
+        impactSchedule: 'なし',
+        impactQuantity: 100_000_000_000,
+        impactAmount: 0,
+        actualCost: 0
+      }
+    });
+    expect(tooLargeQuantity.status).toBe(422);
+    expect(tooLargeQuantity.body).toMatchObject({ code: 'CHANGE_REQUEST_NUMERIC_FIELD_TOO_LARGE' });
+
+    const tooPreciseAmount = await requestAs(adminToken, {
+      designKey,
+      fileDocumentVersionId: proofVersionId,
+      lotMarking: 'LOT-T28-NEW',
+      changeRequest: {
+        requestedOrganization: 'customer',
+        reason: 'scale boundary',
+        evidenceDocumentVersionId: requestEvidenceVersionId,
+        impactSchedule: 'なし',
+        impactQuantity: 0,
+        impactAmount: 1.234,
+        actualCost: 0
+      }
+    });
+    expect(tooPreciseAmount.status).toBe(422);
+    expect(tooPreciseAmount.body).toMatchObject({ code: 'CHANGE_REQUEST_DECIMAL_SCALE_INVALID' });
   });
 
   it('records the complete lot change request and print-start approval', async () => {
+    await db.update(filmSupplyOrders).set({ status: 'FILM_IN_PRODUCTION' }).where(eq(filmSupplyOrders.id, orderId));
     const approved = await requestAs(adminToken, {
       designKey,
       fileDocumentVersionId: proofVersionId,
@@ -357,7 +420,7 @@ describe('R1-9 controlled lot CHANGE_REVIEW (T-28)', () => {
       .where(eq(filmSupplyOrders.id, orderId));
     expect(order?.status).toBe('CHANGE_REVIEW');
     const [revision] = await db.select().from(artworkRevisions)
-      .where(and(eq(artworkRevisions.filmSupplyOrderId, orderId), eq(artworkRevisions.revisionNo, 2)));
+      .where(and(eq(artworkRevisions.filmSupplyOrderId, orderId), eq(artworkRevisions.revisionNo, 3)));
     expect(revision?.lotMarking).toBe('LOT-T28-NEW');
     expect(revision?.actualCost).toBe('0.00');
     expect(revision?.printedChangeApprovedByUserId).toBe(adminId);

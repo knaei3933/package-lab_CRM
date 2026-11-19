@@ -15,12 +15,13 @@ jobs:
           POSTGRES_DB: kanei_crm_mvp_test
           POSTGRES_USER: kanei
           POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
-        ports: ['5432:5432']
+        ports:
+          - '127.0.0.1:5434:5432'
         options: >-
           --health-cmd "pg_isready -U kanei -d kanei_crm_mvp_test"
           --health-interval 5s --health-timeout 5s --health-retries 20
     env:
-      DATABASE_URL: postgresql://kanei@127.0.0.1:5432/kanei_crm_mvp_test
+      DATABASE_URL: postgresql://kanei@127.0.0.1:5434/kanei_crm_mvp_test
       PGPASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
       DOCUMENT_STORAGE_DIR: /tmp/kanei-ci-document-storage
       NODE_ENV: test
@@ -36,7 +37,17 @@ jobs:
       - run: mkdir -p "$DOCUMENT_STORAGE_DIR" && chmod 0700 "$DOCUMENT_STORAGE_DIR"
       - run: npm run typecheck
       - run: npx vitest run --pool=forks --poolOptions.forks.singleFork
+      - name: resolve scan base
+        id: scan-base
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "base=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          elif [[ "${{ github.event.before }}" != "" && "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
+            echo "base=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "base=origin/master" >> "$GITHUB_OUTPUT"
+          fi
       - name: secret scan
-        run: node scripts/secret-scan.mjs "${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'origin/master' }}" HEAD
+        run: node scripts/secret-scan.mjs "${{ steps.scan-base.outputs.base }}" HEAD
       - name: build web
         run: npm run build --workspace @kanei/web

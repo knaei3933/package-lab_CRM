@@ -14,7 +14,7 @@ const app = createApp({
   db,
   secureCookies: env.isProduction,
   allowedOrigins: env.allowedOrigins,
-  trustProxy: env.trustProxy
+  trustedProxyCidrs: env.trustedProxyCidrs
 });
 
 const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (info) => {

@@ -508,7 +508,7 @@ export const artworkRevisions = pgTable('artwork_revisions', {
     and ${table.actualCost} is not null
   )`),
   check('artwork_revisions_change_reason_not_blank', sql`${table.changeReason} is null or length(btrim(${table.changeReason})) > 0`),
-  check('artwork_revisions_lot_change_marking_required', sql`${table.changeRequestedOrganization} is null or length(btrim(${table.lotMarking})) > 0`),
+  check('artwork_revisions_lot_change_marking_required', sql`${table.changeRequestedOrganization} is null or (${table.lotMarking} is not null and length(btrim(${table.lotMarking})) > 0)`),
   check('artwork_revisions_impact_schedule_not_blank', sql`${table.impactSchedule} is null or length(btrim(${table.impactSchedule})) > 0`),
   check('artwork_revisions_impact_quantity_nonnegative', sql`${table.impactQuantity} is null or ${table.impactQuantity} >= 0`),
   check('artwork_revisions_actual_cost_nonnegative', sql`${table.actualCost} is null or ${table.actualCost} >= 0`),
