@@ -25,6 +25,9 @@ export const HIDDEN_BY_ROLE_SHORT = '閲覧権限なし';
  * UI batch E: server batch E (9972e99) widened it to the business identifiers
  * staff need (PO number, lines, approval evidence, delivery and readiness
  * keys); amounts, payment terms, hashes and snapshots stay off it.
+ * UI batch E2: server follow-up (db4bd88) adds the document's file name and
+ * issuing entity, so staff can tell evidence files apart; bytes, sha256,
+ * storage paths and sizes stay off it.
  */
 export const STAFF_VISIBLE_STATE_KEYS: readonly string[] = [
   'id',
@@ -64,6 +67,9 @@ export const STAFF_VISIBLE_STATE_KEYS: readonly string[] = [
   // evidence selection); bytes, amounts and storage paths stay out.
   'documentType',
   'documentId',
+  // db4bd88: staff can identify the evidence file and who issued it.
+  'originalFilename',
+  'issuerEntity',
   'designKey',
   'versionNumber',
   'verificationStatus',

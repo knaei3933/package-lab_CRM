@@ -192,7 +192,7 @@ export interface DocumentView {
   designKey: string | null;
   /** The maker PO the document was uploaded for (admin answer only; null when unbound or withheld). */
   makerPurchaseOrderId: string | null;
-  /** UI batch A: issuer and links were withheld from the role (staff/viewer). */
+  /** Issuer and links were withheld from the role (viewer; staff reads them since db4bd88). */
   detailsHidden: boolean;
   /** The document type was withheld (viewer; staff sees it since 62d9305). */
   typeHidden: boolean;
@@ -677,9 +677,9 @@ export async function loadWorkspace(
         filmSupplyOrderId: text(after, 'filmSupplyOrderId'),
         designKey: text(after, 'designKey'),
         makerPurchaseOrderId: text(after, 'makerPurchaseOrderId'),
-        // issuerEntity is on every full answer and off the staff allowlist
-        // (documentType joined the staff allowlist in 62d9305, so it no longer
-        // tells a trimmed answer apart).
+        // issuerEntity is on every full answer. Since db4bd88 staff reads it
+        // (with the file name and the PO / film order links), so only the
+        // viewer answer, which carries no document identity, is hidden here.
         detailsHidden: isFieldHiddenByRole(event, 'issuerEntity'),
         typeHidden: isFieldHiddenByRole(event, 'documentType'),
         verificationHidden: isFieldHiddenByRole(event, 'verificationStatus'),

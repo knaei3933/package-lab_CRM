@@ -54,6 +54,8 @@ export const ACTION_MESSAGE_FIELDS: readonly ActionMessageField[] = [
   { message: 'の明細の説明が入力されていません。', match: 'suffix', field: lineField(0, 'description'), source: 'actions' },
   { message: 'の明細の数量は正の数で入力してください。', match: 'suffix', field: lineField(0, 'quantity'), source: 'actions' },
   { message: 'の明細の単位が正しくありません。', match: 'suffix', field: lineField(0, 'unit'), source: 'actions' },
+  // UI batch E2: the API's DELIVERY_UNIT_MISMATCH (db4bd88), read back in Japanese by recordDeliveryAction.
+  { message: '単位を明細と同じ単位に直して、もう一度記録してください。', match: 'suffix', field: 'unit', source: 'actions' },
   {
     message: '決済条件（prepaid／on_delivery／undetermined）を選択してください。',
     match: 'exact',

@@ -92,7 +92,7 @@ describe('role redaction labels (UI batch A, P1-4)', () => {
 
   it('mirrors the API staff allowlist exactly', () => {
     const everyKey = Object.fromEntries(
-      [...STAFF_VISIBLE_STATE_KEYS, 'poNumber', 'amount', 'originalFilename'].map((key) => [key, 'x'])
+      [...STAFF_VISIBLE_STATE_KEYS, 'poNumber', 'amount', 'sha256', 'storagePath'].map((key) => [key, 'x'])
     );
     const staff = viewAs('staff', everyKey);
     expect(Object.keys(staff.afterState as object).sort()).toEqual([...STAFF_VISIBLE_STATE_KEYS].sort());

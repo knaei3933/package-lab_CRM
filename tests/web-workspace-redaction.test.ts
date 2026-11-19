@@ -96,7 +96,7 @@ describe('loadWorkspace role labels (UI batch A, P1-4)', () => {
     expect(workspace.documents[0]).toMatchObject({ documentType: 'seven_po', filename: 'SC-2026-1118.pdf', detailsHidden: false, typeHidden: false, verificationHidden: false });
   });
 
-  it('staff (server batch E): PO number, registration date, lines and links read; issuer and file name stay hidden', async () => {
+  it('staff (server batch E, db4bd88): PO number, registration date, lines, links, issuer and file name read', async () => {
     serveAs('staff');
     const workspace = await loadWorkspace(PROJECT_ID);
     const [po] = workspace.sevenPurchaseOrders;
@@ -110,10 +110,10 @@ describe('loadWorkspace role labels (UI batch A, P1-4)', () => {
       code: 'FSO-2026-001', status: 'DRAFT', statusHidden: false, detailsHidden: false, sevenPurchaseOrderId: PO_ID, lineCount: 1
     });
     expect(workspace.fillingOrders[0]).toMatchObject({ code: 'FIL-2026-001', detailsHidden: false });
-    // The issuer and the file name are still off the staff list (probe: issuerEntity).
+    // db4bd88: the file name and the issuer joined the staff list; the note stays off it.
     expect(workspace.documents[0]).toMatchObject({
-      documentType: 'seven_po', typeHidden: false, filename: HIDDEN_BY_ROLE_LABEL, detailsHidden: true,
-      verificationStatus: 'verified', verificationHidden: false
+      documentType: 'seven_po', typeHidden: false, filename: 'SC-2026-1118.pdf', issuerEntity: 'seven', detailsHidden: false,
+      sevenPurchaseOrderId: PO_ID, verificationStatus: 'verified', verificationHidden: false
     });
   });
 

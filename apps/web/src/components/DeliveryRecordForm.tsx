@@ -1,6 +1,6 @@
 'use client';
 
-import { useActionState, useState } from 'react';
+import { useActionState, useId, useState } from 'react';
 import type { FormAction } from './ActionForm';
 import {
   FeedbackForm,
@@ -67,6 +67,9 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices, successH
   const [unit, setUnit] = useState(unitChoices[0]?.value ?? '');
 
   const lines = orders.find((order) => order.id === orderId)?.lines ?? [];
+  const lineUnit = lines.find((line) => line.value === lineId)?.unit;
+  const unitMismatch = lineUnit !== undefined && unit !== lineUnit;
+  const unitWarningId = useId();
 
   if (orders.length === 0) {
     return (
@@ -175,16 +178,38 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices, successH
             </div>
           )}
         </FieldFeedback>
-        <label className="field" style={fieldLabel(140)}>
-          <span style={{ fontSize: 13 }}>単位<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
-          <select name="unit" value={unit} onChange={(event) => setUnit(event.target.value)} style={control(140)}>
-            {unitChoices.map((choice) => (
-              <option key={choice.value} value={choice.value}>
-                {choice.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        {/* UI batch E2: the API refuses a unit other than the line's (DELIVERY_UNIT_MISMATCH, db4bd88);
+            the form says so before the send, and the refusal marks this field. */}
+        <FieldFeedback name="unit">
+          {(unitFeedback) => (
+            <div className="field" style={fieldLabel(140)}>
+              <label style={labelOnly}>
+                <span style={{ fontSize: 13 }}>単位<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
+                <select
+                  name="unit"
+                  value={unit}
+                  onChange={(event) => setUnit(event.target.value)}
+                  aria-describedby={[unitFeedback.describedBy, unitMismatch ? unitWarningId : undefined].filter(Boolean).join(' ') || undefined}
+                  aria-invalid={unitFeedback.invalid}
+                  data-feedback-label="単位"
+                  style={control(140)}
+                >
+                  {unitChoices.map((choice) => (
+                    <option key={choice.value} value={choice.value}>
+                      {choice.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {unitMismatch ? (
+                <span id={unitWarningId} style={noteStyle}>
+                  明細の単位は「{unitChoices.find((choice) => choice.value === lineUnit)?.label ?? lineUnit}」です。違う単位では記録できません。
+                </span>
+              ) : null}
+              <FieldError id={unitFeedback.errorId} message={unitFeedback.error} />
+            </div>
+          )}
+        </FieldFeedback>
         <OffsetDateTimeField name="deliveredAt" label="納品日（任意・未入力は現在日時）" width={240} />
         <label className="field" style={fieldLabel(200)}>
           <span style={{ fontSize: 13 }}>運送業者参照（任意）</span>

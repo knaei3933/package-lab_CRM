@@ -7,6 +7,7 @@ import { callApi, PROJECT_COOKIE, readSelectedProjectId } from '../lib/api';
 import { offsetDateTimeField } from '../lib/datetime';
 import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL } from '../lib/maker-po-data';
 import type { ActionState } from '../lib/types';
+import { unitLabel } from '../lib/vocabulary';
 
 /**
  * M6 operator UI server actions: thin forms-over-API adapters. Each action
@@ -82,11 +83,35 @@ function apiCode(data: unknown): string | null {
     : null;
 }
 
-async function post(path: string, body: unknown): Promise<ActionState> {
+/**
+ * UI batch E2: DELIVERY_UNIT_MISMATCH (server db4bd88, 422) answers
+ * 「納品単位は明細単位（sheets）と一致させてください」 with the line's unit code in
+ * the brackets. The operator reads both units in Japanese and the one fix; when
+ * the bracket cannot be read, the same fix without the unit names.
+ */
+function deliveryUnitMismatchRefusal(data: unknown, submittedUnit: string): ActionState {
+  const raw = typeof data === 'object' && data !== null && typeof (data as { error?: unknown }).error === 'string'
+    ? (data as { error: string }).error
+    : '';
+  const lineUnit = /（([^（）]+)）/.exec(raw)?.[1]?.trim();
+  const units = lineUnit
+    ? `納品単位（${unitLabel(submittedUnit)}）が明細の単位（${unitLabel(lineUnit)}）と異なります。`
+    : '納品単位が明細の単位と異なります。';
+  // The fixed tail is what lib/form-messages maps to the 単位 field.
+  return { ok: false, message: `${units}単位を明細と同じ単位に直して、もう一度記録してください。` };
+}
+
+async function post(
+  path: string,
+  body: unknown,
+  refusal?: (code: string | null, data: unknown) => ActionState | null
+): Promise<ActionState> {
   const result = await callApi(path, { method: 'POST', body });
   if (result.ok) {
     return { ok: true, message: '記録しました。' };
   }
+  const specific = refusal?.(apiCode(result.data), result.data);
+  if (specific) return specific;
   const localized = localizedRefusal(apiCode(result.data));
   if (localized) return localized;
   return { ok: false, message: result.error ?? `APIがステータス ${result.status} を返しました。` };
@@ -520,7 +545,8 @@ export async function recordDeliveryAction(_prev: ActionState | null, formData: 
   const path = kind === 'film'
     ? `/api/film-supply-orders/${encodeURIComponent(orderId)}/deliveries`
     : `/api/filling-orders/${encodeURIComponent(orderId)}/deliveries`;
-  return post(path, body);
+  return post(path, body, (code, data) =>
+    code === 'DELIVERY_UNIT_MISMATCH' ? deliveryUnitMismatchRefusal(data, unit) : null);
 }
 
 export async function confirmDeliveryAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {

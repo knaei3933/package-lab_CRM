@@ -79,6 +79,7 @@ const { loadWorkspace, PROJECT_UNAVAILABLE_MESSAGE } = await import('../apps/web
 const { ceoApprovalFacts } = await import('../apps/web/src/lib/decision-facts.js');
 const { loadRepresentativeQueue } = await import('../apps/web/src/lib/representative-queue.js');
 const { callApi } = await import('../apps/web/src/lib/api.js');
+const { recordDeliveryAction } = await import('../apps/web/src/app/actions.js');
 
 function signIn(role: 'admin' | 'staff') {
   signedIn.role = role;
@@ -457,3 +458,70 @@ describe('F-00 (server batch E 9972e99) on the screen: the delivery line choice 
     signedIn.role = 'staff';
   });
 });
+
+describe('E2 (server follow-up db4bd88): document identity for staff, the unit mismatch in Japanese', () => {
+  it('staff reads the file name and the issuer of an uploaded document on 書類 (not 閲覧権限なし)', async () => {
+    const sevenPoId = await verifiedSevenPo();
+    const { orderId } = await linkedOrder(sevenPoId);
+    const uploaded = await uploadDocument({ documentType: 'acceptance_evidence', issuerEntity: 'maker', orderId, sevenPoId });
+
+    signIn('staff');
+    const workspace = await loadWorkspace(projectId);
+    const document = workspace.documents.find((candidate) => candidate.id === uploaded.document.id)!;
+    expect(document.filename).toMatch(/^be-doc-\d{4}\.txt$/);
+    expect(document).toMatchObject({ issuerEntity: 'maker', detailsHidden: false, typeHidden: false });
+    // The version names its file too; its content digest stays withheld.
+    expect(document.versions[0]).toMatchObject({ originalFilename: document.filename, sha256: null, sha256Hidden: true });
+
+    const html = await render(DocumentsPage);
+    const at = html.indexOf(document.filename);
+    expect(at, 'file name on the 書類 list').toBeGreaterThan(-1);
+    const row = html.slice(html.lastIndexOf('<tr', at), html.indexOf('</tr>', at));
+    // The 発行主体 cell reads the issuer; only the version hash stays 「閲覧権限なし」.
+    expect(row).toMatch(/<td[^>]*>製造先<\/td>/);
+    expect(row).toContain('ハッシュ 閲覧権限なし');
+    signIn('admin');
+  });
+
+  it('a delivery in another unit than its line is refused in Japanese and records nothing (film and filling)', async () => {
+    const sevenPoId = await verifiedSevenPo();
+    const { orderId } = await linkedOrder(sevenPoId);
+    signIn('staff');
+    const before = await loadWorkspace(projectId);
+    const line = before.filmOrders.find((order) => order.id === orderId)!.lines[0]!;
+    expect(line.unit).toBe('sheets');
+
+    const film = await recordDeliveryAction(null, formOf({
+      kind: 'film', orderId, lineId: line.id, unit: 'rolls', deliveredQuantity: '10'
+    }));
+    expect(film).toEqual({
+      ok: false,
+      message: '納品単位（ロール）が明細の単位（枚）と異なります。単位を明細と同じ単位に直して、もう一度記録してください。'
+    });
+
+    const filling = await call(staffToken, `/api/projects/${projectId}/filling-orders`, {
+      code: `FLO-BE2-${nextTag()}`, lines: [{ lineNumber: 1, description: '合成充填カプセル', orderedQuantity: 20, unit: 'pods' }]
+    });
+    expect(filling.status).toBe(201);
+    const fillingLine = (filling.body.lines as Array<{ id: string }>)[0]!;
+    const refusedFilling = await recordDeliveryAction(null, formOf({
+      kind: 'filling', orderId: filling.body.id as string, lineId: fillingLine.id, unit: 'pieces', deliveredQuantity: '5'
+    }));
+    expect(refusedFilling.message).toBe('納品単位（個）が明細の単位（ポッド）と異なります。単位を明細と同じ単位に直して、もう一度記録してください。');
+
+    const after = await loadWorkspace(projectId);
+    expect(after.deliveries.filter((delivery) => delivery.orderId === orderId || delivery.orderId === filling.body.id)).toHaveLength(0);
+
+    // The same form in the line's unit is accepted.
+    expect(await recordDeliveryAction(null, formOf({
+      kind: 'film', orderId, lineId: line.id, unit: 'sheets', deliveredQuantity: '10'
+    }))).toEqual({ ok: true, message: '記録しました。' });
+    signIn('admin');
+  });
+});
+
+function formOf(entries: Record<string, string>): FormData {
+  const data = new FormData();
+  for (const [key, value] of Object.entries(entries)) data.set(key, value);
+  return data;
+}
