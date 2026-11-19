@@ -15,6 +15,13 @@ Without `KANEI_WEB_BEHIND_TRUSTED_PROXY=1` (and the deployed web relay code), AP
 
 - Identity lock: 5 failures in 15 minutes, then exponential delay (1m, 2m, 4m, capped 60m), automatically expired.
 - Source/IP lock: failures are counted across usernames. At 10 failures in 15 minutes, the source enters exponential delay (1m, 2m, 4m, capped 60m) before identity checks continue. This protects a representative account from one source rotating usernames.
-- Recovery is append-only and representative-approved:
+- Identity recovery is append-only and representative-approved:
   `DATABASE_URL=... ALLOW_PRODUCTION_LOGIN_UNLOCK=1 node scripts/unlock-login-guard.mjs --username NAME --remote-address IP --reason 'approved recovery'`
+- Source recovery (after trusted-proxy username rotation) is:
+  `DATABASE_URL=... ALLOW_PRODUCTION_LOGIN_UNLOCK=1 node scripts/unlock-login-guard.mjs --source --remote-address IP --reason 'approved source recovery'`
+- `ALLOW_PRODUCTION_LOGIN_UNLOCK` must be exactly `1`; test DB does not require it. The handler ignores failed attempts before the latest matching reset.
 - `scripts/validate-compose-security.mjs` must pass before deployment approval.
+
+## Fail-closed configuration
+
+`NODE_ENV=production` refuses API startup when `TRUSTED_PROXY_CIDRS` is not explicitly configured. In non-production, loopback is only a local-development fallback; source-wide limits activate solely for a trusted forwarded relay. A socket fallback cannot trigger cross-account source locking.

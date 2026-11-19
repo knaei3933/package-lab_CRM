@@ -14,8 +14,12 @@ const app = createApp({
   db,
   secureCookies: env.isProduction,
   allowedOrigins: env.allowedOrigins,
-  trustedProxyCidrs: env.trustedProxyCidrs
+  trustedProxyCidrs: env.trustedProxyCidrs,
+  trustedProxyConfigured: env.trustedProxyConfigured
 });
+if (env.isProduction && !env.trustedProxyConfigured) {
+  throw new Error('TRUSTED_PROXY_CIDRS is required in production');
+}
 
 const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (info) => {
   console.log(`KANEI CRM API listening on http://${env.host}:${info.port}`);
