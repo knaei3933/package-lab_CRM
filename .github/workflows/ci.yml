@@ -1,0 +1,42 @@
+name: CI
+on:
+  push:
+    branches: [master]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: kanei_crm_mvp_test
+          POSTGRES_USER: kanei
+          POSTGRES_PASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U kanei -d kanei_crm_mvp_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://kanei@127.0.0.1:5432/kanei_crm_mvp_test
+      PGPASSWORD: ${{ secrets.CI_POSTGRES_PASSWORD }}
+      DOCUMENT_STORAGE_DIR: /tmp/kanei-ci-document-storage
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: mkdir -p "$DOCUMENT_STORAGE_DIR" && chmod 0700 "$DOCUMENT_STORAGE_DIR"
+      - run: npm run typecheck
+      - run: npx vitest run --pool=forks --poolOptions.forks.singleFork
+      - name: secret scan
+        run: node scripts/secret-scan.mjs "${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || 'origin/master' }}" HEAD
+      - name: build web
+        run: npm run build --workspace @kanei/web

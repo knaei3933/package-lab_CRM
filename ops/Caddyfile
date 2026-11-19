@@ -1,0 +1,16 @@
+{
+    # The deployment injects PUBLIC_ORIGIN, e.g. https://crm.example.invalid.
+}
+
+{$PUBLIC_ORIGIN} {
+	encode zstd gzip
+	reverse_proxy web:3080
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+}

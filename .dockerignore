@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.git/
+.omc/
+**/.omc/
+apps/web/.next/
+apps/web/tsconfig.tsbuildinfo
+node_modules/
+**/node_modules/
+/root/backups/
+docs/reports/*.md

@@ -1,0 +1,81 @@
+# Production-profile artifact only. Running this compose file, opening ports on
+# the NAS, or deploying requires separate representative approval.
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kanei_crm_mvp
+      POSTGRES_USER: kanei
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD outside the repository}
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kanei -d kanei_crm_mvp"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${PROD_DATABASE_URL:?inject the full production URL outside the repository}
+      API_HOST: 0.0.0.0
+      API_PORT: 3081
+      NODE_ENV: production
+      TRUST_PROXY: "1"
+      ALLOWED_ORIGINS: ${PUBLIC_ORIGIN:?set https origin}
+      DOCUMENT_STORAGE_DIR: /var/lib/kanei/documents
+    volumes:
+      - document_storage:/var/lib/kanei/documents
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3081/api/health | grep -q '\"status\":\"ok\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      KANEI_API_BASE_URL: http://api:3081
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3080/ >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_healthy
+    ports:
+      - "${HTTP_BIND:-0.0.0.0}:80:80"
+      - "${HTTPS_BIND:-0.0.0.0}:443:443"
+    environment:
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN}
+    volumes:
+      - ./ops/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  postgres_data:
+  document_storage:
+  caddy_data:
+  caddy_config:
