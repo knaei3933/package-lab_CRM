@@ -3,7 +3,8 @@
  *
  * The audit-history endpoint answers every role with the same rows but shapes
  * the payload by role (apps/api/src/audit-view.ts, buildAuditViewForRole):
- * - viewer: only status / readinessState / isReady (server batch E), or no
+ * - viewer: only status / readinessState / isReady (server batch E) and
+ *   paymentTerms (UI batch E3), or no
  *   state at all when the event carries none of them;
  * - staff: afterState trimmed to an allowlist of identifier/status keys;
  * - admin: the full state.
@@ -28,6 +29,8 @@ export const HIDDEN_BY_ROLE_SHORT = '閲覧権限なし';
  * UI batch E2: server follow-up (db4bd88) adds the document's file name and
  * issuing entity, so staff can tell evidence files apart; bytes, sha256,
  * storage paths and sizes stay off it.
+ * UI batch E3: the representative decided to show the 決済条件 (paymentTerms)
+ * to staff and viewer; amounts, unit prices and commissions stay off both lists.
  */
 export const STAFF_VISIBLE_STATE_KEYS: readonly string[] = [
   'id',
@@ -70,6 +73,8 @@ export const STAFF_VISIBLE_STATE_KEYS: readonly string[] = [
   // db4bd88: staff can identify the evidence file and who issued it.
   'originalFilename',
   'issuerEntity',
+  // Representative decision (UI batch E3): the 決済条件 is shown, amounts are not.
+  'paymentTerms',
   'designKey',
   'versionNumber',
   'verificationStatus',
@@ -84,8 +89,9 @@ export const STAFF_VISIBLE_STATE_KEYS: readonly string[] = [
  * UI batch E: mirror of VIEWER_STATE_KEYS in apps/api/src/audit-view.ts (server
  * batch E). A viewer answer carries only these keys, or no state at all when
  * the event has none of them (pinned by tests/web-redaction-labels.test.ts).
+ * UI batch E3: the 決済条件 joins them by the representative's decision.
  */
-export const VIEWER_VISIBLE_STATE_KEYS: readonly string[] = ['status', 'readinessState', 'isReady'];
+export const VIEWER_VISIBLE_STATE_KEYS: readonly string[] = ['status', 'readinessState', 'isReady', 'paymentTerms'];
 
 interface StateCarrier {
   afterState?: unknown;

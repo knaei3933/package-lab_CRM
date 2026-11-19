@@ -90,6 +90,15 @@ export interface FilmSupplyOrderView {
    * from staff by the API (reasonHidden).
    */
   hold?: FilmOrderHoldView | null | undefined;
+  /**
+   * UI batch E3: the 決済条件 (G6) the audit history recorded — the creation
+   * value, replaced by each later 決済条件の記録. Since the representative's
+   * decision the API answers it to staff and viewer too (amounts stay hidden);
+   * null when it was not recorded or the role may not read it (paymentTermsHidden).
+   */
+  paymentTerms?: string | null | undefined;
+  /** UI batch E3: the API withheld the 決済条件 from this role. */
+  paymentTermsHidden?: boolean | undefined;
   createdAt: string;
   updatedAt: string;
 }
@@ -552,9 +561,26 @@ export async function loadWorkspace(
         detailsHidden: isFieldHiddenByRole(event, 'lineCount'),
         statusHidden: isStateWithheld(event),
         lastNormalStatus: isStateWithheld(event) ? null : normalStatusOrNull(text(after, 'status')),
+        paymentTerms: text(after, 'paymentTerms'),
+        paymentTermsHidden: isFieldHiddenByRole(event, 'paymentTerms'),
         createdAt: event.occurredAt,
         updatedAt: event.occurredAt
       });
+    } else if (event.action === 'FILM_SUPPLY_ORDER_PAYMENT_TERMS_UPDATED') {
+      // UI batch E3: a later 決済条件の記録 replaces the creation value. Its full
+      // state is never empty ({ paymentTerms }), so an empty answer was trimmed.
+      const current = filmOrders.get(event.entityId);
+      if (current) {
+        const recorded = text(after, 'paymentTerms');
+        if (recorded) {
+          current.paymentTerms = recorded;
+          current.paymentTermsHidden = false;
+        } else if (isFieldHiddenByRole(event, 'paymentTerms', { emptyMeansTrimmed: true })) {
+          current.paymentTerms = null;
+          current.paymentTermsHidden = true;
+        }
+        current.updatedAt = event.occurredAt;
+      }
     } else if (
       event.action === 'FILM_SUPPLY_ORDER_TRANSITIONED'
       // UI batch B: the 受領確認 (receipt assumption) moves the order into the

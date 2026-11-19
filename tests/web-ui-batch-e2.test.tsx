@@ -50,9 +50,12 @@ beforeEach(() => {
 });
 
 describe('E2: staff reads the document file name and issuer (db4bd88)', () => {
-  it('the staff mirror carries both keys; the viewer mirror is unchanged', () => {
+  it('the staff mirror carries both keys; the viewer mirror gains no document identity', () => {
     expect(STAFF_VISIBLE_STATE_KEYS).toEqual(expect.arrayContaining(['originalFilename', 'issuerEntity']));
-    expect([...VIEWER_VISIBLE_STATE_KEYS]).toEqual(['status', 'readinessState', 'isReady']);
+    // UI batch E3: the 決済条件 joined the viewer list by the representative's decision.
+    expect([...VIEWER_VISIBLE_STATE_KEYS]).toEqual(['status', 'readinessState', 'isReady', 'paymentTerms']);
+    expect(VIEWER_VISIBLE_STATE_KEYS).not.toContain('originalFilename');
+    expect(VIEWER_VISIBLE_STATE_KEYS).not.toContain('issuerEntity');
     // Amounts, hashes, storage paths and the viewer's order code stay off.
     for (const key of ['sha256', 'storagePath', 'byteSize', 'amount', 'unitPrice']) {
       expect(STAFF_VISIBLE_STATE_KEYS).not.toContain(key);

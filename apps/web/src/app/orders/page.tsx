@@ -49,7 +49,7 @@ import {
   uncancellableLivePapers
 } from '../../lib/project-data';
 import type { FilmSupplyOrderView, Workspace } from '../../lib/project-data';
-import { holdReleaseFacts, holdSummaryText } from '../../lib/decision-facts';
+import { holdReleaseFacts, holdSummaryText, paymentTermsText } from '../../lib/decision-facts';
 import { EVIDENCE_GAP_SUFFIX, EVIDENCE_NOTE_FIELD, evidenceGapsFor } from '../../lib/transition-evidence';
 import type { MakerPaperCleanupSummary } from '../../lib/maker-po-data';
 import { MAKER_CHAIN_NOTICE, transitionChoicesFor } from '../../lib/transitions';
@@ -205,6 +205,7 @@ export default async function OrdersPage() {
                 <th scope="col" style={thStyle}>発注コード</th>
                 <th scope="col" style={thStyle}>状態</th>
                 <th scope="col" style={thStyle}>セブン発注書</th>
+                <th scope="col" style={thStyle}>決済条件</th>
                 <th scope="col" style={thStyle}>明細</th>
                 <th scope="col" style={thStyle}>作成</th>
                 <th scope="col" style={thStyle}>更新</th>
@@ -239,6 +240,8 @@ export default async function OrdersPage() {
                         </p>
                       ) : null}
                     </td>
+                    {/* UI batch E3: the 決済条件 is shown to every role (amounts are not). */}
+                    <td style={tdStyle}>{paymentTermsText(order)}</td>
                     <td style={tdStyle}>
                       <OrderLinesCell order={order} />
                     </td>

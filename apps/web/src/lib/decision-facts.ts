@@ -1,7 +1,7 @@
 import { PAYMENT_TERMS_LABELS } from './maker-po-data';
 import type { MakerPoViewRow } from './maker-po-data';
 import type { FilmOrderHoldView, FilmSupplyOrderView } from './project-data';
-import { HIDDEN_BY_ROLE_SHORT } from './redaction';
+import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from './redaction';
 import { formatMoney, formatTimestamp } from './vocabulary';
 
 /**
@@ -35,6 +35,16 @@ export function ceoApprovalFacts(
   ];
 }
 
+
+/**
+ * UI batch E3: the 決済条件 of one film order as the audit history showed this
+ * role — 「前払い」, 「（閲覧権限なし）」 when withheld, 「（未記録）」 otherwise.
+ * A recorded term is never a 入金確認.
+ */
+export function paymentTermsText(order: Pick<FilmSupplyOrderView, 'paymentTerms' | 'paymentTermsHidden'>): string {
+  if (order.paymentTerms) return PAYMENT_TERMS_LABELS[order.paymentTerms] ?? order.paymentTerms;
+  return order.paymentTermsHidden ? HIDDEN_BY_ROLE_LABEL : '（未記録）';
+}
 
 /** UI batch E (F-11): the hold reason as the role may read it. */
 function holdReasonText(hold: FilmOrderHoldView): string {
