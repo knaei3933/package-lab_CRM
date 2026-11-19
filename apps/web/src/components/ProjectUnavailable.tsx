@@ -5,7 +5,9 @@ import { infoBoxStyle, noteStyle } from '../lib/ui';
  * UI batch E (F-12): the screen body when the remembered project cannot be
  * opened (deleted, assignment removed). Only the way out is shown — the
  * project's forms would post into a project the API refuses. The API's own
- * reason follows in smaller print.
+ * reason follows in smaller print. Plain markup on purpose: it renders on the
+ * non-pilot screens too, which must not load the Astryx bundle for it
+ * (ASTRYX_EVAL §1 — non-pilot First Load JS unchanged).
  */
 export function ProjectUnavailable({ title, reason }: { title: string; reason: string | null }) {
   return (

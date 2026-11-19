@@ -1,4 +1,22 @@
 /*
+ * Astryx trial (ui/astryx-trial): cascade layer order, declared before any
+ * Astryx stylesheet so this order wins (DESIGN_RULES §1).
+ *   reset        Astryx theme's scoped element reset (inside Astryx islands only)
+ *   kanei-base   this file and forms.css — the existing 「現場の帳簿」 rules
+ *   astryx-base  Astryx component styles (beat our element rules inside islands)
+ *   astryx-theme the neutral theme's tokens
+ *   kanei-theme  our token mapping onto Astryx (astryx-bridge.css) — wins over the theme
+ * Inline styles still win over every layer, so screens that are not migrated
+ * render as before. reset.css and the theme's fonts.css (Google Fonts) are not
+ * imported on purpose.
+ */
+@layer reset, kanei-base, astryx-base, astryx-theme, kanei-theme;
+@import '@astryxdesign/core/astryx.css';
+@import '@astryxdesign/theme-neutral/theme.css';
+@import './astryx-bridge.css';
+
+@layer kanei-base {
+/*
  * UI batch A: design tokens for the operator screens (UI_AUDIT_AND_PLAN §3.2).
  * Direction 「現場の帳簿」 in its restrained variant (CEO decision: keep the
  * current pale blue-grey paper, indigo as the one primary colour). Screens
@@ -543,11 +561,13 @@ h3 {
 }
 
 /* A page's own grid never grows wider than the screen (wide tables scroll). */
-.app-main > section {
+.app-main > section,
+.app-main > .ax-island > section {
   grid-template-columns: minmax(0, 1fr);
 }
 
 .app-main > section > *,
+.app-main > .ax-island > section > *,
 .app-main details {
   min-width: 0;
 }
@@ -863,6 +883,10 @@ h3 {
   *::before,
   *::after {
     animation-duration: 0.01ms !important;
+    /* Astryx trial: an endless animation (a loading spinner) runs once and
+       stops instead of jumping to a random angle every frame. */
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
 }
+} /* @layer kanei-base */

@@ -10,6 +10,8 @@ import { decodeDisplayNameCookie, DISPLAY_NAME_COOKIE, operatorName, roleLabel }
 import { loadSelectableProjects } from '../lib/project-data';
 import type { ProjectSummary } from '../lib/project-data';
 import { selectProjectAction } from './actions';
+// Astryx trial: the layer order first, then the stylesheets (layer-order.css).
+import './layer-order.css';
 import './globals.css';
 
 // UI batch A: each screen sets its own title (tabs stay distinguishable); the

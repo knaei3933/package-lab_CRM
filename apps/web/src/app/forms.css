@@ -1,3 +1,5 @@
+/* Astryx trial: same layer as globals.css so their relative order is unchanged. */
+@layer kanei-base {
 /*
  * UI batch C (part 1): form feedback, locale-free date entry and the confirm
  * dialog. Imported by components/form-feedback.tsx so every form shell loads
@@ -53,8 +55,9 @@
 /* Inline control styles set the border shorthand, so the invalid edge needs
    !important on the colour; the 1px inset ring makes it read as 2px without
    shifting the layout. */
-.form-shell [aria-invalid='true'],
-.login-form [aria-invalid='true'] {
+/* Astryx trial: the login fields are Astryx TextInput, which draws its own
+   error state (status="error"), so .login-form is no longer listed here. */
+.form-shell [aria-invalid='true'] {
   border-color: var(--danger) !important;
   box-shadow: 0 0 0 1px var(--danger);
 }
@@ -292,3 +295,4 @@
     padding-bottom: 0;
   }
 }
+} /* @layer kanei-base */

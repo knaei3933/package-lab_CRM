@@ -1,6 +1,14 @@
 import type { Metadata } from 'next';
 import { LEGACY_HOLD_RELEASE_TARGETS } from '@kanei/core';
+import { Banner } from '@astryxdesign/core/Banner';
+import { Card } from '@astryxdesign/core/Card';
+import { Divider } from '@astryxdesign/core/Divider';
+import { Heading } from '@astryxdesign/core/Heading';
+import { Text } from '@astryxdesign/core/Text';
+import { VStack } from '@astryxdesign/core/VStack';
 import { ActionForm } from '../../components/ActionForm';
+import { AstryxIsland } from '../../components/AstryxIsland';
+import { EmptyNote } from '../../components/EmptyNote';
 import { ChoiceDisclosure, ChoiceToneActionForm } from '../../components/ChoiceDrivenForm';
 import { OrderCreateForm } from '../../components/OrderCreateForm';
 import { RepresentativeQueuePanel } from '../../components/RepresentativeQueue';
@@ -46,7 +54,7 @@ import { EVIDENCE_GAP_SUFFIX, EVIDENCE_NOTE_FIELD, evidenceGapsFor } from '../..
 import type { MakerPaperCleanupSummary } from '../../lib/maker-po-data';
 import { MAKER_CHAIN_NOTICE, transitionChoicesFor } from '../../lib/transitions';
 import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
-import { cardStyle, infoBoxStyle, noteStyle, tdStyle, thStyle } from '../../lib/ui';
+import { noteStyle, tdStyle, thStyle } from '../../lib/ui';
 import { formatTimestamp, unitChoices, unitLabel, VERIFICATION_STATUS_LABELS } from '../../lib/vocabulary';
 
 export const dynamic = 'force-dynamic';
@@ -75,23 +83,31 @@ const PAYMENT_TERMS_CHOICES = [
   { value: 'undetermined', label: PAYMENT_TERMS_LABELS.undetermined! }
 ];
 
+/** Astryx trial: the empty note when the workspace read failed (the Banner above says why). */
+const LOAD_FAILED_NOTE = '一覧を表示できませんでした。画面上部の案内を確認してください。';
+
 export default async function OrdersPage() {
   const projectId = await readSelectedProjectId();
   if (!projectId) {
+    // Astryx trial: a prerequisite, not a failure — info, with the next step in the text.
     // UI batch E (F-23): the first screen after login — the representative sees
     // what waits for them across projects before choosing one.
     const firstUser = await loadSessionUser();
     const queue = firstUser?.role === 'admin' ? await loadRepresentativeQueue(await loadSelectableProjects()) : null;
     return (
-      <section style={{ display: 'grid', gap: 24 }}>
-        <div style={infoBoxStyle}>{NO_PROJECT_SELECTED_MESSAGE}</div>
-        {queue ? (
-          <div style={cardStyle}>
-            <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>代表者の対応待ち（全案件）</h2>
-            <RepresentativeQueuePanel queue={queue} selectAction={selectProjectAction} currentProjectId={null} />
-          </div>
-        ) : null}
-      </section>
+      <AstryxIsland>
+        <VStack as="section" gap={5}>
+          <Banner status="info" title={NO_PROJECT_SELECTED_MESSAGE} />
+          {queue ? (
+            <Card>
+              <VStack gap={3}>
+                <Heading level={2}>代表者の対応待ち（全案件）</Heading>
+                <RepresentativeQueuePanel queue={queue} selectAction={selectProjectAction} currentProjectId={null} />
+              </VStack>
+            </Card>
+          ) : null}
+        </VStack>
+      </AstryxIsland>
     );
   }
 
@@ -125,20 +141,28 @@ export default async function OrdersPage() {
     paymentGateByOrderId.set(order.id, paymentGates[index] ?? null);
   }
 
+  // A failed read leaves the lists empty: then say so, never 「まだありません」 + "create one".
+  const loadFailed = Boolean(workspace.error);
+  const canCreateFilmOrder = canRoleOperate(role, 'film_order:create');
+  const canCreateFillingOrder = canRoleOperate(role, 'filling_order:create');
+
+  // Astryx trial: this screen is an Astryx island (DESIGN_RULES §1). The tables,
+  // status badges and forms are still ours — their markup is the tested contract.
   return (
-    <section style={{ display: 'grid', gap: 24 }}>
+    <AstryxIsland>
+    <VStack as="section" gap={5}>
       <header>
-        <h1 style={{ fontSize: 26, margin: '0 0 4px' }}>案件（発注）一覧／作成</h1>
+        <Heading level={1}>案件（発注）一覧／作成</Heading>
         <ProjectProgress workspace={workspace} role={role} currentPath="/orders" />
         <ViewerPageNotice role={role} />
         {workspace.project ? (
-          <p style={noteStyle}>
+          <Text as="p" type="supporting">
             案件 {workspace.project.code}（{workspace.project.name}）／ ルート {workspace.project.route}
-          </p>
+          </Text>
         ) : (
           <TechDetails context="案件ID">{projectId}</TechDetails>
         )}
-        {workspace.error ? <div style={infoBoxStyle}>{workspace.error}</div> : null}
+        {workspace.error ? <Banner status="error" title={workspace.error} /> : null}
         {representativeQueue && representativeQueue.tasks.length > 0 ? (
           <details className="progress-completed" style={{ marginTop: 12 }}>
             <summary>ほかの案件の代表者の対応待ち（{representativeQueue.tasks.length}件）</summary>
@@ -152,15 +176,17 @@ export default async function OrdersPage() {
         poChoices={poChoices}
         verificationLabel={VERIFICATION_STATUS_LABELS}
         role={role}
+        loadFailed={loadFailed}
       />
 
-      <div style={cardStyle}>
-        <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>フィルム発注 一覧</h2>
-        <p style={noteStyle}>
+      <Card>
+        <VStack gap={3}>
+        <Heading level={2}>フィルム発注 一覧</Heading>
+        <Text as="p" type="supporting">
           行の操作で状態を進めます。受領確認（問題なしとみなす）は「{stateLabel('FILM_DELIVERED')}」の発注でだけ記録できます。
-        </p>
+        </Text>
         {workspace.filmOrders.length === 0 ? (
-          <p style={noteStyle}>フィルム発注はまだありません。</p>
+          loadFailed ? <EmptyNote title={LOAD_FAILED_NOTE} next={null} /> : <EmptyNote title="フィルム発注はまだありません" next={canCreateFilmOrder ? '下の「フィルム発注を作成する」で、確認済みのセブン化学発注書から作成します。' : null} />
         ) : (
           <DataTable caption="フィルム発注の一覧" captionHidden>
             <thead>
@@ -254,12 +280,14 @@ export default async function OrdersPage() {
             </tbody>
           </DataTable>
         )}
-      </div>
+        </VStack>
+      </Card>
 
-      <div style={cardStyle}>
-        <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>フィルム発注を作成する</h2>
+      <Card>
+        <VStack gap={3}>
+        <Heading level={2}>フィルム発注を作成する</Heading>
         <RoleGate role={role} operation="film_order:create" label="フィルム発注の作成">
-          <p style={noteStyle}>明細の単位はフィルム商材の単位（ロール／メートル／枚）です。</p>
+          <Text as="p" type="supporting">明細の単位はフィルム商材の単位（ロール／メートル／枚）です。</Text>
           <OrderCreateForm
             action={createFilmSupplyOrderAction}
             orderKind="film"
@@ -268,18 +296,20 @@ export default async function OrdersPage() {
             paymentTermsChoices={PAYMENT_TERMS_CHOICES}
           />
         </RoleGate>
-      </div>
+        </VStack>
+      </Card>
 
-      <div style={cardStyle}>
-        <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>充填発注 一覧・作成</h2>
-        <p style={noteStyle}>
+      <Card>
+        <VStack gap={3}>
+        <Heading level={2}>充填発注 一覧・作成</Heading>
+        <Text as="p" type="supporting">
           充填製品（カプセル等）の発注です。単位はポッド／個。納品の確認状態は「納品確認・手数料準備」画面で扱います
           （準備状態: {workspace.readiness?.hidden
             ? HIDDEN_BY_ROLE_SHORT
             : readinessLabel(workspace.readiness?.readinessState ?? 'MISSING_DATA')}）。
-        </p>
+        </Text>
         {workspace.fillingOrders.length === 0 ? (
-          <p style={noteStyle}>充填発注はまだありません。</p>
+          loadFailed ? <EmptyNote title={LOAD_FAILED_NOTE} next={null} /> : <EmptyNote title="充填発注はまだありません" next={canCreateFillingOrder ? '下のフォームで作成します。' : null} />
         ) : (
           <DataTable caption="充填発注の一覧" captionHidden>
             <thead>
@@ -312,12 +342,14 @@ export default async function OrdersPage() {
             </tbody>
           </DataTable>
         )}
-        <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '16px 0' }} />
+        <Divider />
         <RoleGate role={role} operation="filling_order:create" label="充填発注の作成">
           <OrderCreateForm action={createFillingOrderAction} orderKind="filling" unitChoices={unitChoices('filling')} />
         </RoleGate>
-      </div>
-    </section>
+        </VStack>
+      </Card>
+    </VStack>
+    </AstryxIsland>
   );
 }
 
@@ -654,25 +686,29 @@ function SevenPurchaseOrderSection({
   orders,
   poChoices,
   verificationLabel,
-  role
+  role,
+  loadFailed
 }: {
   orders: Awaited<ReturnType<typeof loadWorkspace>>['sevenPurchaseOrders'];
   poChoices: Array<{ value: string; label: string }>;
   verificationLabel: Record<string, string>;
   role: string | null;
+  loadFailed: boolean;
 }) {
   // UI batch B (④): the 操作 column only for a role with a form to put in it.
   const showOperations = canRoleOperate(role, 'seven_po:register') || canRoleOperate(role, 'seven_po:verify');
+  const canCreate = canRoleOperate(role, 'seven_po:create');
   return (
-    <div style={cardStyle}>
-      <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>セブン化学発注書</h2>
-      <p style={noteStyle}>
+    <Card>
+      <VStack gap={3}>
+      <Heading level={2}>セブン化学発注書</Heading>
+      <Text as="p" type="supporting">
         フィルム発注を進めるには、発注書の公式登録と真性行チェックリストの記録（確認済み）が必要です。ここで記録すると、
         フィルム発注の紐付けと状態遷移、正式書類のアップロードの前提がそろいます。
-      </p>
+      </Text>
 
       {orders.length === 0 ? (
-        <p style={noteStyle}>セブン化学発注書はまだありません。</p>
+        loadFailed ? <EmptyNote title={LOAD_FAILED_NOTE} next={null} /> : <EmptyNote title="セブン化学発注書はまだありません" next={canCreate ? '紙の発注書が届いたら、下の「セブン化学発注書を登録する」で登録します。' : null} />
       ) : (
         <DataTable caption="セブン化学発注書の一覧" captionHidden>
           <thead>
@@ -782,8 +818,8 @@ function SevenPurchaseOrderSection({
         </DataTable>
       )}
 
-      <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '16px 0' }} />
-      <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>セブン化学発注書を登録する</h3>
+      <Divider />
+      <Heading level={3}>セブン化学発注書を登録する</Heading>
       <RoleGate role={role} operation="seven_po:create" label="発注書の登録">
         <ActionForm
           action={createSevenPurchaseOrderAction}
@@ -797,8 +833,9 @@ function SevenPurchaseOrderSection({
         </ActionForm>
       </RoleGate>
       {poChoices.length === 0 ? null : (
-        <p style={noteStyle}>登録済み: {poChoices.length}件</p>
+        <Text as="p" type="supporting">登録済み: {poChoices.length}件</Text>
       )}
-    </div>
+      </VStack>
+    </Card>
   );
 }

@@ -1,0 +1,9 @@
+/*
+ * Astryx trial: the cascade layer order. This file must be the FIRST stylesheet
+ * the page loads (layout.tsx imports it before globals.css): the first
+ * statement that names a layer fixes its position, and Next emits each
+ * @import-ed Astryx stylesheet as its own file, whose own `@layer reset,
+ * astryx-base, astryx-theme;` would otherwise come first and push kanei-base
+ * above the Astryx component styles. See globals.css for what each layer holds.
+ */
+@layer reset, kanei-base, astryx-base, astryx-theme, kanei-theme;

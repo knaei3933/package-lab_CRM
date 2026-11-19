@@ -1,0 +1,168 @@
+/*
+ * Astryx trial: maps the Astryx neutral theme onto the 「現場の帳簿」 tokens in
+ * globals.css (DESIGN_RULES §2). One source of truth: every value here reads
+ * one of our variables, so changing --primary changes both worlds.
+ *
+ * Layer kanei-theme comes after astryx-theme, so these declarations win over
+ * the neutral theme regardless of selector specificity or @scope proximity.
+ */
+@layer kanei-theme {
+  /* Light only. The theme sets `color-scheme: light dark` on :root, which would
+     darken native controls (select, scrollbars, date pickers) under an OS dark
+     mode while our own tokens stay light. */
+  :root,
+  [data-astryx-theme] {
+    color-scheme: light;
+  }
+
+  [data-astryx-theme='neutral'] {
+    /* Colour: one primary (藍), quiet paper, status tones from our tints. */
+    --color-accent: var(--primary);
+    --color-accent-muted: var(--primary-tint);
+    --color-on-accent: var(--surface);
+    --color-text-accent: var(--primary);
+    --color-icon-accent: var(--primary);
+
+    --color-background-body: var(--paper);
+    --color-background-surface: var(--surface);
+    --color-background-card: var(--surface);
+    --color-background-popover: var(--surface);
+    --color-background-muted: var(--surface-sub);
+
+    --color-text-primary: var(--ink);
+    --color-text-secondary: var(--ink-sub);
+    --color-icon-primary: var(--ink);
+    --color-icon-secondary: var(--ink-sub);
+
+    --color-border: var(--line);
+    --color-border-emphasized: var(--line-strong);
+
+    --color-info: var(--primary);
+    --color-info-muted: var(--primary-tint);
+    --color-on-info: var(--surface);
+    --color-on-info-muted: var(--primary);
+    --color-text-info: var(--primary);
+
+    --color-success: var(--ok);
+    --color-success-muted: var(--ok-tint);
+    --color-on-success: var(--surface);
+    --color-on-success-muted: var(--ok);
+    --color-text-success: var(--ok);
+
+    --color-warning: var(--warn);
+    --color-warning-muted: var(--warn-tint);
+    --color-on-warning: var(--surface);
+    --color-on-warning-muted: var(--warn);
+    --color-text-warning: var(--warn);
+
+    --color-error: var(--danger);
+    --color-error-muted: var(--danger-tint);
+    --color-on-error: var(--surface);
+    --color-on-error-muted: var(--danger);
+    --color-text-error: var(--danger);
+
+    /* Type: the Japanese UI stack; no web font is fetched. */
+    --font-family-body: var(--font-sans);
+    --font-family-heading: var(--font-sans);
+    --font-family-code: var(--font-mono);
+
+    --text-heading-1-size: var(--text-xl);
+    --text-heading-1-weight: 700;
+    --text-heading-1-leading: 1.4;
+    --text-heading-2-size: var(--text-lg);
+    --text-heading-2-weight: 700;
+    --text-heading-2-leading: 1.5;
+    --text-heading-3-size: var(--text-md);
+    --text-heading-3-weight: 700;
+    --text-heading-3-leading: 1.6;
+    --text-body-size: var(--text-sm);
+    --text-body-leading: 1.7;
+    --text-label-size: 13px;
+    --text-label-leading: 1.5;
+    --text-supporting-size: 13px;
+    --text-supporting-leading: 1.6;
+
+    /* Shape: one small radius, flat surfaces (a ledger, not floating cards). */
+    --radius-inner: 4px;
+    --radius-element: var(--radius);
+    --radius-container: var(--radius);
+    --shadow-low: none;
+
+    /* Focus: the same ring as the rest of the app. */
+    --focus-outline-width: 2px;
+    --focus-outline-style: solid;
+    --focus-outline-color: var(--primary);
+    --focus-outline-offset: 2px;
+  }
+
+  /* Inside an island: Astryx components own their spacing (Stack gap), so the
+     browser's default margins on headings and paragraphs go. Our own markup
+     (forms, tables) keeps its margins. */
+  [data-astryx-theme='neutral'] :where(.astryx-heading, .astryx-text) {
+    margin: 0;
+  }
+
+  /* Keyboard focus on a text field: the app's ring (2px 藍 + 2px gap), as on
+     every other control. Astryx alone shows a 1px border change plus a pale
+     inset, which is weaker than the rest of the app (DESIGN_RULES §12).
+     Only the documented component class root is targeted, never its inside. */
+  [data-astryx-theme='neutral'] .astryx-text-input:has(:focus-visible) {
+    outline: var(--focus-ring);
+    outline-offset: 2px;
+  }
+
+  /* Card padding follows our --card-pad (16px, 12px under 768px). */
+  [data-astryx-theme='neutral'] .astryx-card {
+    --astryx-card-padding: var(--card-pad);
+  }
+
+  /* The island is a block of the page, not a second page: no own background. */
+  .ax-island {
+    display: contents;
+  }
+}
+
+/*
+ * The part of Astryx's reset.css its controls rely on (the inner <input> of
+ * TextInput keeps its browser border without it). Applied only inside the
+ * Astryx controls listed here — never inside layout components (Stack, Card),
+ * because those hold our own tables and forms. Add a control to the list when
+ * a screen starts to use it (DESIGN_RULES §1). Layer `reset` is the lowest,
+ * so Astryx component styles and our kanei-base rules both win over it.
+ */
+@layer reset {
+  @scope (:is(.astryx-field, .astryx-button, .astryx-banner-frame)) {
+    :scope,
+    :scope *,
+    :scope ::before,
+    :scope ::after {
+      box-sizing: border-box;
+      border-width: 0;
+      border-style: solid;
+      border-color: currentColor;
+    }
+
+    :where(:scope, :scope *):where(button, input, optgroup, select, textarea) {
+      font: inherit;
+      color: inherit;
+      margin: 0;
+      padding: 0;
+    }
+
+    :where(:scope, :scope *):where(button, [type='button'], [type='submit'], [type='reset']) {
+      appearance: button;
+      background-color: transparent;
+      background-image: none;
+    }
+
+    :where(:scope *):where(svg, img) {
+      display: block;
+      vertical-align: middle;
+    }
+
+    :where(:scope *):where(input, textarea)::placeholder {
+      opacity: 1;
+      color: var(--color-text-secondary);
+    }
+  }
+}

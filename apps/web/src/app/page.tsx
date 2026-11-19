@@ -1,8 +1,12 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
+import { Card } from '@astryxdesign/core/Card';
+import { Heading } from '@astryxdesign/core/Heading';
+import { Text } from '@astryxdesign/core/Text';
+import { VStack } from '@astryxdesign/core/VStack';
+import { AstryxIsland } from '../components/AstryxIsland';
 import { LoginForm } from '../components/LoginForm';
-import { apiBaseUrl, loadSessionUser } from '../lib/api';
-import { cardStyle, noteStyle } from '../lib/ui';
+import { loadSessionUser } from '../lib/api';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,21 +22,26 @@ export default async function LoginPage() {
   const user = await loadSessionUser();
   if (user) redirect('/orders');
 
+  // Astryx trial: the login screen is an Astryx island (DESIGN_RULES §1).
+  // The form sits in a full-width Card, like every other panel (DESIGN_RULES §5).
   return (
-    <section style={{ display: 'grid', gap: 24 }}>
-      <div>
-        <h1 style={{ fontSize: 28, margin: '0 0 8px' }}>ログイン</h1>
-        <p style={noteStyle}>
-          KANEI CRM（F1専用）のオペレーター画面です。API（{apiBaseUrl}）のセッションで認証します。
-        </p>
-      </div>
-      <div style={cardStyle}>
-        <LoginForm />
-      </div>
-      <p style={noteStyle}>
-        シード済みのユーザーでログインしてください（シードの登録内容は packages/db/src/seed.ts を参照）。
-        代表者権限（admin）でログインすると、承認・納品確認・手数料準備の操作が行えます。
-      </p>
-    </section>
+    <AstryxIsland>
+      <VStack as="section" gap={5}>
+        <VStack gap={2}>
+          <Heading level={1}>ログイン</Heading>
+          {/* UI batch E (F-14, T1): no server address or source path on the login screen. */}
+          <Text as="p" type="supporting">
+            KANEI CRM（F1専用）のオペレーター画面です。配られたユーザー名とパスワードでログインします。
+          </Text>
+        </VStack>
+        <Card>
+          <LoginForm />
+        </Card>
+        <Text as="p" type="supporting">
+          {'ユーザー名やパスワードが分からないときは、代表者に確認してください。'
+            + '代表者のユーザーでログインすると、承認・納品確認・手数料準備の操作も行えます。'}
+        </Text>
+      </VStack>
+    </AstryxIsland>
   );
 }

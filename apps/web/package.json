@@ -8,7 +8,10 @@
     "start": "next start -p 3080"
   },
   "dependencies": {
+    "@astryxdesign/core": "0.7.16",
+    "@astryxdesign/theme-neutral": "0.7.16",
     "@kanei/core": "0.1.0",
+    "@stylexjs/stylex": "0.19.1",
     "next": "15.5.29",
     "react": "19.1.0",
     "react-dom": "19.1.0"
