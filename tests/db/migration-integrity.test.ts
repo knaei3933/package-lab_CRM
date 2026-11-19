@@ -146,14 +146,14 @@ describe('drizzle migration ordering and 0021', () => {
     const journal = JSON.parse(
       await readFile(path.resolve(process.cwd(), 'packages/db/drizzle/meta/_journal.json'), 'utf8')
     ) as { entries: Array<{ idx: number; when: number; tag: string }> };
-    expect(journal.entries).toHaveLength(22);
+    expect(journal.entries).toHaveLength(23);
     for (let index = 1; index < journal.entries.length; index += 1) {
       expect(journal.entries[index]!.when, journal.entries[index]!.tag)
         .toBeGreaterThan(journal.entries[index - 1]!.when);
     }
     expect(journal.entries.at(-1)).toMatchObject({
-      idx: 21,
-      tag: '0021_m9_cancelled_film_order_status',
+      idx: 22,
+      tag: '0022_r1_trigger_search_path',
       when: expect.any(Number)
     });
     expect(journal.entries.at(-1)!.when).toBeGreaterThan(1795731560000);
@@ -164,7 +164,7 @@ describe('drizzle migration ordering and 0021', () => {
       .toBe((filmSupplyOrderStatus.enumValues?.length ?? 0) - 1);
   });
 
-  it('migrates a fresh database through 0021 and adds CANCELLED', async () => {
+  it('migrates a fresh database through 0022 and adds CANCELLED', async () => {
     const name = await createScratchDatabase('kanei_crm_mvp_migration_fresh');
     await readFile(path.join(tempRoot, 'scratch-dbs.txt'), 'utf8')
       .catch(() => '')
@@ -183,8 +183,8 @@ describe('drizzle migration ordering and 0021', () => {
       expect(await enumValues(url)).toContain('CANCELLED');
       expect(await enumValues(url)).toEqual(expect.arrayContaining(['CANCELLATION_REVIEW', 'CANCELLED']));
       const rows = await migrationRows(url);
-      expect(rows).toHaveLength(22);
-      expect(rows.at(-1)).toMatchObject({ created_at: '1795818360000' });
+      expect(rows).toHaveLength(23);
+      expect(rows.at(-1)).toMatchObject({ created_at: '1795904760000' });
     } finally {
       await pool.end();
     }
@@ -202,13 +202,21 @@ describe('drizzle migration ordering and 0021', () => {
       encoding: 'utf8'
     });
     expect(result.stdout).toContain('migrations applied successfully');
-    expect(await migrationRows(url)).toHaveLength(22);
+    expect(await migrationRows(url)).toHaveLength(23);
+    const functionClient = new pg.Client({ connectionString: url });
+    await functionClient.connect();
+    const functionConfig = await functionClient.query(`
+      select proconfig from pg_proc
+      where proname = 'kanei_crm_mvp_assert_single_active_maker_po'
+    `);
+    await functionClient.end();
+    expect(functionConfig.rows[0]?.proconfig).toEqual(['search_path=pg_catalog, public']);
     const values = await enumValues(url);
     expect(values).toContain('CANCELLED');
     expect(values.indexOf('CANCELLED')).toBe(values.length - 1);
   });
 
-  it('applies only 0021 to a database already migrated through 0020', async () => {
+  it('applies 0021/0022 to a database already migrated through 0020', async () => {
     const name = await createScratchDatabase('kanei_crm_mvp_migration_existing');
     await readFile(path.join(tempRoot, 'scratch-dbs.txt'), 'utf8')
       .catch(() => '')
@@ -224,11 +232,69 @@ describe('drizzle migration ordering and 0021', () => {
 
       await migrate(drizzle(pool), { migrationsFolder: path.join(tempRoot, 'drizzle') });
       const rows = await migrationRows(url);
-      expect(rows).toHaveLength(22);
-      expect(rows.at(-1)).toMatchObject({ created_at: '1795818360000' });
+      expect(rows).toHaveLength(23);
+      expect(rows.at(-1)).toMatchObject({ created_at: '1795904760000' });
       const values = await enumValues(url);
       expect(values).toContain('CANCELLED');
       expect(values.indexOf('CANCELLED')).toBe(values.length - 1);
+    } finally {
+      await pool.end();
+    }
+  });
+
+  it('0022 pins trigger search_path without changing the relational schema', async () => {
+    const name = await createScratchDatabase('kanei_crm_mvp_0022_search_path');
+    await readFile(path.join(tempRoot, 'scratch-dbs.txt'), 'utf8')
+      .catch(() => '')
+      .then((old) => writeFile(path.join(tempRoot, 'scratch-dbs.txt'), `${old}${name}\n`));
+    const url = await scratchUrl(name);
+    const pool = new Pool({ connectionString: url });
+    const staged = path.join(tempRoot, 'through-0020-search-path');
+    try {
+      await cp(path.resolve(process.cwd(), 'packages/db/drizzle'), staged, { recursive: true });
+      await runThrough0020(staged, url);
+
+      const query = async (text: string) => {
+        const client = new pg.Client({ connectionString: url });
+        await client.connect();
+        try {
+          return await client.query(text);
+        } finally {
+          await client.end();
+        }
+      };
+
+      const tableSchema = async () => (await query(`
+        select table_name, column_name, data_type, udt_name,
+               is_nullable, column_default
+        from information_schema.columns
+        where table_schema = 'public'
+        order by table_name, column_name
+      `)).rows;
+      const beforeColumns = await tableSchema();
+      const beforeFunction = await query(`
+        select pg_get_functiondef(oid) as definition, proconfig
+        from pg_proc
+        where proname = 'kanei_crm_mvp_assert_single_active_maker_po'
+      `);
+      expect(beforeFunction.rows[0]?.proconfig ?? []).toEqual([]);
+      expect(beforeFunction.rows[0]?.definition).not.toContain('SET search_path');
+
+      await migrate(drizzle(pool), { migrationsFolder: path.join(tempRoot, 'drizzle') });
+
+      expect(await migrationRows(url)).toHaveLength(23);
+      const afterColumns = await tableSchema();
+      expect(afterColumns).toEqual(beforeColumns);
+      const afterFunction = await query(`
+        select pg_get_functiondef(oid) as definition, proconfig
+        from pg_proc
+        where proname = 'kanei_crm_mvp_assert_single_active_maker_po'
+      `);
+      expect(afterFunction.rows[0]?.proconfig).toEqual(['search_path=pg_catalog, public']);
+      expect(afterFunction.rows[0]?.definition).toContain("SET search_path TO 'pg_catalog', 'public'");
+      expect(afterFunction.rows[0]?.definition).toContain('FROM public.maker_purchase_orders');
+      const values = await enumValues(url);
+      expect(values).toContain('CANCELLED');
     } finally {
       await pool.end();
     }
@@ -262,7 +328,7 @@ describe('drizzle migration ordering and 0021', () => {
       // and guarded constraint let the same pending migration replay safely.
       await writeFile(failingFile, original);
       await migrate(drizzle(pool), { migrationsFolder: staged });
-      expect(await migrationRows(url)).toHaveLength(22);
+      expect(await migrationRows(url)).toHaveLength(23);
       expect(await enumValues(url)).toContain('CANCELLED');
     } finally {
       await pool.end();

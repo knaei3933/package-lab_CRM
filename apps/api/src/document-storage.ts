@@ -1,6 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
-import { mkdir, open } from 'node:fs/promises';
-import os from 'node:os';
+import { access, constants, lstat, mkdir, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
@@ -33,10 +32,43 @@ const MAGIC_SIGNATURES: readonly { mime: AllowedDocumentMimeType; bytes: readonl
   { mime: 'image/jpeg', bytes: [0xff, 0xd8, 0xff] }
 ];
 
-export function documentStorageRoot(env: NodeJS.ProcessEnv = process.env): string {
+export function documentStorageRoot(
+  env: Record<string, string | undefined> = process.env
+): string {
   const configured = env.DOCUMENT_STORAGE_DIR;
-  if (typeof configured === 'string' && configured.length > 0) return configured;
-  return path.join(os.tmpdir(), 'kanei-crm-mvp-document-storage');
+  if (typeof configured !== 'string' || configured.length === 0) {
+    throw new Error('DOCUMENT_STORAGE_DIR is required; automatic tmpdir storage is disabled');
+  }
+  return configured;
+}
+
+/**
+ * Startup validation is fail-closed: an operator must name an existing private
+ * directory, and the runtime checks that it is writable and not reached through
+ * a symlink. Uploads still use generated file names below this validated root.
+ */
+export async function validateDocumentStorageRoot(
+  env: Record<string, string | undefined> = process.env
+): Promise<string> {
+  const root = documentStorageRoot(env);
+  let stats;
+  try {
+    stats = await lstat(root);
+  } catch {
+    throw new Error(`DOCUMENT_STORAGE_DIR does not exist: ${root}`);
+  }
+  if (stats.isSymbolicLink()) {
+    throw new Error(`DOCUMENT_STORAGE_DIR must not be a symlink: ${root}`);
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`DOCUMENT_STORAGE_DIR must be a directory: ${root}`);
+  }
+  const realRoot = await realpath(root);
+  if (realRoot !== path.resolve(root)) {
+    throw new Error(`DOCUMENT_STORAGE_DIR must not contain a symlink component: ${root}`);
+  }
+  await access(root, constants.R_OK | constants.W_OK | constants.X_OK);
+  return root;
 }
 
 export function documentMaxBytes(env: NodeJS.ProcessEnv = process.env): number {

@@ -3,13 +3,22 @@ import { serve } from '@hono/node-server';
 import { createDatabase } from '@kanei/db';
 import { createApp } from './app.js';
 import { loadApiEnv } from './env.js';
+import { validateDocumentStorageRoot } from './document-storage.js';
 
 const env = loadApiEnv();
+// Fail before opening a database connection or listener if the private
+// document root was not explicitly provisioned and validated.
+await validateDocumentStorageRoot();
 const { db, pool } = createDatabase(env.databaseUrl);
-const app = createApp({ db, secureCookies: env.isProduction });
+const app = createApp({
+  db,
+  secureCookies: env.isProduction,
+  allowedOrigins: env.allowedOrigins,
+  trustProxy: env.trustProxy
+});
 
-const server = serve({ fetch: app.fetch, port: env.port }, (info) => {
-  console.log(`KANEI CRM API listening on http://127.0.0.1:${info.port}`);
+const server = serve({ fetch: app.fetch, port: env.port, hostname: env.host }, (info) => {
+  console.log(`KANEI CRM API listening on http://${env.host}:${info.port}`);
 });
 
 async function shutdown() {

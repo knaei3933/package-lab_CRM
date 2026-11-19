@@ -1,7 +1,8 @@
 import { Hono } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
-import { randomBytes } from 'node:crypto';
-import { readFile, stat } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { lstat, readFile, realpath, stat } from 'node:fs/promises';
+import path from 'node:path';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import {
   buildMakerPoSnapshot,
@@ -123,6 +124,8 @@ import {
 export interface AppOptions {
   db: AppDatabase;
   secureCookies?: boolean;
+  allowedOrigins?: readonly string[];
+  trustProxy?: boolean;
 }
 
 interface AuthContext {
@@ -255,7 +258,7 @@ type MakerPoTxExecutor = Parameters<Parameters<AppDatabase['transaction']>[0]>[0
  * is acting on — states it here and the row carries it (migration 0013).
  */
 interface AuditEventInput {
-  projectId: string;
+  projectId: string | null;
   id?: string;
   actorUserId: string | null;
   action: string;
@@ -461,6 +464,61 @@ function optionalText(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+/**
+ * Browser CSRF defense for this cookie+JSON API: SameSite=Lax blocks ordinary
+ * cross-site POST cookies, and any browser-supplied Origin must be this API or
+ * one explicit deployment origin. Non-browser clients may omit Origin.
+ */
+export function isBrowserOriginAllowed(
+  request: Request,
+  options: { allowedOrigins?: readonly string[]; trustProxy?: boolean } = {}
+): boolean {
+  const origin = request.headers.get('origin');
+  if (!origin) return true;
+  try {
+    const originUrl = new URL(origin);
+    const forwardedHost = options.trustProxy
+      ? request.headers.get('x-forwarded-host')
+      : null;
+    const forwardedProto = options.trustProxy
+      ? request.headers.get('x-forwarded-proto')
+      : null;
+    const host = forwardedHost ?? request.headers.get('host');
+    const protocol = forwardedProto?.split(',')[0]?.trim()
+      ?? new URL(request.url).protocol.replace(/:$/, '');
+    if (host && `${originUrl.protocol.replace(/:$/, '')}://${host}` === `${protocol}://${host}`) {
+      return origin === `${protocol}://${host}` || options.allowedOrigins?.includes(origin) === true;
+    }
+  } catch {
+    return false;
+  }
+  return options.allowedOrigins?.includes(origin) ?? false;
+}
+
+const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_FAILURE_LIMIT = 5;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+
+function loginGuardIdentity(username: string, remoteAddress: string) {
+  return createHash('sha256')
+    .update(['login_guard_v1', username.trim().toLowerCase(), remoteAddress].join('\0'))
+    .digest('hex');
+}
+
+function clientAddress(context: { req: { raw: Request } }, trustProxy: boolean): string {
+  if (trustProxy) {
+    const forwarded = context.req.raw.headers.get('x-forwarded-for');
+    if (forwarded) return forwarded.split(',')[0]?.trim() ?? 'unknown';
+    const real = context.req.raw.headers.get('x-real-ip');
+    if (real) return real.trim();
+  }
+  // In Hono's test client no socket is exposed; production uses the socket
+  // through the node adapter. A stable unknown value cannot split one source
+  // into many identities, so the account-side limit still applies.
+  return (context as { env?: { incoming?: { socket?: { remoteAddress?: string } } } })
+    .env?.incoming?.socket?.remoteAddress ?? 'unknown';
+}
+
 /** Executor that can read inside the pool or one open transaction. */
 type TransitionQueryExecutor = Pick<AppDatabase, 'select'>;
 
@@ -490,8 +548,22 @@ async function loadExceptionOrigin(
   return filmSupplyOrderStateForValue((event?.beforeState as { status?: unknown } | null)?.status);
 }
 
-export function createApp({ db, secureCookies = false }: AppOptions) {
+export function createApp({
+  db,
+  secureCookies = false,
+  allowedOrigins = [],
+  trustProxy = false
+}: AppOptions) {
   const app = new Hono<AuthContext>();
+
+  app.use('*', async (context, next) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(context.req.method)) return next();
+    if (isBrowserOriginAllowed(context.req.raw, { allowedOrigins, trustProxy })) return next();
+    return context.json({
+      error: 'オリジンが許可されていません',
+      code: 'CSRF_ORIGIN_REJECTED'
+    }, 403);
+  });
 
   // Any row-lock deadlock is a retryable concurrency conflict, not a server
   // fault. PostgreSQL rolls the transaction back before this handler runs.
@@ -520,8 +592,50 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       return context.json({ error: 'ユーザー名とパスワードが必要です' }, 400);
     }
 
+    const remoteAddress = clientAddress(context, trustProxy);
+    const guardEntityId = loginGuardIdentity(body.username, remoteAddress);
+    const now = new Date();
+    const recentFailures = await db.select({
+      occurredAt: auditEvents.occurredAt
+    }).from(auditEvents)
+      .where(and(
+        eq(auditEvents.action, 'LOGIN_FAILED'),
+        eq(auditEvents.entityType, 'login_guard'),
+        eq(auditEvents.entityId, guardEntityId),
+        sql`${auditEvents.occurredAt} > now() - interval '${sql.raw(String(Math.round(LOGIN_FAILURE_WINDOW_MS / 1000)))} seconds'`
+      ))
+      .orderBy(desc(auditEvents.occurredAt));
+    const latestFailureAt = recentFailures[0]?.occurredAt;
+    if (recentFailures.length >= LOGIN_FAILURE_LIMIT
+      && latestFailureAt
+      && now.getTime() - latestFailureAt.getTime() < LOGIN_LOCKOUT_MS) {
+      const retryAfterSeconds = Math.max(
+        1,
+        Math.ceil((latestFailureAt.getTime() + LOGIN_LOCKOUT_MS - now.getTime()) / 1000)
+      );
+      return context.json({
+        error: '試行回数が多いため、しばらくしてから再試行してください',
+        code: 'LOGIN_TEMPORARILY_LOCKED',
+        retryAfterSeconds
+      }, 429);
+    }
+
     const [user] = await db.select().from(users).where(eq(users.username, body.username)).limit(1);
     if (!user || !user.isActive || user.deletedAt || !(await verifyPassword(body.password, user.passwordHash))) {
+      await recordAuditEvent(db, {
+        projectId: null,
+        actorUserId: null,
+        action: 'LOGIN_FAILED',
+        entityType: 'login_guard',
+        entityId: guardEntityId,
+        beforeState: null,
+        afterState: {
+          reason: 'invalid_credentials_or_inactive_user',
+          observedAt: now.toISOString()
+        },
+        occurredAt: now,
+        requestMetadata: { operation: 'auth:login_failed', remoteAddress }
+      });
       return context.json({ error: '認証情報が正しくありません' }, 401);
     }
 
@@ -4015,11 +4129,18 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
       documentId: documents.id,
       documentType: documents.documentType,
       versionNumber: documentVersions.versionNumber,
+      byteSize: documentVersions.byteSize,
       storagePath: documentVersions.storagePath
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(documentVersions.id, versionId)).limit(1);
     if (!evidence) return context.json({ error: '書類バージョンが見つかりません' }, 404);
+    // Assignment is checked before any type-specific metadata is sent. A
+    // foreign project gets the same missing-resource answer whether the id
+    // exists or not.
+    if (!user.assignedProjectIds.includes(evidence.projectId)) {
+      return context.json({ error: '書類バージョンが見つかりません' }, 404);
+    }
     const readDecision = canPerform(toActor(user), 'document:read', 'F1', evidence.projectId);
     if (!readDecision.allowed) return context.json({ error: '権限がありません' }, 403);
     if (evidence.documentType !== 'approval_evidence') {
@@ -4051,7 +4172,110 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
         code: 'EVIDENCE_IDENTIFIER_NOT_EXTRACTABLE'
       }, 422);
     }
+    const viewedAt = new Date();
+    await recordAuditEvent(db, {
+      projectId: evidence.projectId,
+      actorUserId: user.id,
+      action: 'DOCUMENT_VERSION_VIEWED',
+      entityType: 'document_version',
+      entityId: versionId,
+      beforeState: null,
+      afterState: {
+        documentId: evidence.documentId,
+        versionNumber: evidence.versionNumber,
+        byteSize: evidence.byteSize,
+        access: 'view'
+      },
+      occurredAt: viewedAt,
+      requestMetadata: { operation: 'document_version:view', documentId: evidence.documentId }
+    });
     return context.json({ evidenceIdentifier, source: 'stored_eml_message_id' });
+  });
+
+  app.get('/api/document-versions/:versionId/download', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    const versionId = context.req.param('versionId');
+    if (!isUuid(versionId)) {
+      return context.json({
+        error: '経路パラメータ（versionId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
+    const [row] = await db.select({
+      projectId: documents.projectId,
+      documentId: documents.id,
+      documentType: documents.documentType,
+      versionNumber: documentVersions.versionNumber,
+      byteSize: documentVersions.byteSize,
+      declaredMimeType: documentVersions.declaredMimeType,
+      originalFilename: documentVersions.originalFilename,
+      storagePath: documentVersions.storagePath
+    }).from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(eq(documentVersions.id, versionId)).limit(1);
+    if (!row) return context.json({ error: '書類バージョンが見つかりません' }, 404);
+    if (!user.assignedProjectIds.includes(row.projectId)) {
+      return context.json({ error: '書類バージョンが見つかりません' }, 404);
+    }
+    const decision = canPerform(toActor(user), 'document:read', 'F1', row.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+
+    const storageRoot = documentStorageRoot();
+    const resolvedRoot = path.resolve(storageRoot);
+    const resolvedFile = path.resolve(row.storagePath);
+    if (!resolvedFile.startsWith(`${resolvedRoot}${path.sep}`)) {
+      return context.json({ error: '書類ファイルが読み取れません', code: 'DOCUMENT_UNREADABLE' }, 404);
+    }
+    let fileStats;
+    try {
+      fileStats = await lstat(row.storagePath);
+      if (fileStats.isSymbolicLink() || !fileStats.isFile()) throw new Error('not a private regular file');
+      const realParent = await realpath(path.dirname(row.storagePath));
+      if (realParent !== path.dirname(resolvedFile)) throw new Error('path is not inside the validated root');
+    } catch {
+      return context.json({ error: '書類ファイルが読み取れません', code: 'DOCUMENT_UNREADABLE' }, 404);
+    }
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(row.storagePath);
+    } catch {
+      return context.json({ error: '書類ファイルが読み取れません', code: 'DOCUMENT_UNREADABLE' }, 404);
+    }
+    if (bytes.byteLength !== row.byteSize || bytes.byteLength > documentMaxBytes()) {
+      return context.json({ error: '書類ファイルの整合性が不正です', code: 'DOCUMENT_INTEGRITY_INVALID' }, 409);
+    }
+
+    const now = new Date();
+    await recordAuditEvent(db, {
+      projectId: row.projectId,
+      actorUserId: user.id,
+      action: 'DOCUMENT_VERSION_DOWNLOADED',
+      entityType: 'document_version',
+      entityId: versionId,
+      beforeState: null,
+      afterState: {
+        documentId: row.documentId,
+        versionNumber: row.versionNumber,
+        byteSize: row.byteSize,
+        access: 'download'
+      },
+      occurredAt: now,
+      requestMetadata: { operation: 'document_version:download', documentId: row.documentId }
+    });
+
+    // RFC 5987 keeps Unicode names while the encoder also removes CR/LF and
+    // header separators. Hash and storage path are deliberately not returned.
+    const encodedFilename = encodeURIComponent(row.originalFilename.replace(/[\r\n]/g, ''));
+    return new Response(new Uint8Array(bytes), {
+      headers: {
+        'content-type': row.declaredMimeType,
+        'content-length': String(row.byteSize),
+        'content-disposition': `attachment; filename*=UTF-8''${encodedFilename}`,
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff'
+      }
+    });
   });
 
   // M8-OPER2 FIX 2: the representative's manual verification of a pending
