@@ -588,7 +588,7 @@ describe('S2: approval evidence is identified per organization', () => {
 });
 
 describe('S3: the audit history answer is filtered by role, the rows never are', () => {
-  it('hides amounts, snapshots and senders from staff and everything but the summary from viewer', async () => {
+  it('hides amounts, snapshots and senders from staff and non-lifecycle state from viewer', async () => {
     const trail = await reachMakerPoAccepted('S3');
     const url = `/api/projects/${projectId}/audit-history?limit=500`;
 
@@ -638,7 +638,15 @@ describe('S3: the audit history answer is filtered by role, the rows never are',
     };
     expect(viewerBody.events).toHaveLength(adminBody.events.length);
     for (const event of viewerBody.events) {
-      expect(Object.keys(event).sort()).toEqual(['action', 'actor', 'entityId', 'entityType', 'id', 'occurredAt']);
+      const allowedSummaryKeys = ['action', 'actor', 'entityId', 'entityType', 'id', 'occurredAt'];
+      expect(Object.keys(event).every((key) => allowedSummaryKeys.includes(key) || key === 'beforeState' || key === 'afterState')).toBe(true);
+      expect(event.requestMetadata).toBeUndefined();
+      for (const stateKey of ['beforeState', 'afterState']) {
+        const state = event[stateKey] as Record<string, unknown> | null | undefined;
+        if (state && typeof state === 'object') {
+          expect(Object.keys(state).every((key) => ['status', 'readinessState', 'isReady'].includes(key))).toBe(true);
+        }
+      }
     }
     const viewerSerialized = JSON.stringify(viewerBody.events);
     expect(viewerSerialized).not.toContain('staff@kanei.example');

@@ -228,7 +228,7 @@ describe('M7 audit view role allowlist (S3)', () => {
     });
   });
 
-  it('gives viewer the summary only: no before/after and no requestMetadata', () => {
+  it('gives viewer lifecycle/readiness states only: no identifiers or metadata', () => {
     const row = auditRow();
     const view = buildAuditViewForRole('viewer', [row])[0]!;
     expect(view).toEqual({
@@ -237,11 +237,13 @@ describe('M7 audit view role allowlist (S3)', () => {
       entityType: 'maker_po_event',
       entityId: 'po-event-1',
       occurredAt: row.occurredAt,
-      actor: { id: 'user-1', displayName: '合成担当者', role: 'staff' }
+      actor: { id: 'user-1', displayName: '合成担当者', role: 'staff' },
+      beforeState: { status: 'APPROVED_FOR_MANUAL_SEND' },
+      afterState: { status: 'MAKER_PO_SENT_MANUALLY' }
     });
-    expect('beforeState' in view).toBe(false);
-    expect('afterState' in view).toBe(false);
     expect('requestMetadata' in view).toBe(false);
+    expect(JSON.stringify(view)).not.toContain('po-1');
+    expect(JSON.stringify(view)).not.toContain('evidence@example.test');
   });
 
   it('never hides a missing actor and keeps the row count stable', () => {

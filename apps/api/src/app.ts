@@ -1061,14 +1061,29 @@ export function createApp({ db, secureCookies = false }: AppOptions) {
     await db.transaction(async (tx) => {
       await tx.insert(filmSupplyOrders).values(order);
       if (lines.length > 0) {
-        await tx.insert(filmSupplyOrderLines).values(lines.map((line) => ({
+        const insertedLines = await tx.insert(filmSupplyOrderLines).values(lines.map((line) => ({
           id: uuidv7(now),
           filmSupplyOrderId: orderId,
           lineNumber: line.lineNumber,
           description: line.description,
           orderedQuantity: line.orderedQuantity,
           unit: line.unit
-        })));
+        }))).returning();
+        // F-00: the deliveries screen reconstructs choices from audit events,
+        // not direct order reads. Every line created with the order must emit
+        // the same append-only event as a line added later.
+        for (const line of insertedLines) {
+          await recordAuditEvent(tx, {
+            projectId,
+            actorUserId: user.id,
+            action: 'FILM_SUPPLY_ORDER_LINE_CREATED',
+            entityType: 'film_supply_order_line',
+            entityId: line.id,
+            afterState: line,
+            occurredAt: now,
+            requestMetadata: { operation: 'film_order:create', filmSupplyOrderId: orderId }
+          });
+        }
       }
       await recordAuditEvent(tx, {
         projectId,

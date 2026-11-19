@@ -31,9 +31,9 @@ export interface AuditEventView {
   entityId: string;
   occurredAt: Date;
   actor: { id: string; displayName: string; role: string | null } | null;
-  beforeState?: Record<string, unknown> | null;
-  afterState?: Record<string, unknown> | null;
-  requestMetadata?: Record<string, unknown> | null;
+  beforeState?: Record<string, unknown> | null | undefined;
+  afterState?: Record<string, unknown> | null | undefined;
+  requestMetadata?: Record<string, unknown> | null | undefined;
 }
 
 /**
@@ -48,6 +48,37 @@ const STAFF_STATE_KEYS: readonly string[] = [
   'state',
   'code',
   'name',
+  // Seventh-persona visibility decision: staff can identify the business work
+  // (orders, POs, lines and approval evidence), but monetary amounts, unit
+  // prices and commission amounts stay off this allowlist.
+  'poNumber',
+  'officialRegisteredAt',
+  'sevenPurchaseOrderId',
+  'promotedFromPreOrderId',
+  'lineCount',
+  'filmSupplyOrderId',
+  'lineNumber',
+  'description',
+  'orderedQuantity',
+  'unit',
+  'deliveredQuantity',
+  'deliverySequence',
+  'deliveredAt',
+  'filmSupplyOrderLineId',
+  'fillingOrderId',
+  'fillingOrderLineId',
+  'artworkRevisionId',
+  'organization',
+  'decision',
+  'revisionNo',
+  'evidenceDocumentVersionId',
+  'evidenceIdentifier',
+  'evidenceIdentifierStatus',
+  'evidenceSource',
+  'eventTime',
+  'readinessState',
+  'isReady',
+  'blocking',
   // A staff recorder needs to know that an uploaded version is approval
   // evidence and where it is bound; bytes, amounts and storage paths stay out.
   'documentType',
@@ -57,11 +88,24 @@ const STAFF_STATE_KEYS: readonly string[] = [
   'versionNumber',
   'verificationStatus',
   'deliveryKind',
-  'confirmationState'
+  'confirmationState',
+  'deliveryId',
+  'filmDeliveryId',
+  'fillingDeliveryId',
 ];
 
 /** Staff sees which operation produced the event, and nothing else it carried. */
 const STAFF_REQUEST_METADATA_KEYS: readonly string[] = ['operation'];
+
+/**
+ * Viewer is read-only and sees only lifecycle/readiness state, never business
+ * identifiers, evidence details, or the fields needed to submit a write.
+ */
+const VIEWER_STATE_KEYS: readonly string[] = [
+  'status',
+  'readinessState',
+  'isReady'
+];
 
 function allowlistObject(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
   if (value === null || value === undefined) return null;
@@ -71,6 +115,13 @@ function allowlistObject(value: unknown, keys: readonly string[]): Record<string
   for (const key of keys) {
     if (key in source) picked[key] = source[key];
   }
+  return picked;
+}
+
+function allowlistState(value: unknown, keys: readonly string[]): Record<string, unknown> | null | undefined {
+  if (value === null) return null;
+  const picked = allowlistObject(value, keys);
+  if (!picked || Object.keys(picked).length === 0) return undefined;
   return picked;
 }
 
@@ -85,7 +136,13 @@ export function buildAuditViewForRole(role: UserRole, rows: readonly AuditHistor
       actor: row.actor
     };
 
-    if (role === 'viewer') return summary;
+    if (role === 'viewer') {
+      return {
+        ...summary,
+        beforeState: allowlistState(row.beforeState, VIEWER_STATE_KEYS),
+        afterState: allowlistState(row.afterState, VIEWER_STATE_KEYS)
+      };
+    }
 
     if (role === 'staff') {
       return {

@@ -240,7 +240,10 @@ describe('staff approval evidence selection contract', () => {
     });
     expect(staffView.requestMetadata).toEqual({ operation: 'document:create' });
 
-    expect(buildAuditViewForRole('viewer', [row])[0]).not.toHaveProperty('afterState');
+    const viewerView = buildAuditViewForRole('viewer', [row])[0]!;
+    expect(viewerView.beforeState).toBeNull();
+    expect(viewerView.afterState).toBeUndefined();
+    expect(viewerView).not.toHaveProperty('requestMetadata');
   });
 
   it('carries a real upload through staff audit selection into approval recording', async () => {
