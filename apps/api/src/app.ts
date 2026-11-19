@@ -120,6 +120,7 @@ import {
   LOGIN_MAX_LOCK_MS,
   resolveClientAddress as resolveTrustedClientAddress,
   loginGuardIdentity,
+  loginIpDelayDurationMs,
   loginLockDurationMs
 } from './login-guard.js';
 import { buildAuditViewForRole, type AuditHistoryRow } from './audit-view.js';
@@ -142,6 +143,10 @@ interface AuthContext {
 }
 
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+// A syntactically valid scrypt record for the fixed decoy password. It is not
+// an account credential and cannot authenticate; verification is only timing
+// filler for unknown usernames.
+const UNKNOWN_ACCOUNT_PASSWORD_HASH = 'scrypt:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==';
 
 const ALL_FILM_SUPPLY_ORDER_STATES: readonly string[] = [
   ...FILM_SUPPLY_ORDER_STATES,
@@ -596,46 +601,43 @@ export function createApp({
     const now = new Date();
 
     const [user] = await db.select().from(users).where(eq(users.username, body.username)).limit(1);
+    // Unknown accounts perform the same scrypt work as existing accounts. This
+    // keeps response timing from becoming a username oracle.
     const credentialMatches = user !== undefined && user.isActive && user.deletedAt === null
       ? await verifyPassword(body.password, user.passwordHash)
-      : false;
+      : await verifyPassword(body.password, UNKNOWN_ACCOUNT_PASSWORD_HASH);
 
     // The guard lookup, password work, and append-only failure write share one
     // identity lock. Parallel guesses cannot all pass the count check.
     const outcome = await db.transaction(async (tx) => {
-      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${guardEntityId}, 215468))`);
-      const recentFailures = await tx.select({
+      // Serialize every identity guarded by this source first; otherwise an
+      // attacker can rotate usernames around the per-identity count.
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`ip:${remoteAddress}`}, 215469))`);
+      const sourceFailures = await tx.select({
         occurredAt: auditEvents.occurredAt,
+        entityId: auditEvents.entityId,
         requestMetadata: auditEvents.requestMetadata
       }).from(auditEvents)
         .where(and(
           eq(auditEvents.action, 'LOGIN_FAILED'),
           eq(auditEvents.entityType, 'login_guard'),
-          eq(auditEvents.entityId, guardEntityId),
-          sql`${auditEvents.occurredAt} > now() - interval '${sql.raw(String(Math.round(LOGIN_FAILURE_WINDOW_MS / 1000)))} seconds'`
+          sql`${auditEvents.occurredAt} > now() - interval '${sql.raw(String(Math.round(LOGIN_FAILURE_WINDOW_MS / 1000)))} seconds'`,
+          sql`${auditEvents.requestMetadata} ->> 'remoteAddress' = ${remoteAddress}`
         ))
         .orderBy(desc(auditEvents.occurredAt));
-
-      const sameIpFailures = recentFailures.filter((failure) => {
-        const metadata = failure.requestMetadata as { remoteAddress?: unknown } | null;
-        return metadata?.remoteAddress === remoteAddress;
-      });
-      if (sameIpFailures.length >= LOGIN_IP_FAILURE_LIMIT) {
-        const ipLatest = sameIpFailures[0]?.occurredAt ?? now;
-        const ipExcess = sameIpFailures.length - LOGIN_IP_FAILURE_LIMIT;
-        const ipRetry = ipLatest.getTime() + Math.min(LOGIN_MAX_LOCK_MS, 60_000 * 2 ** ipExcess) - now.getTime();
-        if (ipRetry > 0) {
-          return { outcome: 'locked' as const, retryAfterSeconds: Math.max(1, Math.ceil(ipRetry / 1000)) };
-        }
+      if (sourceFailures.length >= LOGIN_IP_FAILURE_LIMIT) {
+        const ipLatest = sourceFailures[0]?.occurredAt ?? now;
+        const ipRetry = ipLatest.getTime() + loginIpDelayDurationMs(sourceFailures.length) - now.getTime();
+        if (ipRetry > 0) return { outcome: 'locked' as const, retryAfterSeconds: Math.max(1, Math.ceil(ipRetry / 1000)) };
       }
 
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${guardEntityId}, 215468))`);
+      const recentFailures = sourceFailures.filter((failure) => failure.entityId === guardEntityId);
       const latestFailureAt = recentFailures[0]?.occurredAt;
       if (recentFailures.length >= LOGIN_FAILURE_LIMIT && latestFailureAt) {
         const lockDuration = loginLockDurationMs(recentFailures.length);
         const retryAfterMs = latestFailureAt.getTime() + lockDuration - now.getTime();
-        if (retryAfterMs > 0) {
-          return { outcome: 'locked' as const, retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)) };
-        }
+        if (retryAfterMs > 0) return { outcome: 'locked' as const, retryAfterSeconds: Math.max(1, Math.ceil(retryAfterMs / 1000)) };
       }
 
       if (!credentialMatches) {
@@ -649,7 +651,8 @@ export function createApp({
           afterState: {
             reason: 'invalid_credentials_or_inactive_user',
             observedAt: now.toISOString(),
-            failureCount: recentFailures.length + 1
+            sourceFailureCount: sourceFailures.length + 1,
+            identityFailureCount: recentFailures.length + 1
           },
           occurredAt: now,
           requestMetadata: { operation: 'auth:login_failed', remoteAddress }
@@ -658,7 +661,6 @@ export function createApp({
       }
       return { outcome: 'authenticated' as const, userId: user!.id, role: user!.role, displayName: user!.displayName };
     });
-
     if (outcome.outcome === 'locked') {
       return context.json({
         error: '試行回数が多いため、しばらくしてから再試行してください',

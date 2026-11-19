@@ -1,14 +1,20 @@
-# Login guard deployment contract (2026-11-19)
+# Login guard deployment contract (2026-11-19 update)
 
-1. Caddy sets `X-Forwarded-For $remote_addr` for `/api/auth/*` traffic.
-2. The Next login relay must prepend that exact client address as the first value of API `X-Forwarded-For`. The web worker owns this code change; until merged, browser relay traffic is attributed to the relay socket.
-3. API accepts XFF only when its socket peer is in `TRUSTED_PROXY_CIDRS`. Production compose trusts `127.0.0.1/32`, `::1/128`, and the explicit `172.28.28.0/24` API/web network. An external caller cannot make API trust a forged XFF.
-4. Locking is account+IP with exponential backoff: 1→60m, then 2m, 4m, capped at 60m. A separate IP-limit starts after 10 failures from the same source. Expiry is automatic; successful login never rewrites audit history.
-5. Representative recovery is append-only:
-   `DATABASE_URL=... node scripts/unlock-login-guard.mjs --username NAME --remote-address IP --reason 'approved recovery'`
-   Test DB works directly; production recovery additionally requires `ALLOW_PRODUCTION_LOGIN_UNLOCK=1` and representative approval.
-6. Admin accounts are protected by the IP-level delay first, so one source cannot lock a representative account for all networks. Do not expose an unauthenticated unlock endpoint.
+## Required production chain
 
-## R1-4 boundary correction
+1. **Caddy → web.** Caddy is the public edge. For login traffic it sets the actual client address as the only/right-most proxy value in `X-Forwarded-For`. In Caddy 2 the reverse proxy defaults add the peer address to XFF; keep this behavior for `/api/auth/*`.
+2. **Web relay → API.** The Next login relay sends exactly one API `X-Forwarded-For` value: the valid IP literal read from Caddy's value. This relay is active only when `KANEI_WEB_BEHIND_TRUSTED_PROXY=1`.
+3. **Compose.** The web service must set `KANEI_WEB_BEHIND_TRUSTED_PROXY: "1"`. Port `3080` must remain unpublished; Caddy is the only public HTTP/HTTPS service.
+4. **API trust.** API trusts XFF only when its socket peer is in `TRUSTED_PROXY_CIDRS`. Production compose trusts loopback and the explicit API/web network `172.28.28.0/24`. An Internet peer cannot forge a trusted forwarded value.
 
-View/download authorization returns to the pre-R1-4 matrix: admin may act across projects (global recovery), an assigned staff member may access its project, and viewer/unassigned staff is refused. No project-membership pre-check is inserted in front of `canPerform`.
+## Warning
+
+Without `KANEI_WEB_BEHIND_TRUSTED_PROXY=1` (and the deployed web relay code), API sees every browser as the web socket. An attacker can make repeated failures for the representative's username and, although automatic delays expire, repeatedly prevent that account from logging in across all networks. Do not expose production login until validation passes.
+
+## Limits and recovery
+
+- Identity lock: 5 failures in 15 minutes, then exponential delay (1m, 2m, 4m, capped 60m), automatically expired.
+- Source/IP lock: failures are counted across usernames. At 10 failures in 15 minutes, the source enters exponential delay (1m, 2m, 4m, capped 60m) before identity checks continue. This protects a representative account from one source rotating usernames.
+- Recovery is append-only and representative-approved:
+  `DATABASE_URL=... ALLOW_PRODUCTION_LOGIN_UNLOCK=1 node scripts/unlock-login-guard.mjs --username NAME --remote-address IP --reason 'approved recovery'`
+- `scripts/validate-compose-security.mjs` must pass before deployment approval.

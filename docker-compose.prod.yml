@@ -52,6 +52,7 @@ services:
     environment:
       NODE_ENV: production
       KANEI_API_BASE_URL: http://api:3081
+      KANEI_WEB_BEHIND_TRUSTED_PROXY: "1"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:3080/ >/dev/null"]
       interval: 15s

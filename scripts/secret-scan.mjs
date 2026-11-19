@@ -17,7 +17,7 @@ const patterns = {
 };
 const hits = [];
 for (const [path, text] of added) {
-  if (path === '.env' || path.startsWith('.env.')) hits.push({ category: 'addedEnvFile', path });
+  if (path === '.env') hits.push({ category: 'addedEnvFile', path });
   for (const [category, pattern] of Object.entries(patterns)) {
     if (pattern.test(text)) hits.push({ category, path });
   }

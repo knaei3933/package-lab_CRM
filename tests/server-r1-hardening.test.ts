@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { chmod, lstat, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import {
   accounts,
   auditEvents,
@@ -257,6 +257,47 @@ describe('R1 hardening', () => {
     })).toMatchObject({ address: '198.51.100.7', source: 'forwarded', trustedPeer: true });
   });
 
+  it('limits one source across usernames and preserves timing for unknown accounts', async () => {
+    const trustedRelayLogin = (username: string, ip: string, password = 'not-the-password') => {
+      const request = new Request('http://127.0.0.1:3081/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          origin: 'http://127.0.0.1:3081',
+          'x-forwarded-for': ip
+        },
+        body: JSON.stringify({ username, password })
+      });
+      // This mirrors the trusted Next relay socket: API sees loopback and may
+      // believe the relay-provided XFF value.
+      return hardeningApp.fetch(request, {
+        incoming: { socket: { remoteAddress: '127.0.0.1' } }
+      });
+    };
+
+    const statuses: number[] = [];
+    for (let index = 0; index < 11; index += 1) {
+      const response = await trustedRelayLogin(`ip_rotation_user_${index}`, '203.0.113.70');
+      statuses.push(response.status);
+    }
+    expect(statuses.filter(status => status === 401)).toHaveLength(10);
+    expect(statuses.filter(status => status === 429)).toHaveLength(1);
+
+    // Username rotation cannot escape the source lock.
+    const rotated = await trustedRelayLogin('another_rotated_user', '203.0.113.70');
+    expect(rotated.status).toBe(429);
+    expect(await rotated.json()).toMatchObject({ code: 'LOGIN_TEMPORARILY_LOCKED' });
+
+    // A different source is not delayed by the same source's failures.
+    const otherSource = await trustedRelayLogin('ip_rotation_user_0', '198.51.100.80');
+    expect(otherSource.status).toBe(401);
+
+    // Unknown and known records both execute the same scrypt helper.
+    const appSource = await readFile(path.resolve(process.cwd(), 'apps/api/src/app.ts'), 'utf8');
+    expect(appSource).toContain('UNKNOWN_ACCOUNT_PASSWORD_HASH');
+    expect(appSource).toContain("await verifyPassword(body.password, UNKNOWN_ACCOUNT_PASSWORD_HASH)");
+  });
+
   it('survives parallel guesses with one atomic lock decision', async () => {
     const responses = await Promise.all(Array.from({ length: 30 }, (_, index) =>
       hardeningApp.request('/api/auth/login', {
@@ -270,8 +311,18 @@ describe('R1 hardening', () => {
       })
     ));
     const statuses = responses.map(response => response.status).sort();
-    expect(statuses.filter(status => status === 401)).toHaveLength(5);
-    expect(statuses.filter(status => status === 429)).toHaveLength(25);
+    // The identity lock may close after either the identity count (5) or the
+    // shared source count (10), but no more than five guesses can be recorded.
+    expect(statuses.every(status => status === 401 || status === 429)).toBe(true);
+    expect(statuses.filter(status => status === 401).length).toBeLessThanOrEqual(5);
+    expect(statuses.filter(status => status === 429).length).toBeGreaterThanOrEqual(25);
+    const [auditCount] = await db.select({
+      count: sql<number>`count(*)::int`
+    }).from(auditEvents).where(and(
+      eq(auditEvents.action, 'LOGIN_FAILED'),
+      sql`${auditEvents.requestMetadata} ->> 'remoteAddress' = '198.51.100.70'`
+    ));
+    expect(Number(auditCount?.count ?? 0)).toBeLessThanOrEqual(5);
   });
 
   it('logs document views and downloads, authorizes project membership and role, and never exposes hash or storage metadata', async () => {

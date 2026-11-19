@@ -17,6 +17,11 @@ export function loginLockDurationMs(failureCount: number) {
   return Math.min(LOGIN_MAX_LOCK_MS, LOGIN_BASE_LOCK_MS * 2 ** excess);
 }
 
+export function loginIpDelayDurationMs(failureCount: number) {
+  const excess = Math.max(0, failureCount - LOGIN_IP_FAILURE_LIMIT);
+  return Math.min(LOGIN_MAX_LOCK_MS, LOGIN_BASE_LOCK_MS * 2 ** excess);
+}
+
 interface IpParts {
   version: 4 | 6;
   value: bigint;
