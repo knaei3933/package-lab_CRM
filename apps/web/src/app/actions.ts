@@ -476,7 +476,162 @@ export async function registerArtworkRevisionAction(_prev: ActionState | null, f
   if (lotMarking) body.lotMarking = lotMarking;
   const note = optionalField(formData, 'note');
   if (note) body.note = note;
-  return post(`/api/film-supply-orders/${encodeURIComponent(orderId)}/artwork-revisions`, body);
+  // UI batch F (server R1-9 / F2): a revision of a design with approval history
+  // is a controlled change request; the form posts changeRequest=on for it.
+  if (flag(formData, 'changeRequest')) {
+    const changeRequest = readChangeRequest(formData);
+    if (!('request' in changeRequest)) return changeRequest;
+    if (!lotMarking) return CHANGE_LOT_REFUSAL;
+    body.changeRequest = changeRequest.request;
+  }
+  return post(
+    `/api/film-supply-orders/${encodeURIComponent(orderId)}/artwork-revisions`,
+    body,
+    changeRequestRefusal
+  );
+}
+
+// ---------------------------------------------------------------------------
+// UI batch F: the controlled change request (CHANGE_REVIEW facts, Q-A4).
+// The checks mirror the API (server-batch-f1 R1-9, f2 numeric limits) so the
+// operator reads the field to fix before anything is sent; the API remains the
+// rule and its refusals are read back below in the same words.
+// ---------------------------------------------------------------------------
+
+interface ChangeNumberRule {
+  key: 'impactQuantity' | 'impactAmount' | 'actualCost';
+  scale: number;
+  maximum: number;
+  nonNegative: boolean;
+  missing: ActionState;
+  invalid: ActionState;
+  tooLarge: ActionState;
+}
+
+const CHANGE_NUMBER_RULES: readonly ChangeNumberRule[] = [
+  {
+    key: 'impactQuantity',
+    scale: 3,
+    maximum: 99_999_999_999.999,
+    nonNegative: true,
+    missing: { ok: false, message: '影響数量を入力してください（影響がなければ0）。' },
+    invalid: { ok: false, message: '影響数量は0以上の数で、小数点以下3桁まで入力してください。' },
+    tooLarge: { ok: false, message: '影響数量が上限（99,999,999,999.999）を超えています。' }
+  },
+  {
+    key: 'impactAmount',
+    scale: 2,
+    maximum: 999_999_999_999.99,
+    nonNegative: false,
+    missing: { ok: false, message: '影響金額を入力してください（影響がなければ0、減額はマイナス）。' },
+    invalid: { ok: false, message: '影響金額は数で、小数点以下2桁まで入力してください（減額はマイナス）。' },
+    tooLarge: { ok: false, message: '影響金額が上限（±999,999,999,999.99）を超えています。' }
+  },
+  {
+    key: 'actualCost',
+    scale: 2,
+    maximum: 999_999_999_999.99,
+    nonNegative: true,
+    missing: { ok: false, message: '実費を入力してください（実費がなければ0）。' },
+    invalid: { ok: false, message: '実費は0以上の数で、小数点以下2桁まで入力してください。' },
+    tooLarge: { ok: false, message: '実費が上限（999,999,999,999.99）を超えています。' }
+  }
+];
+
+const CHANGE_ORGANIZATION_REFUSAL: ActionState = { ok: false, message: '変更を依頼した組織（顧客／セブン化学）を選んでください。' };
+const CHANGE_REASON_REFUSAL: ActionState = { ok: false, message: '変更理由を入力してください。' };
+const CHANGE_EVIDENCE_REFUSAL: ActionState = { ok: false, message: '変更依頼の証憑（承認証跡の書類バージョン）を選択してください。' };
+const CHANGE_EVIDENCE_BINDING_REFUSAL: ActionState = {
+  ok: false,
+  message: '変更依頼の証憑は、この発注（デザインを指定した証跡はそのデザイン）に紐付けた承認証跡から選んでください。'
+};
+const CHANGE_SCHEDULE_REFUSAL: ActionState = { ok: false, message: '納期への影響を入力してください（影響がなければ「なし」）。' };
+const CHANGE_LOT_REFUSAL: ActionState = { ok: false, message: 'ロット表記を入力してください（変更依頼では新しいロット表示が必須です）。' };
+const CHANGE_FACTS_REQUIRED: ActionState = {
+  ok: false,
+  message: 'このデザインには承認の記録があるため、変更依頼として登録する必要があります。「変更依頼として登録する」にチェックを入れ、各項目を入力してください。'
+};
+const PRINTED_CHANGE_REFUSAL: ActionState = {
+  ok: false,
+  message: '印刷開始後の変更は代表者だけが登録できます。代表者に登録を依頼してください（版も状態も記録されていません）。'
+};
+
+/** Half-width digits, no separators: 「１，２００」 → 「1200」. */
+function normalizedNumberText(raw: string): string {
+  return raw
+    .replace(/[０-９]/g, (digit) => String.fromCharCode(digit.charCodeAt(0) - 0xfee0))
+    .replace(/[．]/g, '.')
+    .replace(/[－−]/g, '-')
+    .replace(/[,，\s]/g, '');
+}
+
+function readChangeNumber(formData: FormData, rule: ChangeNumberRule): number | ActionState {
+  const raw = normalizedNumberText(field(formData, rule.key));
+  if (raw.length === 0) return rule.missing;
+  if (!/^-?\d+(\.\d+)?$/.test(raw)) return rule.invalid;
+  const value = Number(raw);
+  if (!Number.isFinite(value) || (rule.nonNegative && value < 0)) return rule.invalid;
+  if (Math.abs(value) > rule.maximum) return rule.tooLarge;
+  // The digits as typed (review L4: String(1e-7) has no point to count), and as
+  // the API counts them on the number actually sent.
+  const typedDecimals = raw.split('.')[1]?.replace(/0+$/, '').length ?? 0;
+  const sentText = String(value);
+  const sentDecimals = Number.isInteger(value) ? 0 : (sentText.split('.')[1]?.length ?? 0);
+  if (typedDecimals > rule.scale || sentDecimals > rule.scale || /e/i.test(sentText)) return rule.invalid;
+  return value;
+}
+
+function readChangeRequest(formData: FormData): { request: Record<string, unknown> } | ActionState {
+  const requestedOrganization = field(formData, 'changeRequestedOrganization');
+  if (requestedOrganization !== 'customer' && requestedOrganization !== 'seven') return CHANGE_ORGANIZATION_REFUSAL;
+  const reason = field(formData, 'changeReason');
+  if (reason.length === 0) return CHANGE_REASON_REFUSAL;
+  const evidenceDocumentVersionId = field(formData, 'changeEvidenceDocumentVersionId');
+  if (evidenceDocumentVersionId.length === 0) return CHANGE_EVIDENCE_REFUSAL;
+  const impactSchedule = field(formData, 'impactSchedule');
+  if (impactSchedule.length === 0) return CHANGE_SCHEDULE_REFUSAL;
+  const request: Record<string, unknown> = { requestedOrganization, reason, evidenceDocumentVersionId, impactSchedule };
+  for (const rule of CHANGE_NUMBER_RULES) {
+    const value = readChangeNumber(formData, rule);
+    if (typeof value !== 'number') return value;
+    request[rule.key] = value;
+  }
+  return { request };
+}
+
+/** The API's change-request refusals (all 422 but the 403 print gate), in the form's words. */
+function changeRequestRefusal(code: string | null, data: unknown): ActionState | null {
+  const error = typeof data === 'object' && data !== null && typeof (data as { error?: unknown }).error === 'string'
+    ? (data as { error: string }).error
+    : '';
+  const numberRule = CHANGE_NUMBER_RULES.find((rule) => error.startsWith(rule.key));
+  switch (code) {
+    case 'CHANGE_REQUEST_ORGANIZATION_REQUIRED':
+      // The API only asks this when the design has approval history; the form may not have known.
+      return CHANGE_FACTS_REQUIRED;
+    case 'CHANGE_REQUEST_REASON_REQUIRED':
+      return CHANGE_REASON_REFUSAL;
+    case 'CHANGE_REQUEST_EVIDENCE_REQUIRED':
+      return CHANGE_EVIDENCE_REFUSAL;
+    case 'CHANGE_REQUEST_EVIDENCE_PROJECT_MISMATCH':
+    case 'CHANGE_REQUEST_EVIDENCE_BINDING_INVALID':
+      return CHANGE_EVIDENCE_BINDING_REFUSAL;
+    case 'CHANGE_REQUEST_IMPACT_SCHEDULE_REQUIRED':
+      return CHANGE_SCHEDULE_REFUSAL;
+    case 'CHANGE_REQUEST_NUMERIC_FIELD_REQUIRED':
+      return numberRule?.missing ?? null;
+    case 'CHANGE_REQUEST_NUMERIC_FIELD_INVALID':
+    case 'CHANGE_REQUEST_DECIMAL_SCALE_INVALID':
+      return numberRule?.invalid ?? null;
+    case 'CHANGE_REQUEST_NUMERIC_FIELD_TOO_LARGE':
+      return numberRule?.tooLarge ?? null;
+    case 'CHANGE_REQUEST_LOT_MARKING_REQUIRED':
+      return CHANGE_LOT_REFUSAL;
+    case 'PRINTED_CHANGE_ADMIN_APPROVAL_REQUIRED':
+      return PRINTED_CHANGE_REFUSAL;
+    default:
+      return null;
+  }
 }
 
 export async function recordArtworkApprovalAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {

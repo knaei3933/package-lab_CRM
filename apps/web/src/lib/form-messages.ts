@@ -93,6 +93,48 @@ export const ACTION_MESSAGE_FIELDS: readonly ActionMessageField[] = [
     field: 'fileDocumentVersionId',
     source: 'actions'
   },
+  // UI batch F: the controlled change request of the revision form (server R1-9 / F2).
+  {
+    message: 'このデザインには承認の記録があるため、変更依頼として登録する必要があります。',
+    match: 'prefix',
+    field: 'changeRequest',
+    source: 'actions'
+  },
+  { message: '変更を依頼した組織（顧客／セブン化学）を選んでください。', match: 'exact', field: 'changeRequestedOrganization', source: 'actions' },
+  { message: '変更理由を入力してください。', match: 'exact', field: 'changeReason', source: 'actions' },
+  {
+    message: '変更依頼の証憑（承認証跡の書類バージョン）を選択してください。',
+    match: 'exact',
+    field: 'changeEvidenceDocumentVersionId',
+    source: 'actions'
+  },
+  {
+    message: '変更依頼の証憑は、この発注（デザインを指定した証跡はそのデザイン）に紐付けた承認証跡から選んでください。',
+    match: 'exact',
+    field: 'changeEvidenceDocumentVersionId',
+    source: 'actions'
+  },
+  { message: '納期への影響を入力してください（影響がなければ「なし」）。', match: 'exact', field: 'impactSchedule', source: 'actions' },
+  { message: '影響数量を入力してください（影響がなければ0）。', match: 'exact', field: 'impactQuantity', source: 'actions' },
+  { message: '影響数量は0以上の数で、小数点以下3桁まで入力してください。', match: 'exact', field: 'impactQuantity', source: 'actions' },
+  { message: '影響数量が上限（99,999,999,999.999）を超えています。', match: 'exact', field: 'impactQuantity', source: 'actions' },
+  { message: '影響金額を入力してください（影響がなければ0、減額はマイナス）。', match: 'exact', field: 'impactAmount', source: 'actions' },
+  {
+    message: '影響金額は数で、小数点以下2桁まで入力してください（減額はマイナス）。',
+    match: 'exact',
+    field: 'impactAmount',
+    source: 'actions'
+  },
+  { message: '影響金額が上限（±999,999,999,999.99）を超えています。', match: 'exact', field: 'impactAmount', source: 'actions' },
+  { message: '実費を入力してください（実費がなければ0）。', match: 'exact', field: 'actualCost', source: 'actions' },
+  { message: '実費は0以上の数で、小数点以下2桁まで入力してください。', match: 'exact', field: 'actualCost', source: 'actions' },
+  { message: '実費が上限（999,999,999,999.99）を超えています。', match: 'exact', field: 'actualCost', source: 'actions' },
+  {
+    message: 'ロット表記を入力してください（変更依頼では新しいロット表示が必須です）。',
+    match: 'exact',
+    field: 'lotMarking',
+    source: 'actions'
+  },
   { message: '承認証跡の書類バージョンを選択してください。', match: 'exact', field: 'evidenceDocumentVersionId', source: 'actions' },
   {
     message: '承認証跡識別子を8文字以上で入力してください（例：メールのMessage-ID）。',

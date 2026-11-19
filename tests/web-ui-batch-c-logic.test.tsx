@@ -221,7 +221,9 @@ describe('submit gate while the action runs (review M3)', () => {
       /const decision = gate\.submit\(\{ invalid: check\.count > 0, needsConfirm: dialog !== null, pending \}\);[\s\S]*?if \(decision === 'ignore'\) return;/
     );
     // The non-shell submitters follow the same rule.
-    expect(source('apps/web/src/components/LoginForm.tsx')).toMatch(/if \(pending\) return;[\s\S]*aria-disabled=\{pending \|\| undefined\}/);
+    // UI batch F: the login lockout holds the button the same way (aria-disabled, never disabled).
+    expect(source('apps/web/src/components/LoginForm.tsx')).toMatch(/if \(pending \|\| locked\) return;[\s\S]*aria-disabled=\{pending \|\| locked \|\| undefined\}/);
+    expect(source('apps/web/src/components/LoginForm.tsx')).not.toMatch(/[^-]disabled=\{/);
     expect(source('apps/web/src/components/ProjectPicker.tsx')).toMatch(/aria-disabled=\{pending \|\| undefined\}/);
     expect(source('apps/web/src/components/ProjectPicker.tsx')).not.toMatch(/disabled=\{pending\}/);
   });

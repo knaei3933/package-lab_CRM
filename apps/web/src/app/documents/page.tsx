@@ -33,6 +33,7 @@ import {
   VERIFICATION_STATUS_LABELS
 } from '../../lib/vocabulary';
 import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
+import { documentDownloadHref, downloadRefusalMessage } from '../../lib/document-download';
 
 export const dynamic = 'force-dynamic';
 
@@ -72,7 +73,12 @@ function sevenPoUploadChoices(orders: readonly SevenPurchaseOrderView[]): SevenP
   });
 }
 
-export default async function DocumentsPage() {
+export default async function DocumentsPage(props: {
+  searchParams?: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  // UI batch F: a refused download comes back here with ?download=<reason>.
+  // (Optional chaining on props too: the screen tests call the page without props.)
+  const downloadNotice = downloadRefusalMessage((await props?.searchParams)?.download);
   const projectId = await readSelectedProjectId();
   if (!projectId) {
     return <div style={infoBoxStyle}>{NO_PROJECT_SELECTED_MESSAGE}</div>;
@@ -84,6 +90,9 @@ export default async function DocumentsPage() {
   const role = user?.role ?? null;
   // UI batch B (④): the 確認 column only for a role that may record it.
   const showVerifyColumn = canRoleOperate(role, 'document:verify');
+  // UI batch F: download links only for a role the API lets read the files
+  // (assigned staff, the representative); the API still decides each request.
+  const canDownload = canRoleOperate(role, 'document:read');
   const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
   const poLabelById = new Map(workspace.sevenPurchaseOrders.map((po) => [po.id, po.poNumber]));
 
@@ -105,6 +114,7 @@ export default async function DocumentsPage() {
           承認と納品確認で引用するのは、ここで登録した書類のバージョンです。
         </p>
         {workspace.error ? <div style={infoBoxStyle}>{workspace.error}</div> : null}
+        {downloadNotice ? <div role="alert" style={infoBoxStyle}>{downloadNotice}</div> : null}
       </header>
 
       <div style={cardStyle}>
@@ -133,6 +143,13 @@ export default async function DocumentsPage() {
         <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>書類一覧</h2>
         <p style={noteStyle}>
           同じ（種別・発行主体・ファイル名）の書類に別の内容を送ると新しい版になります。版のIDは承認・納品確認で引用します。
+        </p>
+        <p style={noteStyle}>
+          {canDownload
+            ? '各版の「ダウンロード」で書類ファイルを保存できます（ダウンロードは記録されます）。'
+            : role === null
+              ? '役割を確認できないため、ダウンロードのリンクは表示していません。'
+              : '閲覧者は書類ファイルをダウンロードできません（一覧の閲覧のみ）。'}
         </p>
         {workspace.documents.length === 0 ? (
           <p style={noteStyle}>書類はまだありません。</p>
@@ -181,6 +198,18 @@ export default async function DocumentsPage() {
                           版{version.versionNumber}／{version.sha256
                             ? `${version.sha256.slice(0, 12)}…`
                             : version.sha256Hidden ? `ハッシュ ${HIDDEN_BY_ROLE_SHORT}` : 'ハッシュ未記録'}
+                          {canDownload ? (
+                            <>
+                              {' '}
+                              <a
+                                href={documentDownloadHref(version.id)}
+                                rel="nofollow"
+                                aria-label={`${document.filename} 版${version.versionNumber}をダウンロード`}
+                              >
+                                ダウンロード
+                              </a>
+                            </>
+                          ) : null}
                           <TechDetails context="版ID">{version.id}</TechDetails>
                         </div>
                       ))}

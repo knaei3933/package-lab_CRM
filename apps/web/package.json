@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -p 3080",
+    "dev": "next dev -H \"${WEB_HOST:-127.0.0.1}\" -p \"${WEB_PORT:-3080}\"",
     "build": "next build",
-    "start": "next start -p 3080"
+    "start": "next start -H \"${WEB_HOST:-127.0.0.1}\" -p \"${WEB_PORT:-3080}\""
   },
   "dependencies": {
     "@astryxdesign/core": "0.7.16",

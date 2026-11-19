@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { ActionForm } from '../../components/ActionForm';
 import { ApprovalDecisionForm } from '../../components/ApprovalDecisionForm';
+import { ChangeRequestFields } from '../../components/ChangeRequestFields';
 import { OffsetDateTimeField } from '../../components/OffsetDateTimeField';
 import { ProjectProgress } from '../../components/ProjectProgress';
 import { ProjectUnavailable } from '../../components/ProjectUnavailable';
@@ -28,6 +29,7 @@ import {
   revisionNumberText
 } from '../../lib/project-data';
 import { shortId } from '../../lib/short-id';
+import { approvalHistoryKeys, changeEvidenceChoices, printingStartedOrderIds } from '../../lib/change-request';
 import type {
   ApprovalGateView,
   FilmSupplyOrderView,
@@ -105,17 +107,33 @@ export default async function ApprovalsPage() {
     return `書類バージョン ${shortId(versionId)}`;
   };
 
+  // UI batch F (review M5): the API records DOCUMENT_VERSION_VIEWED for every
+  // Message-ID it reads, so only the evidence an approval form on this screen
+  // actually offers is read — a role that may record approvals, a design still
+  // waiting for them, and the document's current version (the only one the API
+  // extracts from). Nothing is read for a viewer or a fully approved order.
   const evidenceAutoIdentifiers = new Map<string, string>();
-  await Promise.all(workspace.documents
-    .filter((document) => document.documentType === 'approval_evidence')
-    .flatMap((document) => document.versions.map(async (version) => {
-      const result = await callApi<{ evidenceIdentifier?: string }>(
-        `/api/document-versions/${encodeURIComponent(version.id)}/evidence-message-id`
-      );
-      if (result.ok && result.data?.evidenceIdentifier) {
-        evidenceAutoIdentifiers.set(version.id, result.data.evidenceIdentifier);
-      }
-    })));
+  const pendingDesigns = new Set(gates.flatMap((gate) => gate
+    ? gate.designs.filter((design) => !design.dualApproved).map((design) => `${gate.orderId}\u0000${design.designKey}`)
+    : []));
+  const offeredEvidence = canRoleOperate(role, 'artwork_approval:record')
+    ? workspace.documents.filter((document) => document.documentType === 'approval_evidence'
+      && document.filmSupplyOrderId !== null
+      && document.designKey !== null
+      && pendingDesigns.has(`${document.filmSupplyOrderId}\u0000${document.designKey}`))
+    : [];
+  const currentVersions = offeredEvidence.flatMap((document) => {
+    const latest = Math.max(...document.versions.map((candidate) => candidate.versionNumber));
+    return document.versions.filter((version) => version.versionNumber === latest);
+  });
+  await Promise.all(currentVersions.map(async (version) => {
+    const result = await callApi<{ evidenceIdentifier?: string }>(
+      `/api/document-versions/${encodeURIComponent(version.id)}/evidence-message-id`
+    );
+    if (result.ok && result.data?.evidenceIdentifier) {
+      evidenceAutoIdentifiers.set(version.id, result.data.evidenceIdentifier);
+    }
+  }));
 
   const approvalEvidenceChoices = (orderId: string, designKey: string): Choice[] =>
     workspace.documents
@@ -133,6 +151,11 @@ export default async function ApprovalsPage() {
   const revisionTargets = canRoleOperate(role, 'artwork_revision:create')
     ? await loadRevisionTargets(workspace.filmOrders)
     : { registrable: [], blocked: [], unread: [] };
+
+  // UI batch F: the change request facts the revision form asks for (server R1-9 / F2).
+  const historyKeys = approvalHistoryKeys(workspace.revisions, workspace.approvalEvents, gates);
+  const printedOrderIds = printingStartedOrderIds(workspace.filmOrders);
+  const changeEvidence = changeEvidenceChoices(workspace.documents);
 
   const proofChoices: Choice[] = workspace.documents
     .filter((document) => document.documentType === 'proof')
@@ -275,6 +298,8 @@ export default async function ApprovalsPage() {
             発注が「{stateLabel('SEVEN_PO_VERIFIED')}」以降の状態で、取り消されていないメーカー発注書がないとき、
             校正ゲラの書類のバージョンを版として登録できます（取消で終了した発注には登録できません）。
             新しい版を登録すると、そのデザインの既存の承認は無効になり承認待ちに戻ります。
+            承認の記録があるデザインの差し替えは変更依頼として扱われ、依頼組織・変更理由・証憑・影響（納期／数量／金額）・
+            実費（なければ0）・ロット表記の記録が必要です。
           </p>
           {revisionTargets.blocked.length > 0 ? (
             <div style={infoBoxStyle}>
@@ -311,8 +336,14 @@ export default async function ApprovalsPage() {
                 width={420}
                 choices={proofChoices}
               />
-              <TextField name="lotMarking" label="ロット表記（任意）" width={180} />
+              <TextField name="lotMarking" label="ロット表記（変更依頼では必須）" width={200} />
               <TextField name="note" label="備考（任意）" width={220} />
+              <ChangeRequestFields
+                historyKeys={historyKeys}
+                printedOrderIds={printedOrderIds}
+                evidenceChoices={changeEvidence}
+                canRecordPrinted={role === 'admin'}
+              />
             </div>
           </ActionForm>
           {proofChoices.length === 0 ? (

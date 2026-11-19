@@ -220,6 +220,8 @@ describe('fieldForActionMessage (1-①)', () => {
       'components/DocumentUploadForm.tsx',
       'components/MakerPoSendEvidenceForm.tsx',
       'components/ApprovalDecisionForm.tsx',
+      // UI batch F: the change request fields of the revision form.
+      'components/ChangeRequestFields.tsx',
       'components/DeliveryRecordForm.tsx',
       'components/ProjectPicker.tsx',
       'app/orders/page.tsx',
