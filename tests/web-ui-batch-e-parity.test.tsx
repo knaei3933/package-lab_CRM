@@ -74,6 +74,7 @@ vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, s
 const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
 const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
 const { default: DocumentsPage } = await import('../apps/web/src/app/documents/page.js');
+const { default: DeliveriesPage } = await import('../apps/web/src/app/deliveries/page.js');
 const { loadWorkspace, PROJECT_UNAVAILABLE_MESSAGE } = await import('../apps/web/src/lib/project-data.js');
 const { ceoApprovalFacts } = await import('../apps/web/src/lib/decision-facts.js');
 const { loadRepresentativeQueue } = await import('../apps/web/src/lib/representative-queue.js');
@@ -246,10 +247,12 @@ describe('F-05: an order without its セブン化学発注書', () => {
     expect(row).toContain('紐付けなし');
     expect(row).toContain('この発注は「セブン化学発注書確認済」へ進められません。紐付けは作成のときだけ選べます。');
 
+    // Server batch E: staff reads the PO link too, so staff gets the same cause and remedy (F-05: role-independent).
     signIn('staff');
     const staffHtml = await render(OrdersPage);
     expect(staffHtml).not.toContain('セブン化学発注書の公式登録と真性行チェックリストを済ませ');
-    expect(staffHtml).toContain('進められないときは、この発注がセブン化学発注書に紐付いていません');
+    expect(orderRow(staffHtml, code)).toContain('この発注は「セブン化学発注書確認済」へ進められません。紐付けは作成のときだけ選べます。');
+    expect(staffHtml).toContain('この発注はセブン化学発注書に紐付いていないため');
     // The create form (staff may create) requires the PO.
     expect(staffHtml).toMatch(/<select name="sevenPurchaseOrderId" required=""/);
   });
@@ -334,6 +337,8 @@ describe('F-10, F-22: the provisional acceptance and what the final one waits fo
     });
     expect((sent.body as { verificationStatus: string }).verificationStatus).toBe('VERIFIED');
     expect((await call(staffToken, `/api/maker-purchase-orders/${poId}/provisional-acceptance`, {})).status).toBe(201);
+    // Review M2: an uploaded but still unchecked 受領証跡 does not satisfy the prerequisite.
+    await uploadDocument({ documentType: 'acceptance_evidence', issuerEntity: 'maker', orderId: chain.orderId, sevenPoId: chain.sevenPoId, makerPoId: poId });
 
     signIn('staff');
     const staffHtml = await render(MakerPoPage);
@@ -346,6 +351,8 @@ describe('F-10, F-22: the provisional acceptance and what the final one waits fo
     const adminHtml = await render(MakerPoPage);
     expect(adminHtml).toContain('仮の受入記録はあります。最終受入確認の前に、受領証跡');
     expect(adminHtml).not.toContain('最終受入確認のブロック理由');
+    // The unchecked upload is not offered for the final acceptance.
+    expect(adminHtml).not.toContain('受領証跡の書類バージョン（確認済み）');
   });
 });
 
@@ -355,7 +362,8 @@ describe('F-07: the upload form names the PO state', () => {
     expect(unverified.status).toBe(201);
     signIn('admin');
     const html = await render(DocumentsPage);
-    expect(html).toMatch(/SEVEN-BE-UNV-\d+（未登録） 真性確認がまだです/);
+    // Review L3: the label names the step that is missing.
+    expect(html).toMatch(/SEVEN-BE-UNV-\d+（未登録） 真性行チェックリストがまだです/);
   });
 });
 
@@ -382,5 +390,70 @@ describe('F-23: the representative queue', () => {
     expect(works).toContain('保留の解除（理由の確認）');
     expect(works).toContain('メーカー発注書の作成と代表承認');
     expect(queue.tasks.every((task) => task.projectLabel === 'TEST-BE-PROJECT（合成BE案件）')).toBe(true);
+  });
+});
+
+describe('F-00 (server batch E 9972e99) on the screen: the delivery line choice reaches commission READY', () => {
+  it('staff picks the line the screen offers, the delivery and its confirmation land, and staff and viewer read READY', async () => {
+    const sevenPoId = await verifiedSevenPo();
+    // The web's own create path (POST /api/projects/:id/film-supply-orders) — the one that writes line audits.
+    const code = `FSO-BE-LINE-${nextTag()}`;
+    const created = await call(staffToken, `/api/projects/${projectId}/film-supply-orders`, {
+      code, sevenPurchaseOrderId: sevenPoId, paymentTerms: 'prepaid',
+      lines: [{ lineNumber: 1, description: '合成フィルム本体（納品検証）', orderedQuantity: 1000, unit: 'sheets' }]
+    });
+    expect(created.status).toBe(201);
+    const orderId = created.body.id as string;
+
+    signIn('staff');
+    const workspace = await loadWorkspace(projectId);
+    const order = workspace.filmOrders.find((candidate) => candidate.id === orderId)!;
+    expect(order.lines).toHaveLength(1);
+    const lineId = order.lines[0]!.id;
+    // What deliveries/page.tsx turns into 「明細1：合成フィルム本体（納品検証）（1000.000sheets）」 (the select
+    // fills after an order is chosen in the client form; the browser check covers that step).
+    expect(order.lines[0]).toMatchObject({ lineNumber: 1, description: '合成フィルム本体（納品検証）', orderedQuantity: '1000.000', unit: 'sheets' });
+    expect(order.detailsHidden).toBe(false);
+
+    const delivery = await call(staffToken, `/api/film-supply-orders/${orderId}/deliveries`, {
+      filmSupplyOrderLineId: lineId, deliveredQuantity: 1000, unit: 'sheets'
+    });
+    expect(delivery.status, JSON.stringify(delivery.body)).toBe(201);
+    const filmEvidence = await uploadDocument({ documentType: 'acceptance_evidence', issuerEntity: 'kanei', orderId, sevenPoId });
+    expect((await call(staffToken, `/api/documents/${filmEvidence.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+    expect((await call(staffToken, `/api/film-deliveries/${delivery.body.id as string}/confirmation`, {
+      evidenceDocumentVersionId: filmEvidence.version.id
+    })).status).toBe(201);
+
+    const filling = await call(staffToken, `/api/projects/${projectId}/filling-orders`, {
+      code: `FLO-BE-${nextTag()}`, lines: [{ lineNumber: 1, description: '合成充填カプセル', orderedQuantity: 2000, unit: 'pods' }]
+    });
+    expect(filling.status).toBe(201);
+    const fillingLines = filling.body.lines as Array<{ id: string }>;
+    const fillingDelivery = await call(staffToken, `/api/filling-orders/${filling.body.id as string}/deliveries`, {
+      fillingOrderLineId: fillingLines[0]!.id, deliveredQuantity: 1900, unit: 'pods'
+    });
+    expect(fillingDelivery.status).toBe(201);
+    const fillingEvidence = await call(staffToken, `/api/projects/${projectId}/documents`, {
+      documentType: 'acceptance_evidence', issuerEntity: 'kanei', filename: `be-filling-${nextTag()}.txt`, contentType: 'text/plain',
+      contentBase64: Buffer.from('batch E filling acceptance\n', 'utf8').toString('base64'),
+      sevenPurchaseOrderId: sevenPoId, fillingOrderId: filling.body.id
+    });
+    expect(fillingEvidence.status, JSON.stringify(fillingEvidence.body)).toBe(201);
+    const fe = fillingEvidence.body as unknown as { document: { id: string }; version: { id: string } };
+    expect((await call(staffToken, `/api/documents/${fe.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+    expect((await call(staffToken, `/api/filling-deliveries/${fillingDelivery.body.id as string}/confirmation`, {
+      evidenceDocumentVersionId: fe.version.id
+    })).status).toBe(201);
+
+    const readiness = await call(staffToken, `/api/projects/${projectId}/commission-readiness`, {});
+    expect(readiness.status).toBe(201);
+    expect(readiness.body).toMatchObject({ readinessState: 'READY', isReady: true });
+
+    // F-01/F-09 on the screen: staff and the viewer read the state (no 閲覧権限なし).
+    signIn('staff');
+    expect((await loadWorkspace(projectId)).readiness).toMatchObject({ readinessState: 'READY', hidden: false });
+    expect(await render(DeliveriesPage)).toContain('手数料計算可能');
+    signedIn.role = 'staff';
   });
 });

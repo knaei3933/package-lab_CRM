@@ -3,7 +3,8 @@
  *
  * The audit-history endpoint answers every role with the same rows but shapes
  * the payload by role (apps/api/src/audit-view.ts, buildAuditViewForRole):
- * - viewer: no beforeState / afterState / requestMetadata keys at all;
+ * - viewer: only status / readinessState / isReady (server batch E), or no
+ *   state at all when the event carries none of them;
  * - staff: afterState trimmed to an allowlist of identifier/status keys;
  * - admin: the full state.
  * Before this module the screens replayed a missing key as 「未記録」, which
@@ -21,6 +22,9 @@ export const HIDDEN_BY_ROLE_SHORT = '閲覧権限なし';
  * Mirror of STAFF_STATE_KEYS in apps/api/src/audit-view.ts. The contract test
  * tests/web-redaction-labels.test.ts runs the API's own filter against this
  * list, so a drift between the two fails the suite instead of mislabelling.
+ * UI batch E: server batch E (9972e99) widened it to the business identifiers
+ * staff need (PO number, lines, approval evidence, delivery and readiness
+ * keys); amounts, payment terms, hashes and snapshots stay off it.
  */
 export const STAFF_VISIBLE_STATE_KEYS: readonly string[] = [
   'id',
@@ -28,17 +32,54 @@ export const STAFF_VISIBLE_STATE_KEYS: readonly string[] = [
   'state',
   'code',
   'name',
+  'poNumber',
+  'officialRegisteredAt',
+  'sevenPurchaseOrderId',
+  'promotedFromPreOrderId',
+  'lineCount',
+  'filmSupplyOrderId',
+  'lineNumber',
+  'description',
+  'orderedQuantity',
+  'unit',
+  'deliveredQuantity',
+  'deliverySequence',
+  'deliveredAt',
+  'filmSupplyOrderLineId',
+  'fillingOrderId',
+  'fillingOrderLineId',
+  'artworkRevisionId',
+  'organization',
+  'decision',
+  'revisionNo',
+  'evidenceDocumentVersionId',
+  'evidenceIdentifier',
+  'evidenceIdentifierStatus',
+  'evidenceSource',
+  'eventTime',
+  'readinessState',
+  'isReady',
+  'blocking',
   // 62d9305: staff may see where an uploaded version is bound (approval
   // evidence selection); bytes, amounts and storage paths stay out.
   'documentType',
   'documentId',
-  'filmSupplyOrderId',
   'designKey',
   'versionNumber',
   'verificationStatus',
   'deliveryKind',
-  'confirmationState'
+  'confirmationState',
+  'deliveryId',
+  'filmDeliveryId',
+  'fillingDeliveryId'
 ];
+
+/**
+ * UI batch E: mirror of VIEWER_STATE_KEYS in apps/api/src/audit-view.ts (server
+ * batch E). A viewer answer carries only these keys, or no state at all when
+ * the event has none of them (pinned by tests/web-redaction-labels.test.ts).
+ */
+export const VIEWER_VISIBLE_STATE_KEYS: readonly string[] = ['status', 'readinessState', 'isReady'];
 
 interface StateCarrier {
   afterState?: unknown;
@@ -73,12 +114,19 @@ export function isFieldHiddenByRole(
   const after = event.afterState;
   if (!isPlainRecord(after)) return false;
   if (key in after) return false;
-  if (STAFF_VISIBLE_STATE_KEYS.includes(key)) return false;
   const present = Object.keys(after);
   // An empty state carries no evidence of trimming: treat it as unrecorded —
   // unless the caller knows the full state of this event is never empty (the
   // staff allowlist can then only have trimmed every key away).
   if (present.length === 0) return options.emptyMeansTrimmed === true;
+  // UI batch E: a viewer answer (server batch E) carries only status-like keys;
+  // every other key is withheld from it, never 「未記録」. A staff or admin
+  // answer always carries an identifier (id, code, …) beside its status, so it
+  // is not mistaken for one.
+  if (present.every((name) => VIEWER_VISIBLE_STATE_KEYS.includes(name))) {
+    return !VIEWER_VISIBLE_STATE_KEYS.includes(key);
+  }
+  if (STAFF_VISIBLE_STATE_KEYS.includes(key)) return false;
   return present.every((name) => STAFF_VISIBLE_STATE_KEYS.includes(name));
 }
 

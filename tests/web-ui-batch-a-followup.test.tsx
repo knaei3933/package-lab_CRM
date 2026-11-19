@@ -203,7 +203,22 @@ describe('M2 + M1: セブン発注書 registration is told apart from hidden, pe
     expect(sevenPurchaseOrderChoiceLabel(unregistered)).toBe('SC-NEW-2（未登録）');
   });
 
-  for (const role of ['staff', 'viewer'] as const) {
+  it('staff (server batch E): the PO number and the registration date read as the admin reads them', async () => {
+    serveAs('staff');
+    const workspace = await loadWorkspace(PROJECT_ID);
+    const registered = workspace.sevenPurchaseOrders.find((po) => po.id === PO_REGISTERED)!;
+    const unregistered = workspace.sevenPurchaseOrders.find((po) => po.id === PO_UNREGISTERED)!;
+    expect(registered).toMatchObject({
+      officialRegisteredAt: REGISTERED_AT, officiallyRegistered: true, officialRegistrationHidden: false, poNumberHidden: false
+    });
+    expect(officialRegistrationText(registered)).toBe('2026/11/16');
+    expect(sevenPurchaseOrderChoiceLabel(registered)).toBe('SC-REG-1（公式登録済み）');
+    expect(unregistered).toMatchObject({ officialRegisteredAt: null, officiallyRegistered: false, officialRegistrationHidden: false });
+    expect(officialRegistrationText(unregistered)).toBe('未登録');
+    expect(sevenPurchaseOrderChoiceLabel(unregistered)).toBe('SC-NEW-2（未登録）');
+  });
+
+  for (const role of ['viewer'] as const) {
     it(`${role}: a hidden date stays hidden (never the record time), registration known from the action`, async () => {
       serveAs(role);
       const workspace = await loadWorkspace(PROJECT_ID);
@@ -243,30 +258,26 @@ describe('M4: deliveries, approvals, document versions and readiness use the sam
     expect(workspace.readiness).toMatchObject({ readinessState: 'PENDING_VERIFICATION', hidden: false });
   });
 
-  it('staff: the bindings 62d9305 allows are shown; every withheld value is flagged hidden, never a default or record time', async () => {
+  it('staff (server batch E): delivery, approval, revision and readiness read; only the digest stays withheld', async () => {
     serveAs('staff');
     const workspace = await loadWorkspace(PROJECT_ID);
     const [delivery] = workspace.deliveries;
-    // filmSupplyOrderId is on the staff allowlist since 62d9305: the order is known, the rest is not.
     expect(delivery).toMatchObject({
-      orderId: FILM_ID, deliveredAt: null, deliverySequence: null, confirmed: false,
-      detailsHidden: true, confirmationHidden: true
+      orderId: FILM_ID, deliveredAt: DELIVERED_AT, deliverySequence: 1, deliveredQuantity: '10.000', detailsHidden: false
     });
     const [approval] = workspace.approvalEvents;
-    expect(approval).toMatchObject({ eventTime: null, revisionNo: null, detailsHidden: true });
-    // documentId/versionNumber are visible: the version is listed, its digest is not.
+    expect(approval).toMatchObject({ organization: 'customer', decision: 'APPROVE', revisionNo: 1, eventTime: APPROVED_AT, detailsHidden: false });
     expect(workspace.documentVersionsWithheld).toBe(false);
     expect(workspace.documents[0]?.versions).toEqual([
       expect.objectContaining({ id: VERSION_ID, versionNumber: 1, sha256: null, sha256Hidden: true })
     ]);
     expect(RECORD_TIMES).not.toContain(workspace.documents[0]?.versions[0]?.sha256);
-    // filmSupplyOrderId/designKey are visible: the revision is bound; its number is withheld — never 版1 by default.
     expect(workspace.revisionsWithheld).toBe(0);
     expect(workspace.revisions).toEqual([
-      expect.objectContaining({ id: REVISION_ID, filmSupplyOrderId: FILM_ID, designKey: 'label-front', revisionNo: null, revisionNoHidden: true })
+      expect.objectContaining({ id: REVISION_ID, filmSupplyOrderId: FILM_ID, designKey: 'label-front', revisionNo: 1, revisionNoHidden: false })
     ]);
-    expect(revisionNumberText(workspace.revisions[0]!)).toBe('版（閲覧権限なし）');
-    expect(workspace.readiness?.hidden).toBe(true);
+    expect(revisionNumberText(workspace.revisions[0]!)).toBe('版1');
+    expect(workspace.readiness).toMatchObject({ readinessState: 'PENDING_VERIFICATION', hidden: false });
   });
 
   it('viewer: withheld values are flagged hidden and never replaced by defaults or record times', async () => {
@@ -283,7 +294,8 @@ describe('M4: deliveries, approvals, document versions and readiness use the sam
     expect(workspace.documentVersionsWithheld).toBe(true);
     expect(workspace.revisions).toHaveLength(0);
     expect(workspace.revisionsWithheld).toBe(1);
-    expect(workspace.readiness?.hidden).toBe(true);
+    // Server batch E: the viewer reads the readiness state (F-01), nothing else of it.
+    expect(workspace.readiness).toMatchObject({ readinessState: 'PENDING_VERIFICATION', hidden: false });
   });
 
   it('admin: a recorded revision number and digest are shown as they are', async () => {
@@ -304,7 +316,8 @@ describe('rendered screens per role (display only — the forms and permissions 
     // rule: hidden registration state does not hide the form — see M3). UI batch
     // B: a viewer is offered no write form at all (the API refuses it anyway).
     expect(html.match(/>公式登録日を記録する<\/summary>/g) ?? []).toHaveLength(role === 'viewer' ? 0 : 1);
-    if (role === 'admin') {
+    if (role !== 'viewer') {
+      // Server batch E: staff reads the PO number and the date as the admin does.
       expect(html).toContain('SC-NEW-2（未登録）');
       // UI batch E (F-15, T4): the date-only registration shows no invented time.
       expect(html).toContain('>2026/11/16</td>');
@@ -336,6 +349,11 @@ describe('rendered screens per role (display only — the forms and permissions 
       expect(html).toContain('CONFIRMED');
       expect(html).toContain('PENDING_VERIFICATION');
       expect(html).not.toContain(HIDDEN_BY_ROLE_LABEL);
+    } else if (role === 'staff') {
+      // Server batch E: staff reads the delivery date and the readiness state.
+      expect(html).toContain('2026/11/18 08:00 JST');
+      expect(html).toContain('PENDING_VERIFICATION');
+      expect(html).not.toContain('MISSING_DATA');
     } else {
       expect(html).toContain(HIDDEN_BY_ROLE_LABEL);
       expect(html).not.toContain('2026/11/18 08:00 JST');
@@ -355,14 +373,12 @@ describe('rendered screens per role (display only — the forms and permissions 
       expect(html).toContain('2026/11/17 18:00 JST');
       expect(html).not.toContain('校正ゲラの版は1件記録されていますが');
     } else if (role === 'staff') {
-      // 62d9305: the revision's binding is visible to staff, its number is not.
-      expect(html.replaceAll('<!-- -->', '')).toContain('デザイン label-front ／ 版（閲覧権限なし）');
+      // Server batch E: the revision number and the approval time read for staff too.
+      expect(html.replaceAll('<!-- -->', '')).toContain('デザイン label-front ／ 版1');
+      expect(html).not.toContain('版（閲覧権限なし）');
       expect(html).not.toContain('校正ゲラの版は1件記録されていますが');
       expect(html).not.toContain('校了対象の版がまだありません');
-      expect(html).not.toContain('2026/11/17 18:00 JST');
-      expect(html).toContain(HIDDEN_BY_ROLE_LABEL);
-      const approvalRow = ROWS.find((row) => row.action === 'ARTWORK_APPROVAL_RECORDED')!;
-      expect(html.split(formatTimestamp(approvalRow.occurredAt.toISOString()))).toHaveLength(2);
+      expect(html).toContain('2026/11/17 18:00 JST');
     } else {
       expect(html).toContain('校正ゲラの版は1件記録されていますが、紐付け先の発注とデザインが閲覧権限なしのため');
       expect(html).not.toContain('校了対象の版がまだありません');
@@ -401,7 +417,8 @@ describe('rendered screens per role (display only — the forms and permissions 
       expect(html).not.toContain('…902de940');
       expect(html).toContain('フィルム発注の作成は、閲覧権限のため操作できません。');
     } else {
-      expect(html).toContain(role === 'admin' ? 'SC-REG-1（公式登録済み）' : '発注番号 閲覧権限なし・ID …902de940（公式登録済み）');
+      // Server batch E: staff reads the PO number as the admin does.
+      expect(html).toContain('SC-REG-1（公式登録済み）');
     }
   });
 });
@@ -500,7 +517,8 @@ describe('review of f81a5e5: distinct PO labels and the surviving mutants', () =
     const cells = [...row.matchAll(/<td[^>]*>(.*?)<\/td>/g)].map((match) => match[1]);
     // Columns: 種別, 発注, 数量, 回次, 納品日, …
     const [quantity, sequenceCell, deliveredAt] = cells.slice(2, 5);
-    if (role === 'admin') {
+    if (role !== 'viewer') {
+      // Server batch E: staff reads the quantity, the sequence and the date.
       expect([quantity, sequenceCell, deliveredAt]).toEqual(['10.000 rolls', '1', '2026/11/18 08:00 JST']);
     } else {
       expect([quantity, sequenceCell, deliveredAt]).toEqual([HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_LABEL]);
@@ -512,7 +530,9 @@ describe('review of f81a5e5: distinct PO labels and the surviving mutants', () =
     serveAs(role);
     const html = await renderPage(OrdersPage);
     const note = /（準備状態: (.*?)）/.exec(html.replaceAll('<!-- -->', ''))?.[1];
-    expect(note).toBe(role === 'admin' ? 'PENDING_VERIFICATION' : HIDDEN_BY_ROLE_SHORT);
+    // Server batch E: staff and viewer read the readiness state (F-01, F-09).
+    expect(note).toBe('PENDING_VERIFICATION');
+    expect(note).not.toBe(HIDDEN_BY_ROLE_SHORT);
     expect(note).not.toBe('MISSING_DATA');
   });
 });

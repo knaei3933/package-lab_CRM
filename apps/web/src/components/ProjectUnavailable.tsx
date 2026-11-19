@@ -1,4 +1,4 @@
-import { PROJECT_UNAVAILABLE_MESSAGE } from '../lib/project-data';
+import { PROJECT_UNAVAILABLE_MESSAGE, RESELECT_PROJECT_HINT } from '../lib/project-data';
 import { infoBoxStyle, noteStyle } from '../lib/ui';
 
 /**
@@ -15,7 +15,8 @@ export function ProjectUnavailable({ title, reason }: { title: string; reason: s
       <h1 style={{ fontSize: 26, margin: 0 }}>{title}</h1>
       <div style={infoBoxStyle}>
         <p style={{ margin: 0 }}>{PROJECT_UNAVAILABLE_MESSAGE}</p>
-        {reason ? <p style={{ ...noteStyle, margin: '4px 0 0' }}>理由: {reason}</p> : null}
+        {/* Review L11: the API reason without the 「選び直してください」 hint already said above. */}
+        {reason ? <p style={{ ...noteStyle, margin: '4px 0 0' }}>理由: {reason.replace(RESELECT_PROJECT_HINT, '').trim()}</p> : null}
       </div>
     </section>
   );

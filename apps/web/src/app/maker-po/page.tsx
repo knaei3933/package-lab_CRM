@@ -182,6 +182,11 @@ export default async function MakerPoPage() {
   const documentVersionChoices = (orderId: string, documentType: string): Choice[] =>
     board.workspace.documents
       .filter((document) => document.documentType === documentType && document.filmSupplyOrderId === orderId)
+      // UI batch E (review M2): the final acceptance cites a checked 受領証跡 only (the API
+      // refuses an unchecked one), so an upload still 未確認 neither opens that form nor
+      // hides the 「確認済みにしてください」 step.
+      .filter((document) => documentType !== 'acceptance_evidence'
+        || (!document.verificationHidden && document.verificationStatus === 'verified'))
       .flatMap((document) => document.versions.map((version) => ({
         value: version.id,
         label: `${document.filename}（版${version.versionNumber}／確認状態 ${
@@ -216,6 +221,8 @@ export default async function MakerPoPage() {
   // UI batch E (F-15): the maker's address of the latest paper on this project, as the default 宛先.
   const defaultRecipientAddress = cards
     .flatMap((card) => card.entry.makerPurchaseOrders)
+    // Review L1: a cancelled paper may have been cancelled for its wrong address.
+    .filter((po) => po.status !== 'CANCELLED')
     .map((po) => ({ at: po.createdAt ?? '', address: po.snapshot?.recipient?.address ?? po.recipientAddress ?? null }))
     .filter((row): row is { at: string; address: string } => typeof row.address === 'string' && row.address.length > 0)
     .sort((a, b) => (a.at < b.at ? 1 : -1))[0]?.address;

@@ -24,7 +24,10 @@ export function RepresentativeQueuePanel({
   ].filter((note): note is string => note !== null);
   return (
     <div>
-      {queue.tasks.length === 0 ? (
+      {queue.listError ? (
+        // Review M1: a failed read is never 「ありません」 (DESIGN_RULES §10).
+        <p style={noteStyle}>{`案件の一覧を読み込めなかったため、代表者の対応待ちを表示できません（${queue.listError}）。`}</p>
+      ) : queue.tasks.length === 0 ? (
         <p style={noteStyle}>代表者の対応待ちはありません。</p>
       ) : (
         <DataTable caption="代表者の対応待ち（全案件）" captionHidden>
@@ -38,7 +41,7 @@ export function RepresentativeQueuePanel({
           </thead>
           <tbody>
             {queue.tasks.map((task) => (
-              <tr key={`${task.projectId}-${task.orderCode}-${task.status}`}>
+              <tr key={`${task.projectId}-${task.orderId}`}>
                 <td style={tdStyle}>{task.projectLabel}</td>
                 <td style={tdStyle}>{task.orderCode}</td>
                 <td style={tdStyle}>{task.work}</td>

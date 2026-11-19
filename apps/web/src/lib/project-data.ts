@@ -5,6 +5,7 @@ import {
   FILM_SUPPLY_ORDER_TERMINAL_STATE
 } from '@kanei/core';
 import type { FilmSupplyOrderState, Operation } from '@kanei/core';
+import { cache } from 'react';
 import { callApi } from './api';
 import { operationRefusal } from './permissions';
 import { shortId } from './short-id';
@@ -477,10 +478,22 @@ export interface ProjectSummary {
  * below the selector stays usable, so nothing is trapped by a list read.
  */
 export async function loadSelectableProjects(): Promise<ProjectSummary[]> {
-  const result = await callApi<{ projects: ProjectSummary[] }>('/api/projects');
-  if (!result.ok || !result.data) return [];
-  return Array.isArray(result.data.projects) ? result.data.projects : [];
+  return (await loadSelectableProjectList()).projects;
 }
+
+/**
+ * UI batch E (review M1, M3): the same read with its failure kept, so the
+ * representative queue never says 「対応待ちはありません」 after a failed read,
+ * and memoised per server request (React cache) so the layout's selector and
+ * the queue share one GET /api/projects.
+ */
+export const loadSelectableProjectList = cache(async (): Promise<{ projects: ProjectSummary[]; error: string | null }> => {
+  const result = await callApi<{ projects: ProjectSummary[] }>('/api/projects');
+  if (!result.ok || !result.data) {
+    return { projects: [], error: result.error ?? `案件の一覧を取得できませんでした（${result.status}）。` };
+  }
+  return { projects: Array.isArray(result.data.projects) ? result.data.projects : [], error: null };
+});
 
 export async function loadWorkspace(
   projectId: string,

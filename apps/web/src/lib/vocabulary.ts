@@ -214,7 +214,7 @@ export function formatMoney(currency: string | null | undefined, amount: string 
   const raw = (amount ?? '').trim();
   const code = (currency ?? '').trim().toUpperCase();
   if (raw.length === 0) return '—';
-  if (!/^-?\d+(\.\d+)?$/.test(raw)) return code ? `${code} ${raw}` : raw;
+  if (!/^\d+(\.\d+)?$/.test(raw)) return code ? `${code} ${raw}` : raw;
   const [whole, fraction] = raw.split('.') as [string, string | undefined];
   const grouped = `${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}${fraction !== undefined ? `.${fraction}` : ''}`;
   if (code === 'JPY' || code === '') return code === 'JPY' ? `¥${grouped}` : grouped;

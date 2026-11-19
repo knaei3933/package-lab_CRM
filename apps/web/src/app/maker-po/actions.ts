@@ -1,5 +1,6 @@
 'use server';
 
+import { isPlainAmount, normalizeAmountText } from '../../lib/amount';
 import { callApi } from '../../lib/api';
 import { offsetDateTimeField } from '../../lib/datetime';
 import type { ActionState } from '../../lib/types';
@@ -35,17 +36,6 @@ async function patch(path: string, body: unknown): Promise<ActionState> {
   return { ok: false, message: result.error ?? `APIがステータス ${result.status} を返しました。` };
 }
 
-/**
- * UI batch E (F-15): 「¥480,000」「４８００００」 → 480000. Only the spelling
- * changes (yen sign, group commas, spaces, full-width digits); anything else is
- * left for the check above to refuse.
- */
-function normalizeAmountText(raw: string): string {
-  return raw
-    .replace(/[０-９．]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
-    .replace(/[¥￥,，\s]/g, '');
-}
-
 /** Screen 1: freeze the maker paper (admin only; the API refuses everyone else). */
 export async function createMakerPoAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
   const orderId = field(formData, 'orderId');
@@ -58,7 +48,7 @@ export async function createMakerPoAction(_prev: ActionState | null, formData: F
   // UI batch E (F-15): the currency is a select with JPY preselected, so it alone
   // says nothing — the amounts are sent only when an amount was typed.
   if (totalAmount.length > 0) {
-    if (!/^\d+(\.\d+)?$/.test(totalAmount)) {
+    if (!isPlainAmount(totalAmount)) {
       return { ok: false, message: '金額は数字で入力してください（例 480000）。' };
     }
     body.amounts = { currency: currency.length > 0 ? currency : 'JPY', totalAmount };

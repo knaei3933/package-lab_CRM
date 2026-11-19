@@ -12,7 +12,7 @@ import { EmptyNote } from '../../components/EmptyNote';
 import { ChoiceDisclosure, ChoiceToneActionForm } from '../../components/ChoiceDrivenForm';
 import { OrderCreateForm } from '../../components/OrderCreateForm';
 import { RepresentativeQueuePanel } from '../../components/RepresentativeQueue';
-import { loadRepresentativeQueue } from '../../lib/representative-queue';
+import { failedRepresentativeQueue, loadRepresentativeQueue } from '../../lib/representative-queue';
 import { ProjectProgress } from '../../components/ProjectProgress';
 import { ProjectUnavailable } from '../../components/ProjectUnavailable';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
@@ -39,7 +39,7 @@ import { canRoleOperate } from '../../lib/permissions';
 import {
   knownStatus,
   labelLookup,
-  loadSelectableProjects,
+  loadSelectableProjectList,
   loadWorkspace,
   makerCleanupRecords,
   NO_PROJECT_SELECTED_MESSAGE,
@@ -86,6 +86,13 @@ const PAYMENT_TERMS_CHOICES = [
 /** Astryx trial: the empty note when the workspace read failed (the Banner above says why). */
 const LOAD_FAILED_NOTE = '一覧を表示できませんでした。画面上部の案内を確認してください。';
 
+/** UI batch E (F-23): the queue of every project but the open one; a failed list read says so (review M1). */
+async function representativeQueueFor(openProjectId: string | null) {
+  const list = await loadSelectableProjectList();
+  if (list.error) return failedRepresentativeQueue(list.error);
+  return loadRepresentativeQueue(list.projects.filter((project) => project.id !== openProjectId));
+}
+
 export default async function OrdersPage() {
   const projectId = await readSelectedProjectId();
   if (!projectId) {
@@ -93,7 +100,7 @@ export default async function OrdersPage() {
     // UI batch E (F-23): the first screen after login — the representative sees
     // what waits for them across projects before choosing one.
     const firstUser = await loadSessionUser();
-    const queue = firstUser?.role === 'admin' ? await loadRepresentativeQueue(await loadSelectableProjects()) : null;
+    const queue = firstUser?.role === 'admin' ? await representativeQueueFor(null) : null;
     return (
       <AstryxIsland>
         <VStack as="section" gap={5}>
@@ -111,11 +118,13 @@ export default async function OrdersPage() {
     );
   }
 
-  const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
-  // UI batch E (F-23): the other projects' waiting decisions (this project's are in 「次にやること」 below).
-  const representativeQueue = user?.role === 'admin' && !workspace.projectRefused
-    ? await loadRepresentativeQueue((await loadSelectableProjects()).filter((project) => project.id !== projectId))
-    : null;
+  // UI batch E (F-23, review M3): the other projects' waiting decisions (this project's are in
+  // 「次にやること」 below), read alongside the workspace, admin only.
+  const [user, workspace, representativeQueue] = await Promise.all([
+    loadSessionUser(),
+    loadWorkspace(projectId),
+    loadSessionUser().then((who) => (who?.role === 'admin' ? representativeQueueFor(projectId) : null))
+  ]);
   // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
   if (workspace.projectRefused) return <ProjectUnavailable title="案件（発注）一覧／作成" reason={workspace.error} />;
   const role = user?.role ?? null;
@@ -134,7 +143,9 @@ export default async function OrdersPage() {
   // form always shows the recorded value instead of guessing from history.
   // A withheld status (viewer) is not a draft: the 'DRAFT' value there is only
   // the data layer's placeholder, so no payment-gate read is made for it.
-  const draftOrders = workspace.filmOrders.filter((order) => knownStatus(order) === 'DRAFT');
+  // UI batch E: a viewer now reads statuses (server batch E) but has no 操作 column, so its
+  // drafts' payment gates are never shown — and never read.
+  const draftOrders = showOrderOperations ? workspace.filmOrders.filter((order) => knownStatus(order) === 'DRAFT') : [];
   const paymentGates = await Promise.all(draftOrders.map((order) => loadPaymentGate(order.id)));
   const paymentGateByOrderId = new Map<string, Awaited<ReturnType<typeof loadPaymentGate>>>();
   for (const [index, order] of draftOrders.entries()) {
@@ -163,7 +174,7 @@ export default async function OrdersPage() {
           <TechDetails context="案件ID">{projectId}</TechDetails>
         )}
         {workspace.error ? <Banner status="error" title={workspace.error} /> : null}
-        {representativeQueue && representativeQueue.tasks.length > 0 ? (
+        {representativeQueue && (representativeQueue.tasks.length > 0 || representativeQueue.listError) ? (
           <details className="progress-completed" style={{ marginTop: 12 }}>
             <summary>ほかの案件の代表者の対応待ち（{representativeQueue.tasks.length}件）</summary>
             <RepresentativeQueuePanel queue={representativeQueue} selectAction={selectProjectAction} currentProjectId={projectId} />
@@ -451,7 +462,7 @@ function TransitionCell({
               ))}
               <TextareaField
                 name={EVIDENCE_NOTE_FIELD}
-                label="証跡がないまま進める理由（この選択のときは必須）"
+                label="証跡がないまま進める理由（確認用・保存されません）"
                 hint="確認のための入力です。今は履歴には保存されません。証跡があとから届く場合は、その予定を書いてください。"
                 rows={2}
                 width={280}

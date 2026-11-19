@@ -20,7 +20,8 @@ const { ceoApprovalFacts, holdReleaseFacts, holdSummaryText } = await import('..
 const { EVIDENCE_GAP_SUFFIX, evidenceGapsFor } = await import('../apps/web/src/lib/transition-evidence.js');
 const { statusSymbol, TONE_SYMBOLS } = await import('../apps/web/src/lib/status-tone.js');
 const { defaultSevenPoId, requiresSevenPo, SEVEN_PO_REQUIRED_DOCUMENT_TYPES } = await import('../apps/web/src/lib/document-maker-po.js');
-const { replayOrderStatuses, representativeTasks, REPRESENTATIVE_WORK } = await import('../apps/web/src/lib/representative-queue.js');
+const { failedRepresentativeQueue, replayOrderStatuses, representativeTasks, REPRESENTATIVE_WORK } = await import('../apps/web/src/lib/representative-queue.js');
+const { isPlainAmount, normalizeAmountText } = await import('../apps/web/src/lib/amount.js');
 const { nextActionForOrder } = await import('../apps/web/src/lib/project-data.js');
 const { fieldForActionMessage } = await import('../apps/web/src/lib/form-messages.js');
 const { StatusBadge } = await import('../apps/web/src/components/StatusBadge.js');
@@ -44,6 +45,19 @@ describe('F-15: amounts and date-only values as people write them', () => {
     expect(formatMoney('', '999')).toBe('999');
     expect(formatMoney('JPY', '約50万')).toBe('JPY 約50万');
     expect(formatMoney('JPY', '')).toBe('—');
+    // A value that is not a plain non-negative decimal is shown as recorded (review L8).
+    expect(formatMoney('JPY', '-480000')).toBe('JPY -480000');
+  });
+
+  it('normalizeAmountText / isPlainAmount: only the spelling of a plain amount is normalised (review L8)', () => {
+    expect(normalizeAmountText('¥480,000')).toBe('480000');
+    expect(normalizeAmountText('４８０，０００')).toBe('480000');
+    expect(normalizeAmountText(' 1,234.5 ')).toBe('1234.5');
+    expect(normalizeAmountText('480000')).toBe('480000');
+    for (const odd of ['1,2,3', '480000円', '-480000', '48 0000', '']) {
+      expect(isPlainAmount(normalizeAmountText(odd)), odd).toBe(false);
+    }
+    expect(isPlainAmount('480000')).toBe(true);
   });
 
   it('formatDateOrTimestamp: midnight UTC or JST reads as the date; any other instant keeps its JST time', () => {
@@ -265,10 +279,10 @@ describe('F-23: the representative queue across projects', () => {
     ]);
     expect(orders).toEqual([{ id: 'a', code: 'FSO-A', status: 'ON_HOLD' }, { id: 'b', code: 'FSO-B', status: 'SEVEN_PO_VERIFIED' }]);
     const tasks = representativeTasks({ id: 'p1', code: 'P-1', name: '合成案件' }, orders);
-    expect(tasks).toEqual([{ projectId: 'p1', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: REPRESENTATIVE_WORK.ON_HOLD }]);
+    expect(tasks).toEqual([{ projectId: 'p1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: REPRESENTATIVE_WORK.ON_HOLD }]);
   });
   it('the panel: a row per task with 「この案件を開く」, and a plain line when nothing waits', () => {
-    const queue = { tasks: [{ projectId: 'p1', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: '保留の解除（理由の確認）' }], unreadProjects: ['P-9'], skippedProjects: 0 };
+    const queue = { tasks: [{ projectId: 'p1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: '保留の解除（理由の確認）' }], unreadProjects: ['P-9'], skippedProjects: 0 };
     const html = renderToString(<RepresentativeQueuePanel queue={queue} selectAction={noop} currentProjectId={null} />);
     expect(html).toContain('<caption class="visually-hidden">代表者の対応待ち（全案件）</caption>');
     expect(html).toContain('保留の解除（理由の確認）');
@@ -277,6 +291,11 @@ describe('F-23: the representative queue across projects', () => {
     expect(html).toContain('読み込めなかった案件: P-9。');
     const none = renderToString(<RepresentativeQueuePanel queue={{ tasks: [], unreadProjects: [], skippedProjects: 0 }} selectAction={noop} currentProjectId={null} />);
     expect(none).toContain('代表者の対応待ちはありません。');
+    // Review M1: a failed project-list read is said as such, never 「ありません」.
+    const failed = renderToString(<RepresentativeQueuePanel queue={failedRepresentativeQueue('一時的に取得できません')} selectAction={noop} currentProjectId={null} />)
+      .replaceAll('<!-- -->', '');
+    expect(failed).toContain('案件の一覧を読み込めなかったため、代表者の対応待ちを表示できません（一時的に取得できません）。');
+    expect(failed).not.toContain('ありません。');
   });
 });
 

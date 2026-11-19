@@ -13,13 +13,15 @@ export const REPRESENTATIVE_QUEUE_PROJECT_LIMIT = 30;
 /** Order states whose next step is the representative's, and that step in words. */
 export const REPRESENTATIVE_WORK: Readonly<Record<string, string>> = {
   MAKER_PO_READY: 'メーカー発注書の作成と代表承認',
-  MAKER_PO_SENT_MANUALLY: '最終受入確認（受領証跡の確認）',
+  // Review L4: shared step — the representative's part comes after the staff record and the evidence.
+  MAKER_PO_SENT_MANUALLY: '受入の最終確認（担当者の仮記録・受領証跡のあと）',
   ON_HOLD: '保留の解除（理由の確認）',
   CANCELLATION_REVIEW: '取消レビューの処理'
 };
 
 export interface RepresentativeTask {
   projectId: string;
+  orderId: string;
   projectLabel: string;
   orderCode: string;
   status: string;
@@ -32,6 +34,13 @@ export interface RepresentativeQueue {
   unreadProjects: string[];
   /** Projects beyond the limit, not read. */
   skippedProjects: number;
+  /** Review M1: the project list itself could not be read — nothing can be claimed. */
+  listError?: string | null | undefined;
+}
+
+/** Review M1: the queue when the project list read failed. */
+export function failedRepresentativeQueue(error: string): RepresentativeQueue {
+  return { tasks: [], unreadProjects: [], skippedProjects: 0, listError: error };
 }
 
 const STATUS_ACTIONS = new Set([
@@ -64,12 +73,12 @@ export function replayOrderStatuses(events: readonly AuditEventView[]): Array<{ 
 /** The tasks of one project's orders, in the order the orders were created. */
 export function representativeTasks(
   project: Pick<ProjectSummary, 'id' | 'code' | 'name'>,
-  orders: ReadonlyArray<{ code: string; status: string }>
+  orders: ReadonlyArray<{ id: string; code: string; status: string }>
 ): RepresentativeTask[] {
   return orders.flatMap((order) => {
     const work = REPRESENTATIVE_WORK[order.status];
     return work
-      ? [{ projectId: project.id, projectLabel: `${project.code}（${project.name}）`, orderCode: order.code, status: order.status, work }]
+      ? [{ projectId: project.id, orderId: order.id, projectLabel: `${project.code}（${project.name}）`, orderCode: order.code, status: order.status, work }]
       : [];
   });
 }

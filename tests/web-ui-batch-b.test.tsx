@@ -359,15 +359,22 @@ describe('① replay: lastNormalStatus and the receipt assumption', () => {
     expect(groups.hidden).toEqual([]);
   });
 
-  it('viewer: every status withheld, no remembered state, all orders grouped as hidden', async () => {
+  it('viewer (server batch E): the statuses read like staff, the progress groups the same way', async () => {
     serveAs('viewer');
-    const workspace = await loadWorkspace(PROJECT_ID);
-    for (const order of workspace.filmOrders) {
-      expect(order).toMatchObject({ statusHidden: true, lastNormalStatus: null });
+    const viewer = await loadWorkspace(PROJECT_ID);
+    serveAs('staff');
+    const staff = await loadWorkspace(PROJECT_ID);
+    const staffById = new Map(staff.filmOrders.map((order) => [order.id, order]));
+    for (const order of viewer.filmOrders) {
+      expect(order.statusHidden).toBe(false);
+      expect(order.status).toBe(staffById.get(order.id)?.status);
+      expect(order.lastNormalStatus).toBe(staffById.get(order.id)?.lastNormalStatus);
+      // The order's details (lines, PO link) stay withheld from the viewer.
+      expect(order.detailsHidden).toBe(true);
     }
-    const groups = groupOrdersForProgress(workspace.filmOrders);
-    expect(groups).toMatchObject({ active: [], completed: [] });
-    expect(groups.hidden).toHaveLength(6);
+    const groups = groupOrdersForProgress(viewer.filmOrders);
+    expect(groups.hidden).toEqual([]);
+    expect(groups.completed.map((order) => order.id)).toEqual([ORDER_DONE]);
   });
 
   /**
@@ -420,10 +427,15 @@ describe('① replay: lastNormalStatus and the receipt assumption', () => {
       });
     });
 
-    it('viewer: the hold is withheld, so nothing is remembered', async () => {
-      serveAs('viewer', [...HEAD, created(ORDER_GAP, 'FSO-GAP'), ...toReady(ORDER_GAP), hold(ORDER_GAP, 'APPROVED_FOR_MANUAL_SEND')]);
+    it('viewer (server batch E): the hold and the state it left read; the hold reason stays withheld', async () => {
+      const rows = [...HEAD, created(ORDER_GAP, 'FSO-GAP'), ...toReady(ORDER_GAP), hold(ORDER_GAP, 'APPROVED_FOR_MANUAL_SEND')];
+      serveAs('staff', rows);
+      const [staffOrder] = (await loadWorkspace(PROJECT_ID)).filmOrders;
+      serveAs('viewer', rows);
       const [order] = (await loadWorkspace(PROJECT_ID)).filmOrders;
-      expect(order).toMatchObject({ statusHidden: true, lastNormalStatus: null });
+      expect(order).toMatchObject({ statusHidden: false, status: 'ON_HOLD', lastNormalStatus: staffOrder!.lastNormalStatus });
+      expect(order!.hold?.reasonHidden ?? true).toBe(true);
+      expect(order!.hold?.reason ?? null).toBeNull();
     });
 
     it('orders (staff): 次にやること for that hold links no maker PO screen (B-M1); the release is the representative\'s', async () => {
@@ -937,15 +949,16 @@ const ADMIN_ONLY_FORMS = {
 
 describe('rendered screens: stepper, 次にやること and role-gated forms', () => {
   for (const page of PAGE_NAMES) {
-    it(`${page} (viewer): no form at all, the read-only notice, and the progress without marks`, async () => {
+    it(`${page} (viewer): no form at all, the read-only notice, and the progress with its marks (server batch E)`, async () => {
       serveAs('viewer');
       const html = await renderPage(PAGES[page]);
       expect(html.match(/<form\b/g) ?? []).toHaveLength(0);
       expect(html).toContain(VIEWER_PAGE_NOTICE);
       expect(html).toMatch(/閲覧権限のため操作できません/);
       expect(html).toContain('class="stepper"');
-      expect(html).not.toContain('aria-current="step"');
-      expect(html).toContain('この役割では発注の状態は表示されません（閲覧権限なし）');
+      // F-01 (server batch E): the viewer reads where each order stands.
+      expect(html).toContain('aria-current="step"');
+      expect(html).not.toContain('この役割では発注の状態は表示されません（閲覧権限なし）');
       expect(html).toContain('次にやること');
       // No 操作 column left without a form in it.
       expect(html).not.toContain('>操作</th>');
@@ -989,13 +1002,14 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
     });
   }
 
-  it('viewer on maker-po: hidden statuses are never reported as 「no order yet」 (M2)', async () => {
+  it('viewer on maker-po (server batch E): the board follows the readable statuses, never 「no order yet」, no form (M2)', async () => {
     serveAs('viewer');
     const html = await renderPage(MakerPoPage);
-    expect(html).toContain(`${STATUS_HIDDEN_NOTICE}。作成できる発注があるかどうかは表示できません。`);
-    expect(html).toContain(`${STATUS_HIDDEN_NOTICE}。メーカー発注の作業対象になっている発注があるかどうかは、この画面に表示できません。`);
-    expect(html).not.toContain('作成できる発注（');
+    expect(html).not.toContain(STATUS_HIDDEN_NOTICE);
     expect(html).not.toContain('作業対象の発注はまだありません');
+    expect(html.match(/<form\b/g) ?? []).toHaveLength(0);
+    // The order at MAKER_PO_READY is on the board; its creation is the representative's.
+    expect(html).toContain('メーカー発注書の作成は、閲覧権限のため操作できません。');
   });
 
   it('maker-po (admin): a DRAFT order is not on the board, so no 決済条件 form here (L10)', async () => {

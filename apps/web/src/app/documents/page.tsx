@@ -54,10 +54,20 @@ export const metadata: Metadata = { title: '文書' };
 function sevenPoUploadChoices(orders: readonly SevenPurchaseOrderView[]): SevenPoChoice[] {
   return orders.map((po) => {
     const ready = po.officiallyRegistered && po.verificationStatus === 'verified' && !po.reviewPending;
+    // Review L3: name the step that is missing, not always the checklist.
+    const missing = po.reviewPending
+      ? '不一致の確認中です'
+      : po.verificationStatus === 'mismatch'
+        ? '真性確認で相違ありです'
+        : po.verificationStatus !== 'verified'
+          ? po.verificationHidden ? '真性確認の状態は閲覧権限なしです' : '真性行チェックリストがまだです'
+          : !po.officiallyRegistered
+            ? po.officialRegistrationHidden ? '公式登録の状態は閲覧権限なしです' : '公式登録がまだです'
+            : '';
     return {
       value: po.id,
       ready,
-      label: ready ? sevenPurchaseOrderChoiceLabel(po) : `${sevenPurchaseOrderChoiceLabel(po)} 真性確認がまだです`
+      label: ready ? sevenPurchaseOrderChoiceLabel(po) : `${sevenPurchaseOrderChoiceLabel(po)} ${missing}`
     };
   });
 }
