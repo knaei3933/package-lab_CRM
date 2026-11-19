@@ -330,9 +330,27 @@ async function registerNextRevision(chain: Awaited<ReturnType<typeof reachApprov
     orderId: chain.orderId,
     poId: chain.poId
   });
+  const changeEvidence = await uploadDocument({
+    documentType: 'approval_evidence',
+    issuerEntity: 'customer_generated',
+    designKey: 'label-front',
+    orderId: chain.orderId,
+    poId: chain.poId,
+    content: 'composite superseding-change request evidence\n'
+  });
   const revision = await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/artwork-revisions`, {
     designKey: 'label-front',
-    fileDocumentVersionId: proof.version.id
+    fileDocumentVersionId: proof.version.id,
+    lotMarking: `LOT-NEXT-${chain.orderId.slice(0, 8)}`,
+    changeRequest: {
+      requestedOrganization: 'customer',
+      reason: 'superseding artwork test',
+      evidenceDocumentVersionId: changeEvidence.version.id,
+      impactSchedule: 'なし',
+      impactQuantity: 0,
+      impactAmount: 0,
+      actualCost: 0
+    }
   });
   expect(revision.status).toBe(201);
   return {

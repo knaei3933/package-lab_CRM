@@ -470,6 +470,24 @@ export const artworkRevisions = pgTable('artwork_revisions', {
   fileDocumentVersionId: uuid('file_document_version_id').notNull().references(() => documentVersions.id),
   lotMarking: text('lot_marking'),
   note: text('note'),
+  /**
+   * R1-9 / T-28: a superseding revision is a controlled change request, not
+   * just new bytes. These columns are all null together for legacy revisions
+   * and first revisions; the API requires all of them whenever the revision
+   * enters CHANGE_REVIEW. The evidence names the external request; the impact
+   * and actual-cost facts are explicit and zero is never inferred.
+   */
+  changeRequestedOrganization: approvalOrganization('change_requested_organization'),
+  changeReason: text('change_reason'),
+  changeEvidenceDocumentVersionId: uuid('change_evidence_document_version_id')
+    .references(() => documentVersions.id),
+  impactSchedule: text('impact_schedule'),
+  impactQuantity: numeric('impact_quantity', { precision: 14, scale: 3 }),
+  impactAmount: numeric('impact_amount', { precision: 14, scale: 2 }),
+  actualCost: numeric('actual_cost', { precision: 14, scale: 2 }),
+  printedChangeApprovedByUserId: uuid('printed_change_approved_by_user_id')
+    .references(() => users.id),
+  printedChangeApprovedAt: timestamp('printed_change_approved_at', { withTimezone: true }),
   createdByUserId: uuid('created_by_user_id').notNull().references(() => users.id),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
 }, (table) => [
@@ -477,7 +495,24 @@ export const artworkRevisions = pgTable('artwork_revisions', {
   index('artwork_revisions_order_design_idx').on(table.filmSupplyOrderId, table.designKey),
   index('artwork_revisions_file_version_idx').on(table.fileDocumentVersionId),
   check('artwork_revisions_revision_no_positive', sql`${table.revisionNo} > 0`),
-  check('artwork_revisions_design_key_not_blank', sql`length(btrim(${table.designKey})) > 0`)
+  check('artwork_revisions_design_key_not_blank', sql`length(btrim(${table.designKey})) > 0`),
+  check('artwork_revisions_change_request_fields_pair', sql`(
+    ${table.changeRequestedOrganization} is null and ${table.changeReason} is null
+    and ${table.changeEvidenceDocumentVersionId} is null and ${table.impactSchedule} is null
+    and ${table.impactQuantity} is null and ${table.impactAmount} is null
+    and ${table.actualCost} is null
+  ) or (
+    ${table.changeRequestedOrganization} is not null and ${table.changeReason} is not null
+    and ${table.changeEvidenceDocumentVersionId} is not null and ${table.impactSchedule} is not null
+    and ${table.impactQuantity} is not null and ${table.impactAmount} is not null
+    and ${table.actualCost} is not null
+  )`),
+  check('artwork_revisions_change_reason_not_blank', sql`${table.changeReason} is null or length(btrim(${table.changeReason})) > 0`),
+  check('artwork_revisions_lot_change_marking_required', sql`${table.changeRequestedOrganization} is null or length(btrim(${table.lotMarking})) > 0`),
+  check('artwork_revisions_impact_schedule_not_blank', sql`${table.impactSchedule} is null or length(btrim(${table.impactSchedule})) > 0`),
+  check('artwork_revisions_impact_quantity_nonnegative', sql`${table.impactQuantity} is null or ${table.impactQuantity} >= 0`),
+  check('artwork_revisions_actual_cost_nonnegative', sql`${table.actualCost} is null or ${table.actualCost} >= 0`),
+  check('artwork_revisions_printed_change_approval_pair', sql`(${table.printedChangeApprovedAt} is null) = (${table.printedChangeApprovedByUserId} is null)`)
 ]);
 
 /**

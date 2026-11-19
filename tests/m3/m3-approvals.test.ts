@@ -487,10 +487,27 @@ describe('M3 proof revisions and dual approval', () => {
       filmSupplyOrderId: order.orderId,
       designKey: 'label-front'
     });
+    const changeEvidence = await uploadBoundDocument(projectIdA, {
+      documentType: 'approval_evidence',
+      issuerEntity: 'customer_generated',
+      sevenPurchaseOrderId: order.poId,
+      filmSupplyOrderId: order.orderId,
+      designKey: 'label-front',
+      contentBase64: toBase64('composite T-11 change request evidence\nidentifier: MSG-M3-CUSTOMER-CHANGE-0002\n')
+    });
     const second = await postJson<RevisionResult>(`/api/film-supply-orders/${order.orderId}/artwork-revisions`, {
       designKey: 'label-front',
       fileDocumentVersionId: secondProof.version.id,
-      lotMarking: 'LOT-M3-0002'
+      lotMarking: 'LOT-M3-0002',
+      changeRequest: {
+        requestedOrganization: 'customer',
+        reason: 'T-11 superseding artwork',
+        evidenceDocumentVersionId: changeEvidence.version.id,
+        impactSchedule: 'なし',
+        impactQuantity: 0,
+        impactAmount: 0,
+        actualCost: 0
+      }
     });
     expect(second.status).toBe(201);
     expect(second.body.revisionNo).toBe(2);

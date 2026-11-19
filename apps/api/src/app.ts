@@ -3729,6 +3729,127 @@ export function createApp({
       && !isTerminalFilmSupplyOrderState(order.status);
     const statusAfter = entersChangeReview ? 'CHANGE_REVIEW' as const : order.status;
 
+    let changeRequestFields: {
+      changeRequestedOrganization: ApprovalOrganization;
+      changeReason: string;
+      changeEvidenceDocumentVersionId: string;
+      impactSchedule: string;
+      impactQuantity: string;
+      impactAmount: string;
+      actualCost: string;
+      printedChangeApprovedByUserId?: string;
+      printedChangeApprovedAt?: Date;
+    } | null = null;
+    if (entersChangeReview) {
+      const request = body?.changeRequest;
+      const organization = request?.requestedOrganization;
+      if (organization !== 'customer' && organization !== 'seven') {
+        return context.json({
+          error: '変更依頼組織は customer または seven です',
+          code: 'CHANGE_REQUEST_ORGANIZATION_REQUIRED'
+        }, 422);
+      }
+      const reason = typeof request?.reason === 'string' ? request.reason.trim() : '';
+      if (reason.length === 0) {
+        return context.json({
+          error: '変更理由は必須です',
+          code: 'CHANGE_REQUEST_REASON_REQUIRED'
+        }, 422);
+      }
+      const evidenceId = request?.evidenceDocumentVersionId;
+      if (typeof evidenceId !== 'string' || !isUuid(evidenceId)) {
+        return context.json({
+          error: '変更依頼の証憑文書が必要です',
+          code: 'CHANGE_REQUEST_EVIDENCE_REQUIRED'
+        }, 422);
+      }
+      const [changeEvidence] = await db.select({
+        versionId: documentVersions.id,
+        projectId: documents.projectId,
+        documentType: documents.documentType,
+        boundOrderId: documents.filmSupplyOrderId,
+        boundDesignKey: documents.designKey
+      }).from(documentVersions)
+        .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+        .where(eq(documentVersions.id, evidenceId)).limit(1);
+      if (!changeEvidence || changeEvidence.projectId !== order.projectId) {
+        return context.json({
+          error: '変更依頼の証憑文書がこの案件に見つかりません',
+          code: 'CHANGE_REQUEST_EVIDENCE_PROJECT_MISMATCH'
+        }, 422);
+      }
+      if (changeEvidence.documentType !== 'approval_evidence'
+        || changeEvidence.boundOrderId !== orderId
+        || (changeEvidence.boundDesignKey !== null && changeEvidence.boundDesignKey !== designKey)) {
+        return context.json({
+          error: '変更依頼証憑はこの発注・デザインの承認証跡である必要があります',
+          code: 'CHANGE_REQUEST_EVIDENCE_BINDING_INVALID'
+        }, 422);
+      }
+      const schedule = typeof request?.impactSchedule === 'string' ? request.impactSchedule.trim() : '';
+      if (schedule.length === 0) {
+        return context.json({
+          error: '納期への影響は必須です（ない場合は「なし」と明記してください）',
+          code: 'CHANGE_REQUEST_IMPACT_SCHEDULE_REQUIRED'
+        }, 422);
+      }
+      const quantities = ['impactQuantity', 'impactAmount', 'actualCost'] as const;
+      const numericValues: Record<typeof quantities[number], number> = { impactQuantity: 0, impactAmount: 0, actualCost: 0 };
+      for (const key of quantities) {
+        const value = request?.[key];
+        if (typeof value !== 'number' || !Number.isFinite(value)) {
+          return context.json({
+            error: `${key} は数値で必須です（ゼロも明示してください）`,
+            code: 'CHANGE_REQUEST_NUMERIC_FIELD_REQUIRED'
+          }, 422);
+        }
+        if ((key === 'impactQuantity' || key === 'actualCost') && value < 0) {
+          return context.json({
+            error: `${key} は0以上です`,
+            code: 'CHANGE_REQUEST_NUMERIC_FIELD_INVALID'
+          }, 422);
+        }
+        if (Math.abs(value) > 999_999_999_999.99) {
+          return context.json({
+            error: `${key} が数値範囲を超えています`,
+            code: 'CHANGE_REQUEST_NUMERIC_FIELD_TOO_LARGE'
+          }, 422);
+        }
+        numericValues[key] = value;
+      }
+      const lotMarking = typeof body?.lotMarking === 'string' ? body.lotMarking.trim() : '';
+      if (lotMarking.length === 0) {
+        return context.json({
+          error: 'ロット変更では新しいロット表示が必要です',
+          code: 'CHANGE_REQUEST_LOT_MARKING_REQUIRED'
+        }, 422);
+      }
+
+      const printedStartIndex = FILM_SUPPLY_ORDER_STATES.indexOf('FILM_IN_PRODUCTION');
+      const currentIndex = FILM_SUPPLY_ORDER_STATES.indexOf(order.status as typeof FILM_SUPPLY_ORDER_STATES[number]);
+      const printingStarted = currentIndex >= printedStartIndex;
+      if (printingStarted && user.role !== 'admin') {
+        return context.json({
+          error: '印刷開始後の変更は代表者の承認が必要です',
+          code: 'PRINTED_CHANGE_ADMIN_APPROVAL_REQUIRED'
+        }, 403);
+      }
+
+      changeRequestFields = {
+        changeRequestedOrganization: organization,
+        changeReason: reason,
+        changeEvidenceDocumentVersionId: changeEvidence.versionId,
+        impactSchedule: schedule,
+        impactQuantity: numericValues.impactQuantity.toFixed(3),
+        impactAmount: numericValues.impactAmount.toFixed(2),
+        actualCost: numericValues.actualCost.toFixed(2),
+        ...(printingStarted ? {
+          printedChangeApprovedByUserId: user.id,
+          printedChangeApprovedAt: new Date()
+        } : {})
+      };
+    }
+
     const now = new Date();
     const revisionId = uuidv7(now);
     const revision = {
@@ -3739,6 +3860,7 @@ export function createApp({
       fileDocumentVersionId: fileVersion.versionId,
       lotMarking: optionalText(body?.lotMarking),
       note: optionalText(body?.note),
+      ...(changeRequestFields ?? {}),
       createdByUserId: user.id,
       createdAt: now
     };

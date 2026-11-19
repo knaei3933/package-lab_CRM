@@ -146,14 +146,14 @@ describe('drizzle migration ordering and 0021', () => {
     const journal = JSON.parse(
       await readFile(path.resolve(process.cwd(), 'packages/db/drizzle/meta/_journal.json'), 'utf8')
     ) as { entries: Array<{ idx: number; when: number; tag: string }> };
-    expect(journal.entries).toHaveLength(23);
+    expect(journal.entries).toHaveLength(24);
     for (let index = 1; index < journal.entries.length; index += 1) {
       expect(journal.entries[index]!.when, journal.entries[index]!.tag)
         .toBeGreaterThan(journal.entries[index - 1]!.when);
     }
     expect(journal.entries.at(-1)).toMatchObject({
-      idx: 22,
-      tag: '0022_r1_trigger_search_path',
+      idx: 23,
+      tag: '0023_r1_change_review_fields',
       when: expect.any(Number)
     });
     expect(journal.entries.at(-1)!.when).toBeGreaterThan(1795731560000);
@@ -183,8 +183,8 @@ describe('drizzle migration ordering and 0021', () => {
       expect(await enumValues(url)).toContain('CANCELLED');
       expect(await enumValues(url)).toEqual(expect.arrayContaining(['CANCELLATION_REVIEW', 'CANCELLED']));
       const rows = await migrationRows(url);
-      expect(rows).toHaveLength(23);
-      expect(rows.at(-1)).toMatchObject({ created_at: '1795904760000' });
+      expect(rows).toHaveLength(24);
+      expect(rows.at(-1)).toMatchObject({ created_at: '1795991160000' });
     } finally {
       await pool.end();
     }
@@ -202,7 +202,7 @@ describe('drizzle migration ordering and 0021', () => {
       encoding: 'utf8'
     });
     expect(result.stdout).toContain('migrations applied successfully');
-    expect(await migrationRows(url)).toHaveLength(23);
+    expect(await migrationRows(url)).toHaveLength(24);
     const functionClient = new pg.Client({ connectionString: url });
     await functionClient.connect();
     const functionConfig = await functionClient.query(`
@@ -232,8 +232,8 @@ describe('drizzle migration ordering and 0021', () => {
 
       await migrate(drizzle(pool), { migrationsFolder: path.join(tempRoot, 'drizzle') });
       const rows = await migrationRows(url);
-      expect(rows).toHaveLength(23);
-      expect(rows.at(-1)).toMatchObject({ created_at: '1795904760000' });
+      expect(rows).toHaveLength(24);
+      expect(rows.at(-1)).toMatchObject({ created_at: '1795991160000' });
       const values = await enumValues(url);
       expect(values).toContain('CANCELLED');
       expect(values.indexOf('CANCELLED')).toBe(values.length - 1);
@@ -242,7 +242,7 @@ describe('drizzle migration ordering and 0021', () => {
     }
   });
 
-  it('0022 pins trigger search_path without changing the relational schema', async () => {
+  it('0022 pins search_path and 0023 adds controlled change fields', async () => {
     const name = await createScratchDatabase('kanei_crm_mvp_0022_search_path');
     await readFile(path.join(tempRoot, 'scratch-dbs.txt'), 'utf8')
       .catch(() => '')
@@ -282,9 +282,31 @@ describe('drizzle migration ordering and 0021', () => {
 
       await migrate(drizzle(pool), { migrationsFolder: path.join(tempRoot, 'drizzle') });
 
-      expect(await migrationRows(url)).toHaveLength(23);
+      expect(await migrationRows(url)).toHaveLength(24);
       const afterColumns = await tableSchema();
-      expect(afterColumns).toEqual(beforeColumns);
+      const unchangedColumns = (rows: unknown) => (rows as Array<{ table_name:string; column_name:string }>).filter(
+        (column) => column.table_name !== 'artwork_revisions'
+          || !['change_requested_organization','change_reason','change_evidence_document_version_id','impact_schedule','impact_quantity','impact_amount','actual_cost','printed_change_approved_by_user_id','printed_change_approved_at'].includes(column.column_name)
+      );
+      expect(unchangedColumns(afterColumns)).toEqual(unchangedColumns(beforeColumns));
+      expect(afterColumns.filter((column: any) => column.table_name === 'artwork_revisions').map((column: any) => column.column_name))
+        .toEqual(expect.arrayContaining([
+          'change_requested_organization', 'change_reason', 'change_evidence_document_version_id',
+          'impact_schedule', 'impact_quantity', 'impact_amount', 'actual_cost',
+          'printed_change_approved_by_user_id', 'printed_change_approved_at'
+        ]));
+      const constraints = await query(`
+        select conname from pg_constraint
+        where conrelid = 'artwork_revisions'::regclass
+          and conname like 'artwork_revisions_%'
+        order by conname
+      `);
+      expect(constraints.rows.map((row: any) => row.conname)).toEqual(expect.arrayContaining([
+        'artwork_revisions_change_request_fields_pair', 'artwork_revisions_change_reason_not_blank',
+        'artwork_revisions_lot_change_marking_required', 'artwork_revisions_impact_schedule_not_blank',
+        'artwork_revisions_impact_quantity_nonnegative', 'artwork_revisions_actual_cost_nonnegative',
+        'artwork_revisions_printed_change_approval_pair'
+      ]));
       const afterFunction = await query(`
         select pg_get_functiondef(oid) as definition, proconfig
         from pg_proc
@@ -328,7 +350,7 @@ describe('drizzle migration ordering and 0021', () => {
       // and guarded constraint let the same pending migration replay safely.
       await writeFile(failingFile, original);
       await migrate(drizzle(pool), { migrationsFolder: staged });
-      expect(await migrationRows(url)).toHaveLength(23);
+      expect(await migrationRows(url)).toHaveLength(24);
       expect(await enumValues(url)).toContain('CANCELLED');
     } finally {
       await pool.end();

@@ -827,6 +827,14 @@ describe('M8-HARDEN2 FIX 2 recovery: explicit reverse reopen is atomic and gated
       poId: chain.poId,
       content: `race proof ${nextTag()}\n`
     });
+    const changeEvidence = await uploadDocument({
+      documentType: 'approval_evidence',
+      issuerEntity: 'customer_generated',
+      designKey: 'label-front',
+      orderId: chain.orderId,
+      poId: chain.poId,
+      content: `race change request evidence ${nextTag()}\n`
+    });
     const revisionCountBefore = (await db.select().from(artworkRevisions)
       .where(eq(artworkRevisions.filmSupplyOrderId, chain.orderId))).length;
 
@@ -848,7 +856,17 @@ describe('M8-HARDEN2 FIX 2 recovery: explicit reverse reopen is atomic and gated
     try {
       revision = await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/artwork-revisions`, {
         designKey: 'label-front',
-        fileDocumentVersionId: proof.version.id
+        fileDocumentVersionId: proof.version.id,
+        lotMarking: `LOT-RACE-${nextTag()}`,
+        changeRequest: {
+          requestedOrganization: 'customer',
+          reason: 'race replacement artwork',
+          evidenceDocumentVersionId: changeEvidence.version.id,
+          impactSchedule: 'なし',
+          impactQuantity: 0,
+          impactAmount: 0,
+          actualCost: 0
+        }
       });
     } finally {
       (db as unknown as { transaction: unknown }).transaction = originalTransaction;
