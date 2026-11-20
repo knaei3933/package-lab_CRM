@@ -16,7 +16,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   callApi: async () => ({ ok: false, status: 500, data: null, error: 'unused' }),
   readSessionToken: async () => 'token',
   readSelectedProjectId: async () => 'project',
-  loadSessionUser: async () => null
+  loadSessionUser: async () => null,
+  loadSession: async () => ({ kind: 'anonymous' })
 }));
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));

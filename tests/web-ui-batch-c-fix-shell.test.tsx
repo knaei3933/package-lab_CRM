@@ -32,6 +32,20 @@ vi.mock('react', async (importOriginal) => {
   };
 });
 
+// P0 R05: the shell holds a ref-held in-flight lock per form; the test keeps the instance of the last render to release it as a result would.
+const lock = vi.hoisted(() => ({ list: [] as Array<{ observe: (result: unknown, pending: boolean) => void; busy: boolean }> }));
+vi.mock('../apps/web/src/lib/saved-record.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../apps/web/src/lib/saved-record.js')>();
+  return {
+    ...actual,
+    createSubmitInFlight: () => {
+      const created = actual.createSubmitInFlight();
+      lock.list.push(created);
+      return created;
+    }
+  };
+});
+
 const { FeedbackForm, formDataFor } = await import('../apps/web/src/components/form-feedback.js');
 const { ConfirmDialog } = await import('../apps/web/src/components/ConfirmDialog.js');
 
@@ -139,9 +153,13 @@ type DialogProps = { onConfirm: () => void; onCancel: () => void };
 /** One render of the shell: the <form> element and, when a confirm is set, the dialog element. */
 function renderShell(props: Partial<Parameters<typeof FeedbackForm>[0]> = {}) {
   effects.list = [];
+  lock.list = [];
   const action = vi.fn();
   const tree = FeedbackForm({ action, state: null, children: null, ...props } as Parameters<typeof FeedbackForm>[0]) as ReactElement<FormProps>;
-  const dialog = (tree.props.children as ReactNode[])[1] as ReactElement<DialogProps> | null;
+  // P0 R03/R05: the shell now starts with the hidden project / idempotency inputs; the dialog is the child that carries the handlers.
+  const dialog = ((tree.props.children as ReactNode[]).find(
+    (child) => child !== null && typeof child === 'object' && 'props' in child && typeof (child as ReactElement<DialogProps>).props.onConfirm === 'function'
+  ) ?? null) as ReactElement<DialogProps> | null;
   return { action: (props.action as ReturnType<typeof vi.fn> | undefined) ?? action, tree, dialog };
 }
 
@@ -262,6 +280,13 @@ describe('H1 / L3: the confirm dialog dispatches the held submit exactly once', 
     tree.props.onSubmit(submitEvent(form, null));
     dialog!.props.onConfirm();
     expect(action).toHaveBeenCalledTimes(1);
+    // P0 R05: while the first action is still running (no result yet) a second submit is dropped.
+    const dropped = submitEvent(form, null);
+    tree.props.onSubmit(dropped);
+    dialog!.props.onConfirm();
+    expect(action).toHaveBeenCalledTimes(1);
+    // The result arrives (a new state object): the lock is released and the next submit asks again.
+    lock.list.at(-1)!.observe({ ok: true, message: '記録しました。' }, false);
     tree.props.onSubmit(submitEvent(form, null));
     expect(action).toHaveBeenCalledTimes(1); // held again, not sent
     dialog!.props.onConfirm();
@@ -280,6 +305,12 @@ describe('H1 / L3: the confirm dialog dispatches the held submit exactly once', 
 });
 
 describe('H1: the reset after a result (effects run by hand)', () => {
+  const dispatchEvent = vi.fn();
+  beforeEach(() => {
+    dispatchEvent.mockClear();
+    vi.stubGlobal('window', { dispatchEvent });
+  });
+
   function runWith(state: { ok: boolean; message: string } | null) {
     const { tree } = renderShell({ state });
     const form = fakeForm([field('poId', 'p1')]);
@@ -290,6 +321,16 @@ describe('H1: the reset after a result (effects run by hand)', () => {
 
   it('success → form.reset() once', () => {
     expect(runWith({ ok: true, message: '記録しました。' })).toHaveBeenCalledTimes(1);
+  });
+
+  it('success → the screen is told once (P0 R06 saved-record event)', () => {
+    runWith({ ok: true, message: '記録しました。' });
+    expect(dispatchEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('refusal → the screen is not told', () => {
+    runWith({ ok: false, message: '公式登録日が必要です' });
+    expect(dispatchEvent).not.toHaveBeenCalled();
   });
 
   it('refusal → no reset (every entered value stays)', () => {

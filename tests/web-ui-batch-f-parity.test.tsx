@@ -53,6 +53,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   readSessionToken: async () => signedIn.token,
   readSelectedProjectId: async () => signedIn.projectId,
   loadSessionUser: async () => ({ id: signedIn.userId, role: signedIn.role, displayName: '合成' }),
+  loadSession: async () => ({ kind: 'user', user: ({ id: signedIn.userId, role: signedIn.role, displayName: '合成' }) }),
   callApi: async (apiPath: string, options: { method?: string; body?: unknown } = {}) => {
     signedIn.paths.push(apiPath);
     const response = await app.request(apiPath, {
@@ -105,6 +106,7 @@ async function postAs(role: Role, url: string, body: unknown = {}) {
 
 function form(entries: Record<string, string>): FormData {
   const data = new FormData();
+  data.set('_kaneiRenderedProjectId', signedIn.projectId); // P0 R03: the form was drawn for the selected project
   for (const [key, value] of Object.entries(entries)) data.set(key, value);
   return data;
 }
@@ -303,7 +305,7 @@ describe('R1-9 / F2: the controlled change request through the revision form', (
       orderId: chain.orderId, designKey: 'label-front', fileDocumentVersionId: chain.newProofVersionId,
       ...FACTS, changeEvidenceDocumentVersionId: chain.changeEvidenceVersionId
     }));
-    expect(recorded).toEqual({ ok: true, message: '記録しました。' });
+    expect(recorded).toEqual({ ok: true, message: '記録しました。', changedId: expect.any(String) });
     const stored = (await revisionsOf(chain.orderId)).find((row) => row.revisionNo === 2)!;
     expect(stored).toMatchObject({
       changeRequestedOrganization: 'customer',
@@ -508,7 +510,7 @@ describe('server-batch-f4 M-6: the web approval-history judgement equals the API
       orderId: chain.orderId, designKey: 'label-front', fileDocumentVersionId: chain.newProofVersionId,
       ...FACTS, changeEvidenceDocumentVersionId: chain.changeEvidenceVersionId
     }));
-    expect(recorded).toEqual({ ok: true, message: '記録しました。' });
+    expect(recorded).toEqual({ ok: true, message: '記録しました。', changedId: expect.any(String) });
     const stored = (await revisionsOf(chain.orderId)).find((row) => row.revisionNo === 2)!;
     expect(stored).toMatchObject({ changeRequestedOrganization: 'customer', changeReason: '顧客依頼：成分表示の修正', lotMarking: 'LOT-UF-B' });
     const [order] = await db.select({ status: filmSupplyOrders.status }).from(filmSupplyOrders).where(eq(filmSupplyOrders.id, chain.orderId));
@@ -526,6 +528,7 @@ describe('server-batch-f4 M-6: the web approval-history judgement equals the API
     }));
     expect(result).toEqual({
       ok: true,
+      changedId: expect.any(String),
       message: '版を記録しました。このデザインには承認の記録（承認・取消）がないため、変更依頼の項目（依頼組織・理由・証憑・影響・実費）は記録されていません（通常の版として登録されました）。'
     });
     const stored = (await revisionsOf(chain.orderId)).find((row) => row.revisionNo === 2)!;

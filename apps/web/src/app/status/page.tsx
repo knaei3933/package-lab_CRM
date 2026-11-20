@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { cookies } from 'next/headers';
+import { callApi, SESSION_COOKIE } from '../../lib/api';
 
 /**
  * M5 Japanese status surface (design section 8). Server-rendered: the labels
@@ -13,8 +14,6 @@ export const dynamic = 'force-dynamic';
 /** UI batch A: per-screen tab title (layout template adds 「｜KANEI CRM」). */
 export const metadata: Metadata = { title: '状態表示' };
 
-const SESSION_COOKIE = 'kanei_mvp_session';
-const apiBaseUrl = process.env.KANEI_API_BASE_URL ?? 'http://127.0.0.1:3081';
 
 interface StatusLabelEntryView {
   key: string;
@@ -52,22 +51,13 @@ async function loadStatusLabels(): Promise<
   { ok: true; payload: StatusLabelsPayload } | { ok: false; message: string }
 > {
   const cookieStore = await cookies();
-  const token = cookieStore.get(SESSION_COOKIE)?.value;
-  if (!token) {
-    return { ok: false, message: 'APIのセッションCookieがありません。ログイン後に表示されます。' };
+  if (!cookieStore.get(SESSION_COOKIE)?.value) {
+    return { ok: false, message: 'ログインすると表示されます。' };
   }
-  try {
-    const response = await fetch(`${apiBaseUrl}/api/status-labels`, {
-      headers: { cookie: `${SESSION_COOKIE}=${token}` },
-      cache: 'no-store'
-    });
-    if (!response.ok) {
-      return { ok: false, message: `APIがステータス ${response.status} を返しました。ログイン確認が必要です。` };
-    }
-    return { ok: true, payload: (await response.json()) as StatusLabelsPayload };
-  } catch {
-    return { ok: false, message: `API（${apiBaseUrl}）に接続できません。` };
-  }
+  // P0 R04/R09: the shared client — 10 s timeout, operator text, no internal address (H9).
+  const result = await callApi<StatusLabelsPayload>('/api/status-labels');
+  if (!result.ok || !result.data) return { ok: false, message: result.error ?? 'ステータス一覧を取得できませんでした。' };
+  return { ok: true, payload: result.data };
 }
 
 export default async function StatusPage() {
@@ -77,7 +67,7 @@ export default async function StatusPage() {
     <section>
       <h1 style={{ fontSize: 28, marginBottom: 8 }}>ステータス一覧（日本語表記）</h1>
       <p style={{ color: 'var(--ink-sub)' }}>
-        F1案件で使う状態の日本語ラベル一覧です。ラベルはAPI（/api/status-labels）から取得した共通定義をそのまま表示しています。
+        F1案件で使う状態の日本語ラベル一覧です。ラベルはシステムの共通定義をそのまま表示しています。
       </p>
 
       {!labels.ok && (

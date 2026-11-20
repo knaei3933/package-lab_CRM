@@ -6,8 +6,13 @@ import { NavDrawerProvider, NavDrawerToggle } from '../components/NavDrawer';
 import { SideNav } from '../components/NavLinks';
 import { ProjectPicker } from '../components/ProjectPicker';
 import { ScreenGuideLine } from '../components/ScreenGuide';
-import { cookies } from 'next/headers';
-import { loadSessionUser, readSelectedProjectId } from '../lib/api';
+import { cookies, headers } from 'next/headers';
+import { loadSession, readSelectedProjectId } from '../lib/api';
+import { RenderedContextProvider } from '../components/RenderedContext';
+import { SavedRecordRefresher } from '../components/SavedRecordRefresher';
+import { SessionNotice } from '../components/SessionNotice';
+import { normalizeRole } from '../lib/permissions';
+import { REQUEST_PATH_HEADER, sessionGateFor } from '../lib/request-path';
 import { decodeDisplayNameCookie, DISPLAY_NAME_COOKIE, operatorName, roleLabel } from '../lib/session-display';
 import { loadSelectableProjects } from '../lib/project-data';
 import type { ProjectSummary } from '../lib/project-data';
@@ -16,6 +21,7 @@ import { selectProjectAction } from './actions';
 // Astryx trial: the layer order first, then the stylesheets (layer-order.css).
 import './layer-order.css';
 import './globals.css';
+import './p0-notices.css';
 
 // UI batch A: each screen sets its own title (tabs stay distinguishable); the
 // template adds the product name.
@@ -25,7 +31,14 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
-  const user = await loadSessionUser();
+  // P0 R04/R08: the session told apart (user / not logged in / expired / API down).
+  // Without a usable session the screen is replaced by its notice and is never
+  // drawn — no false empty list (H8), no logout-looking outage (H9), and no
+  // screen data is asked from an API that is not answering (B4).
+  const session = await loadSession();
+  const user = session.kind === 'user' ? session.user : null;
+  const path = (await headers()).get(REQUEST_PATH_HEADER) ?? '/';
+  const gate = sessionGateFor(path, session.kind);
   const rememberedName = user
     ? decodeDisplayNameCookie((await cookies()).get(DISPLAY_NAME_COOKIE)?.value, user.id)
     : null;
@@ -82,7 +95,20 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             {user ? <SideNav groups={navGroupsForRole(user.role)} roleNote={navRoleNote(user.role)} /> : null}
             <main id="main" tabIndex={-1} className="app-main">
               {user ? <ScreenGuideLine /> : null}
-              {children}
+              {gate === 'screen' ? (
+                <RenderedContextProvider
+                  value={{ projectId: projectId ?? '', showKorean: user ? normalizeRole(user.role) === 'admin' : false }}
+                >
+                  {children}
+                  <SavedRecordRefresher />
+                </RenderedContextProvider>
+              ) : (
+                <SessionNotice
+                  kind={gate === 'outage-notice' ? 'outage' : gate === 'expired-notice' ? 'expired' : 'login'}
+                  path={path}
+                  code={session.kind === 'unavailable' ? session.code : null}
+                />
+              )}
             </main>
           </div>
         </NavDrawerProvider>

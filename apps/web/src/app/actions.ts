@@ -5,10 +5,16 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { FILM_UNITS, FILLING_UNITS, OFFICIAL_ARTIFACT_DOCUMENT_TYPES } from '@kanei/core';
 import { callApi, PROJECT_COOKIE, readSelectedProjectId } from '../lib/api';
+import { recordIdOf, refusalState } from '../lib/action-result';
+import { refuseIfProjectSwitched } from '../lib/project-guard';
+import { idempotencyKeyOf } from '../lib/project-context';
+import { duplicateRefusal } from '../lib/duplicate-check';
+import type { DuplicateKind } from '../lib/duplicate-check';
 import { offsetDateTimeField } from '../lib/datetime';
 import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL } from '../lib/maker-po-data';
 import type { ActionState } from '../lib/types';
 import { unitLabel } from '../lib/vocabulary';
+import { PAYMENT_TERMS_DISPLAY, PAYMENT_TERMS_REQUIRED_MESSAGE } from '../lib/form-messages';
 
 /**
  * M6 operator UI server actions: thin forms-over-API adapters. Each action
@@ -53,6 +59,10 @@ async function requireProjectId(): Promise<string | ActionState> {
 function isProjectId(value: string | ActionState): value is string {
   return typeof value === 'string';
 }
+
+const PAYMENT_TERMS_VALUES: readonly string[] = ['prepaid', 'on_delivery', 'undetermined'];
+
+const PAYMENT_TERMS_REQUIRED: ActionState = { ok: false, message: PAYMENT_TERMS_REQUIRED_MESSAGE };
 
 function refresh(): void {
   revalidatePath('/', 'layout');
@@ -103,20 +113,51 @@ function deliveryUnitMismatchRefusal(data: unknown, submittedUnit: string): Acti
 }
 
 async function post(
+  formData: FormData,
   path: string,
   body: unknown,
   refusal?: (code: string | null, data: unknown) => ActionState | null,
   success?: (data: unknown) => ActionState | null
 ): Promise<ActionState> {
-  const result = await callApi(path, { method: 'POST', body });
+  const result = await callApi(path, { method: 'POST', body, idempotencyKey: idempotencyKeyOf(formData) });
   if (result.ok) {
-    return success?.(result.data) ?? { ok: true, message: '記録しました。' };
+    // P0 R06 (H1): every successful write re-renders the screen, so the list the
+    // operator is looking at shows the new record — post() never did this before.
+    refresh();
+    const state = success?.(result.data) ?? { ok: true, message: '記録しました。' };
+    return { ...state, changedId: state.changedId ?? recordIdOf(result.data) };
   }
   const specific = refusal?.(apiCode(result.data), result.data);
   if (specific) return specific;
   const localized = localizedRefusal(apiCode(result.data));
   if (localized) return localized;
-  return { ok: false, message: result.error ?? `APIがステータス ${result.status} を返しました。` };
+  return refusalState(result);
+}
+
+/**
+ * P0 R05: a create whose number may collide. A refused create is checked for
+ * a duplicate (lib/duplicate-check) so the operator reads 「この番号はすでに
+ * 登録されています」 with a link to the registered record, not 「サーバーエラー」.
+ */
+async function postCreate(
+  formData: FormData,
+  path: string,
+  body: unknown,
+  duplicate: { projectId: string; kind: DuplicateKind; value: string }
+): Promise<ActionState> {
+  const result = await callApi(path, { method: 'POST', body, idempotencyKey: idempotencyKeyOf(formData) });
+  if (result.ok) {
+    refresh();
+    return { ok: true, message: '記録しました。', changedId: recordIdOf(result.data) };
+  }
+  const code = apiCode(result.data);
+  const dup = await duplicateRefusal({ ...duplicate, status: result.status, code, data: result.data });
+  if (dup) {
+    // The registered record may be one this screen does not show yet.
+    refresh();
+    return dup;
+  }
+  return localizedRefusal(code) ?? refusalState(result);
 }
 
 function parseLines(raw: string, units: readonly string[], label: string):
@@ -168,9 +209,7 @@ export async function selectProjectAction(_prev: ActionState | null, formData: F
     return { ok: false, message: '案件を選択するか、案件IDを入力してください。' };
   }
   const result = await callApi<{ code: string; name: string }>(`/api/projects/${encodeURIComponent(projectId)}`);
-  if (!result.ok || !result.data) {
-    return { ok: false, message: result.error ?? `案件が取得できませんでした（${result.status}）。` };
-  }
+  if (!result.ok || !result.data) return refusalState(result);
   const store = await cookies();
   store.set(PROJECT_COOKIE, projectId, { path: '/', httpOnly: true, sameSite: 'lax' });
   refresh();
@@ -193,6 +232,8 @@ export async function openProjectFromCardAction(formData: FormData): Promise<voi
 // ---------------------------------------------------------------------------
 
 export async function createSevenPurchaseOrderAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const projectId = await requireProjectId();
   if (!isProjectId(projectId)) return projectId;
   const poNumber = field(formData, 'poNumber');
@@ -202,20 +243,28 @@ export async function createSevenPurchaseOrderAction(_prev: ActionState | null, 
   // Date and time inputs are passed through as entered: the API parses them on
   // the same host, so the operator's wall-clock value is what gets recorded.
   if (registeredAt.length > 0) body.officialRegisteredAt = registeredAt;
-  return post(`/api/projects/${encodeURIComponent(projectId)}/seven-purchase-orders`, body);
+  return postCreate(formData, `/api/projects/${encodeURIComponent(projectId)}/seven-purchase-orders`, body, {
+    projectId,
+    kind: 'seven_po',
+    value: poNumber
+  });
 }
 
 export async function registerSevenPurchaseOrderAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const poId = field(formData, 'poId');
   const registeredAt = field(formData, 'officialRegisteredAt');
   if (poId.length === 0) return { ok: false, message: 'セブン発注書が選択されていません。' };
   if (registeredAt.length === 0) return { ok: false, message: '公式登録日を入力してください。' };
-  return post(`/api/seven-purchase-orders/${encodeURIComponent(poId)}/register-official`, {
+  return post(formData, `/api/seven-purchase-orders/${encodeURIComponent(poId)}/register-official`, {
     officialRegisteredAt: registeredAt
   });
 }
 
 export async function verifySevenPurchaseOrderAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const poId = field(formData, 'poId');
   if (poId.length === 0) return { ok: false, message: 'セブン発注書が選択されていません。' };
   const body: Record<string, unknown> = {
@@ -238,7 +287,7 @@ export async function verifySevenPurchaseOrderAction(_prev: ActionState | null, 
     confirmationReplyNote: optionalField(formData, 'confirmationReplyNote'),
     verificationNote: optionalField(formData, 'verificationNote')
   };
-  return post(`/api/seven-purchase-orders/${encodeURIComponent(poId)}/verification-checklist`, body);
+  return post(formData, `/api/seven-purchase-orders/${encodeURIComponent(poId)}/verification-checklist`, body);
 }
 
 // ---------------------------------------------------------------------------
@@ -246,6 +295,8 @@ export async function verifySevenPurchaseOrderAction(_prev: ActionState | null, 
 // ---------------------------------------------------------------------------
 
 export async function createFilmSupplyOrderAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const projectId = await requireProjectId();
   if (!isProjectId(projectId)) return projectId;
   const code = field(formData, 'code');
@@ -258,11 +309,16 @@ export async function createFilmSupplyOrderAction(_prev: ActionState | null, for
   const sevenPurchaseOrderId = optionalField(formData, 'sevenPurchaseOrderId');
   if (!sevenPurchaseOrderId) return { ok: false, message: 'セブン化学発注書を選択してください。' };
   body.sevenPurchaseOrderId = sevenPurchaseOrderId;
-  // M8-OPER2 FIX 1: the G6 transaction terms are chosen at creation. Omitted
-  // means the API's default (undetermined — the term that keeps G6 closed).
+  // P0 R01 (B1): the 支払条件 is chosen at creation, always — no silent default.
+  // 「未定」 (undetermined) is a deliberate choice; it keeps 代表承認 closed.
   const paymentTerms = field(formData, 'paymentTerms');
-  if (paymentTerms.length > 0) body.paymentTerms = paymentTerms;
-  return post(`/api/projects/${encodeURIComponent(projectId)}/film-supply-orders`, body);
+  if (!PAYMENT_TERMS_VALUES.includes(paymentTerms)) return PAYMENT_TERMS_REQUIRED;
+  body.paymentTerms = paymentTerms;
+  return postCreate(formData, `/api/projects/${encodeURIComponent(projectId)}/film-supply-orders`, body, {
+    projectId,
+    kind: 'film_order',
+    value: code
+  });
 }
 
 /**
@@ -272,21 +328,28 @@ export async function createFilmSupplyOrderAction(_prev: ActionState | null, for
  * confirmation is a separate manual step with no writer today.
  */
 export async function updateFilmPaymentTermsAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const orderId = field(formData, 'orderId');
   const paymentTerms = field(formData, 'paymentTerms');
   if (orderId.length === 0) return { ok: false, message: 'フィルム発注が選択されていません。' };
-  if (!['prepaid', 'on_delivery', 'undetermined'].includes(paymentTerms)) {
-    return { ok: false, message: '決済条件（prepaid／on_delivery／undetermined）を選択してください。' };
-  }
+  if (!PAYMENT_TERMS_VALUES.includes(paymentTerms)) return PAYMENT_TERMS_REQUIRED;
+  // P0 R01 (policy P-5): an optional change reason, kept in the change history.
+  const reason = optionalField(formData, 'reason');
   const result = await callApi(`/api/film-supply-orders/${encodeURIComponent(orderId)}/payment-terms`, {
     method: 'PATCH',
-    body: { paymentTerms }
+    body: reason ? { paymentTerms, reason } : { paymentTerms },
+    idempotencyKey: idempotencyKeyOf(formData)
   });
-  refresh();
   if (result.ok) {
-    return { ok: true, message: `決済条件を記録しました（${paymentTerms}）。記録は入金確認ではありません。` };
+    refresh();
+    return {
+      ok: true,
+      message: `支払条件を記録しました（${PAYMENT_TERMS_DISPLAY[paymentTerms] ?? '—'}）。記録は入金確認ではありません。`,
+      changedId: orderId
+    };
   }
-  return { ok: false, message: result.error ?? `APIがステータス ${result.status} を返しました。` };
+  return refusalState(result);
 }
 
 /**
@@ -296,6 +359,8 @@ export async function updateFilmPaymentTermsAction(_prev: ActionState | null, fo
  * refuses any approval that is not actually waiting for this check.
  */
 export async function verifyEvidenceManualAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const approvalEventId = field(formData, 'approvalEventId');
   const result = field(formData, 'result');
   const verifierName = field(formData, 'verifierName');
@@ -310,7 +375,7 @@ export async function verifyEvidenceManualAction(_prev: ActionState | null, form
   if (reasonNote.length === 0) {
     return { ok: false, message: '根拠を入力してください（原本証跡のどこで識別子を確認したか）。' };
   }
-  return post(`/api/artwork-approval-events/${encodeURIComponent(approvalEventId)}/verification`, {
+  return post(formData, `/api/artwork-approval-events/${encodeURIComponent(approvalEventId)}/verification`, {
     result,
     verifierName,
     verifiedAt,
@@ -319,16 +384,24 @@ export async function verifyEvidenceManualAction(_prev: ActionState | null, form
 }
 
 export async function createFillingOrderAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const projectId = await requireProjectId();
   if (!isProjectId(projectId)) return projectId;
   const code = field(formData, 'code');
   if (code.length === 0) return { ok: false, message: '発注コードを入力してください。' };
   const lines = parseLines(field(formData, 'lines'), FILLING_UNITS, '充填発注');
   if (!lines.ok) return { ok: false, message: lines.message };
-  return post(`/api/projects/${encodeURIComponent(projectId)}/filling-orders`, { code, lines: lines.lines });
+  return postCreate(formData, `/api/projects/${encodeURIComponent(projectId)}/filling-orders`, { code, lines: lines.lines }, {
+    projectId,
+    kind: 'filling_order',
+    value: code
+  });
 }
 
 export async function transitionFilmSupplyOrderAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const orderId = field(formData, 'orderId');
   const to = field(formData, 'to');
   if (orderId.length === 0) return { ok: false, message: 'フィルム発注が選択されていません。' };
@@ -339,9 +412,9 @@ export async function transitionFilmSupplyOrderAction(_prev: ActionState | null,
     const holdReason = reasonField(formData, 'holdReason', '保留にする理由');
     // The literal (not the reasonField template) so the form can map it to its field.
     if (!holdReason.ok) return { ok: false, message: '保留にする理由は必須です。' };
-    return post(`/api/film-supply-orders/${encodeURIComponent(orderId)}/transitions`, { to, holdReason: holdReason.text });
+    return post(formData, `/api/film-supply-orders/${encodeURIComponent(orderId)}/transitions`, { to, holdReason: holdReason.text });
   }
-  return post(`/api/film-supply-orders/${encodeURIComponent(orderId)}/transitions`, { to });
+  return post(formData, `/api/film-supply-orders/${encodeURIComponent(orderId)}/transitions`, { to });
 }
 
 /**
@@ -368,12 +441,14 @@ function reasonField(
  * it, and refuses any value that differs from a recorded origin).
  */
 export async function releaseFilmOrderHoldAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const orderId = field(formData, 'orderId');
   if (orderId.length === 0) return { ok: false, message: 'フィルム発注が選択されていません。' };
   const reason = reasonField(formData, 'reason', '保留解除の理由');
   if (!reason.ok) return reason.state;
   const resumeStatus = optionalField(formData, 'resumeStatus');
-  return post(`/api/film-supply-orders/${encodeURIComponent(orderId)}/hold-release`, {
+  return post(formData, `/api/film-supply-orders/${encodeURIComponent(orderId)}/hold-release`, {
     reason: reason.text,
     ...(resumeStatus ? { resumeStatus } : {})
   });
@@ -387,6 +462,8 @@ export async function resolveCancellationReviewAction(
   _prev: ActionState | null,
   formData: FormData
 ): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const orderId = field(formData, 'orderId');
   const outcome = field(formData, 'outcome');
   if (orderId.length === 0) return { ok: false, message: 'フィルム発注が選択されていません。' };
@@ -397,7 +474,7 @@ export async function resolveCancellationReviewAction(
   if (!reason.ok) return reason.state;
   // Legacy review without a recorded origin: the resume target the operator picked (resume only).
   const resumeStatus = outcome === 'resume' ? optionalField(formData, 'resumeStatus') : undefined;
-  return post(`/api/film-supply-orders/${encodeURIComponent(orderId)}/cancellation-review-resolve`, {
+  return post(formData, `/api/film-supply-orders/${encodeURIComponent(orderId)}/cancellation-review-resolve`, {
     outcome,
     reason: reason.text,
     ...(resumeStatus ? { resumeStatus } : {})
@@ -405,6 +482,8 @@ export async function resolveCancellationReviewAction(
 }
 
 export async function assumeFilmReceiptAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const orderId = field(formData, 'orderId');
   const note = field(formData, 'note');
   if (orderId.length === 0) return { ok: false, message: 'フィルム発注が選択されていません。' };
@@ -412,7 +491,7 @@ export async function assumeFilmReceiptAction(_prev: ActionState | null, formDat
   if (!flag(formData, 'acknowledgeNoEvidence')) {
     return { ok: false, message: '「証跡なしで問題なしとみなす」の確認にチェックを入れてください。' };
   }
-  return post(`/api/film-supply-orders/${encodeURIComponent(orderId)}/receipt-assumption`, {
+  return post(formData, `/api/film-supply-orders/${encodeURIComponent(orderId)}/receipt-assumption`, {
     note,
     acknowledgeNoEvidence: true
   });
@@ -426,6 +505,8 @@ export async function assumeFilmReceiptAction(_prev: ActionState | null, formDat
 const PO_REQUIRED_DOCUMENT_TYPES: readonly string[] = OFFICIAL_ARTIFACT_DOCUMENT_TYPES;
 
 export async function uploadDocumentAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const projectId = await requireProjectId();
   if (!isProjectId(projectId)) return projectId;
   const filename = field(formData, 'filename');
@@ -457,10 +538,12 @@ export async function uploadDocumentAction(_prev: ActionState | null, formData: 
   if (designKey) body.designKey = designKey;
   const note = optionalField(formData, 'note');
   if (note) body.note = note;
-  return post(`/api/projects/${encodeURIComponent(projectId)}/documents`, body);
+  return post(formData, `/api/projects/${encodeURIComponent(projectId)}/documents`, body);
 }
 
 export async function verifyDocumentAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const documentId = field(formData, 'documentId');
   const verificationStatus = field(formData, 'verificationStatus');
   if (documentId.length === 0) return { ok: false, message: '書類が選択されていません。' };
@@ -470,7 +553,7 @@ export async function verifyDocumentAction(_prev: ActionState | null, formData: 
   const body: Record<string, unknown> = { verificationStatus };
   const verificationNote = optionalField(formData, 'verificationNote');
   if (verificationNote) body.verificationNote = verificationNote;
-  return post(`/api/documents/${encodeURIComponent(documentId)}/verify`, body);
+  return post(formData, `/api/documents/${encodeURIComponent(documentId)}/verify`, body);
 }
 
 // ---------------------------------------------------------------------------
@@ -478,6 +561,8 @@ export async function verifyDocumentAction(_prev: ActionState | null, formData: 
 // ---------------------------------------------------------------------------
 
 export async function registerArtworkRevisionAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const orderId = field(formData, 'orderId');
   const designKey = field(formData, 'designKey');
   const fileDocumentVersionId = field(formData, 'fileDocumentVersionId');
@@ -497,7 +582,7 @@ export async function registerArtworkRevisionAction(_prev: ActionState | null, f
     if (!lotMarking) return CHANGE_LOT_REFUSAL;
     body.changeRequest = changeRequest.request;
   }
-  return post(
+  return post(formData, 
     `/api/film-supply-orders/${encodeURIComponent(orderId)}/artwork-revisions`,
     body,
     changeRequestRefusal,
@@ -666,6 +751,8 @@ function changeRequestRefusal(code: string | null, data: unknown): ActionState |
 }
 
 export async function recordArtworkApprovalAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const revisionId = field(formData, 'revisionId');
   const organization = field(formData, 'organization');
   const evidenceDocumentVersionId = field(formData, 'evidenceDocumentVersionId');
@@ -700,7 +787,7 @@ export async function recordArtworkApprovalAction(_prev: ActionState | null, for
   if (externalApproverOrg) body.externalApproverOrg = externalApproverOrg;
   const supersedesEventId = optionalField(formData, 'supersedesEventId');
   if (supersedesEventId) body.supersedesEventId = supersedesEventId;
-  return post(`/api/artwork-revisions/${encodeURIComponent(revisionId)}/approvals`, body);
+  return post(formData, `/api/artwork-revisions/${encodeURIComponent(revisionId)}/approvals`, body);
 }
 
 // ---------------------------------------------------------------------------
@@ -708,6 +795,8 @@ export async function recordArtworkApprovalAction(_prev: ActionState | null, for
 // ---------------------------------------------------------------------------
 
 export async function recordDeliveryAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const kind = field(formData, 'kind');
   const orderId = field(formData, 'orderId');
   const lineId = field(formData, 'lineId');
@@ -731,11 +820,13 @@ export async function recordDeliveryAction(_prev: ActionState | null, formData: 
   const path = kind === 'film'
     ? `/api/film-supply-orders/${encodeURIComponent(orderId)}/deliveries`
     : `/api/filling-orders/${encodeURIComponent(orderId)}/deliveries`;
-  return post(path, body, (code, data) =>
+  return post(formData, path, body, (code, data) =>
     code === 'DELIVERY_UNIT_MISMATCH' ? deliveryUnitMismatchRefusal(data, unit) : null);
 }
 
 export async function confirmDeliveryAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const kind = field(formData, 'kind');
   const deliveryId = field(formData, 'deliveryId');
   const evidenceDocumentVersionId = field(formData, 'evidenceDocumentVersionId');
@@ -750,10 +841,12 @@ export async function confirmDeliveryAction(_prev: ActionState | null, formData:
   const path = kind === 'film'
     ? `/api/film-deliveries/${encodeURIComponent(deliveryId)}/confirmation`
     : `/api/filling-deliveries/${encodeURIComponent(deliveryId)}/confirmation`;
-  return post(path, body);
+  return post(formData, path, body);
 }
 
-export async function evaluateCommissionReadinessAction(_prev: ActionState | null, _formData: FormData): Promise<ActionState> {
+export async function evaluateCommissionReadinessAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
   const projectId = await requireProjectId();
   if (!isProjectId(projectId)) return projectId;
   const result = await callApi<{
@@ -762,10 +855,8 @@ export async function evaluateCommissionReadinessAction(_prev: ActionState | nul
     blocking: string[];
     commissionCalculationAllowed: boolean;
   }>(`/api/projects/${encodeURIComponent(projectId)}/commission-readiness`, { method: 'POST', body: {} });
+  if (!result.ok || !result.data) return refusalState(result);
   refresh();
-  if (!result.ok || !result.data) {
-    return { ok: false, message: result.error ?? `手数料準備状態の評価が失敗しました（${result.status}）。` };
-  }
   return {
     ok: true,
     message: result.data.isReady

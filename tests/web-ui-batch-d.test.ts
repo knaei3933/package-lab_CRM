@@ -18,7 +18,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   callApi: (...args: unknown[]) => callApi(...args),
   readSessionToken: async () => 'token',
   readSelectedProjectId: async () => 'project',
-  loadSessionUser: async () => null
+  loadSessionUser: async () => null,
+  loadSession: async () => ({ kind: 'anonymous' })
 }));
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
@@ -51,6 +52,7 @@ const decision = (makerPoEventId: string, result: 'confirmed' | 'rejected'): Ver
 
 function form(entries: Record<string, string>): FormData {
   const data = new FormData();
+  data.set('_kaneiRenderedProjectId', 'project'); // P0 R03: the form was drawn for the selected project
   for (const [key, value] of Object.entries(entries)) data.set(key, value);
   return data;
 }
@@ -222,6 +224,6 @@ describe('hold / cancellation review actions: required reason, dedicated endpoin
 
   it('the API refusal is shown verbatim (e.g. staff 403)', async () => {
     callApi.mockResolvedValue({ ok: false, status: 403, error: '権限がありません', data: null });
-    expect(await releaseFilmOrderHoldAction(null, form({ orderId: 'o', reason: '理由' }))).toEqual({ ok: false, message: '権限がありません' });
+    expect(await releaseFilmOrderHoldAction(null, form({ orderId: 'o', reason: '理由' }))).toEqual({ ok: false, message: '権限がありません', messageKo: null, code: null });
   });
 });

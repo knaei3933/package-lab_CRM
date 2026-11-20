@@ -18,7 +18,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   callApi: (...args: unknown[]) => callApi(...args),
   readSessionToken: async () => 'token',
   readSelectedProjectId: async () => 'project',
-  loadSessionUser: async () => null
+  loadSessionUser: async () => null,
+  loadSession: async () => ({ kind: 'anonymous' })
 }));
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
@@ -68,6 +69,7 @@ const cancelAudit = (entityId: string, flag: unknown): AuditRow => ({
 
 function form(entries: Record<string, string>): FormData {
   const data = new FormData();
+  data.set('_kaneiRenderedProjectId', 'project'); // P0 R03: the form was drawn for the selected project
   for (const [key, value] of Object.entries(entries)) data.set(key, value);
   return data;
 }
@@ -235,7 +237,7 @@ describe('Low-7', () => {
     expect(state).toEqual({ ok: false, message: '保留にする理由は1000字以内で入力してください。' });
     callApi.mockResolvedValueOnce({ ok: false, status: 422, data: { error: 'その他', code: 'OTHER' }, error: 'その他' });
     expect(await transitionFilmSupplyOrderAction(null, form({ orderId: 'o1', to: 'ON_HOLD', holdReason: 'x' })))
-      .toEqual({ ok: false, message: 'その他' });
+      .toEqual({ ok: false, message: 'その他', messageKo: null, code: null });
   });
 
   it('(d) both hold-reason refusals name the folded field, so the form opens and focuses it', () => {

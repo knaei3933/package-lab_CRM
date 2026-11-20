@@ -47,6 +47,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   readSessionToken: async () => signedIn.token,
   readSelectedProjectId: async () => signedIn.projectId,
   loadSessionUser: async () => ({ id: signedIn.userId, role: signedIn.role, displayName: '合成' }),
+  loadSession: async () => ({ kind: 'user', user: ({ id: signedIn.userId, role: signedIn.role, displayName: '合成' }) }),
   callApi: async (apiPath: string, options: { method?: string; body?: unknown } = {}) => {
     const response = await app.request(apiPath, {
       method: options.method ?? 'GET',
@@ -277,7 +278,7 @@ describe('dashboard by role on the real API', () => {
     expect(todo).toContain(`href="/maker-po#maker-order-${chain.readyId}"`);
     expect(todo).toContain(chain.heldCode);
     expect(todo).toContain('保留の理由: 色見本の再確認待ち（合成ND）');
-    expect(todo).toContain('決済条件: 前払い');
+    expect(todo).toContain('支払条件: 前払い');
     // The staff step of order ③ is the staff's, shown as reference with its missing evidence as a note.
     const staffWork = panel(html, '担当者が進めている作業');
     expect(staffWork).toContain(chain.artworkCode);
@@ -317,7 +318,7 @@ describe('dashboard by role on the real API', () => {
     const waiting = panel(html, '代表者の対応待ち（代表者が行う作業）');
     expect(waiting).toContain(chain.readyCode);
     expect(waiting).toContain(chain.heldCode);
-    expect(html).toContain('決済条件: 前払い');
+    expect(html).toContain('支払条件: 前払い');
     // The hold reason is withheld from staff by the API: named as withheld, never shown.
     expect(html).not.toContain('色見本の再確認待ち');
     expect(html).toContain('保留の理由: （閲覧権限なし）');
@@ -329,7 +330,7 @@ describe('dashboard by role on the real API', () => {
     expect(html).not.toMatch(AMOUNT);
     expect(html).not.toMatch(HANGUL);
     expect(panel(html, 'いま自分がやること')).toContain('閲覧者は記録・変更をしません。');
-    expect(panel(html, '進行中の作業（誰が何をするか）')).toContain('決済条件: 前払い');
+    expect(panel(html, '進行中の作業（誰が何をするか）')).toContain('支払条件: 前払い');
     expect(panel(html, '止まっている発注')).toContain('「保留中」で止まっています。');
     // The viewer does not read the linked records: no quiet-order judgement, said plainly.
     expect(panel(html, '更新が止まっている発注（確認用）')).toContain('判定していません');

@@ -373,7 +373,7 @@ export default async function ApprovalsPage() {
             </thead>
             <tbody>
               {workspace.approvalEvents.map((event) => (
-                <tr key={event.id}>
+                <tr key={event.id} data-record-id={event.id}>
                   {event.detailsHidden ? (
                     // UI batch A follow-up (P1-4): the role may not read the
                     // decision details; say so instead of 「—」 or 版0.

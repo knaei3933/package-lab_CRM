@@ -22,7 +22,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   callApi: async () => ({ ok: false, status: 500 }),
   readSessionToken: async () => 'token',
   readSelectedProjectId: async () => null,
-  loadSessionUser: async () => null
+  loadSessionUser: async () => null,
+  loadSession: async () => ({ kind: 'anonymous' })
 }));
 
 const { validationMessage, formErrorSummary, plainLabel, createSubmitGate } = await import(
@@ -72,7 +73,14 @@ const render = (node: ReactNode): string => renderToString(node).replaceAll('<!-
 /** Every `message: '…'` / `message: \`…\`` literal of a server action file. */
 function actionMessages(relative: string): string[] {
   const source = read(relative);
-  return [...source.matchAll(/message:\s*(['`])((?:(?!\1)[^\\]|\\.)*)\1/g)].map((match) => match[2] ?? '');
+  const literals = [...source.matchAll(/message:\s*(['`])((?:(?!\1)[^\\]|\\.)*)\1/g)].map((match) => match[2] ?? '');
+  // P0 R01/R10: some refusals are shared constants of lib/form-messages (`message: NAME_MESSAGE`).
+  const constants = read('lib/form-messages.ts');
+  const named = [...source.matchAll(/message:\s*([A-Z][A-Z0-9_]*_MESSAGE)\b/g)].map((match) => {
+    const definition = new RegExp(`export const ${match[1]} =\\s*(['\`])((?:(?!\\1)[^\\\\]|\\\\.)*)\\1`).exec(constants);
+    return definition?.[2] ?? `(unresolved ${match[1]})`;
+  });
+  return [...literals, ...named];
 }
 
 /** The id attribute values the markup references with aria-describedby="…". */
@@ -272,13 +280,14 @@ describe('displayActionMessage (1-①)', () => {
   });
 
   it('shows payment terms in Japanese', () => {
+    // P0 R01 / P-10: the old 決済条件 wording is read back with the glossary word 支払条件.
     expect(displayActionMessage('決済条件を記録しました（prepaid）。記録は入金確認ではありません。')).toBe(
-      '決済条件を記録しました（前払い）。記録は入金確認ではありません。'
+      '支払条件を記録しました（前払い）。記録は入金確認ではありません。'
     );
-    expect(displayActionMessage('決済条件を記録しました（on_delivery）。記録は入金確認ではありません。')).toContain('（搬入時払い）');
-    expect(displayActionMessage('決済条件を記録しました（undetermined）。記録は入金確認ではありません。')).toContain('（未確定）');
+    expect(displayActionMessage('決済条件を記録しました（on_delivery）。記録は入金確認ではありません。')).toContain('（納品後払い）');
+    expect(displayActionMessage('決済条件を記録しました（undetermined）。記録は入金確認ではありません。')).toContain('（未定）');
     expect(displayActionMessage('決済条件（prepaid／on_delivery／undetermined）を選択してください。')).toBe(
-      '決済条件（前払い／搬入時払い／未確定）を選択してください。'
+      '決済条件（前払い／納品後払い／未定）を選択してください。'
     );
     // An unknown code is left as it is.
     expect(displayActionMessage('決済条件を記録しました（barter）。')).toBe('決済条件を記録しました（barter）。');

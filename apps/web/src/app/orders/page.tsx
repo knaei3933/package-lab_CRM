@@ -78,6 +78,21 @@ const QUOTE_MATCH_CHOICES = [
 ];
 
 /** M8-OPER2 FIX 1: the G6 terms an operator can record while the order is a draft. */
+/**
+ * P0 R01 (B1, policy P-5): the order states in which the 支払条件 may still be
+ * changed — up to the 代表承認 (mirror of p0-server PAYMENT_TERMS_EDITABLE_ORDER_STATES;
+ * the API decides, and refuses once a maker PO carries the 代表承認).
+ */
+const PAYMENT_TERMS_EDITABLE_STATES: ReadonlySet<string> = new Set([
+  'DRAFT',
+  'SEVEN_PO_VERIFIED',
+  'ARTWORK_RECEIVED',
+  'PROOF_READY',
+  'APPROVAL_PENDING',
+  'DUAL_APPROVED',
+  'MAKER_PO_READY'
+]);
+
 const PAYMENT_TERMS_CHOICES = [
   { value: 'prepaid', label: PAYMENT_TERMS_LABELS.prepaid! },
   { value: 'on_delivery', label: PAYMENT_TERMS_LABELS.on_delivery! },
@@ -206,7 +221,7 @@ export default async function OrdersPage() {
                 <th scope="col" style={thStyle}>発注コード</th>
                 <th scope="col" style={thStyle}>状態</th>
                 <th scope="col" style={thStyle}>セブン発注書</th>
-                <th scope="col" style={thStyle}>決済条件</th>
+                <th scope="col" style={thStyle}>支払条件</th>
                 <th scope="col" style={thStyle}>明細</th>
                 <th scope="col" style={thStyle}>作成</th>
                 <th scope="col" style={thStyle}>更新</th>
@@ -218,7 +233,7 @@ export default async function OrdersPage() {
                 const status = knownStatus(order);
                 return (
                   // UI nav-dashboard: the dashboard links to this row (#order-<id>).
-                  <tr key={order.id} id={`order-${order.id}`} className="anchor-target">
+                  <tr key={order.id} id={`order-${order.id}`} data-record-id={order.id} className="anchor-target">
                     <td style={tdStyle}>
                       {order.code}
                       <TechDetails context="ID">{order.id}</TechDetails>
@@ -261,8 +276,8 @@ export default async function OrdersPage() {
                             workspace={workspace}
                           />
                         )}
-                        {status === 'DRAFT' ? (
-                          <RoleGate role={role} operation="film_order:update_payment_terms" label="決済条件の記録">
+                        {PAYMENT_TERMS_EDITABLE_STATES.has(status ?? '') ? (
+                          <RoleGate role={role} operation="film_order:update_payment_terms" label="支払条件の記録">
                             <PaymentTermsCell order={order} gate={paymentGateByOrderId.get(order.id) ?? null} />
                           </RoleGate>
                         ) : null}
@@ -337,7 +352,7 @@ export default async function OrdersPage() {
             </thead>
             <tbody>
               {workspace.fillingOrders.map((order) => (
-                <tr key={order.id}>
+                <tr key={order.id} id={`filling-order-${order.id}`} data-record-id={order.id} className="anchor-target">
                   <td style={tdStyle}>
                     {order.code}
                     <TechDetails context="ID">{order.id}</TechDetails>
@@ -672,27 +687,43 @@ function PaymentTermsCell({
   order: FilmSupplyOrderView;
   gate: Awaited<ReturnType<typeof loadPaymentGate>>;
 }) {
-  const currentTerms = gate
-    ? PAYMENT_TERMS_LABELS[gate.paymentTerms] ?? gate.paymentTerms
-    : '（決済条件の状態を取得できませんでした）';
+  const current = gate?.paymentTerms ?? order.paymentTerms ?? null;
+  const currentTerms = current
+    ? PAYMENT_TERMS_LABELS[current] ?? '（不明）'
+    : '（支払条件の状態を取得できませんでした）';
+  const undecided = current === 'undetermined';
   return (
-    <details style={{ marginTop: 8 }}>
+    // P0 R01 (B1): open while 「未定」 — the one thing that will stop the 代表承認 later.
+    <details style={{ marginTop: 8 }} open={undecided || undefined}>
       <summary style={{ fontSize: 13, cursor: 'pointer' }}>
-        決済条件（G6）: {currentTerms} ／ 入金確認: {gate?.paymentConfirmedAt ? '確認済み' : '未確認'}
+        支払条件: {currentTerms} ／ 入金確認: {gate?.paymentConfirmedAt ? '確認済み' : '未確認'}
       </summary>
+      {undecided ? (
+        <p className="field-warning">
+          <span aria-hidden="true">⚠</span> 支払条件が「未定」です。このままでは代表承認できません。決まったらここで変更してください。
+        </p>
+      ) : null}
       <ActionForm
         action={updateFilmPaymentTermsAction}
-        submitLabel="決済条件を記録する"
-        hint="決済条件は発注が下書きの間だけ記録できます。ここでの記録は入金確認（検証）ではありません。入金の確認は別の手動ステップです。"
+        submitLabel="支払条件を変更する"
+        hint="代表承認の前なら、担当者・代表者のどちらも変更できます（変更は履歴に残ります）。記録は入金確認ではありません。"
         confirm={{
-          title: '決済条件を記録しますか？',
-          body: '選んだ決済条件（G6）をこのフィルム発注に記録します。記録は入金確認ではありません。発注が下書きの間は記録し直せますが、下書きでなくなると変更できません。',
+          title: `発注 ${order.code} の支払条件を変更しますか？`,
+          body: '選んだ支払条件をこのフィルム発注に記録します。代表承認の前なら記録し直せます。記録は入金確認ではありません。',
           tone: 'primary',
-          summaryFields: ['paymentTerms']
+          summaryFields: ['paymentTerms', 'reason']
         }}
       >
         <input type="hidden" readOnly name="orderId" value={order.id} />
-        <SelectField name="paymentTerms" label="決済条件" required width={280} choices={PAYMENT_TERMS_CHOICES} />
+        <SelectField
+          name="paymentTerms"
+          label="支払条件"
+          required
+          width={280}
+          choices={PAYMENT_TERMS_CHOICES}
+          {...(current && current in PAYMENT_TERMS_LABELS ? { defaultValue: current } : {})}
+        />
+        <TextField name="reason" label="変更の理由（任意）" width={280} />
       </ActionForm>
     </details>
   );
@@ -737,7 +768,7 @@ function SevenPurchaseOrderSection({
           </thead>
           <tbody>
             {orders.map((po) => (
-              <tr key={po.id}>
+              <tr key={po.id} id={`seven-po-${po.id}`} data-record-id={po.id} className="anchor-target">
                 <td style={tdStyle}>
                   {po.poNumber}
                   <TechDetails context="ID">{po.id}</TechDetails>

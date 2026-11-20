@@ -407,7 +407,7 @@ describe('dashboard redaction: amounts only for the representative, 決済条件
     const hidden = buildDashboard(input('viewer', [order('approval', 'APPROVAL_PENDING', { paymentTerms: null, paymentTermsHidden: true })]));
     expect(hidden.others[0]!.paymentTerms).toBe(HIDDEN_BY_ROLE_LABEL);
     const html = markup(<DashboardItemList items={buildDashboard(input('staff', MIXED)).todo} label="x" empty="" />);
-    expect(html).toContain('決済条件: 前払い');
+    expect(html).toContain('支払条件: 前払い');
   });
 });
 

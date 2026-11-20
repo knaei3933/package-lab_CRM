@@ -7,6 +7,7 @@ import { VStack } from '@astryxdesign/core/VStack';
 import { AstryxIsland } from '../components/AstryxIsland';
 import { LoginForm } from '../components/LoginForm';
 import { loadSessionUser } from '../lib/api';
+import { DEFAULT_AFTER_LOGIN, RETURN_PARAM, safeReturnPath } from '../lib/return-path';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,9 +19,11 @@ export const metadata: Metadata = { title: 'ログイン' };
  * order screen; everyone else sees the username/password form that posts to
  * POST /api/auth/login (relayed to the API, which issues the session cookie).
  */
-export default async function LoginPage() {
+export default async function LoginPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
+  // P0 R08: 「ログインする」 from an expired screen carries that screen (?next=), same-site paths only.
+  const returnTo = safeReturnPath((await searchParams)[RETURN_PARAM]);
   const user = await loadSessionUser();
-  if (user) redirect('/dashboard');
+  if (user) redirect(returnTo ?? DEFAULT_AFTER_LOGIN);
 
   // Astryx trial: the login screen is an Astryx island (DESIGN_RULES §1).
   // The form sits in a full-width Card, like every other panel (DESIGN_RULES §5).
@@ -35,7 +38,7 @@ export default async function LoginPage() {
           </Text>
         </VStack>
         <Card>
-          <LoginForm />
+          <LoginForm returnTo={returnTo} />
         </Card>
         <Text as="p" type="supporting">
           {'ユーザー名やパスワードが分からないときは、代表者に確認してください。'

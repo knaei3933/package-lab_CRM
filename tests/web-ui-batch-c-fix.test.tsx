@@ -35,7 +35,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   callApi: (...args: unknown[]) => callApi(...args),
   readSessionToken: async () => 'token',
   readSelectedProjectId: async () => PROJECT_ID,
-  loadSessionUser: async () => ({ id: USER_ID, role: 'admin', displayName: '合成' })
+  loadSessionUser: async () => ({ id: USER_ID, role: 'admin', displayName: '合成' }),
+  loadSession: async () => ({ kind: 'user', user: ({ id: USER_ID, role: 'admin', displayName: '合成' }) })
 }));
 
 const { createSubmitGate, shouldResetAfterResult } = await import('../apps/web/src/lib/form-validation.js');
@@ -443,11 +444,11 @@ beforeEach(() => {
   callApi.mockReset();
 });
 
-describe('M3: /orders — 公式登録, 真性行チェックリスト, 決済条件 ask first (primary tone, disabled before hydration)', () => {
+describe('M3: /orders — 公式登録, 真性行チェックリスト, 支払条件 ask first (primary tone, disabled before hydration)', () => {
   it.each([
     ['公式登録する', '公式登録日を記録しますか？', ['公式登録日']],
     ['チェックリストを記録する', '真性行チェックリストを記録しますか？', ['相違あり・確認中', '履歴に残ります']],
-    ['決済条件を記録する', '決済条件を記録しますか？', ['入金確認ではありません', '下書きでなくなると変更できません']]
+    ['支払条件を変更する', '発注 FSO-DRAFT の支払条件を変更しますか？', ['入金確認ではありません', '代表承認の前なら記録し直せます']]
   ] as const)('%s → dialog 「%s」', async (button, title, bodyParts) => {
     serve([...SEVEN_PO_ROWS, ...filmOrder(ORDER_DRAFT, 'FSO-DRAFT', [])]);
     const html = await renderPage(OrdersPage);
@@ -462,9 +463,9 @@ describe('M3: /orders — 公式登録, 真性行チェックリスト, 決済�
   it('the summary fields name real controls of each form (the dialog rows are read from them)', () => {
     const page = source('apps/web/src/app/orders/page.tsx');
     expect(page).toContain("summaryFields: ['officialRegisteredAt']");
-    expect(page).toContain("summaryFields: ['paymentTerms']");
+    expect(page).toContain("summaryFields: ['paymentTerms', 'reason']");
     expect(page).toMatch(/summaryFields: \[\s*'quoteMatchesPo',\s*'quoteCompared',\s*'uncertain',\s*'confirmationReplyRecorded',\s*'documentNumber',\s*'issueDate'\s*\]/);
-    for (const name of ['officialRegisteredAt', 'paymentTerms', 'quoteMatchesPo', 'quoteCompared', 'uncertain', 'confirmationReplyRecorded', 'documentNumber', 'issueDate']) {
+    for (const name of ['officialRegisteredAt', 'paymentTerms', 'reason', 'quoteMatchesPo', 'quoteCompared', 'uncertain', 'confirmationReplyRecorded', 'documentNumber', 'issueDate']) {
       expect(page).toContain(`name="${name}"`);
     }
   });

@@ -24,10 +24,12 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   SESSION_COOKIE: 'kanei_mvp_session',
   PROJECT_COOKIE: 'kanei_web_project',
   apiBaseUrl: 'http://127.0.0.1:1',
+  apiTimeoutMs: () => 10_000, // P0 R04: the logout relay reads the timeout from lib/api
   callApi: (...args: unknown[]) => callApi(...args),
   readSessionToken: async () => 'token',
   readSelectedProjectId: async () => PROJECT_ID,
-  loadSessionUser: async () => ({ id: USER_ID, role: sessionRole.current, displayName: '合成' })
+  loadSessionUser: async () => ({ id: USER_ID, role: sessionRole.current, displayName: '合成' }),
+  loadSession: async () => ({ kind: 'user', user: ({ id: USER_ID, role: sessionRole.current, displayName: '合成' }) })
 }));
 
 const { loadWorkspace, officialRegistrationText, revisionNumberText, sevenPurchaseOrderChoiceLabel } = await import(

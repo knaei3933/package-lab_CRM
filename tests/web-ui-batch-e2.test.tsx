@@ -21,7 +21,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   callApi: (...args: unknown[]) => callApi(...args),
   readSessionToken: async () => 'token',
   readSelectedProjectId: async () => 'project',
-  loadSessionUser: async () => null
+  loadSessionUser: async () => null,
+  loadSession: async () => ({ kind: 'anonymous' })
 }));
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
@@ -34,6 +35,7 @@ const { DeliveryRecordForm } = await import('../apps/web/src/components/Delivery
 
 function form(entries: Record<string, string>): FormData {
   const data = new FormData();
+  data.set('_kaneiRenderedProjectId', 'project'); // P0 R03: the form was drawn for the selected project
   for (const [key, value] of Object.entries(entries)) data.set(key, value);
   return data;
 }
@@ -108,7 +110,7 @@ describe('E2: DELIVERY_UNIT_MISMATCH reaches the screen in Japanese', () => {
       .toBe('納品単位が明細の単位と異なります。単位を明細と同じ単位に直して、もう一度記録してください。');
     callApi.mockResolvedValueOnce({ ok: false, status: 422, data: { error: '単位が不正です', code: 'UNIT_DOMAIN_MISMATCH' }, error: '単位が不正です' });
     expect(await recordDeliveryAction(null, form({ kind: 'film', orderId: 'o1', lineId: 'l1', unit: 'pods', deliveredQuantity: '1' })))
-      .toEqual({ ok: false, message: '単位が不正です' });
+      .toEqual({ ok: false, message: '単位が不正です', messageKo: null, code: null });
   });
 
   it('the refusal marks and focuses the 単位 field of the delivery form', () => {

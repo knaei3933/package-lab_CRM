@@ -146,7 +146,7 @@ export function normalizeQuantityText(text: string): string {
 }
 
 /** Where a picked file stands: being read, read into the hidden field, or unreadable. */
-export type FileReadState = 'idle' | 'reading' | 'read' | 'failed';
+export type FileReadState = 'idle' | 'reading' | 'read' | 'failed' | 'too-large';
 
 export const FILE_READING_MESSAGE = 'ファイルを読み込み中です…';
 export const FILE_READ_FAILED_MESSAGE = 'ファイルを読み取れませんでした。別のファイルを試してください。';
@@ -155,7 +155,28 @@ export const FILE_READ_FAILED_MESSAGE = 'ファイルを読み取れませんで
 export function fileReadIssue(state: FileReadState): string | null {
   if (state === 'reading') return FILE_READING_MESSAGE;
   if (state === 'failed') return FILE_READ_FAILED_MESSAGE;
+  if (state === 'too-large') return FILE_TOO_LARGE_MESSAGE;
   return null;
+}
+
+/**
+ * P0 R07 (H15): the upload limit the API enforces (DEFAULT_DOCUMENT_MAX_BYTES,
+ * 5 MiB of file bytes). The file is checked before it is read, so a too-large
+ * file is explained at once instead of failing after a long post. The server
+ * action body limit (next.config serverActionsBodySizeLimit) is set above the
+ * Base64 size of a 5 MiB file, so every file the API accepts reaches it.
+ */
+export const UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
+
+export const FILE_TOO_LARGE_MESSAGE = 'ファイルが大きすぎます。5MBまでのファイルを選んでください。';
+
+/** 「（7.2MB）」-style size for the message. */
+export function megabytesText(bytes: number): string {
+  return `${(Math.ceil((bytes / (1024 * 1024)) * 10) / 10).toFixed(1)}MB`;
+}
+
+export function isUploadTooLarge(bytes: number): boolean {
+  return bytes > UPLOAD_MAX_BYTES;
 }
 
 /** 'ignore': a submit while the previous one is still running (the button is aria-disabled, not disabled). */

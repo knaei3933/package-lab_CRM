@@ -12,7 +12,7 @@ import { ProjectUnavailable } from '../../components/ProjectUnavailable';
 import { RepresentativeQueuePanel } from '../../components/RepresentativeQueue';
 import { DashboardFlow, DashboardItemList, DashboardActivity } from '../../components/DashboardParts';
 import { openProjectFromCardAction, selectProjectAction } from '../actions';
-import { loadSessionUser } from '../../lib/api';
+import { loadSession } from '../../lib/api';
 import { buildDashboard, OTHERS_TITLE, STALE_AFTER_DAYS, STALE_BASIS, STALLED_TITLE, TODO_SCOPE, TODO_TITLE } from '../../lib/dashboard';
 import { loadDashboardData } from '../../lib/dashboard-data';
 import { normalizeRole } from '../../lib/permissions';
@@ -39,8 +39,12 @@ async function representativeQueueFor(openProjectId: string | null) {
  * the screen (and order) where it is done; every record is still made there.
  */
 export default async function DashboardPage() {
-  const user = await loadSessionUser();
-  if (!user) redirect('/');
+  // P0 R04/R08: only a visitor who never logged in goes to the login screen; an
+  // expired session or an API outage is the layout's notice (never a silent logout, H9).
+  const session = await loadSession();
+  if (session.kind === 'anonymous') redirect('/');
+  if (session.kind !== 'user') return null;
+  const user = session.user;
   const role = normalizeRole(user.role);
   const selection = await projectSelectionFor('/dashboard');
 
@@ -111,7 +115,7 @@ export default async function DashboardPage() {
           <Card>
             <VStack gap={3}>
               <Heading level={2}>止まっている発注</Heading>
-              <Text as="p" type="supporting">保留・変更レビュー・取消レビュー中のもの、明細やセブン化学発注書の紐付けがないもの、決済条件（G6）や送信確認で進めないもの。</Text>
+              <Text as="p" type="supporting">保留・変更レビュー・取消レビュー中のもの、明細やセブン化学発注書の紐付けがないもの、支払条件が「未定」のものや送信確認で進めないもの。</Text>
               <DashboardItemList
                 items={view.blocked}
                 label="止まっている発注"

@@ -90,8 +90,8 @@ describe('E3: the redaction mirror carries the 決済条件, not the amounts', (
 describe('E3: paymentTermsText — the cell of the 決済条件 column', () => {
   it('Japanese label, the withheld label, or 未記録 — never the stored code', () => {
     expect(paymentTermsText({ paymentTerms: 'prepaid', paymentTermsHidden: false })).toBe('前払い');
-    expect(paymentTermsText({ paymentTerms: 'on_delivery', paymentTermsHidden: false })).toBe('搬入時払い');
-    expect(paymentTermsText({ paymentTerms: 'undetermined', paymentTermsHidden: false })).toBe('未確定');
+    expect(paymentTermsText({ paymentTerms: 'on_delivery', paymentTermsHidden: false })).toBe('納品後払い');
+    expect(paymentTermsText({ paymentTerms: 'undetermined', paymentTermsHidden: false })).toBe('未定');
     expect(paymentTermsText({ paymentTerms: null, paymentTermsHidden: true })).toBe(HIDDEN_BY_ROLE_LABEL);
     expect(paymentTermsText({ paymentTerms: null, paymentTermsHidden: false })).toBe('（未記録）');
     expect(paymentTermsText({})).toBe('（未記録）');

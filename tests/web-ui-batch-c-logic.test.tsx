@@ -23,7 +23,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   callApi: async () => ({ ok: false, status: 500 }),
   readSessionToken: async () => 'token',
   readSelectedProjectId: async () => null,
-  loadSessionUser: async () => null
+  loadSessionUser: async () => null,
+  loadSession: async () => ({ kind: 'anonymous' })
 }));
 
 const {
@@ -540,7 +541,8 @@ describe('live regions and notices', () => {
     const text = source('apps/web/src/components/MakerPoSendEvidenceForm.tsx');
     // Auto-fill and header notices are notes; a wrong or unreadable file is an error.
     expect(text).toMatch(/setMessage\(\{ text: notices\.join\(' '\), tone: 'note' \}\)/);
-    expect(text.match(/tone: 'error'/g) ?? []).toHaveLength(2);
+    // P0 R07 adds one: the file larger than 5MB is an error notice too.
+    expect(text.match(/tone: 'error'/g) ?? []).toHaveLength(3);
     expect(source('apps/web/src/app/forms.css')).toMatch(/\.form-result--note \{\s*color: var\(--ink-sub\);/);
   });
 });

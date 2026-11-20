@@ -9,7 +9,7 @@ import type { Choice } from '../lib/types';
 import { defaultSevenPoId, isMakerPoBoundDocumentType, requiresSevenPo } from '../lib/document-maker-po';
 import type { MakerPoChoice, SevenPoChoice } from '../lib/document-maker-po';
 import { FILE_FIELD } from '../lib/form-messages';
-import { FILE_READ_FAILED_MESSAGE, FILE_READING_MESSAGE, fileReadIssue } from '../lib/form-validation';
+import { FILE_READ_FAILED_MESSAGE, FILE_READING_MESSAGE, FILE_TOO_LARGE_MESSAGE, fileReadIssue, isUploadTooLarge, megabytesText } from '../lib/form-validation';
 import type { FileReadState } from '../lib/form-validation';
 import { buttonStyle, inputStyle, noteStyle, subtleButtonStyle } from '../lib/ui';
 
@@ -93,6 +93,7 @@ export function DocumentUploadForm({
   const showMakerPo = isMakerPoBoundDocumentType(documentType);
   const makerPoOptions = makerPurchaseOrderChoices.filter((choice) => choice.filmSupplyOrderId === filmSupplyOrderId);
   const [readState, setReadState] = useState<FileReadState>('idle');
+  const [fileSize, setFileSize] = useState<number | null>(null);
   /** Only the latest picked file may fill the hidden field (a slower earlier read is dropped). */
   const readToken = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -120,6 +121,13 @@ export function DocumentUploadForm({
       return;
     }
     setFilename(file.name);
+    // P0 R07 (H15): over the API's 5MB the file is never read or sent.
+    if (isUploadTooLarge(file.size)) {
+      setFileSize(file.size);
+      markRead('too-large');
+      return;
+    }
+    setFileSize(null);
     markRead('reading');
     const suffix = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : '';
     const guessed = EXTENSION_CONTENT_TYPES[suffix];
@@ -158,7 +166,13 @@ export function DocumentUploadForm({
   }
 
   /** The file field's message: the shell's (submit / server) first, else a failed read. */
-  const fileErrorFor = (shellError: string | undefined) => shellError ?? (readState === 'failed' ? FILE_READ_FAILED_MESSAGE : undefined);
+  const fileErrorFor = (shellError: string | undefined) =>
+    shellError
+    ?? (readState === 'failed'
+      ? FILE_READ_FAILED_MESSAGE
+      : readState === 'too-large'
+        ? `${FILE_TOO_LARGE_MESSAGE}（選んだファイル: ${megabytesText(fileSize ?? 0)}）`
+        : undefined);
   const fileDescribedBy = (errorId: string, error: string | undefined) =>
     [error ? errorId : null, readState === 'reading' ? readNoteId : null].filter((id): id is string => id !== null).join(' ') || undefined;
 
@@ -219,7 +233,11 @@ export function DocumentUploadForm({
             return (
               <div className="field" style={fieldLabel()}>
                 <label style={labelOnly}>
-                  <span style={{ fontSize: 13 }}>ファイル<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
+                  <span style={{ fontSize: 13 }}>
+                    ファイル<span style={{ color: 'var(--danger)' }}>（必須）</span>
+                    {/* P0 R07: the limit is said before the file is chosen. */}
+                    <span style={{ color: 'var(--ink-sub)' }}>　5MBまで</span>
+                  </span>
                   {/* UI batch C: required so the empty case is explained instead of a disabled button. */}
                   <input
                     ref={fileInput}

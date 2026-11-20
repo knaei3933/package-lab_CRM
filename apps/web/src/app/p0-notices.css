@@ -1,0 +1,246 @@
+/*
+ * P0 notices: session / outage notice body, form-result extras, select
+ * warning line and the just-saved row highlight. Uses only the existing
+ * tokens from globals.css (no new palette). Flat, ruled, no shadows.
+ */
+@layer kanei-base {
+  :root {
+    --font-ko: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', 'Nanum Gothic', var(--font-sans);
+  }
+
+  /* ---- SessionNotice -------------------------------------------------- */
+
+  .session-notice {
+    max-width: 560px;
+    margin: var(--space-6) auto;
+    padding: var(--space-5) var(--card-pad);
+    border-top: 3px solid var(--primary);
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    border-left: 1px solid var(--line);
+    border-radius: 0 0 8px 8px;
+    overflow-wrap: anywhere;
+  }
+
+  /* Outage: a status notice. A square danger band on the left, nothing more. */
+  .session-notice--outage {
+    border-top-color: var(--line);
+    border-left: 4px solid var(--danger);
+  }
+
+  .session-notice-title {
+    margin: 0 0 var(--space-3);
+    font-size: var(--text-xl);
+    line-height: 1.35;
+    font-weight: 700;
+    color: var(--ink);
+    text-wrap: balance;
+  }
+
+  .session-notice--outage .session-notice-title {
+    color: var(--danger);
+  }
+
+  .session-notice-body {
+    margin: 0 0 var(--space-2);
+    font-size: var(--text-md);
+    line-height: 1.75;
+    color: var(--ink);
+    max-width: 38em;
+  }
+
+  .session-notice-ko {
+    margin: 0 0 var(--space-4);
+    font-family: var(--font-ko);
+    font-size: var(--text-sm);
+    line-height: 1.7;
+    color: var(--ink-sub);
+    word-break: keep-all;
+  }
+
+  .session-notice-actions {
+    margin: var(--space-4) 0 0;
+  }
+
+  .session-notice-primary {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+    padding: 0 var(--space-5);
+    border: 1px solid var(--primary);
+    border-radius: var(--radius);
+    background: var(--primary);
+    color: #fff;
+    font-size: var(--text-md);
+    font-weight: 700;
+    text-decoration: none;
+    transition: background-color 0.12s ease-out, border-color 0.12s ease-out;
+  }
+
+  .session-notice-primary:hover {
+    background: var(--primary-hover);
+    border-color: var(--primary-hover);
+    color: #fff;
+  }
+
+  .session-notice-primary:active {
+    background: var(--ink);
+    border-color: var(--ink);
+  }
+
+  .session-notice-primary:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+    box-shadow: 0 0 0 2px var(--surface);
+  }
+
+  .session-notice-note {
+    margin: var(--space-4) 0 0;
+    font-size: var(--text-sm);
+    color: var(--ink-sub);
+  }
+
+  .session-notice-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-5);
+    margin: var(--space-4) 0 0;
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--line);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+  }
+
+  .session-notice-facts > div {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 var(--space-2);
+    min-width: 0;
+  }
+
+  .session-notice-facts dt {
+    color: var(--ink-sub);
+  }
+
+  .session-notice-facts dd {
+    margin: 0;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums;
+    overflow-wrap: anywhere;
+  }
+
+  /* ---- form result extras (inside .form-result, an inline-flex wrap row) -- */
+
+  .form-result-ko {
+    display: block;
+    flex: 0 0 100%;
+    font-family: var(--font-ko);
+    font-size: var(--text-xs);
+    line-height: 1.6;
+    color: var(--ink-sub);
+    word-break: keep-all;
+  }
+
+  .form-result-action {
+    display: inline-flex;
+    flex: 0 0 auto;
+    align-items: center;
+    align-self: flex-start;
+    min-height: 36px;
+    margin: var(--space-1) 0 0;
+    padding: 0 var(--space-3);
+    border: 1px solid var(--primary);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--primary);
+    font: inherit;
+    font-size: var(--text-sm);
+    font-weight: 700;
+    line-height: 1.3;
+    text-align: left;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background-color 0.12s ease-out;
+  }
+
+  .form-result-action:hover {
+    background: var(--primary-tint);
+    color: var(--primary-hover);
+  }
+
+  .form-result-action:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+  }
+
+  /* ---- warning line under a select ------------------------------------ */
+
+  .field-warning {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-1);
+    margin: var(--space-1) 0 0;
+    padding: 2px var(--space-2);
+    border-left: 3px solid var(--warn);
+    background: var(--warn-tint);
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--warn);
+  }
+
+  .field-warning > [aria-hidden='true'] {
+    flex: none;
+    font-weight: 700;
+  }
+
+  /* ---- just-saved highlight (class added ~6 s by JS, then removed) ------ */
+
+  .record-changed,
+  .record-changed > td,
+  .record-changed > th {
+    background-color: var(--primary-tint);
+  }
+
+  .record-changed > :first-child {
+    box-shadow: inset 4px 0 0 var(--primary);
+  }
+
+  /* On a card (not a row) the marker sits on the element itself. */
+  :not(tr).record-changed {
+    box-shadow: inset 4px 0 0 var(--primary);
+  }
+
+  /* The fade-out runs when the class is removed (base state carries the transition). */
+  tr[data-record-id] > td,
+  tr[data-record-id] > th,
+  [data-record-id]:not(tr) {
+    transition: background-color 1.2s ease-out, box-shadow 1.2s ease-out;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    tr[data-record-id] > td,
+    tr[data-record-id] > th,
+    [data-record-id]:not(tr),
+    .session-notice-primary,
+    .form-result-action {
+      transition: none;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .session-notice {
+      margin: var(--space-4) 0;
+      padding: var(--space-4);
+    }
+
+    .session-notice-title {
+      font-size: var(--text-lg);
+    }
+
+    .session-notice-primary {
+      width: 100%;
+    }
+  }
+}

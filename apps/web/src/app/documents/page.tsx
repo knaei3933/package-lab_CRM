@@ -169,7 +169,7 @@ export default async function DocumentsPage(props: {
             </thead>
             <tbody>
               {workspace.documents.map((document) => (
-                <tr key={document.id}>
+                <tr key={document.id} data-record-id={document.id}>
                   <td style={tdStyle}>
                     {document.typeHidden
                       ? HIDDEN_BY_ROLE_LABEL
