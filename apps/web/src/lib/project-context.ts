@@ -13,7 +13,7 @@ export const PROJECT_CONTEXT_MISMATCH = 'PROJECT_CONTEXT_MISMATCH';
  * the context) is refused too — fail closed. '' on both sides (no project) is
  * a match; the action then asks for a project as before.
  */
-export function renderedProjectMatches(rendered: FormDataEntryValue | null, current: string | null): boolean {
+export function renderedProjectMatches(rendered: unknown, current: string | null): boolean {
   if (typeof rendered !== 'string') return false;
   return rendered === (current ?? '');
 }

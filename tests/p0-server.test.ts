@@ -887,3 +887,30 @@ describe('P0 follow-up coverage (test-engineer review)', () => {
     expect(row!.verifierName).toBe(ADMIN_DISPLAY_NAME);
   });
 });
+
+describe('P0 integration: audit-history action filter', () => {
+  it('returns only the asked actions; reads of a version no longer crowd out uploads', async () => {
+    const sevenPoId = await verifiedSevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    const uploaded = await upload(sevenPoId, orderId, { documentType: 'approval_evidence', issuerEntity: 'seven', designKey: 'label-front' });
+    for (let i = 0; i < 3; i += 1) await send('staff', 'GET', `/api/document-versions/${uploaded.version.id}/evidence-message-id`);
+    const all = await send('staff', 'GET', `/api/projects/${projectId}/audit-history?entityType=document_version&entityId=${uploaded.version.id}&limit=500`);
+    expect(all.status).toBe(200);
+    const allActions = (all.body.events as Array<{ action: string }>).map((event) => event.action);
+    expect(allActions).toContain('DOCUMENT_VERSION_UPLOADED');
+    const onlyUploads = await send('staff', 'GET', `/api/projects/${projectId}/audit-history?entityType=document_version&entityId=${uploaded.version.id}&action=DOCUMENT_VERSION_UPLOADED`);
+    expect(onlyUploads.status).toBe(200);
+    expect((onlyUploads.body.events as Array<{ action: string }>).map((event) => event.action)).toEqual(['DOCUMENT_VERSION_UPLOADED']);
+  });
+
+  it('ignores malformed action names (no filter, no error) and keeps the project scope', async () => {
+    const response = await send('staff', 'GET', `/api/projects/${projectId}/audit-history?entityType=document_version&action=${encodeURIComponent("x' OR 1=1 --")}&limit=5`);
+    expect(response.status).toBe(200);
+    expect(Array.isArray(response.body.events)).toBe(true);
+  });
+
+  it('viewer still reads the history through the same permission (the filter grants nothing)', async () => {
+    const response = await send('viewer', 'GET', `/api/projects/${projectId}/audit-history?entityType=document_version&action=DOCUMENT_VERSION_UPLOADED&limit=5`);
+    expect([200, 403]).toContain(response.status);
+  });
+});

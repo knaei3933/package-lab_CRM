@@ -413,10 +413,13 @@ function bool(record: Record<string, unknown>, key: string): boolean {
 
 async function loadEvents(
   projectId: string,
-  entityType: string
+  entityType: string,
+  actions: readonly string[] = []
 ): Promise<{ events: AuditEventView[]; error: string | null }> {
+  // P0 integration: `action` keeps reads (DOCUMENT_VERSION_VIEWED…) out of the 500-row window.
+  const actionQuery = actions.length > 0 ? `&action=${encodeURIComponent(actions.join(','))}` : '';
   const result = await callApi<{ events: AuditEventView[] }>(
-    `/api/projects/${encodeURIComponent(projectId)}/audit-history?entityType=${encodeURIComponent(entityType)}&limit=500`
+    `/api/projects/${encodeURIComponent(projectId)}/audit-history?entityType=${encodeURIComponent(entityType)}&limit=500${actionQuery}`
   );
   if (!result.ok || !result.data) {
     return { events: [], error: result.error ?? `監査履歴が取得できませんでした（${result.status}）。` };
@@ -542,7 +545,7 @@ export async function loadWorkspace(
       loadEvents(projectId, 'filling_order_line'),
       loadEvents(projectId, 'seven_purchase_order'),
       loadEvents(projectId, 'document'),
-      loadEvents(projectId, 'document_version'),
+      loadEvents(projectId, 'document_version', ['DOCUMENT_VERSION_UPLOADED']),
       loadEvents(projectId, 'artwork_revision'),
       loadEvents(projectId, 'artwork_approval_event'),
       loadEvents(projectId, 'film_delivery'),
@@ -757,11 +760,18 @@ export async function loadWorkspace(
   }
   let documentVersionsWithheld = false;
   for (const event of versionEvents.events) {
+    // P0 integration: only an upload makes a version. The API also records
+    // DOCUMENT_VERSION_VIEWED (every Message-ID read of the approvals screen) and
+    // DOCUMENT_VERSION_DOWNLOADED on the same entity; counted as versions they
+    // listed one evidence many times, and every render read each copy again
+    // (511 view rows for one EML after a handful of renders).
+    if (event.action !== 'DOCUMENT_VERSION_UPLOADED') continue;
     const after = state(event.afterState);
     const documentId = text(after, 'documentId') ?? text(state(event.requestMetadata), 'documentId');
     if (!documentId && isFieldHiddenByRole(event, 'documentId')) documentVersionsWithheld = true;
     const current = documentId ? documents.get(documentId) : undefined;
     if (!current || !documentId) continue;
+    if (current.versions.some((version) => version.id === event.entityId)) continue;
     current.versions.push({
       id: event.entityId,
       documentId,

@@ -263,7 +263,11 @@ export default async function OrdersPage() {
                       ) : null}
                     </td>
                     {/* UI batch E3: the 決済条件 is shown to every role (amounts are not). */}
-                    <td style={tdStyle}>{paymentTermsText(order)}</td>
+                    <td style={tdStyle}>
+                      {paymentTermsText(order)}
+                      {/* P0 R01 (P-5): the change history stays readable after the 代表承認 too. */}
+                      <PaymentTermsHistory order={order} />
+                    </td>
                     <td style={tdStyle}>
                       <OrderLinesCell order={order} />
                     </td>
@@ -730,7 +734,6 @@ function PaymentTermsCell({
         />
         <TextField name="reason" label="変更の理由（任意）" width={280} />
       </ActionForm>
-      <PaymentTermsHistory order={order} />
     </details>
   );
 }
@@ -758,8 +761,8 @@ function PaymentTermsHistory({ order }: { order: FilmSupplyOrderView }) {
   if (history.length === 0) return null;
   const label = (value: string | null) => (value ? PAYMENT_TERMS_LABELS[value] ?? '（不明）' : '（記録なし）');
   return (
-    <div style={{ marginTop: 8 }}>
-      <p style={{ ...noteStyle, margin: 0 }}>支払条件の変更履歴</p>
+    <div style={{ marginTop: 6 }}>
+      <p style={{ ...noteStyle, margin: 0 }}>支払条件の変更履歴（{history.length}件）</p>
       <ol className="payment-terms-history" style={{ margin: '4px 0 0', paddingLeft: 20 }}>
         {history.map((change, index) => (
           <li key={`${change.at}-${index}`} style={{ fontSize: 13 }}>

@@ -2786,6 +2786,14 @@ export function createApp({
     const entityIdFilter = typeof query.entityId === 'string' && query.entityId.length > 0
       ? eq(auditEvents.entityId, query.entityId)
       : undefined;
+    // P0 integration: an optional action filter (comma list of action codes). It only
+    // narrows the rows the caller may already read. Reads of a document version
+    // (DOCUMENT_VERSION_VIEWED, written on every evidence Message-ID read) piled up
+    // in the oldest-first 500-row window and pushed newer uploads out of the list.
+    const actionNames = typeof query.action === 'string' && query.action.length > 0
+      ? query.action.split(',').map((name) => name.trim()).filter((name) => /^[A-Z][A-Z0-9_]{2,79}$/.test(name)).slice(0, 10)
+      : [];
+    const actionFilter = actionNames.length > 0 ? inArray(auditEvents.action, actionNames) : undefined;
 
     const rows = await db.select({
       id: auditEvents.id,
@@ -2801,7 +2809,7 @@ export function createApp({
       actorRole: users.role
     }).from(auditEvents)
       .leftJoin(users, eq(users.id, auditEvents.actorUserId))
-      .where(and(eq(auditEvents.projectId, projectId), entityTypeFilter, entityIdFilter))
+      .where(and(eq(auditEvents.projectId, projectId), entityTypeFilter, entityIdFilter, actionFilter))
       .orderBy(auditEvents.occurredAt, auditEvents.id)
       .limit(limit);
 
