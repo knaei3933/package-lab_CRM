@@ -151,7 +151,7 @@ describe('focusableIndexFor: the control a field error focuses', () => {
 // ---------------------------------------------------------------------------
 
 describe('resolveActionFieldError: a new action result against the fields the form shows', () => {
-  const present = new Set(['verifierName', 'poNumber', 'file']);
+  const present = new Set(['reasonNote', 'poNumber', 'file']);
   const has = (field: string) => present.has(field);
 
   it('no result yet leaves the errors alone; a success clears them', () => {
@@ -160,10 +160,11 @@ describe('resolveActionFieldError: a new action result against the fields the fo
   });
 
   it('a refusal about a present field marks it with the display wording', () => {
-    expect(resolveActionFieldError({ ok: false, message: '検証者名（verifierName）を入力してください。' }, has)).toEqual({
+    // P0 R11: the verifier name is the API's now; the 「根拠」 refusal still marks its field.
+    expect(resolveActionFieldError({ ok: false, message: '根拠（reasonNote）を入力してください。何を確認して納品を断定したかを記録してください。' }, has)).toEqual({
       kind: 'field',
-      field: 'verifierName',
-      message: '検証者名を入力してください。'
+      field: 'reasonNote',
+      message: '根拠を入力してください。何を確認して送信を確定したかを記録してください。'
     });
     expect(resolveActionFieldError({ ok: false, message: 'ファイルを選択してください。' }, has)).toMatchObject({ field: 'file' });
   });

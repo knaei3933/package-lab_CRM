@@ -232,8 +232,9 @@ describe('E3: the 決済条件 is public, amounts are not (representative decisi
       const header = headers(html);
       const termsColumn = header.indexOf('支払条件');
       const cells = (row: string) => [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((match) => match[1]!);
-      expect(cells(orderRow(html, orderId))[termsColumn], role).toBe('納品後払い');
-      expect(cells(orderRow(html, draftOnlyOrderId))[termsColumn], role).toBe('前払い');
+      // P0 integration: the cell starts with the term; the 支払条件 change history may follow it.
+      expect(cells(orderRow(html, orderId))[termsColumn], role).toMatch(/^納品後払い(<|$)/);
+      expect(cells(orderRow(html, draftOnlyOrderId))[termsColumn], role).toMatch(/^前払い(<|$)/);
       // The stored code is never shown as text (it is only the value of staff's recording form option).
       expect(html, role).not.toMatch(/>\s*(on_delivery|prepaid|undetermined)\s*</);
     }
