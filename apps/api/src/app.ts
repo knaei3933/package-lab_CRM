@@ -32,6 +32,8 @@ import {
   evaluatePaymentTermsChange,
   PAYMENT_TERMS_LABELS_JA,
   evaluateApprovalEvidenceIssuer,
+  normalizedEvidenceText,
+  TEXT_LIKE_EVIDENCE_MIME_TYPES,
   APPROVAL_ORGANIZATION_ISSUER,
   validateMakerPoRecipientAddress,
   UNIT_LABELS_JA,
@@ -363,6 +365,13 @@ class MakerPoStateConflict extends Error {}
 class PaymentGateClosedUnderLock extends Error {
   constructor(readonly paymentTerms: string) {
     super('payment gate closed under lock');
+  }
+}
+
+/** P0 review M2: the term the representative saw is not the term on the order. */
+class PaymentTermsChangedUnderLock extends Error {
+  constructor(readonly expected: string, readonly current: string) {
+    super('payment terms changed under lock');
   }
 }
 
@@ -713,16 +722,18 @@ export function createApp({
     if (Number.isFinite(declaredLength) && declaredLength > bodyCap) return next();
     const sessionUser = await getSessionUser(context.req.raw, db);
     if (!sessionUser) return next();
-    // A multipart retry carries a fresh boundary, so its fingerprint is the
-    // endpoint alone; JSON bodies are fingerprinted by content, read from a
-    // clone with a hard cap (an over-cap body is simply not cached).
-    const multipart = (context.req.header('content-type') ?? '').toLowerCase().startsWith('multipart/');
-    let bodyHash = 'multipart';
-    if (!multipart) {
-      const capped = await readCappedBody(context.req.raw.clone(), bodyCap);
-      if (capped === null) return next();
-      bodyHash = sha256Hex(capped);
-    }
+    // Bodies are fingerprinted by content, read from a clone with a hard cap
+    // (an over-cap body is simply not cached). Review M4: a multipart retry
+    // carries a fresh boundary, so the boundary is removed before hashing —
+    // the same fields and file give the same fingerprint, a different file a
+    // different one (IDEMPOTENCY_KEY_REUSED instead of a silent replay).
+    const capped = await readCappedBody(context.req.raw.clone(), bodyCap);
+    if (capped === null) return next();
+    const contentType = context.req.header('content-type') ?? '';
+    const boundary = /multipart\/[^;]+;.*?boundary="?([^";]+)"?/i.exec(contentType)?.[1];
+    const bodyHash = boundary
+      ? sha256Hex(Buffer.from(capped).toString('latin1').split(boundary).join('<boundary>'))
+      : sha256Hex(capped);
     const fingerprint = `${sha256Hex(`${context.req.method} ${context.req.path}`)}:${bodyHash}`;
     const replay = (stored: StoredResponse) => new Response(stored.body, {
       status: stored.status,
@@ -796,25 +807,33 @@ export function createApp({
   // container healthcheck keeps its meaning; `db` tells an outage apart.
   // The probe result is reused for 5 s so an unauthenticated flood cannot take
   // pool slots from real requests.
+  // Review M5: single-flight — while one probe runs, every other health
+  // request waits for that same probe, so at most one pool slot is ever used.
   let healthProbe: { state: 'ok' | 'down'; at: number } | null = null;
-  app.get('/api/health', async (context) => {
-    if (healthProbe && Date.now() - healthProbe.at < 5_000) {
-      return context.json({ status: 'ok', app: 'api', port, db: healthProbe.state });
-    }
-    let dbState: 'ok' | 'down' = 'down';
+  let healthProbeInFlight: Promise<'ok' | 'down'> | null = null;
+  async function probeDatabase(): Promise<'ok' | 'down'> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
         db.execute(sql`select 1`),
         new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('health probe timeout')), healthDbTimeoutMs); })
       ]);
-      dbState = 'ok';
+      return 'ok';
     } catch {
-      dbState = 'down';
+      return 'down';
     } finally {
       if (timer) clearTimeout(timer);
     }
-    healthProbe = { state: dbState, at: Date.now() };
+  }
+  app.get('/api/health', async (context) => {
+    if (healthProbe && Date.now() - healthProbe.at < 5_000) {
+      return context.json({ status: 'ok', app: 'api', port, db: healthProbe.state });
+    }
+    healthProbeInFlight ??= probeDatabase().then((state) => {
+      healthProbe = { state, at: Date.now() };
+      return state;
+    }).finally(() => { healthProbeInFlight = null; });
+    const dbState = await healthProbeInFlight;
     return context.json({ status: 'ok', app: 'api', port, db: dbState });
   });
 
@@ -3497,8 +3516,32 @@ export function createApp({
       });
     });
 
+    // P0 review H1: approval evidence whose bytes are already on this order
+    // under another issuer is stored (it is the same file), but the answer says
+    // so — the approval endpoint will treat both uploads as one evidence.
+    const warnings: Array<{ code: string; message: string }> = [];
+    const storedDocument = newDocument ?? existingDocument;
+    if (storedDocument?.documentType === 'approval_evidence' && storedDocument.filmSupplyOrderId) {
+      const [sameBytes] = await db.select({ issuerEntity: documents.issuerEntity })
+        .from(documentVersions)
+        .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+        .where(and(
+          eq(documents.filmSupplyOrderId, storedDocument.filmSupplyOrderId),
+          eq(documents.documentType, 'approval_evidence'),
+          eq(documentVersions.sha256, versionRow.sha256),
+          ne(documents.issuerEntity, storedDocument.issuerEntity)
+        ))
+        .limit(1);
+      if (sameBytes) {
+        warnings.push({
+          code: 'SAME_CONTENT_OTHER_ISSUER',
+          message: '同じ内容の承認証跡が別の発行元ですでに登録されています。組織ごとに別の承認書類を使ってください'
+        });
+      }
+    }
+
     return context.json(
-      { document: newDocument ?? existingDocument, version: versionRow, idempotent: false },
+      { document: storedDocument, version: versionRow, idempotent: false, warnings },
       newDocument ? 201 : 200
     );
   });
@@ -3900,7 +3943,110 @@ export function createApp({
     // result is a text column held to the EvidenceVerificationResult vocabulary by
     // the evidence_manual_verifications_result_vocabulary CHECK (migration 0017).
 
-    return { revisions: revisionRows, events: eventRows, verifications: verificationRows };
+    // P0 review M8 / H1: approvals recorded before the issuer rule (or before
+    // content-based sharing checks) are judged by the same rules here, so the
+    // gate never counts them on their own:
+    // - evidence issued by someone other than the approving organization, with
+    //   no declared shared-evidence exception, never counts (its manual
+    //   verifications are ignored too);
+    // - the same evidence content already cited by the other organization
+    //   waits for the representative's manual verification.
+    const integrity = await approvalEvidenceIntegrity(eventRows, executor);
+    const blockedEventIds = new Set<string>();
+    const events = eventRows.map((event) => {
+      const facts = integrity.get(event.id);
+      if (!facts || event.decision !== 'APPROVE') return event;
+      if (facts.issuerBlocked) {
+        blockedEventIds.add(event.id);
+        return { ...event, evidenceIdentifierStatus: 'pending_manual_verification' as const };
+      }
+      if (facts.sameContentEventId !== null && facts.sharedEvidenceException === null
+        && event.evidenceIdentifierStatus !== 'pending_manual_verification') {
+        return { ...event, evidenceIdentifierStatus: 'pending_manual_verification' as const };
+      }
+      return event;
+    });
+    const verifications = verificationRows.filter((verification) => !blockedEventIds.has(verification.approvalEventId));
+    return { revisions: revisionRows, events, verifications };
+  }
+
+  /**
+   * P0 review M8 / H1: per approval event, the issuer of its evidence, whether
+   * that issuer is the approving organization, the declared shared-evidence
+   * exception (from the append-only ARTWORK_APPROVAL_RECORDED row), and whether
+   * an earlier event of the other organization cites the same document or the
+   * same bytes.
+   */
+  async function approvalEvidenceIntegrity(
+    events: readonly ApprovalEventView[],
+    executor: MakerPoQueryExecutor = db
+  ): Promise<Map<string, {
+    issuerEntity: string | null;
+    sha256: string | null;
+    issuerMatchesOrganization: boolean;
+    sharedEvidenceException: { reason: string } | null;
+    issuerBlocked: boolean;
+    sameContentEventId: string | null;
+  }>> {
+    const result = new Map<string, {
+      issuerEntity: string | null;
+      sha256: string | null;
+      issuerMatchesOrganization: boolean;
+      sharedEvidenceException: { reason: string } | null;
+      issuerBlocked: boolean;
+      sameContentEventId: string | null;
+    }>();
+    const versionIds = [...new Set(events.map((event) => event.evidenceDocumentVersionId).filter((id): id is string => typeof id === 'string'))];
+    if (versionIds.length === 0) return result;
+    const versions = await executor.select({
+      versionId: documentVersions.id,
+      documentId: documentVersions.documentId,
+      sha256: documentVersions.sha256,
+      issuerEntity: documents.issuerEntity
+    }).from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(inArray(documentVersions.id, versionIds));
+    const byVersion = new Map(versions.map((version) => [version.versionId, version]));
+    const recorded = await executor.select({ entityId: auditEvents.entityId, afterState: auditEvents.afterState })
+      .from(auditEvents)
+      .where(and(
+        eq(auditEvents.entityType, 'artwork_approval_event'),
+        eq(auditEvents.action, 'ARTWORK_APPROVAL_RECORDED'),
+        inArray(auditEvents.entityId, events.map((event) => event.id))
+      ));
+    const exceptions = new Map<string, { reason: string }>();
+    for (const row of recorded) {
+      const exception = (row.afterState as { sharedEvidenceException?: { reason?: unknown } | null } | null)?.sharedEvidenceException;
+      if (exception && typeof exception.reason === 'string' && exception.reason.length > 0) {
+        exceptions.set(row.entityId, { reason: exception.reason });
+      }
+    }
+    const ordered = [...events].sort((left, right) =>
+      new Date(left.recordedAt).getTime() - new Date(right.recordedAt).getTime() || (left.id < right.id ? -1 : 1));
+    for (const event of ordered) {
+      const version = event.evidenceDocumentVersionId ? byVersion.get(event.evidenceDocumentVersionId) : undefined;
+      const expected = APPROVAL_ORGANIZATION_ISSUER[event.organization as ApprovalOrganization];
+      const issuerMatchesOrganization = version?.issuerEntity === expected;
+      const sharedEvidenceException = exceptions.get(event.id) ?? null;
+      const earlierSameContent = ordered.find((other) => {
+        if (other === event) return false;
+        if (other.organization === event.organization || other.decision !== 'APPROVE') return false;
+        if (new Date(other.recordedAt).getTime() > new Date(event.recordedAt).getTime()) return false;
+        if (new Date(other.recordedAt).getTime() === new Date(event.recordedAt).getTime() && other.id > event.id) return false;
+        const otherVersion = other.evidenceDocumentVersionId ? byVersion.get(other.evidenceDocumentVersionId) : undefined;
+        return otherVersion !== undefined && version !== undefined
+          && (otherVersion.documentId === version.documentId || otherVersion.sha256 === version.sha256);
+      });
+      result.set(event.id, {
+        issuerEntity: version?.issuerEntity ?? null,
+        sha256: version?.sha256 ?? null,
+        issuerMatchesOrganization,
+        sharedEvidenceException,
+        issuerBlocked: version !== undefined && !issuerMatchesOrganization && sharedEvidenceException === null,
+        sameContentEventId: earlierSameContent?.id ?? null
+      });
+    }
+    return result;
   }
 
   /**
@@ -4479,7 +4625,8 @@ export function createApp({
       storagePath: documentVersions.storagePath,
       declaredMimeType: documentVersions.declaredMimeType,
       documentId: documents.id,
-      issuerEntity: documents.issuerEntity
+      issuerEntity: documents.issuerEntity,
+      sha256: documentVersions.sha256
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(documentVersions.id, body.evidenceDocumentVersionId)).limit(1);
@@ -4524,21 +4671,25 @@ export function createApp({
         code: 'SHARED_EVIDENCE_FLAG_INVALID'
       }, 422);
     }
-    const [otherOrganizationCitation] = await db.select({ id: artworkApprovalEvents.id })
-      .from(artworkApprovalEvents)
-      .innerJoin(artworkRevisions, eq(artworkRevisions.id, artworkApprovalEvents.artworkRevisionId))
-      .innerJoin(documentVersions, eq(documentVersions.id, artworkApprovalEvents.evidenceDocumentVersionId))
-      .where(and(
-        eq(artworkRevisions.filmSupplyOrderId, order.id),
-        eq(documentVersions.documentId, evidence.documentId),
-        ne(artworkApprovalEvents.organization, organization)
-      ))
-      .limit(1);
+    // P0 review H1: "the same evidence" is decided on content, not on the
+    // logical document — re-uploading the same bytes under the other issuer, or
+    // a case / whitespace / filename variant of the same text, is the same mail.
+    const otherOrganizationCitation = await crossOrganizationEvidenceCitation({
+      orderId: order.id,
+      organization,
+      evidence: {
+        documentId: evidence.documentId,
+        sha256: evidence.sha256,
+        declaredMimeType: evidence.declaredMimeType,
+        storagePath: evidence.storagePath
+      }
+    });
     const issuerCheck = evaluateApprovalEvidenceIssuer({
       organization,
       issuerEntity: evidence.issuerEntity,
-      citedByOtherOrganization: otherOrganizationCitation !== undefined,
-      sharedEvidenceDeclared
+      citedByOtherOrganization: otherOrganizationCitation !== null,
+      sharedEvidenceDeclared,
+      decision: decisionCheck.value
     });
     if (!issuerCheck.ok) {
       return context.json({
@@ -4546,7 +4697,8 @@ export function createApp({
         code: issuerCheck.code,
         organization,
         evidenceIssuerEntity: evidence.issuerEntity,
-        expectedIssuerEntity: APPROVAL_ORGANIZATION_ISSUER[organization]
+        expectedIssuerEntity: APPROVAL_ORGANIZATION_ISSUER[organization],
+        ...(otherOrganizationCitation ? { sameEvidenceMatchedOn: otherOrganizationCitation.matchedOn } : {})
       }, 422);
     }
     const sharedEvidenceException = sharedEvidenceReason !== null ? { reason: sharedEvidenceReason } : null;
@@ -5019,11 +5171,29 @@ export function createApp({
         code: 'EVIDENCE_VERIFICATION_TARGET_INVALID'
       }, 422);
     }
+    // P0 review M8 / H1: an approval the gate holds back (same evidence
+    // content as the other organization's, recorded before the content check)
+    // waits for this verification even if its stored status is verified.
+    const targetIntegrity = (await approvalEvidenceIntegrity([{
+      ...(target as unknown as ApprovalEventView)
+    }, ...((await loadApprovalContext(order.id)).events.filter((event) => event.id !== target.id))])).get(target.id);
+    const heldBack = (targetIntegrity?.sameContentEventId != null
+      && targetIntegrity.sharedEvidenceException === null) || targetIntegrity?.issuerBlocked === true;
     if (target.evidenceIdentifierStatus !== 'pending_manual_verification') {
-      return context.json({
-        error: 'この承認イベントの識別子は手動確認待ちではありません。確認済みまたは自動検証済みのイベントは確認できません',
-        code: 'EVIDENCE_NOT_PENDING_MANUAL_VERIFICATION'
-      }, 422);
+      // The database only accepts a manual verification for an approval
+      // recorded as pending (migration 0017 trigger), and no migration is
+      // added here: an older auto-verified approval the gate now holds back is
+      // replaced by recording that organization's approval again on its own
+      // evidence.
+      return context.json(heldBack
+        ? {
+            error: 'この承認は、もう一方の組織と同じ承認証跡、または別の発行元の証跡で記録されているため数えられません。その組織が発行した承認書類で承認を記録し直してください',
+            code: 'EVIDENCE_REQUIRES_REPLACEMENT'
+          }
+        : {
+            error: 'この承認イベントの識別子は手動確認待ちではありません。確認済みまたは自動検証済みのイベントは確認できません',
+            code: 'EVIDENCE_NOT_PENDING_MANUAL_VERIFICATION'
+          }, 422);
     }
     if (!target.evidenceIdentifier) {
       return context.json({
@@ -5262,19 +5432,40 @@ export function createApp({
     // next to the organization it is recorded for. A mismatch without a
     // declared shared evidence cannot be confirmed (the verification endpoint
     // refuses it with EVIDENCE_ISSUER_MISMATCH), so the card says so up front.
+    // P0 review H1: the card also says when the other organization's approval
+    // rests on the same evidence content (same document or same bytes).
+    const integrity = await approvalEvidenceIntegrity(approvalContext.events);
+    const storedPending = approvalContext.events.length === 0 ? [] : await db.select({ id: artworkApprovalEvents.id })
+      .from(artworkApprovalEvents)
+      .where(and(
+        inArray(artworkApprovalEvents.id, approvalContext.events.map((event) => event.id)),
+        eq(artworkApprovalEvents.evidenceIdentifierStatus, 'pending_manual_verification')
+      ));
+    const storedPendingIds = new Set(storedPending.map((row) => row.id));
     const pendingWithIssuer = await Promise.all(pendingManualVerifications.map(async (item) => {
       const facts = item.evidenceDocumentVersionId
         ? await loadApprovalEvidenceIssuerFacts(item.approvalEventId, item.evidenceDocumentVersionId)
         : { issuerEntity: null, sharedEvidenceException: null };
       const expectedIssuerEntity = APPROVAL_ORGANIZATION_ISSUER[item.organization];
       const issuerMatchesOrganization = facts.issuerEntity === expectedIssuerEntity;
+      const eventIntegrity = integrity.get(item.approvalEventId);
+      const sameContentEventId = eventIntegrity?.sameContentEventId
+        ?? [...integrity.entries()].find(([, other]) => other.sameContentEventId === item.approvalEventId)?.[0]
+        ?? null;
       return {
         ...item,
         evidenceIssuerEntity: facts.issuerEntity,
         expectedIssuerEntity,
         issuerMatchesOrganization,
         sharedEvidenceException: facts.sharedEvidenceException,
-        confirmable: issuerMatchesOrganization || facts.sharedEvidenceException !== null
+        evidenceSha256: eventIntegrity?.sha256 ?? null,
+        sameContentUsedByOtherOrganization: sameContentEventId !== null,
+        sameContentApprovalEventId: sameContentEventId,
+        // Only an approval stored as pending can take a manual verification;
+        // a held-back older auto-verified one must be recorded again.
+        recordedAsPending: storedPendingIds.has(item.approvalEventId),
+        confirmable: (issuerMatchesOrganization || facts.sharedEvidenceException !== null)
+          && storedPendingIds.has(item.approvalEventId)
       };
     }));
 
@@ -5376,24 +5567,67 @@ export function createApp({
    */
   async function sendEvidenceBelongsToCancelledPaper(
     executor: MakerPoQueryExecutor,
-    evidence: { versionId: string; makerPurchaseOrderId: string | null },
+    evidence: {
+      versionId?: string | null;
+      makerPurchaseOrderId?: string | null;
+      sha256?: string | null;
+      storagePath?: string | null;
+      bytes?: Buffer | null;
+    },
     currentPoId: string
   ): Promise<boolean> {
-    if (evidence.makerPurchaseOrderId !== null && evidence.makerPurchaseOrderId !== currentPoId) {
+    if (evidence.makerPurchaseOrderId && evidence.makerPurchaseOrderId !== currentPoId) {
       const [bound] = await executor.select({ status: makerPurchaseOrders.status })
         .from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, evidence.makerPurchaseOrderId)).limit(1);
       if (bound?.status === 'CANCELLED') return true;
     }
-    const [cited] = await executor.select({ id: makerPoEvents.id })
-      .from(makerPoEvents)
-      .innerJoin(makerPurchaseOrders, eq(makerPurchaseOrders.id, makerPoEvents.makerPurchaseOrderId))
+    if (evidence.versionId) {
+      const [cited] = await executor.select({ id: makerPoEvents.id })
+        .from(makerPoEvents)
+        .innerJoin(makerPurchaseOrders, eq(makerPurchaseOrders.id, makerPoEvents.makerPurchaseOrderId))
+        .where(and(
+          eq(makerPoEvents.evidenceDocumentVersionId, evidence.versionId),
+          ne(makerPoEvents.makerPurchaseOrderId, currentPoId),
+          eq(makerPurchaseOrders.status, 'CANCELLED')
+        ))
+        .limit(1);
+      if (cited) return true;
+    }
+    // Review M6: the same mail re-uploaded (new version, inline contentBase64,
+    // other filename) is still the cancelled paper's mail — compared by bytes
+    // (sha256) and by its own Message-ID header.
+    const [current] = await executor.select({ filmSupplyOrderId: makerPurchaseOrders.filmSupplyOrderId })
+      .from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, currentPoId)).limit(1);
+    if (!current) return false;
+    const cancelled = await executor.select({ id: makerPurchaseOrders.id }).from(makerPurchaseOrders)
       .where(and(
-        eq(makerPoEvents.evidenceDocumentVersionId, evidence.versionId),
-        ne(makerPoEvents.makerPurchaseOrderId, currentPoId),
-        eq(makerPurchaseOrders.status, 'CANCELLED')
-      ))
-      .limit(1);
-    return cited !== undefined;
+        eq(makerPurchaseOrders.filmSupplyOrderId, current.filmSupplyOrderId),
+        eq(makerPurchaseOrders.status, 'CANCELLED'),
+        ne(makerPurchaseOrders.id, currentPoId)
+      ));
+    if (cancelled.length === 0) return false;
+    const cancelledIds = cancelled.map((paper) => paper.id);
+    const boundVersions = await executor.select({ sha256: documentVersions.sha256, storagePath: documentVersions.storagePath })
+      .from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(and(eq(documents.documentType, 'send_evidence'), inArray(documents.makerPurchaseOrderId, cancelledIds)));
+    const citedVersions = await executor.select({ sha256: documentVersions.sha256, storagePath: documentVersions.storagePath })
+      .from(makerPoEvents)
+      .innerJoin(documentVersions, eq(documentVersions.id, makerPoEvents.evidenceDocumentVersionId))
+      .where(inArray(makerPoEvents.makerPurchaseOrderId, cancelledIds));
+    const cancelledVersions = [...boundVersions, ...citedVersions];
+    if (cancelledVersions.length === 0) return false;
+    const bytes = evidence.bytes
+      ?? (evidence.storagePath ? await readFile(evidence.storagePath).catch(() => null) : null);
+    const ownSha256 = evidence.sha256 ?? (bytes ? computeSha256(bytes) : null);
+    if (ownSha256 && cancelledVersions.some((version) => version.sha256 === ownSha256)) return true;
+    const ownMessageId = bytes ? extractStoredEmlMessageId(bytes) : null;
+    if (ownMessageId === null) return false;
+    for (const version of cancelledVersions) {
+      const otherBytes = await readFile(version.storagePath).catch(() => null);
+      if (otherBytes && extractStoredEmlMessageId(otherBytes) === ownMessageId) return true;
+    }
+    return false;
   }
 
   /**
@@ -5461,6 +5695,46 @@ export function createApp({
     } catch {
       return base;
     }
+  }
+
+  /**
+   * P0 review H1: whether another organization already cites the same approval
+   * evidence on this order — the same logical document, the same bytes
+   * (sha256), or for text-like evidence the same normalized text (NFKC, lower
+   * case, no whitespace). Returns how it matched, or null.
+   */
+  async function crossOrganizationEvidenceCitation(input: {
+    orderId: string;
+    organization: string;
+    evidence: { documentId: string; sha256: string; declaredMimeType: string | null; storagePath: string };
+  }): Promise<{ eventId: string; matchedOn: 'same_document' | 'same_bytes' | 'same_text' } | null> {
+    const cited = await db.select({
+      eventId: artworkApprovalEvents.id,
+      documentId: documentVersions.documentId,
+      sha256: documentVersions.sha256,
+      declaredMimeType: documentVersions.declaredMimeType,
+      storagePath: documentVersions.storagePath
+    }).from(artworkApprovalEvents)
+      .innerJoin(artworkRevisions, eq(artworkRevisions.id, artworkApprovalEvents.artworkRevisionId))
+      .innerJoin(documentVersions, eq(documentVersions.id, artworkApprovalEvents.evidenceDocumentVersionId))
+      .where(and(
+        eq(artworkRevisions.filmSupplyOrderId, input.orderId),
+        ne(artworkApprovalEvents.organization, input.organization as ApprovalOrganization)
+      ));
+    for (const row of cited) {
+      if (row.documentId === input.evidence.documentId) return { eventId: row.eventId, matchedOn: 'same_document' };
+      if (row.sha256 === input.evidence.sha256) return { eventId: row.eventId, matchedOn: 'same_bytes' };
+    }
+    const textLike = (mime: string | null) => TEXT_LIKE_EVIDENCE_MIME_TYPES.includes((mime ?? '').toLowerCase());
+    if (!textLike(input.evidence.declaredMimeType)) return null;
+    const ownText = await readFile(input.evidence.storagePath).then(normalizedEvidenceText, () => null);
+    if (ownText === null || ownText.length === 0) return null;
+    for (const row of cited) {
+      if (!textLike(row.declaredMimeType)) continue;
+      const otherText = await readFile(row.storagePath).then(normalizedEvidenceText, () => null);
+      if (otherText !== null && otherText === ownText) return { eventId: row.eventId, matchedOn: 'same_text' };
+    }
+    return null;
   }
 
   /** P0 R11: the name a manual verification records is the session user's own. */
@@ -5964,6 +6238,18 @@ export function createApp({
     });
     if (approvalRecheck) return context.json(approvalRecheck, 422);
 
+    // P0 review M2: the approval pins the payment term the representative
+    // decided on. `expectedPaymentTerms` (the term the approval screen showed)
+    // is compared with the order's term under the order lock below; a term that
+    // changed in between is refused instead of approved over.
+    const approvalBody = await context.req.json().catch(() => null) as { expectedPaymentTerms?: unknown } | null;
+    let expectedPaymentTerms: string | null = null;
+    if (approvalBody?.expectedPaymentTerms !== undefined && approvalBody?.expectedPaymentTerms !== null) {
+      const expectedCheck = validatePaymentTermsInput(approvalBody.expectedPaymentTerms);
+      if (!expectedCheck.ok) return context.json({ error: expectedCheck.message, code: expectedCheck.code }, 422);
+      expectedPaymentTerms = expectedCheck.value;
+    }
+
     // P0 R10: the paper is sent to its recipient mail address and the send
     // evidence is checked against it. A paper frozen before R10 with a postal
     // address or a name could never pass that check, so it is refused before
@@ -5988,6 +6274,9 @@ export function createApp({
         // a change committed while the request waited cannot be approved over.
         const lockedPaymentGate = evaluatePaymentGate({ paymentTerms: lockedOrder.paymentTerms });
         if (!lockedPaymentGate.ok) throw new PaymentGateClosedUnderLock(lockedPaymentGate.paymentTerms);
+        if (expectedPaymentTerms !== null && expectedPaymentTerms !== lockedPaymentGate.paymentTerms) {
+          throw new PaymentTermsChangedUnderLock(expectedPaymentTerms, lockedPaymentGate.paymentTerms);
+        }
         const [po] = await tx.select().from(makerPurchaseOrders)
           .where(eq(makerPurchaseOrders.id, poId)).limit(1).for('update');
         if (!po || po.status !== approval.from) throw new MakerPoStateConflict();
@@ -6053,9 +6342,9 @@ export function createApp({
           entityType: 'maker_purchase_order',
           entityId: poId,
           beforeState: { status: po.status },
-          afterState: { status: 'APPROVED_FOR_MANUAL_SEND', snapshotSha256 },
+          afterState: { status: 'APPROVED_FOR_MANUAL_SEND', snapshotSha256, approvedPaymentTerms: lockedPaymentGate.paymentTerms },
           occurredAt: now,
-          requestMetadata: { operation: 'maker_po:ceo_approve' }
+          requestMetadata: { operation: 'maker_po:ceo_approve', expectedPaymentTerms }
         });
 
         // The film supply order chain mirrors the maker PO when the transition
@@ -6084,13 +6373,22 @@ export function createApp({
             createdAt: po.createdAt,
             updatedAt: now
           }),
-          approvalEvent
+          approvalEvent,
+          approvedPaymentTerms: lockedPaymentGate.paymentTerms
         };
       });
       return context.json(outcome, 200);
     } catch (error) {
       if (isPostgresDeadlockError(error)) {
         return context.json({ error: '発注状態の処理でロック競合が発生しました', code: 'MAKER_PO_LOCK_CONFLICT' }, 409);
+      }
+      if (error instanceof PaymentTermsChangedUnderLock) {
+        return context.json({
+          error: '承認画面を開いた後に決済条件が変更されました。最新の決済条件を確認してから、もう一度承認してください',
+          code: 'PAYMENT_TERMS_CHANGED',
+          expectedPaymentTerms: error.expected,
+          paymentTerms: error.current
+        }, 409);
       }
       if (error instanceof PaymentGateClosedUnderLock) {
         const closed = evaluatePaymentGate({ paymentTerms: error.paymentTerms });
@@ -6140,6 +6438,8 @@ export function createApp({
       versionNumber: documentVersions.versionNumber,
       originalFilename: documentVersions.originalFilename,
       makerPurchaseOrderId: documents.makerPurchaseOrderId,
+      sha256: documentVersions.sha256,
+      storagePath: documentVersions.storagePath,
       createdAt: documentVersions.createdAt
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
@@ -6149,14 +6449,14 @@ export function createApp({
         eq(documents.documentType, 'send_evidence')
       ))
       .orderBy(desc(documentVersions.createdAt));
-    const candidates: Array<Omit<(typeof versions)[number], 'makerPurchaseOrderId'>> = [];
+    const candidates: Array<Omit<(typeof versions)[number], 'makerPurchaseOrderId' | 'sha256' | 'storagePath'>> = [];
     let excludedCancelledCount = 0;
     for (const version of versions) {
       if (await sendEvidenceBelongsToCancelledPaper(db, version, poId)) {
         excludedCancelledCount += 1;
         continue;
       }
-      const { makerPurchaseOrderId: _bound, ...visible } = version;
+      const { makerPurchaseOrderId: _bound, sha256: _sha256, storagePath: _path, ...visible } = version;
       candidates.push(visible);
     }
     return context.json({ makerPurchaseOrderId: poId, candidates, excludedCancelledCount });
@@ -6306,6 +6606,15 @@ export function createApp({
         let evidenceDocument: MakerPoEvidenceDocument | null = null;
         let evidenceDocumentVersionId: string | null = requestedEvidenceId;
         if (inlineEmlBytes !== null) {
+          // Review M6: an inline re-upload of a cancelled paper's mail is refused
+          // exactly like citing its stored version.
+          if (await sendEvidenceBelongsToCancelledPaper(tx, { bytes: inlineEmlBytes }, poId)) {
+            return {
+              kind: 'invalid' as const,
+              code: 'SEND_EVIDENCE_FROM_CANCELLED_PO',
+              message: 'この送信証跡は取り消し済みのメーカー発注書の送信メールです。現在の発注書を送信したメールのEMLを登録してください'
+            };
+          }
           const stored = await storeMakerPoSendEvidenceDocument(tx, {
             projectId: order.projectId,
             makerPurchaseOrderId: poId,

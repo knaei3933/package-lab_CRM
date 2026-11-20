@@ -588,7 +588,7 @@ describe('R12 the evidence-gap reason is kept; a cancelled paper\'s send mail is
     const second = await createPaper(chain.orderId, 'maker-po@example.com');
     expect(second.status, JSON.stringify(second.body)).toBe(201);
     expect((await post('admin', `/api/maker-purchase-orders/${second.body.id}/ceo-approval`)).status).toBe(200);
-    const fresh = buildMakerPoEml({ orderCode: chain.code });
+    const fresh = buildMakerPoEml({ orderCode: chain.code, messageId: `<p0-r12-fresh-${nextTag()}@kanei.example>` });
     await upload(chain.sevenPoId, chain.orderId, {
       documentType: 'send_evidence', issuerEntity: 'kanei', contentType: 'message/rfc822',
       filename: `p0-send-${nextTag()}.eml`, contentBase64: fresh.contentBase64
@@ -718,7 +718,17 @@ describe('R09 every refusal carries a stable code and safe Japanese text', () =>
       for (const file of await readdir(root)) {
         if (!file.endsWith('.ts')) continue;
         const source = await readFile(path.join(root, file), 'utf8');
-        for (const match of source.matchAll(/code: '([A-Z][A-Z0-9_]+)'/g)) codes.add(match[1]!);
+        // Review M3: a code may be chosen by a ternary spread over several
+        // lines (`code: x ? 'A' : 'B'`), so every quoted code inside the
+        // `code:` expression and its `?` / `:` continuation lines counts.
+        const lines = source.split('\n');
+        lines.forEach((line, index) => {
+          const at = line.indexOf('code:');
+          if (at < 0) return;
+          let expression = line.slice(at + 5);
+          for (let next = index + 1; next < lines.length && /^\s*[?:]/.test(lines[next]!); next += 1) expression += lines[next];
+          for (const match of expression.matchAll(/'([A-Z][A-Z0-9_]{2,})'/g)) codes.add(match[1]!);
+        });
       }
     }
     expect(codes.size).toBeGreaterThan(100);
@@ -885,5 +895,305 @@ describe('P0 follow-up coverage (test-engineer review)', () => {
     expect(verified.status).toBe(201);
     const [row] = await db.select().from(evidenceManualVerifications).where(eq(evidenceManualVerifications.approvalEventId, eventId));
     expect(row!.verifierName).toBe(ADMIN_DISPLAY_NAME);
+  });
+});
+
+// ------------------------------------------------- independent review fixes
+describe('P0 review fixes (REVIEW_REPORT H1, M1-M9)', () => {
+  async function pendingOrder() {
+    const sevenPoId = await verifiedSevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    await toApprovalPending(orderId);
+    const { revisionId } = await revisionFor(sevenPoId, orderId);
+    return { sevenPoId, orderId, revisionId };
+  }
+  async function uploadText(sevenPoId: string, orderId: string, issuerEntity: string, text: string, extra: Record<string, unknown> = {}) {
+    return await post('staff', `/api/projects/${projectId}/documents`, {
+      documentType: 'approval_evidence', issuerEntity, designKey: 'label-front', filename: `rv-${nextTag()}.txt`,
+      contentType: 'text/plain', contentBase64: b64(text), sevenPurchaseOrderId: sevenPoId, filmSupplyOrderId: orderId, ...extra
+    });
+  }
+  async function revisionSha(revisionId: string) {
+    const rows = await db.execute(sql`select dv.sha256 from artwork_revisions ar join document_versions dv on dv.id = ar.file_document_version_id where ar.id = ${revisionId}`);
+    return (rows.rows[0] as { sha256: string }).sha256;
+  }
+
+  it('H1 (GAP-3): the same bytes uploaded under both issuers do not fill both approvals; the upload warns', async () => {
+    const { sevenPoId, orderId, revisionId } = await pendingOrder();
+    const identifier = `MSG-P0-DUP-${nextTag()}`;
+    const text = `one shared mail\ncustomer: ${identifier}-C\nseven: ${identifier}-S\n`;
+    const asCustomer = await uploadText(sevenPoId, orderId, 'customer_generated', text, { filename: `dup-${identifier}.txt` });
+    expect(asCustomer.body.warnings).toEqual([]);
+    const asSeven = await uploadText(sevenPoId, orderId, 'seven', text, { filename: `dup-${identifier}.txt` });
+    expect(asSeven.status).toBe(201);
+    expect(asSeven.body.document.id).not.toBe(asCustomer.body.document.id);
+    expect(asSeven.body.warnings.map((warning: any) => warning.code)).toEqual(['SAME_CONTENT_OTHER_ISSUER']);
+    expect((await approval(revisionId, 'customer', asCustomer.body.version.id, `${identifier}-C`)).status).toBe(201);
+    const second = await approval(revisionId, 'seven', asSeven.body.version.id, `${identifier}-S`);
+    expect(second.status).toBe(422);
+    expect(second.body).toMatchObject({ code: 'EVIDENCE_SHARED_ACROSS_ORGANIZATIONS', sameEvidenceMatchedOn: 'same_bytes' });
+    expect((await orderRow(orderId)).status).not.toBe('DUAL_APPROVED');
+  });
+
+  it('H1: case, whitespace, line-ending and filename variants of the same text are the same evidence', async () => {
+    const { sevenPoId, orderId, revisionId } = await pendingOrder();
+    const identifier = `MSG-P0-VAR-${nextTag()}`;
+    const original = `Approval Mail\nCustomer: ${identifier}-C\nSeven: ${identifier}-S\n`;
+    const customer = await uploadText(sevenPoId, orderId, 'customer_generated', original);
+    expect((await approval(revisionId, 'customer', customer.body.version.id, `${identifier}-C`)).status).toBe(201);
+    const variants = [
+      original.toUpperCase().replace(`${identifier}-S`.toUpperCase(), `${identifier}-S`),
+      original.replace(/\n/g, '\r\n'),
+      `﻿  ${original.replace(/ /g, '   ')}\n\n`,
+      original.replace('Approval Mail', 'Ａｐｐｒｏｖａｌ　Ｍａｉｌ')
+    ];
+    for (const variant of variants) {
+      const seven = await uploadText(sevenPoId, orderId, 'seven', variant);
+      expect(seven.status, JSON.stringify(seven.body)).toBe(201);
+      const refused = await approval(revisionId, 'seven', seven.body.version.id, `${identifier}-S`);
+      expect(refused.status, variant).toBe(422);
+      expect(refused.body).toMatchObject({ code: 'EVIDENCE_SHARED_ACROSS_ORGANIZATIONS', sameEvidenceMatchedOn: 'same_text' });
+    }
+    // A genuinely different Seven mail still records normally.
+    const own = await uploadText(sevenPoId, orderId, 'seven', `seven approval\nid: ${identifier}-S\n`);
+    expect((await approval(revisionId, 'seven', own.body.version.id, `${identifier}-S`)).status).toBe(201);
+    expect((await orderRow(orderId)).status).toBe('DUAL_APPROVED');
+  });
+
+  it('H1: identical PDF bytes under both issuers are refused by bytes', async () => {
+    const { sevenPoId, orderId, revisionId } = await pendingOrder();
+    const identifier = `SIG-P0-PDFDUP-${nextTag()}`;
+    const pdf = b64(`%PDF-1.4\n% one signed paper ${identifier}\n%%EOF\n`);
+    const c = await post('staff', `/api/projects/${projectId}/documents`, { documentType: 'approval_evidence', issuerEntity: 'customer_generated', designKey: 'label-front', filename: `a-${identifier}.pdf`, contentType: 'application/pdf', contentBase64: pdf, sevenPurchaseOrderId: sevenPoId, filmSupplyOrderId: orderId });
+    const s7 = await post('staff', `/api/projects/${projectId}/documents`, { documentType: 'approval_evidence', issuerEntity: 'seven', designKey: 'label-front', filename: `b-${identifier}.pdf`, contentType: 'application/pdf', contentBase64: pdf, sevenPurchaseOrderId: sevenPoId, filmSupplyOrderId: orderId });
+    expect(c.status, JSON.stringify(c.body)).toBe(201);
+    expect((await approval(revisionId, 'customer', c.body.version.id, identifier, { evidenceSource: 'signed_document' })).status).toBe(201);
+    const refused = await approval(revisionId, 'seven', s7.body.version.id, identifier, { evidenceSource: 'signed_document' });
+    expect(refused.body).toMatchObject({ code: 'EVIDENCE_SHARED_ACROSS_ORGANIZATIONS', sameEvidenceMatchedOn: 'same_bytes' });
+  });
+
+  it('H1 / M8 legacy rows: same content cited by both organizations waits for the CEO; the card says so', async () => {
+    const { sevenPoId, orderId, revisionId } = await pendingOrder();
+    const identifier = `MSG-P0-LEGDUP-${nextTag()}`;
+    const text = `legacy shared mail\ncustomer: ${identifier}-C\nseven: ${identifier}-S\n`;
+    const c = await uploadText(sevenPoId, orderId, 'customer_generated', text);
+    const s7 = await uploadText(sevenPoId, orderId, 'seven', text);
+    const sha = await revisionSha(revisionId);
+    const base = { artworkRevisionId: revisionId, decision: 'APPROVE' as const, recordedByUserId: staffId, evidenceSource: 'email' as const, approvedFileSha256: sha, eventTime: new Date() };
+    const customerEventId = uuidv7();
+    const sevenEventId = uuidv7();
+    // Rows written before the content check: both auto-verified.
+    await db.insert(artworkApprovalEvents).values([
+      { ...base, id: customerEventId, organization: 'customer', evidenceDocumentVersionId: c.body.version.id, evidenceIdentifier: `${identifier}-C`, evidenceIdentifierStatus: 'verified_in_document', recordedAt: new Date(Date.now() - 1000) },
+      { ...base, id: sevenEventId, organization: 'seven', evidenceDocumentVersionId: s7.body.version.id, evidenceIdentifier: `${identifier}-S`, evidenceIdentifierStatus: 'verified_in_document', recordedAt: new Date() }
+    ]);
+    const gate = await send('admin', 'GET', `/api/film-supply-orders/${orderId}/approval-gate`);
+    expect(gate.body.dualApproved).toBe(false);
+    const card = gate.body.pendingManualVerifications.find((item: any) => item.approvalEventId === sevenEventId);
+    expect(card).toMatchObject({ sameContentUsedByOtherOrganization: true, sameContentApprovalEventId: customerEventId, issuerMatchesOrganization: true });
+    expect(card.evidenceSha256).toMatch(/^[0-9a-f]{64}$/);
+    // The transition to MAKER_PO_READY reads the same gate.
+    expect((await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'DUAL_APPROVED' })).body.code).toBe('DUAL_APPROVAL_REQUIRED');
+    expect(card.confirmable).toBe(false);
+    expect(card.recordedAsPending).toBe(false);
+    const refused = await post('admin', `/api/artwork-approval-events/${sevenEventId}/verification`, { result: 'confirmed', reasonNote: '1通のメールに両社の承認があることを原本で確認' });
+    expect(refused.status).toBe(422);
+    expect(refused.body.code).toBe('EVIDENCE_REQUIRES_REPLACEMENT');
+    // Recovery: Seven's approval recorded again on its own evidence replaces the held one.
+    const own = await uploadText(sevenPoId, orderId, 'seven', `seven own approval ${identifier}-S2
+`);
+    const replaced = await approval(revisionId, 'seven', own.body.version.id, `${identifier}-S2`);
+    expect(replaced.status, JSON.stringify(replaced.body)).toBe(201);
+    expect(replaced.body.dualApproved).toBe(true);
+  });
+
+  it('M8: a legacy auto-verified approval on another issuer\'s evidence never counts until re-recorded', async () => {
+    const { sevenPoId, orderId, revisionId } = await pendingOrder();
+    const identifier = `MSG-P0-LEGMIS-${nextTag()}`;
+    const customerOwn = await uploadText(sevenPoId, orderId, 'customer_generated', `customer mail ${identifier}-C\n`);
+    expect((await approval(revisionId, 'customer', customerOwn.body.version.id, `${identifier}-C`)).status).toBe(201);
+    const customerFile = await uploadText(sevenPoId, orderId, 'customer_generated', `another customer mail ${identifier}-S\n`);
+    const legacyId = uuidv7();
+    await db.insert(artworkApprovalEvents).values({
+      id: legacyId, artworkRevisionId: revisionId, organization: 'seven', decision: 'APPROVE', recordedByUserId: staffId,
+      evidenceDocumentVersionId: customerFile.body.version.id, evidenceIdentifier: `${identifier}-S`,
+      evidenceIdentifierStatus: 'verified_in_document', evidenceSource: 'email', approvedFileSha256: await revisionSha(revisionId),
+      eventTime: new Date(), recordedAt: new Date()
+    });
+    const gate = await send('admin', 'GET', `/api/film-supply-orders/${orderId}/approval-gate`);
+    expect(gate.body.dualApproved).toBe(false);
+    expect(gate.body.pendingManualVerifications.find((item: any) => item.approvalEventId === legacyId)).toMatchObject({ confirmable: false, issuerMatchesOrganization: false });
+    expect((await post('admin', `/api/artwork-approval-events/${legacyId}/verification`, { result: 'confirmed', reasonNote: '確認' })).body.code).toBe('EVIDENCE_REQUIRES_REPLACEMENT');
+    expect((await post('admin', `/api/artwork-approval-events/${legacyId}/verification`, { result: 'rejected', reasonNote: '発行元がセブン化学ではない' })).body.code).toBe('EVIDENCE_REQUIRES_REPLACEMENT');
+    expect((await send('admin', 'GET', `/api/film-supply-orders/${orderId}/approval-gate`)).body.dualApproved).toBe(false);
+    const own = await uploadText(sevenPoId, orderId, 'seven', `seven own ${identifier}-S2
+`);
+    expect((await approval(revisionId, 'seven', own.body.version.id, `${identifier}-S2`)).body.dualApproved).toBe(true);
+  });
+
+  it('GAP-2: another version of a document the other organization cited is refused', async () => {
+    const { sevenPoId, orderId, revisionId } = await pendingOrder();
+    const identifier = `MSG-P0-GAP2-${nextTag()}`;
+    const filename = `gap-shared-${nextTag()}.txt`;
+    const v1 = await uploadText(sevenPoId, orderId, 'customer_generated', `v1\ncustomer: ${identifier}-C\n`, { filename });
+    expect((await approval(revisionId, 'customer', v1.body.version.id, `${identifier}-C`)).status).toBe(201);
+    const v2 = await uploadText(sevenPoId, orderId, 'customer_generated', `v2\nseven: ${identifier}-S\n`, { filename });
+    expect(v2.body.document.id).toBe(v1.body.document.id);
+    const second = await approval(revisionId, 'seven', v2.body.version.id, `${identifier}-S`);
+    expect(second.body).toMatchObject({ code: 'EVIDENCE_SHARED_ACROSS_ORGANIZATIONS', sameEvidenceMatchedOn: 'same_document' });
+  });
+
+  it('M7: the shared-evidence exception needs the other organization to cite it first', async () => {
+    const { sevenPoId, orderId, revisionId } = await pendingOrder();
+    const identifier = `MSG-P0-M7-${nextTag()}`;
+    const doc = await uploadText(sevenPoId, orderId, 'customer_generated', `mail ${identifier}-C ${identifier}-S\n`);
+    const first = await approval(revisionId, 'seven', doc.body.version.id, `${identifier}-S`, { sharedEvidence: true, sharedEvidenceReason: '1通のメール' });
+    expect(first.status).toBe(422);
+    expect(first.body.code).toBe('SHARED_EVIDENCE_NOT_CITED_BY_OTHER_ORGANIZATION');
+    expect((await approval(revisionId, 'customer', doc.body.version.id, `${identifier}-C`)).status).toBe(201);
+    const declared = await approval(revisionId, 'seven', doc.body.version.id, `${identifier}-S`, { sharedEvidence: true, sharedEvidenceReason: '1通のメール' });
+    expect(declared.status).toBe(201);
+    expect(declared.body.countsTowardDualApproval).toBe(false);
+  });
+
+  it('M9: a revocation is recorded on any evidence of the order (fails closed, not open)', async () => {
+    const { sevenPoId, orderId, revisionId } = await pendingOrder();
+    const identifier = `MSG-P0-M9-${nextTag()}`;
+    const own = await uploadText(sevenPoId, orderId, 'seven', `seven mail ${identifier}\n`);
+    expect((await approval(revisionId, 'seven', own.body.version.id, identifier)).status).toBe(201);
+    const memo = await uploadText(sevenPoId, orderId, 'kanei', `電話メモ 承認取消 ${identifier}-R\n`);
+    const revoked = await approval(revisionId, 'seven', memo.body.version.id, `${identifier}-R`, { decision: 'REVOKE' });
+    expect(revoked.status, JSON.stringify(revoked.body)).toBe(201);
+    expect(revoked.body.approvalEvent.decision).toBe('REVOKE');
+    const gate = await send('staff', 'GET', `/api/film-supply-orders/${orderId}/approval-gate`);
+    expect(gate.body.missingApprovals.some((missing: any) => missing.organization === 'seven')).toBe(true);
+  });
+
+  it('GAP-1 (M1): a term change racing the CEO approval waits for its lock and is refused after it', async () => {
+    const chain = await readyOrder('prepaid');
+    const paper = await createPaper(chain.orderId);
+    expect(paper.status, JSON.stringify(paper.body)).toBe(201);
+    let patch: Promise<{ status: number; body: any }> | undefined;
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`select id from film_supply_orders where id = ${chain.orderId} for update`);
+      await tx.update(makerPurchaseOrders).set({ ceoApprovedAt: new Date(), ceoApprovedByUserId: adminId })
+        .where(eq(makerPurchaseOrders.id, paper.body.id));
+      patch = send('staff', 'PATCH', `/api/film-supply-orders/${chain.orderId}/payment-terms`, { paymentTerms: 'on_delivery' });
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    });
+    const result = await patch!;
+    expect(result.status, JSON.stringify(result.body)).toBe(422);
+    expect(result.body.code).toBe('PAYMENT_TERMS_LOCKED');
+    expect((await orderRow(chain.orderId)).paymentTerms).toBe('prepaid');
+  });
+
+  it('M2: the CEO approval pins the term it was shown (expectedPaymentTerms)', async () => {
+    const chain = await readyOrder('prepaid');
+    const paper = await createPaper(chain.orderId);
+    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, { expectedPaymentTerms: 'cash' })).body.code).toBe('UNKNOWN_PAYMENT_TERMS');
+    // Changed after the screen was opened.
+    expect((await send('staff', 'PATCH', `/api/film-supply-orders/${chain.orderId}/payment-terms`, { paymentTerms: 'on_delivery' })).status).toBe(200);
+    const stale = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, { expectedPaymentTerms: 'prepaid' });
+    expect(stale.status).toBe(409);
+    expect(stale.body).toMatchObject({ code: 'PAYMENT_TERMS_CHANGED', expectedPaymentTerms: 'prepaid', paymentTerms: 'on_delivery' });
+    const [draft] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, paper.body.id));
+    expect(draft!.status).toBe('DRAFT');
+    const approved = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, { expectedPaymentTerms: 'on_delivery' });
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect(approved.body.approvedPaymentTerms).toBe('on_delivery');
+    const [audit] = await db.select().from(auditEvents).where(and(
+      eq(auditEvents.entityId, paper.body.id), eq(auditEvents.action, 'MAKER_PO_STATUS_CHANGED')
+    ));
+    expect((audit!.afterState as any).approvedPaymentTerms).toBe('on_delivery');
+  });
+
+  it('M3: the reason refusals of hold release / review / cancel / acknowledgement read their own Japanese text', async () => {
+    for (const code of ['HOLD_RELEASE_REASON_REQUIRED', 'HOLD_RELEASE_REASON_TOO_LONG', 'CANCELLATION_REASON_REQUIRED', 'CANCELLATION_REASON_TOO_LONG',
+      'MAKER_PO_CANCEL_REASON_REQUIRED', 'MAKER_PO_CANCEL_REASON_TOO_LONG', 'MAKER_CANCELLATION_ACK_REASON_REQUIRED', 'MAKER_CANCELLATION_ACK_REASON_TOO_LONG']) {
+      expect(ERROR_MESSAGES_JA[code], code).toBeTruthy();
+    }
+    const { orderId } = await createOrder(await verifiedSevenPo());
+    expect((await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ON_HOLD', holdReason: '確認待ち' })).status).toBe(200);
+    const release = await post('admin', `/api/film-supply-orders/${orderId}/hold-release`, {});
+    expect(release.status).toBe(422);
+    expect(release.body).toEqual({ error: ERROR_MESSAGES_JA.HOLD_RELEASE_REASON_REQUIRED, code: 'HOLD_RELEASE_REASON_REQUIRED' });
+  });
+
+  it('M4: a multipart upload replays only for the same file; another file with the same key is refused', async () => {
+    const sevenPoId = await verifiedSevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    const key = `idem-mp-${nextTag()}-0001`;
+    const filename = `mp-${nextTag()}.txt`;
+    function multipart(boundary: string, content: string) {
+      const fields: Record<string, string> = { documentType: 'proof', issuerEntity: 'kanei', filename, contentType: 'text/plain', sevenPurchaseOrderId: sevenPoId, filmSupplyOrderId: orderId, designKey: 'label-front' };
+      let body = '';
+      for (const [name, value] of Object.entries(fields)) body += `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
+      body += `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${filename}"\r\nContent-Type: text/plain\r\n\r\n${content}\r\n--${boundary}--\r\n`;
+      return app.request(`/api/projects/${projectId}/documents`, {
+        method: 'POST', body,
+        headers: { 'content-type': `multipart/form-data; boundary=${boundary}`, cookie: `${SESSION_COOKIE}=${tokens.staff}`, 'idempotency-key': key }
+      });
+    }
+    const first = await multipart('----boundaryAAAA1111', 'multipart proof one\n');
+    expect(first.status).toBe(201);
+    const retry = await multipart('----boundaryBBBB2222', 'multipart proof one\n');
+    expect(retry.status).toBe(201);
+    expect(retry.headers.get('idempotent-replayed')).toBe('true');
+    const otherFile = await multipart('----boundaryCCCC3333', 'a different file\n');
+    expect(otherFile.status).toBe(422);
+    expect(((await otherFile.json()) as { code: string }).code).toBe('IDEMPOTENCY_KEY_REUSED');
+  });
+
+  it('M5: concurrent health requests share one database probe', async () => {
+    let probes = 0;
+    const slowDb: any = { execute: () => { probes += 1; return new Promise((resolve) => setTimeout(resolve, 200)); } };
+    const healthApp = createApp({ db: slowDb, port: 3096 });
+    const answers = await Promise.all(Array.from({ length: 10 }, () => Promise.resolve(healthApp.request('/api/health')).then((response: Response) => response.json())));
+    expect(probes).toBe(1);
+    expect(answers.every((answer: any) => answer.db === 'ok')).toBe(true);
+  });
+
+  it('M6: a cancelled paper\'s mail re-uploaded (inline, new document, or same Message-ID) is refused for the replacement', async () => {
+    const chain = await readyOrder();
+    const first = await createPaper(chain.orderId);
+    expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/ceo-approval`)).status).toBe(200);
+    const messageId = `<p0-m6-${nextTag()}@kanei.example>`;
+    const original = buildMakerPoEml({ orderCode: chain.code, messageId });
+    const firstSend = await post('staff', `/api/maker-purchase-orders/${first.body.id}/send-evidence`, {
+      contentBase64: original.contentBase64, senderAddress: original.senderAddress, recipients: [original.recipientAddress], sentAt: original.sentAtIso
+    });
+    expect(firstSend.status, JSON.stringify(firstSend.body)).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/cancel`, { note: '再作成' })).status).toBe(200);
+    const second = await createPaper(chain.orderId);
+    expect((await post('admin', `/api/maker-purchase-orders/${second.body.id}/ceo-approval`)).status).toBe(200);
+
+    const inline = await post('staff', `/api/maker-purchase-orders/${second.body.id}/send-evidence`, {
+      contentBase64: original.contentBase64, senderAddress: original.senderAddress, recipients: [original.recipientAddress], sentAt: new Date().toISOString()
+    });
+    expect(inline.body.code).toBe('SEND_EVIDENCE_FROM_CANCELLED_PO');
+    const reuploaded = await upload(chain.sevenPoId, chain.orderId, {
+      documentType: 'send_evidence', issuerEntity: 'kanei', contentType: 'message/rfc822', filename: `renamed-${nextTag()}.eml`, contentBase64: original.contentBase64
+    });
+    const sameId = buildMakerPoEml({ orderCode: chain.code, messageId, subject: `再送 ${chain.code}` });
+    const sameMessageId = await upload(chain.sevenPoId, chain.orderId, {
+      documentType: 'send_evidence', issuerEntity: 'kanei', contentType: 'message/rfc822', filename: `same-id-${nextTag()}.eml`, contentBase64: sameId.contentBase64
+    });
+    for (const versionId of [reuploaded.version.id, sameMessageId.version.id]) {
+      const cited = await post('staff', `/api/maker-purchase-orders/${second.body.id}/send-evidence`, {
+        evidenceDocumentVersionId: versionId, senderAddress: original.senderAddress, recipients: [original.recipientAddress], sentAt: new Date().toISOString()
+      });
+      expect(cited.body.code).toBe('SEND_EVIDENCE_FROM_CANCELLED_PO');
+    }
+    const candidates = await send('staff', 'GET', `/api/maker-purchase-orders/${second.body.id}/send-evidence-candidates`);
+    const offered = candidates.body.candidates.map((candidate: any) => candidate.versionId);
+    expect(offered).not.toContain(reuploaded.version.id);
+    expect(offered).not.toContain(sameMessageId.version.id);
+    // A fresh mail for the new paper is still offered.
+    const fresh = await upload(chain.sevenPoId, chain.orderId, {
+      documentType: 'send_evidence', issuerEntity: 'kanei', contentType: 'message/rfc822', filename: `fresh-${nextTag()}.eml`,
+      contentBase64: buildMakerPoEml({ orderCode: chain.code, messageId: `<p0-m6-new-${nextTag()}@kanei.example>` }).contentBase64
+    });
+    const after = await send('staff', 'GET', `/api/maker-purchase-orders/${second.body.id}/send-evidence-candidates`);
+    expect(after.body.candidates.map((candidate: any) => candidate.versionId)).toContain(fresh.version.id);
   });
 });

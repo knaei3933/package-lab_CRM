@@ -741,20 +741,33 @@ export type ApprovalEvidenceIssuerCheck =
   | { ok: true; issuerMatchesOrganization: boolean; requiresManualVerification: boolean }
   | {
       ok: false;
-      code: 'EVIDENCE_ISSUER_MISMATCH' | 'EVIDENCE_SHARED_ACROSS_ORGANIZATIONS' | 'SHARED_EVIDENCE_ISSUER_INVALID';
+      code: 'EVIDENCE_ISSUER_MISMATCH' | 'EVIDENCE_SHARED_ACROSS_ORGANIZATIONS' | 'SHARED_EVIDENCE_ISSUER_INVALID'
+        | 'SHARED_EVIDENCE_NOT_CITED_BY_OTHER_ORGANIZATION';
       message: string;
     };
 
 export function evaluateApprovalEvidenceIssuer(input: {
   organization: ApprovalOrganization;
   issuerEntity: string;
-  /** Another organization already cites this exact evidence version on the order. */
+  /**
+   * Another organization already cites the same evidence on the order: the
+   * same document, the same bytes (sha256), or the same normalized text (case,
+   * whitespace, re-upload or filename variants). P0 review H1.
+   */
   citedByOtherOrganization: boolean;
   /** The recorder explicitly declared one shared evidence for both organizations. */
   sharedEvidenceDeclared: boolean;
+  /** APPROVE or REVOKE; a revocation only ever reduces an approval (review M9). */
+  decision?: 'APPROVE' | 'REVOKE';
 }): ApprovalEvidenceIssuerCheck {
   const expected = APPROVAL_ORGANIZATION_ISSUER[input.organization];
   const matches = input.issuerEntity === expected;
+  // Review M9: refusing a revocation over its evidence's issuer would keep a
+  // withdrawn approval counting — failing open. A REVOKE never counts toward
+  // anything, so it is recorded on any evidence of this order and design.
+  if (input.decision === 'REVOKE') {
+    return { ok: true, issuerMatchesOrganization: matches, requiresManualVerification: false };
+  }
   if (input.sharedEvidenceDeclared) {
     // The shared mail must come from one of the two approving organizations;
     // a Kanei memo, a maker paper or an unknown issuer is never approval
@@ -764,6 +777,16 @@ export function evaluateApprovalEvidenceIssuer(input: {
         ok: false,
         code: 'SHARED_EVIDENCE_ISSUER_INVALID',
         message: '共有証跡として使えるのは、顧客作成またはセブン化学が発行した承認書類だけです'
+      };
+    }
+    // Review M7 (P-1 condition): the exception is for one mail that carries
+    // both organizations' approvals, so the other organization must already
+    // cite that same evidence; the first organization records it as its own.
+    if (!input.citedByOtherOrganization) {
+      return {
+        ok: false,
+        code: 'SHARED_EVIDENCE_NOT_CITED_BY_OTHER_ORGANIZATION',
+        message: '共有証跡の例外は、もう一方の組織が同じ承認証跡ですでに承認を記録している場合だけ使えます。先にもう一方の組織の承認を記録してください'
       };
     }
     return { ok: true, issuerMatchesOrganization: matches, requiresManualVerification: true };
@@ -785,4 +808,21 @@ export function evaluateApprovalEvidenceIssuer(input: {
     };
   }
   return { ok: true, issuerMatchesOrganization: true, requiresManualVerification: false };
+}
+
+/**
+ * P0 review H1: the content key of an approval evidence. Two uploads are the
+ * same evidence when their bytes match (sha256) or — for text-like evidence
+ * (plain text, CSV, EML) — when their text matches after Unicode NFKC folding,
+ * lower-casing and removing every whitespace character and the BOM. Binary
+ * evidence (PDF, images) compares by bytes only.
+ */
+export const TEXT_LIKE_EVIDENCE_MIME_TYPES: readonly string[] = ['text/plain', 'text/csv', 'message/rfc822'];
+
+export function normalizedEvidenceText(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString('utf8')
+    .replace(/^\uFEFF/, '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\s\p{Z}\u200B-\u200D\u2060\uFEFF]+/gu, '');
 }

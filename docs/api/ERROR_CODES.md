@@ -1,6 +1,6 @@
 # API エラーコード一覧（P0 サーバー, p0/server）
 
-コード数: 239
+コード数: 251
 
 API の拒否応答（HTTP 400 以上）は必ず JSON `{ "error": "<日本語の文>", "code": "<CODE>", ...追加項目 }` です（R09）。
 `error` には英語の core メッセージ・enum 値・項目名・内部 URL/ポートを入れません。安全でない文はサーバーがこの表の文に置き換えます。
@@ -90,6 +90,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `PAYMENT_TERMS_LOCKED` | 422 | 代表承認済みのメーカー発注書がある、または保留・見直し中のため、決済条件は変更できません | `reason`: `ceo_approved`（承認済み発注書あり。`makerPurchaseOrderId` 付き）/ `order_frozen`（保留・見直し・取消）, `from`（発注状態） |
 | `PAYMENT_TERMS_REASON_TOO_LONG` | 422 | 決済条件の変更理由が長すぎます。1000文字以下にしてください |  |
 | `PAYMENT_TERMS_REASON_INVALID` | 422 | 決済条件の変更理由が空です。理由を書くか、欄を空のままにしてください |  |
+| `PAYMENT_TERMS_CHANGED` | 409 | 承認画面を開いた後に決済条件が変更されました。最新の決済条件を確認してから、もう一度承認してください |  |
 | `PAYMENT_GATE_UNSATISFIED` | 422 | 決済条件が「未定」のため代表承認できません。フィルム発注の決済条件を「前払い」または「納品時払い」に変更してから承認してください | `paymentTerms`。「この画面で決済条件を選ぶ」ボタン（PATCH /api/film-supply-orders/:orderId/payment-terms）を置く |
 | `PAYMENT_TERMS_UNDETERMINED` | 401 | 決済条件が「未定」です。代表承認の前に「前払い」または「納品時払い」を選んでください | 拒否ではない。遷移応答の `warnings[]` と GET /api/projects/:projectId/film-supply-orders の `attention[]` に入る |
 
@@ -139,6 +140,8 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `HOLD_REASON_TOO_LONG` | 422 | 保留理由が長すぎます。1000文字以下にしてください |  |
 | `EVIDENCE_NOTE_TOO_LONG` | 422 | 証跡がないまま進める理由が長すぎます。1000文字以下にしてください |  |
 | `ORDER_NOT_ON_HOLD` | 422 | この発注は保留中ではありません。画面を再読み込みしてください |  |
+| `HOLD_RELEASE_REASON_REQUIRED` | 422 | 保留を解除する理由を入力してください |  |
+| `HOLD_RELEASE_REASON_TOO_LONG` | 422 | 保留を解除する理由が長すぎます。1000文字以下にしてください |  |
 | `HOLD_ORIGIN_UNKNOWN` | 422 | 保留前の状態が記録されていないため、戻す先の状態を選んでください |  |
 | `HOLD_RELEASE_STATE_CONFLICT` | 409 | 保留の状態が別の操作で変わりました。画面を再読み込みしてください |  |
 | `HOLD_RESUME_EVIDENCE_MISMATCH` | 422 | 戻す先の状態に必要なメーカー発注書の証跡がありません |  |
@@ -146,6 +149,8 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `ORDER_NOT_IN_CANCELLATION_REVIEW` | 422 | この発注は取消レビュー中ではありません。画面を再読み込みしてください |  |
 | `CANCELLATION_REVIEW_RESOLUTION_REQUIRED` | 422 | 取消レビューは、取消レビューの解決操作（代表者）でだけ終了できます |  |
 | `CANCELLATION_REVIEW_STATE_CHANGED` | 409 | 取消レビューの状態が別の操作で変わりました。画面を再読み込みしてください |  |
+| `CANCELLATION_REASON_REQUIRED` | 422 | 取消レビューを解決する理由を入力してください |  |
+| `CANCELLATION_REASON_TOO_LONG` | 422 | 取消レビューを解決する理由が長すぎます。1000文字以下にしてください |  |
 | `CANCELLATION_OUTCOME_INVALID` | 422 | 取消レビューの結果は「再開」か「取消で終了」から選んでください |  |
 | `CANCELLATION_RESUME_REQUIRED` | 422 | 取消レビュー前の状態が記録されていないため、再開する状態を選んでください |  |
 | `CANCELLATION_RESUME_TARGET_INVALID` | 422 | 再開できるのは取消レビュー前の状態だけです |  |
@@ -228,6 +233,8 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `SHARED_EVIDENCE_ISSUER_INVALID` | 422 | 共有証跡として使えるのは、顧客作成またはセブン化学が発行した承認書類だけです | `organization`, `evidenceIssuerEntity` |
 | `SHARED_EVIDENCE_REASON_REQUIRED` | 422 | 両組織で同じ承認証跡を使う理由を入力してください |  |
 | `SHARED_EVIDENCE_REASON_TOO_LONG` | 422 | 共有証跡の理由が長すぎます。1000文字以下にしてください |  |
+| `SHARED_EVIDENCE_NOT_CITED_BY_OTHER_ORGANIZATION` | 422 | 共有証跡の例外は、もう一方の組織が同じ承認証跡ですでに承認を記録している場合だけ使えます。先にもう一方の組織の承認を記録してください |  |
+| `SAME_CONTENT_OTHER_ISSUER` | 401 | 同じ内容の承認証跡が別の発行元ですでに登録されています。組織ごとに別の承認書類を使ってください |  |
 | `SHARED_EVIDENCE_FLAG_INVALID` | 422 | 共有証跡の指定が正しくありません。画面を再読み込みしてください |  |
 
 ## manual verification (approval evidence / send)
@@ -243,6 +250,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `EVIDENCE_VERIFICATION_TARGET_INVALID` | 422 | 承認取消の記録は手動確認の対象ではありません |  |
 | `EVIDENCE_NOT_PENDING_MANUAL_VERIFICATION` | 422 | この承認は手動確認待ちではありません（確認済みまたは自動確認済み） |  |
 | `EVIDENCE_IDENTIFIER_MISSING` | 422 | この承認には識別子が記録されていないため確認できません |  |
+| `EVIDENCE_REQUIRES_REPLACEMENT` | 422 | この承認は、もう一方の組織と同じ承認証跡、または別の発行元の証跡で記録されているため数えられません。その組織が発行した承認書類で承認を記録し直してください |  |
 | `EVIDENCE_ALREADY_CONFIRMED` | 422 | この承認はすでに確認済みです。訂正する場合は、その組織の承認取消として記録してください |  |
 | `EVIDENCE_ALREADY_VERIFIED` | 422 | この承認はすでに手動確認が記録されています。訂正する場合は、その組織の承認取消として記録してください |  |
 | `MAKER_PO_SEND_VERIFICATION_TARGET_INVALID` | 422 | 手動確認できるのは送信の記録だけです |  |
@@ -265,6 +273,10 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED` | 409 | 保留・見直し中の発注のメーカー発注書は進められません。状態を解決してから記録してください |  |
 | `FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED` | 409 | 取消で終了した発注のメーカー発注書は操作できません |  |
 | `MAKER_PO_CANCELLATION_ACK_REQUIRED` | 422 | 送信済みのメーカー発注書が取り消されています。新しい発注書を作る前に、メーカーの取消確認を記録してください |  |
+| `MAKER_PO_CANCEL_REASON_REQUIRED` | 422 | メーカー発注書を取り消す理由を入力してください |  |
+| `MAKER_PO_CANCEL_REASON_TOO_LONG` | 422 | メーカー発注書を取り消す理由が長すぎます。1000文字以下にしてください |  |
+| `MAKER_CANCELLATION_ACK_REASON_REQUIRED` | 422 | メーカーの取消確認の内容（メモ）を入力してください |  |
+| `MAKER_CANCELLATION_ACK_REASON_TOO_LONG` | 422 | メーカーの取消確認の内容（メモ）が長すぎます。1000文字以下にしてください |  |
 | `MAKER_PO_NOT_CANCELLED` | 422 | 取消確認は、取り消し済みのメーカー発注書にだけ記録できます |  |
 | `MAKER_CANCELLATION_ACK_ALREADY_RECORDED` | 422 | この発注書の取消確認はすでに記録されています |  |
 | `MAKER_CANCELLATION_ACK_EVIDENCE_INVALID` | 422 | 取消確認の証跡の指定が正しくありません |  |
