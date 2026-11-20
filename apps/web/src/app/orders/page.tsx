@@ -34,7 +34,7 @@ import {
   updateFilmPaymentTermsAction,
   verifySevenPurchaseOrderAction
 } from '../actions';
-import { loadSessionUser } from '../../lib/api';
+import { callApi, loadSessionUser } from '../../lib/api';
 import { loadPaymentGate, PAYMENT_TERMS_LABELS } from '../../lib/maker-po-data';
 import { canRoleOperate } from '../../lib/permissions';
 import {
@@ -161,7 +161,12 @@ export default async function OrdersPage() {
   // the data layer's placeholder, so no payment-gate read is made for it.
   // UI batch E: a viewer now reads statuses (server batch E) but has no 操作 column, so its
   // drafts' payment gates are never shown — and never read.
-  const draftOrders = showOrderOperations ? workspace.filmOrders.filter((order) => knownStatus(order) === 'DRAFT') : [];
+  // P0 integration (R01, P-5): the API says per order whether the 支払条件 may still be
+  // changed (until a maker PO carries the 代表承認; not while frozen or closed).
+  const termsEditable = showOrderOperations ? await loadPaymentTermsEditability(projectId) : null;
+  const draftOrders = showOrderOperations
+    ? workspace.filmOrders.filter((order) => (termsEditable?.get(order.id) ?? PAYMENT_TERMS_EDITABLE_STATES.has(knownStatus(order) ?? '')))
+    : [];
   const paymentGates = await Promise.all(draftOrders.map((order) => loadPaymentGate(order.id)));
   const paymentGateByOrderId = new Map<string, Awaited<ReturnType<typeof loadPaymentGate>>>();
   for (const [index, order] of draftOrders.entries()) {
@@ -276,7 +281,7 @@ export default async function OrdersPage() {
                             workspace={workspace}
                           />
                         )}
-                        {PAYMENT_TERMS_EDITABLE_STATES.has(status ?? '') ? (
+                        {(termsEditable?.get(order.id) ?? PAYMENT_TERMS_EDITABLE_STATES.has(status ?? '')) ? (
                           <RoleGate role={role} operation="film_order:update_payment_terms" label="支払条件の記録">
                             <PaymentTermsCell order={order} gate={paymentGateByOrderId.get(order.id) ?? null} />
                           </RoleGate>
@@ -482,8 +487,8 @@ function TransitionCell({
               ))}
               <TextareaField
                 name={EVIDENCE_NOTE_FIELD}
-                label="証跡がないまま進める理由（確認用・保存されません）"
-                hint="確認のための入力です。今は履歴には保存されません。証跡があとから届く場合は、その予定を書いてください。"
+                label="証跡がないまま進める理由（履歴に保存されます）"
+                hint="理由は監査の履歴に残ります（1000字まで）。証跡があとから届く場合は、その予定を書いてください。"
                 rows={2}
                 width={280}
               />
@@ -725,7 +730,45 @@ function PaymentTermsCell({
         />
         <TextField name="reason" label="変更の理由（任意）" width={280} />
       </ActionForm>
+      <PaymentTermsHistory order={order} />
     </details>
+  );
+}
+
+/**
+ * P0 integration: GET /api/projects/:projectId/film-supply-orders answers
+ * paymentTermsEditable per order (p0-server). Null when the list cannot be read —
+ * the screen then falls back to the state list and the API still decides.
+ */
+async function loadPaymentTermsEditability(projectId: string): Promise<Map<string, boolean> | null> {
+  const result = await callApi<{ orders?: Array<{ id?: unknown; paymentTermsEditable?: unknown }> }>(
+    `/api/projects/${encodeURIComponent(projectId)}/film-supply-orders`
+  );
+  if (!result.ok || !Array.isArray(result.data?.orders)) return null;
+  const editable = new Map<string, boolean>();
+  for (const order of result.data.orders) {
+    if (typeof order.id === 'string') editable.set(order.id, order.paymentTermsEditable === true);
+  }
+  return editable;
+}
+
+/** P0 R01 (P-5): the 支払条件 changes on record — every change stays visible, oldest first. */
+function PaymentTermsHistory({ order }: { order: FilmSupplyOrderView }) {
+  const history = order.paymentTermsHistory ?? [];
+  if (history.length === 0) return null;
+  const label = (value: string | null) => (value ? PAYMENT_TERMS_LABELS[value] ?? '（不明）' : '（記録なし）');
+  return (
+    <div style={{ marginTop: 8 }}>
+      <p style={{ ...noteStyle, margin: 0 }}>支払条件の変更履歴</p>
+      <ol className="payment-terms-history" style={{ margin: '4px 0 0', paddingLeft: 20 }}>
+        {history.map((change, index) => (
+          <li key={`${change.at}-${index}`} style={{ fontSize: 13 }}>
+            {formatTimestamp(change.at)} {change.actorName ?? '（記録者不明）'}: {label(change.before)} → {label(change.after)}
+            {change.reason ? `（理由: ${change.reason}）` : ''}
+          </li>
+        ))}
+      </ol>
+    </div>
   );
 }
 

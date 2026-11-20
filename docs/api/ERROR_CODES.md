@@ -85,13 +85,13 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 
 | code | HTTP | 意味（サーバー既定の日本語文） | 追加項目・画面での扱い |
 |---|---|---|---|
-| `PAYMENT_TERMS_REQUIRED` | 422 | 決済条件を選んでください（前払い・納品時払い・未定） |  |
-| `UNKNOWN_PAYMENT_TERMS` | 422 | 決済条件は「前払い」「納品時払い」「未定」から選んでください |  |
-| `PAYMENT_TERMS_LOCKED` | 422 | 代表承認済みのメーカー発注書がある、または保留・見直し中のため、決済条件は変更できません | `reason`: `ceo_approved`（承認済み発注書あり。`makerPurchaseOrderId` 付き）/ `order_frozen`（保留・見直し・取消）, `from`（発注状態） |
-| `PAYMENT_TERMS_REASON_TOO_LONG` | 422 | 決済条件の変更理由が長すぎます。1000文字以下にしてください |  |
-| `PAYMENT_TERMS_REASON_INVALID` | 422 | 決済条件の変更理由が空です。理由を書くか、欄を空のままにしてください |  |
-| `PAYMENT_GATE_UNSATISFIED` | 422 | 決済条件が「未定」のため代表承認できません。フィルム発注の決済条件を「前払い」または「納品時払い」に変更してから承認してください | `paymentTerms`。「この画面で決済条件を選ぶ」ボタン（PATCH /api/film-supply-orders/:orderId/payment-terms）を置く |
-| `PAYMENT_TERMS_UNDETERMINED` | 401 | 決済条件が「未定」です。代表承認の前に「前払い」または「納品時払い」を選んでください | 拒否ではない。遷移応答の `warnings[]` と GET /api/projects/:projectId/film-supply-orders の `attention[]` に入る |
+| `PAYMENT_TERMS_REQUIRED` | 422 | 支払条件を選んでください（前払い・納品後払い・未定） |  |
+| `UNKNOWN_PAYMENT_TERMS` | 422 | 支払条件は「前払い」「納品後払い」「未定」から選んでください |  |
+| `PAYMENT_TERMS_LOCKED` | 422 | 代表承認済みのメーカー発注書がある、または保留・見直し中のため、支払条件は変更できません | `reason`: `ceo_approved`（承認済み発注書あり。`makerPurchaseOrderId` 付き）/ `order_frozen`（保留・見直し・取消）, `from`（発注状態） |
+| `PAYMENT_TERMS_REASON_TOO_LONG` | 422 | 支払条件の変更理由が長すぎます。1000文字以下にしてください |  |
+| `PAYMENT_TERMS_REASON_INVALID` | 422 | 支払条件の変更理由が空です。理由を書くか、欄を空のままにしてください |  |
+| `PAYMENT_GATE_UNSATISFIED` | 422 | 支払条件が「未定」のため代表承認できません。フィルム発注の支払条件を「前払い」または「納品後払い」に変更してから承認してください | `paymentTerms`。「この画面で支払条件を選ぶ」ボタン（PATCH /api/film-supply-orders/:orderId/payment-terms）を置く |
+| `PAYMENT_TERMS_UNDETERMINED` | 200 (warnings / attention) | 支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください | 拒否ではない。遷移応答の `warnings[]` と GET /api/projects/:projectId/film-supply-orders の `attention[]` に入る |
 
 ## seven purchase orders / pre-order references
 

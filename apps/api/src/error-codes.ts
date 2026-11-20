@@ -64,13 +64,13 @@ export const ERROR_MESSAGES_JA: Readonly<Record<string, string>> = {
   ROUTE_IMMUTABLE: '案件の種類はあとから変更できません',
 
   // ---- R01: payment terms
-  PAYMENT_TERMS_REQUIRED: '決済条件を選んでください（前払い・納品時払い・未定）',
-  UNKNOWN_PAYMENT_TERMS: '決済条件は「前払い」「納品時払い」「未定」から選んでください',
-  PAYMENT_TERMS_LOCKED: '代表承認済みのメーカー発注書がある、または保留・見直し中のため、決済条件は変更できません',
-  PAYMENT_TERMS_REASON_TOO_LONG: '決済条件の変更理由が長すぎます。1000文字以下にしてください',
-  PAYMENT_TERMS_REASON_INVALID: '決済条件の変更理由が空です。理由を書くか、欄を空のままにしてください',
-  PAYMENT_GATE_UNSATISFIED: '決済条件が「未定」のため代表承認できません。フィルム発注の決済条件を「前払い」または「納品時払い」に変更してから承認してください',
-  PAYMENT_TERMS_UNDETERMINED: '決済条件が「未定」です。代表承認の前に「前払い」または「納品時払い」を選んでください',
+  PAYMENT_TERMS_REQUIRED: '支払条件を選んでください（前払い・納品後払い・未定）',
+  UNKNOWN_PAYMENT_TERMS: '支払条件は「前払い」「納品後払い」「未定」から選んでください',
+  PAYMENT_TERMS_LOCKED: '代表承認済みのメーカー発注書がある、または保留・見直し中のため、支払条件は変更できません',
+  PAYMENT_TERMS_REASON_TOO_LONG: '支払条件の変更理由が長すぎます。1000文字以下にしてください',
+  PAYMENT_TERMS_REASON_INVALID: '支払条件の変更理由が空です。理由を書くか、欄を空のままにしてください',
+  PAYMENT_GATE_UNSATISFIED: '支払条件が「未定」のため代表承認できません。フィルム発注の支払条件を「前払い」または「納品後払い」に変更してから承認してください',
+  PAYMENT_TERMS_UNDETERMINED: '支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください',
 
   // ---- seven purchase orders / pre-order references
   PO_NUMBER_REQUIRED: '発注番号を入力してください',

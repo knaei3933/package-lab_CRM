@@ -260,9 +260,9 @@ describe('R01 payment terms: required choice, editable until the CEO approval, s
     expect(blank.body.code).toBe('PAYMENT_TERMS_REASON_INVALID');
     expect((await orderRow(orderId)).paymentTerms).toBe('undetermined');
 
-    const byStaff = await patch('staff', { paymentTerms: 'on_delivery', reason: '顧客と納品時払いで合意' });
+    const byStaff = await patch('staff', { paymentTerms: 'on_delivery', reason: '顧客と納品後払いで合意' });
     expect(byStaff.status).toBe(200);
-    expect(byStaff.body).toMatchObject({ paymentTerms: 'on_delivery', paymentTermsLabel: '納品時払い', changed: true });
+    expect(byStaff.body).toMatchObject({ paymentTerms: 'on_delivery', paymentTermsLabel: '納品後払い', changed: true });
     const byAdmin = await patch('admin', { paymentTerms: 'prepaid' });
     expect(byAdmin.status).toBe(200);
     const same = await patch('admin', { paymentTerms: 'prepaid' });
@@ -275,7 +275,7 @@ describe('R01 payment terms: required choice, editable until the CEO approval, s
     expect(audit[0]!.beforeState).toEqual({ paymentTerms: 'undetermined' });
     expect(audit[0]!.afterState).toEqual({ paymentTerms: 'on_delivery' });
     expect(audit[0]!.actorUserId).toBe(staffId);
-    expect(audit[0]!.requestMetadata).toMatchObject({ actorRole: 'staff', orderStatus: 'SEVEN_PO_VERIFIED', reason: '顧客と納品時払いで合意' });
+    expect(audit[0]!.requestMetadata).toMatchObject({ actorRole: 'staff', orderStatus: 'SEVEN_PO_VERIFIED', reason: '顧客と納品後払いで合意' });
     expect(audit[1]!.actorUserId).toBe(adminId);
   });
 

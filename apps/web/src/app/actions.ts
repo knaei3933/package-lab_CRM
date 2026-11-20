@@ -14,7 +14,8 @@ import { offsetDateTimeField } from '../lib/datetime';
 import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL } from '../lib/maker-po-data';
 import type { ActionState } from '../lib/types';
 import { unitLabel } from '../lib/vocabulary';
-import { PAYMENT_TERMS_DISPLAY, PAYMENT_TERMS_REQUIRED_MESSAGE } from '../lib/form-messages';
+import { EVIDENCE_NOTE_FIELD } from '../lib/transition-evidence';
+import { PAYMENT_TERMS_DISPLAY, PAYMENT_TERMS_REQUIRED_MESSAGE, SHARED_EVIDENCE_REASON_MESSAGE } from '../lib/form-messages';
 
 /**
  * M6 operator UI server actions: thin forms-over-API adapters. Each action
@@ -363,22 +364,17 @@ export async function verifyEvidenceManualAction(_prev: ActionState | null, form
   if (switched) return switched;
   const approvalEventId = field(formData, 'approvalEventId');
   const result = field(formData, 'result');
-  const verifierName = field(formData, 'verifierName');
-  const verifiedAt = dateTimeField(formData, 'verifiedAt');
+  // P0 R11 (M3): the verifier and the time are the API's (signed-in user, server clock).
   const reasonNote = field(formData, 'reasonNote');
   if (approvalEventId.length === 0) return { ok: false, message: '確認対象の承認イベントが見つかりません。' };
   if (result !== 'confirmed' && result !== 'rejected') {
     return { ok: false, message: '検証結果（確認／却下）を選択してください。' };
   }
-  if (verifierName.length === 0) return { ok: false, message: '検証者名を入力してください。' };
-  if (verifiedAt.length === 0) return { ok: false, message: '検証日時を入力してください。' };
   if (reasonNote.length === 0) {
     return { ok: false, message: '根拠を入力してください（原本証跡のどこで識別子を確認したか）。' };
   }
   return post(formData, `/api/artwork-approval-events/${encodeURIComponent(approvalEventId)}/verification`, {
     result,
-    verifierName,
-    verifiedAt,
     reasonNote
   });
 }
@@ -414,7 +410,29 @@ export async function transitionFilmSupplyOrderAction(_prev: ActionState | null,
     if (!holdReason.ok) return { ok: false, message: '保留にする理由は必須です。' };
     return post(formData, `/api/film-supply-orders/${encodeURIComponent(orderId)}/transitions`, { to, holdReason: holdReason.text });
   }
-  return post(formData, `/api/film-supply-orders/${encodeURIComponent(orderId)}/transitions`, { to });
+  // P0 R12 (M4): the reason to move on without evidence is kept in the audit history now.
+  const evidenceNote = optionalField(formData, EVIDENCE_NOTE_FIELD);
+  return post(
+    formData,
+    `/api/film-supply-orders/${encodeURIComponent(orderId)}/transitions`,
+    evidenceNote ? { to, evidenceNote } : { to },
+    undefined,
+    transitionWarnings
+  );
+}
+
+/**
+ * P0 R01: a move the API allows but warns about — moving on with the 支払条件
+ * still 「未定」 (warnings[] PAYMENT_TERMS_UNDETERMINED). The success says so.
+ */
+function transitionWarnings(data: unknown): ActionState | null {
+  const warnings = typeof data === 'object' && data !== null ? (data as { warnings?: unknown }).warnings : undefined;
+  if (!Array.isArray(warnings)) return null;
+  const undecided = warnings.some((warning) =>
+    typeof warning === 'object' && warning !== null && (warning as { code?: unknown }).code === 'PAYMENT_TERMS_UNDETERMINED');
+  return undecided
+    ? { ok: true, message: '記録しました。注意: 支払条件が「未定」です。代表承認の前に「前払い」か「納品後払い」に決めてください。' }
+    : null;
 }
 
 /**
@@ -787,6 +805,13 @@ export async function recordArtworkApprovalAction(_prev: ActionState | null, for
   if (externalApproverOrg) body.externalApproverOrg = externalApproverOrg;
   const supersedesEventId = optionalField(formData, 'supersedesEventId');
   if (supersedesEventId) body.supersedesEventId = supersedesEventId;
+  // P0 R02 (policy P-1): the declared exception — one paper carries both approvals.
+  if (flag(formData, 'sharedEvidence')) {
+    const sharedReason = field(formData, 'sharedEvidenceReason');
+    if (sharedReason.length === 0) return { ok: false, message: SHARED_EVIDENCE_REASON_MESSAGE };
+    body.sharedEvidence = true;
+    body.sharedEvidenceReason = sharedReason;
+  }
   return post(formData, `/api/artwork-revisions/${encodeURIComponent(revisionId)}/approvals`, body);
 }
 

@@ -25,6 +25,14 @@ import type { MakerPaperCleanupSummary } from './maker-po-data';
  * wording always comes from GET /api/status-labels.
  */
 
+export interface PaymentTermsChangeView {
+  at: string;
+  actorName: string | null;
+  before: string | null;
+  after: string | null;
+  reason: string | null;
+}
+
 export interface AuditEventView {
   id: string;
   action: string;
@@ -97,6 +105,11 @@ export interface FilmSupplyOrderView {
    * null when it was not recorded or the role may not read it (paymentTermsHidden).
    */
   paymentTerms?: string | null | undefined;
+  /**
+   * P0 R01 (policy P-5): the recorded changes of the 支払条件 after creation,
+   * oldest first — who, when, from what to what and the optional reason.
+   */
+  paymentTermsHistory?: PaymentTermsChangeView[] | undefined;
   /** UI batch E3: the API withheld the 決済条件 from this role. */
   paymentTermsHidden?: boolean | undefined;
   createdAt: string;
@@ -306,6 +319,17 @@ export interface PendingManualVerificationView {
   eventTime: string;
   recordedAt: string;
   manualVerification: OrganizationApprovalStateView['manualVerification'];
+  /**
+   * P0 R02 (B2, p0-server approval-gate): who issued the cited evidence, who
+   * should have (顧客の承認 → customer_generated, セブン化学 → seven), whether
+   * they match, the declared shared-evidence exception, and whether 「確認」 can
+   * be recorded at all (the API refuses it on a mismatch without the exception).
+   */
+  evidenceIssuerEntity: string | null;
+  expectedIssuerEntity: string | null;
+  issuerMatchesOrganization: boolean | null;
+  sharedEvidenceException: { reason: string | null } | null;
+  confirmable: boolean;
 }
 
 export interface DesignApprovalGateView {
@@ -572,6 +596,14 @@ export async function loadWorkspace(
       const current = filmOrders.get(event.entityId);
       if (current) {
         const recorded = text(after, 'paymentTerms');
+        const metadata = event.requestMetadata ?? {};
+        (current.paymentTermsHistory ??= []).push({
+          at: event.occurredAt,
+          actorName: event.actor?.displayName ?? null,
+          before: text(state(event.beforeState), 'paymentTerms'),
+          after: recorded,
+          reason: text(metadata, 'reason') ?? text(after, 'reason')
+        });
         if (recorded) {
           current.paymentTerms = recorded;
           current.paymentTermsHidden = false;
@@ -985,7 +1017,15 @@ export async function loadApprovalGate(orderId: string): Promise<ApprovalGateVie
             approvedFileSha256: typeof entry.approvedFileSha256 === 'string' ? entry.approvedFileSha256 : '—',
             eventTime: typeof entry.eventTime === 'string' ? entry.eventTime : '—',
             recordedAt: typeof entry.recordedAt === 'string' ? entry.recordedAt : '—',
-            manualVerification: toManualVerification(entry.manualVerification)
+            manualVerification: toManualVerification(entry.manualVerification),
+            evidenceIssuerEntity: text(entry, 'evidenceIssuerEntity'),
+            expectedIssuerEntity: text(entry, 'expectedIssuerEntity'),
+            issuerMatchesOrganization: typeof entry.issuerMatchesOrganization === 'boolean' ? entry.issuerMatchesOrganization : null,
+            sharedEvidenceException: isRecord(entry.sharedEvidenceException)
+              ? { reason: text(entry.sharedEvidenceException, 'reason') }
+              : entry.sharedEvidenceException === true ? { reason: null } : null,
+            // An older API without the field: 「確認」 stays offered and the API decides.
+            confirmable: entry.confirmable !== false
           }))
       : []
   };

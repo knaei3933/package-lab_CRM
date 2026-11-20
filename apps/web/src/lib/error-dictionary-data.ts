@@ -67,6 +67,10 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ja: 'ログインの有効期限が切れました。もう一度ログインしてください。',
     ko: '로그인이 만료되었습니다. 다시 로그인하세요.'
   },
+  BAD_REQUEST: {
+    ja: '送信内容が正しくありません。画面を再読み込みしてから、もう一度操作してください。',
+    ko: '전송 내용이 올바르지 않습니다. 화면을 다시 불러온 뒤 다시 시도하세요.'
+  },
   CANCELLATION_OUTCOME_INVALID: {
     ja: '取消確認の結果が正しくありません。「再開」か「取消」のどちらかを選んでください。',
     ko: '취소 검토 결과가 올바르지 않습니다. 재개 또는 취소 중 하나를 선택하세요.'
@@ -154,6 +158,10 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
   CONFIRMATION_REPLY_REQUIRED: {
     ja: '判断に迷う場合は、確認の返信を記録する必要があります。返信を記録してから、もう一度確認してください。',
     ko: '판단이 불확실할 때는 확인 회신을 기록해야 합니다. 회신을 기록한 뒤 다시 확인하세요.'
+  },
+  CONFLICT: {
+    ja: 'ほかの操作と重なったため、処理できませんでした。画面を再読み込みしてから、もう一度操作してください。',
+    ko: '다른 작업과 겹쳐 처리하지 못했습니다. 화면을 다시 불러온 뒤 다시 시도하세요.'
   },
   CREDENTIALS_REQUIRED: {
     ja: 'ユーザー名とパスワードを入力してください。',
@@ -675,6 +683,10 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ja: 'この状態のメーカー発注書は、この操作を行えません。発注書の状態を確認し、手順の順に進めてください。',
     ko: '이 상태의 제조사 발주서는 이 작업을 할 수 없습니다. 발주서 상태를 확인하고 단계 순서대로 진행하세요.'
   },
+  NOT_FOUND: {
+    ja: '指定した記録が見つかりません。画面を再読み込みしてから、もう一度選んでください。',
+    ko: '지정한 기록을 찾을 수 없습니다. 화면을 다시 불러온 뒤 다시 선택하세요.'
+  },
   OFFICIAL_DATE_ALREADY_REGISTERED: {
     ja: '公式登録日はすでに別の記録で登録されています。画面を再読み込みして、登録済みの日付を確認してください。',
     ko: '공식 등록일이 이미 다른 기록으로 등록되었습니다. 화면을 다시 불러와 등록된 날짜를 확인하세요.'
@@ -703,6 +715,10 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ja: 'この発注は保留中のため、メーカー発注書を進められません。保留が解除されてから操作してください。',
     ko: '이 발주는 보류 중이라 제조사 발주서를 진행할 수 없습니다. 보류가 해제된 뒤 작업하세요.'
   },
+  PAYLOAD_TOO_LARGE: {
+    ja: '送信する内容が大きすぎます。ファイルは5MBまでにしてください。',
+    ko: '전송 내용이 너무 큽니다. 파일은 5MB 이하로 하세요.'
+  },
   PAYMENT_GATE_UNSATISFIED: {
     ja: '支払条件が「未定」のため代表承認できません。発注の支払条件を「前払い」か「納品後払い」に決めてから、もう一度承認してください。',
     ko: '결제 조건이 미정이라 대표 승인을 할 수 없습니다. 발주의 결제 조건을 선불 또는 납품 후 지불로 정한 뒤 다시 승인하세요.'
@@ -710,6 +726,14 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
   PAYMENT_TERMS_LOCKED: {
     ja: '支払条件を変更できるのは、発注が「下書き」の間だけです。現在の状態では変更できません。',
     ko: '결제 조건은 발주가 「초안」일 때만 바꿀 수 있습니다. 현재 상태에서는 변경할 수 없습니다.'
+  },
+  PAYMENT_TERMS_REASON_INVALID: {
+    ja: '支払条件の変更理由が空です。理由を書くか、欄を空のままにしてください。',
+    ko: '결제 조건 변경 이유가 비어 있습니다. 이유를 쓰거나 칸을 비워 두세요.'
+  },
+  PAYMENT_TERMS_REASON_TOO_LONG: {
+    ja: '支払条件の変更理由が長すぎます。1000字以内にしてください。',
+    ko: '결제 조건 변경 이유가 너무 깁니다. 1000자 이내로 하세요.'
   },
   PAYMENT_TERMS_REQUIRED: {
     ja: '支払条件を選んでください（決まっていない場合は「未定」を選びます）。',
@@ -875,6 +899,10 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ja: '送信日時が入力されていません。メールの送信日時を入力してください。',
     ko: '송신 일시가 입력되지 않았습니다. 메일의 송신 일시를 입력하세요.'
   },
+  SERVICE_UNAVAILABLE: {
+    ja: 'システムが一時的に使えません。数分後にもう一度お試しください。急ぎの場合は代表者へ連絡してください。',
+    ko: '시스템을 잠시 쓸 수 없습니다. 몇 분 뒤 다시 시도하세요. 급하면 대표에게 연락하세요.'
+  },
   SESSION_EXPIRED: {
     ja: 'ログインの有効期限が切れました。もう一度ログインしてください。',
     ko: '로그인 유효 기간이 지났습니다. 다시 로그인하세요.'
@@ -907,6 +935,14 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ja: '共有証跡として使えるのは、顧客作成またはセブン化学が発行した承認書類だけです。',
     ko: '공유 증빙으로 쓸 수 있는 것은 고객 작성 또는 세븐화학 발행 승인 서류뿐입니다.'
   },
+  SHARED_EVIDENCE_REASON_REQUIRED: {
+    ja: '両組織で同じ承認証跡を使う理由を入力してください。',
+    ko: '두 조직이 같은 승인 증빙을 쓰는 이유를 입력하세요.'
+  },
+  SHARED_EVIDENCE_REASON_TOO_LONG: {
+    ja: '両組織で同じ承認証跡を使う理由が長すぎます。1000字以内にしてください。',
+    ko: '두 조직이 같은 승인 증빙을 쓰는 이유가 너무 깁니다. 1000자 이내로 하세요.'
+  },
   SNAPSHOT_VOIDED: {
     ja: '発注の内容が、承認済みのメーカー発注書と変わったため、発注書は無効になりました。代表者が、もう一度代表承認をしてください。',
     ko: '발주 내용이 승인된 제조사 발주서와 달라져 발주서가 무효가 되었습니다. 대표가 다시 대표 승인을 하세요.'
@@ -914,6 +950,10 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
   SUPERSEDED_EVENT_MISMATCH: {
     ja: '置き換え対象の承認が、この版に見つかりません。置き換える承認を選び直してください。',
     ko: '교체할 승인이 이 판에서 발견되지 않습니다. 교체할 승인을 다시 선택하세요.'
+  },
+  TOO_MANY_REQUESTS: {
+    ja: '操作が続いたため、一時的に受け付けていません。しばらく待ってから、もう一度お試しください。',
+    ko: '요청이 많아 잠시 받지 않습니다. 잠시 뒤 다시 시도하세요.'
   },
   UNIT_DOMAIN_MISMATCH: {
     ja: 'この単位は、この明細の種類では使えません。フィルムと充填製品で使える単位を確認してください。',
@@ -974,6 +1014,10 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
   UPLOAD_TOO_LARGE: {
     ja: 'ファイルが5MBを超えています。5MBまでのファイルを選んでください。',
     ko: '파일이 5MB를 넘습니다. 5MB 이하 파일을 선택하세요.'
+  },
+  VALIDATION_FAILED: {
+    ja: '入力内容に誤りがあります。各項目を確認してから、もう一度操作してください。',
+    ko: '입력 내용에 오류가 있습니다. 각 항목을 확인한 뒤 다시 시도하세요.'
   },
   VERIFICATION_REASON_REQUIRED: {
     ja: '確認の根拠が入力されていません。原本のどこで何を確認したかを入力してください。',

@@ -157,22 +157,17 @@ export async function verifyMakerPoSendAction(
   if (switched) return switched;
   const eventId = field(formData, 'eventId');
   const result = field(formData, 'result');
-  const verifierName = field(formData, 'verifierName');
-  const verifiedAt = dateTimeField(formData, 'verifiedAt');
+  // P0 R11 (M3): the verifier and the time are recorded by the API (signed-in user, server clock).
   const reasonNote = field(formData, 'reasonNote');
   if (eventId.length === 0) return { ok: false, message: '確認対象の送信イベントが選択されていません。' };
   if (!['confirmed', 'rejected'].includes(result)) {
     return { ok: false, message: '確認結果（confirmed／rejected）を選択してください。' };
   }
-  if (verifierName.length === 0) return { ok: false, message: '検証者名（verifierName）を入力してください。' };
-  if (verifiedAt.length === 0) return { ok: false, message: '検証日時（verifiedAt）を入力してください。' };
   if (reasonNote.length === 0) {
     return { ok: false, message: '根拠（reasonNote）を入力してください。何を確認して納品を断定したかを記録してください。' };
   }
   return post(formData, `/api/maker-po-events/${encodeURIComponent(eventId)}/send-manual-verification`, {
     result,
-    verifierName,
-    verifiedAt,
     reasonNote
   });
 }

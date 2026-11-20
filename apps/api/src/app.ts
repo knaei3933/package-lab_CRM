@@ -251,7 +251,7 @@ function requiredPaymentTermsInput(value: unknown):
     return {
       ok: false,
       code: 'PAYMENT_TERMS_REQUIRED',
-      message: '決済条件を選んでください（前払い・納品時払い・未定）'
+      message: '支払条件を選んでください（前払い・納品後払い・未定）'
     };
   }
   return validatePaymentTermsInput(value);
@@ -1700,7 +1700,7 @@ export function createApp({
       const attention = !closed && paymentTerms === 'undetermined'
         ? [{
             code: 'PAYMENT_TERMS_UNDETERMINED',
-            message: '決済条件が「未定」です。代表承認の前に「前払い」または「納品時払い」を選んでください'
+            message: '支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください'
           }]
         : [];
       return {
@@ -2069,7 +2069,7 @@ export function createApp({
     const warnings = target === 'SEVEN_PO_VERIFIED' && normalizePaymentTerms(order.paymentTerms) === 'undetermined'
       ? [{
           code: 'PAYMENT_TERMS_UNDETERMINED',
-          message: '決済条件が「未定」のままです。代表承認の前に「前払い」または「納品時払い」を選んでください'
+          message: '支払条件が「未定」のままです。代表承認の前に「前払い」または「納品後払い」を選んでください'
         }]
       : [];
     return context.json({ ...order, ...updated, ...(evidenceNote ? { evidenceNote } : {}), warnings });
@@ -6095,7 +6095,7 @@ export function createApp({
       if (error instanceof PaymentGateClosedUnderLock) {
         const closed = evaluatePaymentGate({ paymentTerms: error.paymentTerms });
         return context.json({
-          error: closed.ok ? '決済条件がすでに変わっています' : closed.message,
+          error: closed.ok ? '支払条件がすでに変わっています' : closed.message,
           code: 'PAYMENT_GATE_UNSATISFIED',
           paymentTerms: error.paymentTerms
         }, 422);

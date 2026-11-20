@@ -171,7 +171,7 @@ describe('M7-SEC3 G6 payment gate (FIX 3)', () => {
       if (!gate.ok) {
         expect(gate.code).toBe('PAYMENT_GATE_UNSATISFIED');
         expect(gate.paymentTerms).toBe('undetermined');
-        expect(gate.message).toContain('決済条件');
+        expect(gate.message).toContain('支払条件');
       }
     }
   });

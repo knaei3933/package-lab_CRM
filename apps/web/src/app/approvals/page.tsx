@@ -43,8 +43,10 @@ import {
   EVIDENCE_SOURCE_LABELS,
   formatTimestamp,
   evidenceSourceChoices,
+  ISSUER_ENTITY_LABELS,
   VERIFICATION_STATUS_LABELS
 } from '../../lib/vocabulary';
+import type { IssuerEntity } from '@kanei/core';
 import type { Choice } from '../../lib/types';
 import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../../lib/redaction';
 import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL, liveMakerPapers, MAKER_PO_STATUS_LABELS } from '../../lib/maker-po-data';
@@ -143,6 +145,7 @@ export default async function ApprovalsPage() {
         && document.designKey === designKey)
       .flatMap((document) => document.versions.map((version) => ({
         value: version.id,
+        issuerEntity: document.issuerEntity,
         autoEvidenceIdentifier: evidenceAutoIdentifiers.get(version.id) ?? null,
         label: `${document.filename}（版${version.versionNumber}／確認状態 ${
           VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus
@@ -431,6 +434,69 @@ function organizationStateText(state: DesignApprovalGateView['customer']): strin
 }
 
 /** The result select of the verification form. */
+/** P0 R02: a mismatched issuer without the declared exception can only be rejected (the API refuses 「確認」). */
+const REJECT_ONLY_CHOICES: Choice[] = [{ value: 'rejected', label: '却下（発行元が承認する組織と違う／確認できなかった）' }];
+
+/**
+ * P0 R02 (B2): the facts the representative checks before 「確認」, spelled out —
+ * the evidence's issuer, the organization approving, whether they match, the
+ * shared-evidence exception and its reason, and whether 「確認」 is possible.
+ */
+function EvidenceIssuerCheck({
+  entry,
+  organizationText
+}: {
+  entry: PendingManualVerificationView;
+  organizationText: (key: string) => string;
+}) {
+  const issuer = entry.evidenceIssuerEntity ? ISSUER_ENTITY_LABELS[entry.evidenceIssuerEntity as IssuerEntity] ?? '（不明）' : '（記録なし）';
+  const expected = entry.expectedIssuerEntity ? ISSUER_ENTITY_LABELS[entry.expectedIssuerEntity as IssuerEntity] ?? '（不明）' : '—';
+  const matches = entry.issuerMatchesOrganization;
+  return (
+    <dl className="issuer-check">
+      <div>
+        <dt>承認する組織</dt>
+        <dd>{organizationText(entry.organization)}</dd>
+      </div>
+      <div>
+        <dt>証跡の発行元</dt>
+        <dd>{issuer}</dd>
+      </div>
+      <div>
+        <dt>照合</dt>
+        <dd>
+          {matches === true ? (
+            <StatusBadge tone="done" label="一致" />
+          ) : matches === false ? (
+            <>
+              <StatusBadge tone="blocked" label="不一致" />
+              {` 必要な発行元: ${expected}`}
+            </>
+          ) : (
+            '（照合結果なし）'
+          )}
+        </dd>
+      </div>
+      <div>
+        <dt>識別子</dt>
+        <dd translate="no">{entry.evidenceIdentifier ?? '（記録なし）'}</dd>
+      </div>
+      {entry.sharedEvidenceException ? (
+        <div>
+          <dt>共有証跡の例外</dt>
+          <dd>あり（理由: {entry.sharedEvidenceException.reason ?? '記録なし'}）</dd>
+        </div>
+      ) : null}
+      {entry.confirmable ? null : (
+        <div>
+          <dt>確認</dt>
+          <dd>発行元が承認する組織と違うため「確認」は記録できません。「却下」を記録し、その組織が発行した承認証跡を登録し直してください。</dd>
+        </div>
+      )}
+    </dl>
+  );
+}
+
 const VERIFICATION_RESULT_CHOICES: Choice[] = [
   { value: 'confirmed', label: '確認（識別子を原本証跡で確認した）' },
   { value: 'rejected', label: '却下（確認できなかった）' }
@@ -470,6 +536,7 @@ function PendingVerificationSection({
             <StatusBadge tone="waiting" label="手動確認待ち" />{' '}
             <strong>{organizationText(entry.organization)}</strong> の承認（デザイン {entry.designKey}／版
             {entry.revisionNo}）は手動確認待ちです。
+            <EvidenceIssuerCheck entry={entry} organizationText={organizationText} />
             <div style={noteStyle}>
               原本証跡: {evidenceLabel(entry.evidenceDocumentVersionId)}
               <TechDetails context="ID・識別子">
@@ -495,19 +562,18 @@ function PendingVerificationSection({
               confirm={{
                 title: '承認証跡の手動確認を記録しますか？',
                 body: `${organizationText(entry.organization)} の承認（デザイン ${entry.designKey}／版${entry.revisionNo}）に、選んだ結果を記録します。「確認」は二重承認に算入されます。記録は追記型で、あとから書き換えられません。`,
-                summaryFields: ['result', 'verifierName', 'verifiedAt', 'reasonNote']
+                summaryFields: ['result', 'reasonNote']
               }}
             >
               <input type="hidden" readOnly name="approvalEventId" value={entry.approvalEventId} />
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
-                <TextField name="verifierName" label="検証者" required width={200} />
-                <OffsetDateTimeField name="verifiedAt" label="検証日時" required width={240} />
+                {/* P0 R11 (M3): the API records the signed-in representative and the server time. */}
                 <SelectField
                   name="result"
                   label="結果"
                   required
                   width={320}
-                  choices={VERIFICATION_RESULT_CHOICES}
+                  choices={entry.confirmable ? VERIFICATION_RESULT_CHOICES : REJECT_ONLY_CHOICES}
                 />
                 <TextField
                   name="reasonNote"

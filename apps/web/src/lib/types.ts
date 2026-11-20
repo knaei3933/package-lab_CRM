@@ -23,4 +23,6 @@ export interface Choice {
   autoEvidenceIdentifier?: string | null;
   /** UI batch B: rendered inside <optgroup label={group}> after the ungrouped choices. */
   group?: string;
+  /** P0 R02: the issuer of an approval-evidence document (customer_generated / seven / …). */
+  issuerEntity?: string;
 }

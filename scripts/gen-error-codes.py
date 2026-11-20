@@ -17,6 +17,9 @@ for f in glob.glob(f'{wt}/apps/api/src/*.ts'):
         tail = s[m.end():m.end()+700]
         st = re.search(r"\}\s*,\s*(\d{3})\s*\)", tail)
         if st: statuses[m.group(1)].add(st.group(1))
+# Not a refusal: the code travels in warnings[] / attention[] of a 200 answer (the scan above
+# picks up a neighbouring status otherwise).
+statuses.pop('PAYMENT_TERMS_UNDETERMINED', None)
 fallback = {'BAD_REQUEST':'400','AUTH_REQUIRED':'401','FORBIDDEN':'403','NOT_FOUND':'404','CONFLICT':'409','PAYLOAD_TOO_LARGE':'413',
  'VALIDATION_FAILED':'422','TOO_MANY_REQUESTS':'429','INTERNAL_ERROR':'500','SERVICE_UNAVAILABLE':'503','DB_UNAVAILABLE':'503','DB_TIMEOUT':'503',
  'DUPLICATE':'409','PAYMENT_TERMS_UNDETERMINED':'200 (warnings / attention)','ROUTE_NOT_FOUND':'404'}
@@ -26,7 +29,7 @@ extra = {
  'DB_TIMEOUT': 'ヘッダー `Retry-After: 30`。障害画面（データベース応答なし）を出す',
  'LOGIN_TIMEOUT': 'ログインボタンの待機を止めて再試行を案内',
  'PAYMENT_TERMS_LOCKED': '`reason`: `ceo_approved`（承認済み発注書あり。`makerPurchaseOrderId` 付き）/ `order_frozen`（保留・見直し・取消）, `from`（発注状態）',
- 'PAYMENT_GATE_UNSATISFIED': '`paymentTerms`。「この画面で決済条件を選ぶ」ボタン（PATCH /api/film-supply-orders/:orderId/payment-terms）を置く',
+ 'PAYMENT_GATE_UNSATISFIED': '`paymentTerms`。「この画面で支払条件を選ぶ」ボタン（PATCH /api/film-supply-orders/:orderId/payment-terms）を置く',
  'PAYMENT_TERMS_UNDETERMINED': '拒否ではない。遷移応答の `warnings[]` と GET /api/projects/:projectId/film-supply-orders の `attention[]` に入る',
  'EVIDENCE_ISSUER_MISMATCH': '`organization`, `evidenceIssuerEntity`, `expectedIssuerEntity`。承認記録時と代表確認（confirmed）時の両方で返る',
  'EVIDENCE_SHARED_ACROSS_ORGANIZATIONS': '`organization`, `evidenceIssuerEntity`, `expectedIssuerEntity`。例外は `sharedEvidence: true` + `sharedEvidenceReason`',

@@ -1014,7 +1014,7 @@ describe('M7-SEC3 FIX 3: the G6 payment gate', () => {
     const body = refused.body as { code: string; error: string; paymentTerms: string };
     expect(body.code).toBe('PAYMENT_GATE_UNSATISFIED');
     expect(body.paymentTerms).toBe('undetermined');
-    expect(body.error).toContain('決済条件');
+    expect(body.error).toContain('支払条件');
 
     // Nothing was written: the purchase order is still an unapproved draft.
     const row = await makerPoRow(poId);

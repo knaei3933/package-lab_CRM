@@ -3,8 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { prerenderToNodeStream } from 'react-dom/static';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { sql } from 'drizzle-orm';
-import { accounts, auditEvents, createDatabase, projectAssignments, projects, sessions, users, uuidv7 } from '@kanei/db';
+import { eq, sql } from 'drizzle-orm';
+import { accounts, auditEvents, createDatabase, filmSupplyOrders, projectAssignments, projects, sessions, users, uuidv7 } from '@kanei/db';
 import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
@@ -120,6 +120,9 @@ async function draftOrder(role: Role = 'staff') {
  */
 let clockOffset = 0;
 async function moveOrderTo(orderId: string, status: string, actor: Role = 'admin') {
+  // P0 integration: the API decides the 支払条件 editability from the order row
+  // (paymentTermsEditable), the screen reads the state from the history — both move.
+  await db.update(filmSupplyOrders).set({ status: status as never }).where(eq(filmSupplyOrders.id, orderId));
   await db.insert(auditEvents).values({
     id: uuidv7(),
     projectId,
@@ -301,6 +304,20 @@ describe('R01: 支払条件 is chosen at creation (real API)', () => {
     expect(result.message).toContain('前払い');
     const order = (await loadWorkspace(projectId)).filmOrders.find((row) => row.id === orderId);
     expect(order?.paymentTerms).toBe('prepaid');
+  });
+
+  it('P0 integration: a change through the action is listed in the row\'s 支払条件の変更履歴 with its reason (P-5)', async () => {
+    signIn('staff');
+    const { orderId } = await draftOrder('staff');
+    const changed = await actions.updateFilmPaymentTermsAction(null, form({ orderId, paymentTerms: 'on_delivery', reason: '納品後に支払うと合意' }));
+    expect(changed.ok, changed.message).toBe(true);
+    signIn('admin');
+    const html = await render(OrdersPage);
+    const start = html.indexOf(`id="order-${orderId}"`);
+    const row = html.slice(start, html.indexOf('</tr>', start));
+    expect(row).toContain('支払条件の変更履歴');
+    expect(row).toContain('未定 → 納品後払い');
+    expect(row).toContain('理由: 納品後に支払うと合意');
   });
 
   it('an undetermined order shows 「未定」 in the summary and the warning that it blocks the 代表承認', async () => {

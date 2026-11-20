@@ -17,6 +17,9 @@ export const PAYMENT_TERMS_REQUIRED_MESSAGE = '支払条件を選んでくださ
 /** P0 R10 (H5): the maker PO's recipient must be an e-mail address (checked before the paper is frozen). */
 export const RECIPIENT_EMAIL_INVALID_MESSAGE = 'メーカーの送信先メールアドレスの形（例 order@maker.example）で入力してください。郵便の住所ではありません。';
 
+/** P0 R02: the shared-evidence exception needs its reason (mapped to the reason field). */
+export const SHARED_EVIDENCE_REASON_MESSAGE = '両組織で同じ承認証跡を使う理由を入力してください。';
+
 export type MessageMatch = 'exact' | 'prefix' | 'suffix';
 
 export interface ActionMessageField {
@@ -63,9 +66,8 @@ export const ACTION_MESSAGE_FIELDS: readonly ActionMessageField[] = [
   // UI batch E2: the API's DELIVERY_UNIT_MISMATCH (db4bd88), read back in Japanese by recordDeliveryAction.
   { message: '単位を明細と同じ単位に直して、もう一度記録してください。', match: 'suffix', field: 'unit', source: 'actions' },
   { message: PAYMENT_TERMS_REQUIRED_MESSAGE, match: 'exact', field: 'paymentTerms', source: 'actions' },
+  { message: SHARED_EVIDENCE_REASON_MESSAGE, match: 'exact', field: 'sharedEvidenceReason', source: 'actions' },
   { message: '検証結果（確認／却下）を選択してください。', match: 'exact', field: 'result', source: 'actions' },
-  { message: '検証者名を入力してください。', match: 'exact', field: 'verifierName', source: 'actions' },
-  { message: '検証日時を入力してください。', match: 'exact', field: 'verifiedAt', source: 'actions' },
   {
     message: '根拠を入力してください（原本証跡のどこで識別子を確認したか）。',
     match: 'exact',
@@ -174,8 +176,6 @@ export const ACTION_MESSAGE_FIELDS: readonly ActionMessageField[] = [
   { message: '宛先アドレスを1件以上入力してください。', match: 'exact', field: 'recipients', source: 'maker-po-actions' },
   { message: '送信日時を入力してください。', match: 'exact', field: 'sentAt', source: 'maker-po-actions' },
   { message: '確認結果（confirmed／rejected）を選択してください。', match: 'exact', field: 'result', source: 'maker-po-actions' },
-  { message: '検証者名（verifierName）を入力してください。', match: 'exact', field: 'verifierName', source: 'maker-po-actions' },
-  { message: '検証日時（verifiedAt）を入力してください。', match: 'exact', field: 'verifiedAt', source: 'maker-po-actions' },
   { message: '根拠（reasonNote）を入力してください。', match: 'prefix', field: 'reasonNote', source: 'maker-po-actions' },
   { message: '取消理由（note）は必須です。', match: 'prefix', field: 'note', source: 'maker-po-actions' },
   { message: '承認理由（note）は必須です。', match: 'prefix', field: 'note', source: 'maker-po-actions' },

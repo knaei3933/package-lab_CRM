@@ -9,6 +9,20 @@ import { approvalConfirmSpec } from '../lib/confirm-summary';
 import type { Choice } from '../lib/types';
 import { buttonStyle, inputStyle, noteStyle } from '../lib/ui';
 
+type ApprovalOrganization = 'customer' | 'seven';
+
+const ORGANIZATION_LABEL: Record<ApprovalOrganization, string> = { customer: '顧客', seven: 'セブン化学' };
+
+/** P0 R02: the issuer each organization's approval evidence must have (the shared exception allows either). */
+const ISSUER_FOR: Record<ApprovalOrganization, string> = { customer: 'customer_generated', seven: 'seven' };
+
+/** Exported for tests. A choice without an issuer (older data shape) stays offered; the API decides. */
+export function matchesOrganization(choice: Choice, organization: ApprovalOrganization, shared: boolean): boolean {
+  if (choice.issuerEntity === undefined) return true;
+  if (shared) return choice.issuerEntity === 'customer_generated' || choice.issuerEntity === 'seven';
+  return choice.issuerEntity === ISSUER_FOR[organization];
+}
+
 interface ApprovalDecisionFormProps {
   action: FormAction;
   revisionId: string;
@@ -49,12 +63,32 @@ export function ApprovalDecisionForm({
   successHint
 }: ApprovalDecisionFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
+  // P0 R02 (B2, policy P-1): the organization is chosen first; only evidence that
+  // organization issued is offered (顧客 → 顧客作成, セブン化学 → セブン化学). The shared
+  // exception (one paper carries both approvals) needs a tick and a reason, and the
+  // API then always holds the approval for the representative's manual check.
+  const [organization, setOrganization] = useState<ApprovalOrganization>(
+    evidenceChoices.some((choice) => matchesOrganization(choice, 'customer', false)) || !evidenceChoices.some((choice) => matchesOrganization(choice, 'seven', false))
+      ? 'customer'
+      : 'seven'
+  );
+  const [shared, setShared] = useState(false);
+  const offered = evidenceChoices.filter((choice) => matchesOrganization(choice, organization, shared));
   const [evidenceIdentifier, setEvidenceIdentifier] = useState(
-    evidenceChoices[0]?.autoEvidenceIdentifier ?? ''
+    offered[0]?.autoEvidenceIdentifier ?? ''
   );
   const [selectedEvidenceVersionId, setSelectedEvidenceVersionId] = useState(
-    evidenceChoices[0]?.value ?? ''
+    offered[0]?.value ?? ''
   );
+  const organizationGroupId = useId();
+
+  function chooseOrganization(next: ApprovalOrganization, nextShared: boolean): void {
+    setOrganization(next);
+    setShared(nextShared);
+    const first = evidenceChoices.find((choice) => matchesOrganization(choice, next, nextShared));
+    setSelectedEvidenceVersionId(first?.value ?? '');
+    setEvidenceIdentifier(first?.autoEvidenceIdentifier ?? '');
+  }
   const evidenceHelpId = useId();
   /** The shared G6 help first, then this field's error when there is one. */
   const describedBy = (errorId: string | undefined) => (errorId ? `${evidenceHelpId} ${errorId}` : evidenceHelpId);
@@ -87,13 +121,31 @@ export function ApprovalDecisionForm({
       style={{ display: 'grid', gap: 10 }}
     >
       <input type="hidden" readOnly name="revisionId" value={revisionId} />
+      <fieldset className="approval-organization" aria-describedby={organizationGroupId}>
+        <legend style={{ fontSize: 13 }}>承認する組織<span style={{ color: 'var(--danger)' }}>（必須）</span></legend>
+        {(['customer', 'seven'] as const).map((value) => (
+          <label key={value} style={{ marginRight: 16 }}>
+            <input
+              type="radio"
+              name="_approvalOrganization"
+              value={value}
+              checked={organization === value}
+              onChange={() => chooseOrganization(value, shared)}
+            />{' '}
+            {ORGANIZATION_LABEL[value]}
+          </label>
+        ))}
+        <p id={organizationGroupId} style={noteStyle}>
+          選んだ組織が発行した承認証跡だけを表示します（顧客の承認は「顧客作成」、セブン化学の承認は「セブン化学」）。
+        </p>
+      </fieldset>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
         <FieldFeedback name="evidenceDocumentVersionId">
           {(versionFeedback) => (
             <div className="field" style={{ display: 'grid', gap: 4, maxWidth: '100%', flex: '0 1 380px' }}>
               <label style={labelOnly}>
                 <span style={{ fontSize: 13 }}>
-                  承認証跡の書類バージョン<span style={{ color: 'var(--danger)' }}>（必須・両組織で同じ版を引用します）</span>
+                  承認証跡の書類バージョン<span style={{ color: 'var(--danger)' }}>（必須・{ORGANIZATION_LABEL[organization]}が発行した証跡）</span>
                 </span>
                 <select
                   name="evidenceDocumentVersionId"
@@ -102,10 +154,12 @@ export function ApprovalDecisionForm({
                   aria-invalid={versionFeedback.invalid}
                   data-feedback-label="承認証跡の書類バージョン"
                   autoComplete="off"
+                  value={selectedEvidenceVersionId}
                   onChange={(event) => onEvidenceChange(event.target.value)}
                   style={{ ...inputStyle, width: '100%', maxWidth: 380 }}
                 >
-                  {evidenceChoices.map((choice) => (
+                  {offered.length === 0 ? <option value="">（この組織が発行した承認証跡がありません）</option> : null}
+                  {offered.map((choice) => (
                     <option key={choice.value} value={choice.value}>
                       {choice.label}
                     </option>
@@ -185,6 +239,39 @@ export function ApprovalDecisionForm({
           <input name="externalApproverOrg" style={{ ...inputStyle, width: '100%', maxWidth: 180 }} />
         </label>
       </div>
+      <div className="shared-evidence" style={{ display: 'grid', gap: 6 }}>
+        <label>
+          <input
+            type="checkbox"
+            name="sharedEvidence"
+            checked={shared}
+            onChange={(event) => chooseOrganization(organization, event.target.checked)}
+          />{' '}
+          1通の証跡に両組織の承認が含まれている（例外。代表者の手動確認が必要になります）
+        </label>
+        {shared ? (
+          <FieldFeedback name="sharedEvidenceReason">
+            {(reasonFeedback) => (
+              <div className="field" style={{ display: 'grid', gap: 4, maxWidth: 520 }}>
+                <label style={labelOnly}>
+                  <span style={{ fontSize: 13 }}>両組織で同じ証跡を使う理由<span style={{ color: 'var(--danger)' }}>（必須）</span></span>
+                  <textarea
+                    name="sharedEvidenceReason"
+                    required
+                    maxLength={1000}
+                    rows={2}
+                    aria-describedby={reasonFeedback.describedBy}
+                    aria-invalid={reasonFeedback.invalid}
+                    data-feedback-label="両組織で同じ証跡を使う理由"
+                    style={{ ...inputStyle, width: '100%' }}
+                  />
+                </label>
+                <FieldError id={reasonFeedback.errorId} message={reasonFeedback.error} />
+              </div>
+            )}
+          </FieldFeedback>
+        ) : null}
+      </div>
       <div className="form-actions">
         {/* Review M1: disabled until hydration, so neither button records an approval past the dialog. */}
         <SubmitLock>
@@ -194,6 +281,7 @@ export function ApprovalDecisionForm({
                 type="submit"
                 name="organization"
                 value="customer"
+                hidden={organization !== 'customer' || undefined}
                 aria-disabled={pending || undefined}
                 disabled={locked || undefined}
                 style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
@@ -204,6 +292,7 @@ export function ApprovalDecisionForm({
                 type="submit"
                 name="organization"
                 value="seven"
+                hidden={organization !== 'seven' || undefined}
                 aria-disabled={pending || undefined}
                 disabled={locked || undefined}
                 style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
@@ -213,7 +302,7 @@ export function ApprovalDecisionForm({
             </>
           )}
         </SubmitLock>
-        <span style={noteStyle}>どちらが先でも構いません。2つ目の承認でダブル承認（校了）になります。</span>
+        <span style={noteStyle}>どちらの組織が先でも構いません。両組織の承認がそろうとダブル承認（校了）になります。</span>
         <FormErrorSummary />
         <FormResult state={state} successHint={successHint} />
       </div>

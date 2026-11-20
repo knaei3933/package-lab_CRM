@@ -250,8 +250,9 @@ describe('fieldForActionMessage (1-①)', () => {
   it('maps exact, template and long messages to their field', () => {
     expect(fieldForActionMessage('発注番号を入力してください。')).toBe('poNumber');
     expect(fieldForActionMessage('公式登録日を入力してください。')).toBe('officialRegisteredAt');
-    expect(fieldForActionMessage('検証者名を入力してください。')).toBe('verifierName');
-    expect(fieldForActionMessage('検証者名（verifierName）を入力してください。')).toBe('verifierName');
+    // P0 R11: the verifier and the time are recorded by the API — the forms no longer ask for them.
+    expect(fieldForActionMessage('検証者名を入力してください。')).toBeNull();
+    expect(fieldForActionMessage('検証者名（verifierName）を入力してください。')).toBeNull();
     expect(fieldForActionMessage('根拠を入力してください（原本証跡のどこで識別子を確認したか）。')).toBe('reasonNote');
     expect(fieldForActionMessage('納品数量は正の数で入力してください。')).toBe('deliveredQuantity');
     expect(fieldForActionMessage('フィルム発注の明細の数量は正の数で入力してください。')).toBe('lines.0.quantity');

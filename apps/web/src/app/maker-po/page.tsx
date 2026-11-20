@@ -1142,6 +1142,45 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
  * block (③′ first while a send waits for it); the cancellation work moved to
  * the danger zone (MakerPoCancelWork) under the same conditions.
  */
+/**
+ * P0 R12 (M8): the send-evidence form offers only the EMLs the API would accept
+ * for this paper — GET …/send-evidence-candidates leaves out the evidence of a
+ * cancelled paper (its send mail cannot prove this paper's send), and says how
+ * many it left out. When the list cannot be read, every registered EML stays
+ * offered and the API refuses a cancelled one (SEND_EVIDENCE_FROM_CANCELLED_PO).
+ */
+async function SendEvidenceSection({ po, sendEvidenceChoices }: { po: MakerPoViewRow; sendEvidenceChoices: Choice[] }) {
+  const result = await callApi<{ candidates?: Array<{ versionId?: unknown }>; excludedCancelledCount?: unknown }>(
+    `/api/maker-purchase-orders/${encodeURIComponent(po.id)}/send-evidence-candidates`
+  );
+  const allowed = result.ok && Array.isArray(result.data?.candidates)
+    ? new Set(result.data.candidates.map((candidate) => candidate.versionId).filter((id): id is string => typeof id === 'string'))
+    : null;
+  const choices = allowed ? sendEvidenceChoices.filter((choice) => allowed.has(choice.value)) : sendEvidenceChoices;
+  const excluded = typeof result.data?.excludedCancelledCount === 'number' ? result.data.excludedCancelledCount : 0;
+  return (
+    <>
+      <MakerPoSendEvidenceForm
+        action={recordMakerPoSendEvidenceAction}
+        poId={po.id}
+        sendEvidenceChoices={choices}
+        recipientAddress={po.recipientAddress ?? null}
+        ceoApprovedAt={po.ceoApprovedAt ?? null}
+        orderCode={po.orderCode ?? po.snapshot?.order?.code ?? null}
+      />
+      {excluded > 0 ? (
+        <p style={noteStyle}>取り消したメーカー発注書の送信メール（{excluded}件）は、この発注書の送信証跡には使えないため表示していません。</p>
+      ) : null}
+      {choices.length === 0 ? (
+        <p style={noteStyle}>
+          参考: 「文書」画面に登録済みの送信証跡の書類はまだありません。原本を上のフォームで直接
+          選ぶ場合は事前の登録は不要です。文書画面から登録するときは形式に「メール原文（EML）」を選んでください。
+        </p>
+      ) : null}
+    </>
+  );
+}
+
 function MakerPoWorkBlocks({
   paper,
   role,
@@ -1186,20 +1225,7 @@ function MakerPoWorkBlocks({
               送信証跡は、メールソフトの送信済みフォルダから書き出した原本のEML（.eml）です。PDFやスクリーンショット、
               メモでは送信は「確認済み」になりません。
             </p>
-            <MakerPoSendEvidenceForm
-              action={recordMakerPoSendEvidenceAction}
-              poId={po.id}
-              sendEvidenceChoices={sendEvidenceChoices}
-              recipientAddress={po.recipientAddress ?? null}
-              ceoApprovedAt={po.ceoApprovedAt ?? null}
-              orderCode={po.orderCode ?? po.snapshot?.order?.code ?? null}
-            />
-            {sendEvidenceChoices.length === 0 ? (
-              <p style={noteStyle}>
-                参考: 「文書」画面に登録済みの送信証跡の書類はまだありません。原本を上のフォームで直接
-                選ぶ場合は事前の登録は不要です。文書画面から登録するときは形式に「メール原文（EML）」を選んでください。
-              </p>
-            ) : null}
+            <SendEvidenceSection po={po} sendEvidenceChoices={sendEvidenceChoices} />
           </RoleGate>
         </div>
       ) : null}
@@ -1352,20 +1378,18 @@ function MakerPoManualVerificationBlock({ poId, events }: { poId: string; events
           <ActionForm
             action={verifyMakerPoSendAction}
             submitLabel="手動確認を記録する"
-            hint="検証者名・検証日時・結果・根拠はAPIの必須項目です。根拠には何を確認したか（原本の何を見たか）を書いてください。"
+            hint="検証者（ログイン中の代表者）と検証日時（記録した時刻）はシステムが記録します。根拠には何を確認したか（原本の何を見たか）を書いてください。"
             confirm={{
               title: '送信の手動確認を記録しますか？',
               body: '選んだ確認結果を記録します。確認の記録は取り消せません（訂正は新しい記録として残します）。「確認」を記録すると、発注書は受入確認待ちに進みます。',
               tone: 'danger',
-              summaryFields: ['result', 'verifierName', 'verifiedAt']
+              summaryFields: ['result', 'reasonNote']
             }}
           >
             <input type="hidden" readOnly name="eventId" value={event.id} />
             <input type="hidden" readOnly name="poId" value={poId} />
             <div className="form-row">
               <SelectField name="result" label="確認結果" required choices={resultChoices} width={300} />
-              <TextField name="verifierName" label="検証者名" required width={220} />
-              <OffsetDateTimeField name="verifiedAt" label="検証日時" required width={240} />
               <TextareaField
                 name="reasonNote"
                 label="根拠（何を確認して送信を確定したか）"

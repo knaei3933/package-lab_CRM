@@ -221,3 +221,47 @@ describe('describeApiFailure', () => {
     }
   });
 });
+
+/**
+ * P0 integration (f): the web dictionary follows the server's code list. The
+ * server documents every code it can answer in docs/api/ERROR_CODES.md
+ * (generated from apps/api/src/error-codes.ts ERROR_MESSAGES_JA). A server
+ * code added without a web entry fails here, before it reaches a screen as
+ * 「予期しないエラー」.
+ */
+describe('code ↔ dictionary sync with the server contract', () => {
+  const documented = [...readFileSync(path.join(root, 'docs/api/ERROR_CODES.md'), 'utf8').matchAll(/^\| `([A-Z][A-Z0-9_]+)`/gm)]
+    .map((match) => match[1]!);
+  const serverDictionarySource = readFileSync(path.join(root, 'apps/api/src/error-codes.ts'), 'utf8');
+  const serverDictionary = serverDictionarySource.slice(
+    serverDictionarySource.indexOf('ERROR_MESSAGES_JA'),
+    serverDictionarySource.indexOf('};', serverDictionarySource.indexOf('ERROR_MESSAGES_JA'))
+  );
+  const serverMessageCodes = [...serverDictionary.matchAll(/^\s*([A-Z][A-Z0-9_]+): '/gm)].map((match) => match[1]!);
+
+  it('reads the documented contract (239 codes or more)', () => {
+    expect(new Set(documented).size).toBeGreaterThanOrEqual(239);
+    expect(serverMessageCodes.length).toBeGreaterThanOrEqual(239);
+  });
+
+  it('every code in docs/api/ERROR_CODES.md has a web entry', () => {
+    expect(documented.filter((code) => dictionaryEntry(code) === null)).toEqual([]);
+  });
+
+  it('every code of the server dictionary (ERROR_MESSAGES_JA) has a web entry', () => {
+    expect(serverMessageCodes.filter((code) => dictionaryEntry(code) === null)).toEqual([]);
+  });
+
+  it('every code literal in the API and core source has a web entry', () => {
+    expect(serverCodes.filter((code) => dictionaryEntry(code) === null)).toEqual([]);
+  });
+
+  it('the payment-term words agree between server and web (P-10: 前払い / 納品後払い / 未定)', async () => {
+    const core = await import('../packages/core/src/payment-gate.js');
+    const web = await import('../apps/web/src/lib/maker-po-data.js');
+    expect(web.PAYMENT_TERMS_LABELS).toEqual(core.PAYMENT_TERMS_LABELS_JA);
+    expect(core.PAYMENT_TERMS_LABELS_JA).toEqual({ prepaid: '前払い', on_delivery: '納品後払い', undetermined: '未定' });
+    expect(documented.length).toBeGreaterThan(0);
+    expect(readFileSync(path.join(root, 'docs/api/ERROR_CODES.md'), 'utf8')).not.toContain('納品時払い');
+  });
+});

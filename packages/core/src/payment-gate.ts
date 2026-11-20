@@ -80,7 +80,7 @@ export function evaluatePaymentGate(input: PaymentGateInput): PaymentGate {
       code: 'PAYMENT_GATE_UNSATISFIED',
       paymentTerms,
       message:
-        '決済条件が「未定」のため代表承認できません。フィルム発注の決済条件を「前払い」または「納品時払い」に変更してから承認してください'
+        '支払条件が「未定」のため代表承認できません。フィルム発注の支払条件を「前払い」または「納品後払い」に変更してから承認してください'
     };
   }
   return { ok: true, gatedOn: 'payment_terms_recorded', paymentTerms };
@@ -89,7 +89,7 @@ export function evaluatePaymentGate(input: PaymentGateInput): PaymentGate {
 /** P0 R01: Japanese labels for the payment terms (never shown as raw enum values). */
 export const PAYMENT_TERMS_LABELS_JA: Readonly<Record<PaymentTerms, string>> = {
   prepaid: '前払い',
-  on_delivery: '納品時払い',
+  on_delivery: '納品後払い',
   undetermined: '未定'
 };
 
@@ -133,13 +133,13 @@ export function evaluatePaymentTermsChange(input: {
           ok: false,
           code: 'PAYMENT_TERMS_LOCKED',
           reason: 'order_frozen',
-          message: '保留・見直し中または取消終了の発注は決済条件を変更できません。状態を解決してから変更してください'
+          message: '保留・見直し中または取消終了の発注は支払条件を変更できません。状態を解決してから変更してください'
         }
       : {
           ok: false,
           code: 'PAYMENT_TERMS_LOCKED',
           reason: 'ceo_approved',
-          message: '代表承認済みのメーカー発注書があるため、決済条件は変更できません。変更する場合はメーカー発注書を取り消して作り直してください'
+          message: '代表承認済みのメーカー発注書があるため、支払条件は変更できません。変更する場合はメーカー発注書を取り消して作り直してください'
         };
   }
   return { ok: true };
