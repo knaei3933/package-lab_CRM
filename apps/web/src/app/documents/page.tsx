@@ -3,13 +3,14 @@ import { ActionForm } from '../../components/ActionForm';
 import { DocumentUploadForm } from '../../components/DocumentUploadForm';
 import { ProjectProgress } from '../../components/ProjectProgress';
 import { ProjectUnavailable } from '../../components/ProjectUnavailable';
+import { openProjectIdFor } from '../../lib/project-selection-server';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
 import { TechDetails } from '../../components/TechDetails';
 import { SelectField, TextField } from '../../components/fields';
 import { uploadDocumentAction, verifyDocumentAction } from '../actions';
-import { loadSessionUser, readSelectedProjectId } from '../../lib/api';
+import { loadSessionUser } from '../../lib/api';
 import { loadMakerPoChoices } from '../../lib/document-maker-po-server';
 import { canRoleOperate } from '../../lib/permissions';
 import {
@@ -79,14 +80,14 @@ export default async function DocumentsPage(props: {
   // UI batch F: a refused download comes back here with ?download=<reason>.
   // (Optional chaining on props too: the screen tests call the page without props.)
   const downloadNotice = downloadRefusalMessage((await props?.searchParams)?.download);
-  const projectId = await readSelectedProjectId();
+  const projectId = await openProjectIdFor('/documents');
   if (!projectId) {
     return <div style={infoBoxStyle}>{NO_PROJECT_SELECTED_MESSAGE}</div>;
   }
 
   const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
   // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
-  if (workspace.projectRefused) return <ProjectUnavailable title="文書" reason={workspace.error} />;
+  if (workspace.projectRefused) return <ProjectUnavailable title="文書" reason={workspace.error} returnTo="/documents" />;
   const role = user?.role ?? null;
   // UI batch B (④): the 確認 column only for a role that may record it.
   const showVerifyColumn = canRoleOperate(role, 'document:verify');

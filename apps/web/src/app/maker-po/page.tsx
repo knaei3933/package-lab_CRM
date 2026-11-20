@@ -5,12 +5,13 @@ import { OrderCreateForm } from '../../components/OrderCreateForm';
 import { OffsetDateTimeField } from '../../components/OffsetDateTimeField';
 import { ProjectProgress } from '../../components/ProjectProgress';
 import { ProjectUnavailable } from '../../components/ProjectUnavailable';
+import { openProjectIdFor } from '../../lib/project-selection-server';
 import { DataTable } from '../../components/DataTable';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
 import { StatusBadge } from '../../components/StatusBadge';
 import { TechDetails } from '../../components/TechDetails';
 import { SelectField, TextareaField, TextField } from '../../components/fields';
-import { callApi, loadSessionUser, readSelectedProjectId } from '../../lib/api';
+import { callApi, loadSessionUser } from '../../lib/api';
 import {
   acknowledgementBlocksCreation,
   acknowledgementEvidenceDocuments,
@@ -135,14 +136,14 @@ const PAYMENT_TERMS_CHOICES: Choice[] = [
 const MAKER_PO_READY = 'MAKER_PO_READY';
 
 export default async function MakerPoPage() {
-  const projectId = await readSelectedProjectId();
+  const projectId = await openProjectIdFor('/maker-po');
   if (!projectId) {
     return <div style={infoBoxStyle}>{NO_PROJECT_SELECTED_MESSAGE}</div>;
   }
 
   const [user, board] = await Promise.all([loadSessionUser(), loadMakerPoBoard(projectId)]);
   // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
-  if (board.workspace.projectRefused) return <ProjectUnavailable title="メーカー発注（発注書・承認・送信・受入）" reason={board.workspace.error} />;
+  if (board.workspace.projectRefused) return <ProjectUnavailable title="メーカー発注（発注書・承認・送信・受入）" reason={board.workspace.error} returnTo="/maker-po" />;
   const role = user?.role ?? null;
   // UI batch B (④): display-only role checks; representative-only work reads
   // the shared permission helper (canRoleOperate) below, exactly as before.

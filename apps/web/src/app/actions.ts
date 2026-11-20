@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 import { FILM_UNITS, FILLING_UNITS, OFFICIAL_ARTIFACT_DOCUMENT_TYPES } from '@kanei/core';
 import { callApi, PROJECT_COOKIE, readSelectedProjectId } from '../lib/api';
 import { offsetDateTimeField } from '../lib/datetime';
@@ -174,6 +175,17 @@ export async function selectProjectAction(_prev: ActionState | null, formData: F
   store.set(PROJECT_COOKIE, projectId, { path: '/', httpOnly: true, sameSite: 'lax' });
   refresh();
   return { ok: true, message: `案件 ${result.data.code}（${result.data.name}）を選択しました。` };
+}
+
+/**
+ * ui/fix-project-select: a project card on the dashboard. The same check and
+ * cookie as the header selector; afterwards the dashboard is shown again — for
+ * the opened project, or (when the API refused it) with the cards again, the
+ * refused project no longer remembered.
+ */
+export async function openProjectFromCardAction(formData: FormData): Promise<void> {
+  await selectProjectAction(null, formData);
+  redirect('/dashboard');
 }
 
 // ---------------------------------------------------------------------------

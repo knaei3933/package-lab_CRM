@@ -259,8 +259,10 @@ describe('F-12: a project that cannot be opened shows only the way out', () => {
   it('ProjectUnavailable: the step, the API reason, no form', () => {
     const html = markup(<ProjectUnavailable title="文書" reason="案件が見つかりません 上部の「案件」から選び直してください。" />);
     expect(html).toContain('<h1');
-    expect(html).toContain('選択中の案件を開けません。画面上部の「案件」から案件を選んでください。');
-    expect(html).toContain('理由: 案件が見つかりません');
+    // ui/fix-project-select: what happened and the one thing to do, as a button.
+    expect(html).toContain('この案件は開けません。削除されたか、担当から外れた可能性があります。「案件を選び直す」を押して、開ける案件から選んでください。');
+    expect(html).toContain('href="/project-selection?next=%2Fdashboard&amp;reset=1"');
+    expect(html).toContain('理由（システムの応答）: 案件が見つかりません');
     expect(html).not.toContain('<form');
   });
 });

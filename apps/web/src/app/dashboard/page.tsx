@@ -6,17 +6,18 @@ import { Card } from '@astryxdesign/core/Card';
 import { Heading } from '@astryxdesign/core/Heading';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
-import { ActionForm } from '../../components/ActionForm';
 import { AstryxIsland } from '../../components/AstryxIsland';
+import { ProjectChooser } from '../../components/ProjectChooser';
 import { ProjectUnavailable } from '../../components/ProjectUnavailable';
 import { RepresentativeQueuePanel } from '../../components/RepresentativeQueue';
 import { DashboardFlow, DashboardItemList, DashboardActivity } from '../../components/DashboardParts';
-import { selectProjectAction } from '../actions';
-import { loadSessionUser, readSelectedProjectId } from '../../lib/api';
+import { openProjectFromCardAction, selectProjectAction } from '../actions';
+import { loadSessionUser } from '../../lib/api';
 import { buildDashboard, OTHERS_TITLE, STALE_AFTER_DAYS, STALE_BASIS, STALLED_TITLE, TODO_SCOPE, TODO_TITLE } from '../../lib/dashboard';
 import { loadDashboardData } from '../../lib/dashboard-data';
 import { normalizeRole } from '../../lib/permissions';
-import { loadSelectableProjectList, NO_PROJECT_SELECTED_MESSAGE } from '../../lib/project-data';
+import { loadSelectableProjectList } from '../../lib/project-data';
+import { projectSelectionFor } from '../../lib/project-selection-server';
 import { failedRepresentativeQueue, loadRepresentativeQueue } from '../../lib/representative-queue';
 
 export const dynamic = 'force-dynamic';
@@ -41,49 +42,16 @@ export default async function DashboardPage() {
   const user = await loadSessionUser();
   if (!user) redirect('/');
   const role = normalizeRole(user.role);
-  const projectId = await readSelectedProjectId();
+  const selection = await projectSelectionFor('/dashboard');
 
-  if (!projectId) {
-    const [list, queue] = await Promise.all([
-      loadSelectableProjectList(),
-      role === 'admin' ? representativeQueueFor(null) : Promise.resolve(null)
-    ]);
+  if (selection.kind !== 'open') {
+    const queue = role === 'admin' && selection.kind === 'choose' ? await representativeQueueFor(null) : null;
     return (
       <AstryxIsland>
         <VStack as="section" gap={5}>
-          <VStack gap={2}>
-            <Heading level={1}>ダッシュボード</Heading>
-            <Banner status="info" title={NO_PROJECT_SELECTED_MESSAGE} />
-          </VStack>
-          <Card>
-            <VStack gap={3}>
-              <Heading level={2}>まず案件を開く</Heading>
-              <Text as="p" type="supporting">
-                作業は案件ごとに行います。下から担当の案件を開くと、その案件の進み具合とやることが表示されます。
-              </Text>
-              {list.error ? (
-                <Text as="p">{`案件の一覧を読み込めませんでした（${list.error}）。画面上部の「案件」から選んでください。`}</Text>
-              ) : list.projects.length === 0 ? (
-                <Text as="p">
-                  {role === 'admin'
-                    ? '開ける案件がまだありません。案件の作成は管理者の手順で行います。'
-                    : '割り当てられた案件がありません。代表者に案件の割り当てを依頼してください。'}
-                </Text>
-              ) : (
-                <ul className="dash-project-list">
-                  {list.projects.map((project) => (
-                    <li key={project.id}>
-                      <span translate="no">{project.code}</span>
-                      <span>{project.name}</span>
-                      <ActionForm action={selectProjectAction} submitLabel="この案件を開く">
-                        <input type="hidden" readOnly name="projectId" value={project.id} />
-                      </ActionForm>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </VStack>
-          </Card>
+          <Heading level={1}>ダッシュボード</Heading>
+          {/* ui/fix-project-select: choose here, not in the header — one big card per project. */}
+          <ProjectChooser selection={selection} role={role} openAction={openProjectFromCardAction} />
           {queue ? (
             <Card>
               <VStack gap={3}>
@@ -99,13 +67,14 @@ export default async function DashboardPage() {
       </AstryxIsland>
     );
   }
+  const projectId = selection.projectId;
 
   const [data, queue] = await Promise.all([
     loadDashboardData(projectId),
     role === 'admin' ? representativeQueueFor(projectId) : Promise.resolve(null)
   ]);
   const { workspace, boards } = data.board;
-  if (workspace.projectRefused) return <ProjectUnavailable title="ダッシュボード" reason={workspace.error} />;
+  if (workspace.projectRefused) return <ProjectUnavailable title="ダッシュボード" reason={workspace.error} returnTo="/dashboard" />;
 
   const view = buildDashboard({ role: user.role, workspace, boards, activity: data.activity, now: new Date() });
   const projectName = workspace.project ? `${workspace.project.code}（${workspace.project.name}）` : null;

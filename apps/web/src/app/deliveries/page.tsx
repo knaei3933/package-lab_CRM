@@ -3,13 +3,14 @@ import { ActionForm } from '../../components/ActionForm';
 import { DeliveryRecordForm } from '../../components/DeliveryRecordForm';
 import { ProjectProgress } from '../../components/ProjectProgress';
 import { ProjectUnavailable } from '../../components/ProjectUnavailable';
+import { openProjectIdFor } from '../../lib/project-selection-server';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
 import { TechDetails } from '../../components/TechDetails';
 import { SelectField, TextField } from '../../components/fields';
 import { confirmDeliveryAction, evaluateCommissionReadinessAction, recordDeliveryAction } from '../actions';
-import { loadSessionUser, readSelectedProjectId } from '../../lib/api';
+import { loadSessionUser } from '../../lib/api';
 import { canRoleOperate } from '../../lib/permissions';
 import { labelLookup, loadWorkspace, NO_PROJECT_SELECTED_MESSAGE } from '../../lib/project-data';
 import { shortId } from '../../lib/short-id';
@@ -32,14 +33,14 @@ export const metadata: Metadata = { title: '納品確認・手数料準備' };
  * commissionCalculationAllowed / blocking in Japanese.
  */
 export default async function DeliveriesPage() {
-  const projectId = await readSelectedProjectId();
+  const projectId = await openProjectIdFor('/deliveries');
   if (!projectId) {
     return <div style={infoBoxStyle}>{NO_PROJECT_SELECTED_MESSAGE}</div>;
   }
 
   const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
   // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
-  if (workspace.projectRefused) return <ProjectUnavailable title="納品確認・手数料準備" reason={workspace.error} />;
+  if (workspace.projectRefused) return <ProjectUnavailable title="納品確認・手数料準備" reason={workspace.error} returnTo="/deliveries" />;
   const role = user?.role ?? null;
   // UI batch B (④): the 確認 column only for a role that may record it.
   const showConfirmColumn = canRoleOperate(role, 'delivery_confirmation:record');

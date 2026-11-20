@@ -337,14 +337,12 @@ describe('dashboard by role on the real API', () => {
     expect(html).not.toContain('<form');
   });
 
-  it('without a selected project: the first action is to open one, from the projects the API lists for the role', async () => {
+  it('without a selected project: the only project the API lists for the role is opened for the operator', async () => {
+    // ui/fix-project-select: one project — no choice to make, the route opens it
+    // (the cards for several projects: web-fix-project-select-parity).
     signIn('staff', false);
-    const html = await render(DashboardPage);
-    expect(html).toContain('まず案件を開く');
-    expect(html).toContain('TEST-ND-PROJECT');
-    expect(html).toContain('この案件を開く');
-    expect(html).not.toMatch(AMOUNT);
-    expect(html).not.toMatch(HANGUL);
+    const target = await render(DashboardPage).then(() => null, (error: { digest?: string }) => error.digest ?? String(error));
+    expect(target).toContain('/project-selection?next=%2Fdashboard');
   });
 
   it('the guide page is Japanese; Korean only in the closed 「한국어 설명」 note under each section; the role’s day comes first', async () => {

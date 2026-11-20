@@ -1,4 +1,4 @@
-import { apiBaseUrl, SESSION_COOKIE } from '../../../../lib/api';
+import { apiBaseUrl, PROJECT_COOKIE, SESSION_COOKIE } from '../../../../lib/api';
 import { DISPLAY_NAME_COOKIE } from '../../../../lib/session-display';
 import { CROSS_SITE_REFUSAL, isSameOriginPost } from '../../../../lib/login-relay';
 
@@ -14,6 +14,9 @@ export const dynamic = 'force-dynamic';
 
 const CLEARED_SESSION_COOKIE = `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
 const CLEARED_DISPLAY_NAME_COOKIE = `${DISPLAY_NAME_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
+// ui/fix-project-select: the next person to sign in on this browser starts without
+// the previous operator's project (it may not be one they can open).
+const CLEARED_PROJECT_COOKIE = `${PROJECT_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`;
 
 export async function POST(request: Request): Promise<Response> {
   if (!isSameOriginPost(request)) {
@@ -42,6 +45,7 @@ export async function POST(request: Request): Promise<Response> {
     );
     unreachable.headers.append('set-cookie', CLEARED_SESSION_COOKIE);
     unreachable.headers.append('set-cookie', CLEARED_DISPLAY_NAME_COOKIE);
+    unreachable.headers.append('set-cookie', CLEARED_PROJECT_COOKIE);
     return unreachable;
   }
 
@@ -59,5 +63,6 @@ export async function POST(request: Request): Promise<Response> {
     response.headers.append('set-cookie', CLEARED_SESSION_COOKIE);
   }
   response.headers.append('set-cookie', CLEARED_DISPLAY_NAME_COOKIE);
+  response.headers.append('set-cookie', CLEARED_PROJECT_COOKIE);
   return response;
 }

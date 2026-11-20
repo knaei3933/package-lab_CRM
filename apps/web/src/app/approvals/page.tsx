@@ -5,6 +5,7 @@ import { ChangeRequestFields } from '../../components/ChangeRequestFields';
 import { OffsetDateTimeField } from '../../components/OffsetDateTimeField';
 import { ProjectProgress } from '../../components/ProjectProgress';
 import { ProjectUnavailable } from '../../components/ProjectUnavailable';
+import { openProjectIdFor } from '../../lib/project-selection-server';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
 import { DataTable } from '../../components/DataTable';
 import { StatusBadge } from '../../components/StatusBadge';
@@ -15,7 +16,7 @@ import {
   registerArtworkRevisionAction,
   verifyEvidenceManualAction
 } from '../actions';
-import { loadSessionUser, readSelectedProjectId } from '../../lib/api';
+import { loadSessionUser } from '../../lib/api';
 import { callApi } from '../../lib/api';
 import { asiaTokyoDatetimeLocalNow } from '../../lib/datetime';
 import { canRoleOperate, operationRefusal } from '../../lib/permissions';
@@ -69,14 +70,14 @@ export const metadata: Metadata = { title: '承認' };
  * append-only verification (確認／却下); the API refuses every other role.
  */
 export default async function ApprovalsPage() {
-  const projectId = await readSelectedProjectId();
+  const projectId = await openProjectIdFor('/approvals');
   if (!projectId) {
     return <div style={infoBoxStyle}>{NO_PROJECT_SELECTED_MESSAGE}</div>;
   }
 
   const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
   // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
-  if (workspace.projectRefused) return <ProjectUnavailable title="承認（校了のダブル承認）" reason={workspace.error} />;
+  if (workspace.projectRefused) return <ProjectUnavailable title="承認（校了のダブル承認）" reason={workspace.error} returnTo="/approvals" />;
   const role = user?.role ?? null;
   // UI batch B (④): the representative-only manual verification, through the shared helper.
   const canVerifyEvidence = canRoleOperate(role, 'artwork_approval:verify_evidence');

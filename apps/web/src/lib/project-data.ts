@@ -1022,7 +1022,7 @@ function toOrganizationState(value: unknown, organization: string): Organization
 // ---------------------------------------------------------------------------
 
 /** Shown on every operator screen while no project is selected. */
-export const NO_PROJECT_SELECTED_MESSAGE = '案件が選択されていません。画面上部の「案件」から選んでください。';
+export const NO_PROJECT_SELECTED_MESSAGE = 'まだ案件を選んでいません。画面上部の「案件」で作業する案件を選ぶと、この画面に内容が表示されます。';
 
 /** Appended to the API's refusal when the remembered project cannot be opened. */
 export const RESELECT_PROJECT_HINT = '上部の「案件」から選び直してください。';
@@ -1032,7 +1032,10 @@ export const RELOGIN_HINT = 'ログインし直してください。';
 
 /** Where the role may not read the film order states (viewer). */
 /** UI batch E (F-12): the selected project cannot be opened — the one thing to do next. */
-export const PROJECT_UNAVAILABLE_MESSAGE = '選択中の案件を開けません。画面上部の「案件」から案件を選んでください。';
+export const PROJECT_UNAVAILABLE_MESSAGE = 'この案件は開けません。削除されたか、担当から外れた可能性があります。「案件を選び直す」を押して、開ける案件から選んでください。';
+
+/** The way out of PROJECT_UNAVAILABLE_MESSAGE (forgets the project, then the dashboard offers the ones that open). */
+export const RESELECT_PROJECT_LABEL = '案件を選び直す';
 
 export const STATUS_HIDDEN_NOTICE = 'この役割では発注の状態は表示されません（閲覧権限なし）';
 

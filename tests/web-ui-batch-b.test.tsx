@@ -1138,6 +1138,14 @@ describe('maker-po: the 代表承認 form is the representative\'s (M11)', () =>
 describe('unselected project message', () => {
   it('is the same on all five screens', async () => {
     selectedProject.current = null;
+    // ui/fix-project-select: with several projects to choose from nothing is
+    // opened for the operator, so every screen asks for a choice.
+    callApi.mockImplementation(async (apiPath: string) => apiPath === '/api/projects'
+      ? { ok: true, status: 200, error: null, data: { projects: [
+          { id: PROJECT_ID, code: 'P-1', name: '案件1', status: 'active' },
+          { id: `${PROJECT_ID.slice(0, -1)}0`, code: 'P-2', name: '案件2', status: 'active' }
+        ] } }
+      : { ok: false, status: 404, error: 'not served in this test', data: null });
     try {
       for (const page of PAGE_NAMES) {
         const html = await renderPage(PAGES[page]);

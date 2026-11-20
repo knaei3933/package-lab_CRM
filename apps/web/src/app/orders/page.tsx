@@ -15,6 +15,7 @@ import { RepresentativeQueuePanel } from '../../components/RepresentativeQueue';
 import { failedRepresentativeQueue, loadRepresentativeQueue } from '../../lib/representative-queue';
 import { ProjectProgress } from '../../components/ProjectProgress';
 import { ProjectUnavailable } from '../../components/ProjectUnavailable';
+import { openProjectIdFor } from '../../lib/project-selection-server';
 import { RoleGate, ViewerPageNotice } from '../../components/RoleGate';
 import { TechDetails } from '../../components/TechDetails';
 import { DataTable } from '../../components/DataTable';
@@ -33,7 +34,7 @@ import {
   updateFilmPaymentTermsAction,
   verifySevenPurchaseOrderAction
 } from '../actions';
-import { loadSessionUser, readSelectedProjectId } from '../../lib/api';
+import { loadSessionUser } from '../../lib/api';
 import { loadPaymentGate, PAYMENT_TERMS_LABELS } from '../../lib/maker-po-data';
 import { canRoleOperate } from '../../lib/permissions';
 import {
@@ -94,7 +95,7 @@ async function representativeQueueFor(openProjectId: string | null) {
 }
 
 export default async function OrdersPage() {
-  const projectId = await readSelectedProjectId();
+  const projectId = await openProjectIdFor('/orders');
   if (!projectId) {
     // Astryx trial: a prerequisite, not a failure — info, with the next step in the text.
     // UI batch E (F-23): the first screen after login — the representative sees
@@ -126,7 +127,7 @@ export default async function OrdersPage() {
     loadSessionUser().then((who) => (who?.role === 'admin' ? representativeQueueFor(projectId) : null))
   ]);
   // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
-  if (workspace.projectRefused) return <ProjectUnavailable title="案件（発注）一覧／作成" reason={workspace.error} />;
+  if (workspace.projectRefused) return <ProjectUnavailable title="案件（発注）一覧／作成" reason={workspace.error} returnTo="/orders" />;
   const role = user?.role ?? null;
   const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
   const readinessLabel = labelLookup(workspace.labels, 'commissionReadinessStates');

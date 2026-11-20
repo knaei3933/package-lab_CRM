@@ -1,6 +1,7 @@
 import { mkdtemp } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { renderToString } from 'react-dom/server';
 import { prerenderToNodeStream } from 'react-dom/static';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
@@ -76,6 +77,7 @@ const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page
 const { default: DocumentsPage } = await import('../apps/web/src/app/documents/page.js');
 const { default: DeliveriesPage } = await import('../apps/web/src/app/deliveries/page.js');
 const { loadWorkspace, PROJECT_UNAVAILABLE_MESSAGE } = await import('../apps/web/src/lib/project-data.js');
+const { ProjectUnavailable } = await import('../apps/web/src/components/ProjectUnavailable.js');
 const { ceoApprovalFacts } = await import('../apps/web/src/lib/decision-facts.js');
 const { loadRepresentativeQueue } = await import('../apps/web/src/lib/representative-queue.js');
 const { callApi } = await import('../apps/web/src/lib/api.js');
@@ -375,9 +377,13 @@ describe('F-12: a project the API no longer opens', () => {
     const workspace = await loadWorkspace(signedIn.projectId);
     expect(workspace.project).toBeNull();
     expect(workspace.projectRefused).toBe(true);
-    const html = await render(OrdersPage);
-    expect(html).toContain(PROJECT_UNAVAILABLE_MESSAGE);
-    expect(html).not.toContain('<form');
+    // ui/fix-project-select: the screen no longer stops on it — a project the
+    // operator's list does not offer is forgotten first (the /project-selection
+    // route writes the cookie), and the message stays for a refusal of a
+    // listed project (ProjectUnavailable, below and web-ui-batch-e).
+    const target = await render(OrdersPage).then(() => null, (error: { digest?: string }) => error.digest ?? String(error));
+    expect(target).toContain('/project-selection?next=%2Forders');
+    expect(renderToString(<ProjectUnavailable title="案件（発注）一覧／作成" reason={workspace.error} returnTo="/orders" />)).toContain(PROJECT_UNAVAILABLE_MESSAGE);
     signedIn.projectId = projectId;
   });
 });
