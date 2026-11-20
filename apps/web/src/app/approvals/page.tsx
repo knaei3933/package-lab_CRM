@@ -470,7 +470,7 @@ function PendingVerificationSection({
             <strong>{organizationText(entry.organization)}</strong> の承認（デザイン {entry.designKey}／版
             {entry.revisionNo}）は手動確認待ちです。
             <div style={noteStyle}>
-              原本証跡（원본 증빙）: {evidenceLabel(entry.evidenceDocumentVersionId)}
+              原本証跡: {evidenceLabel(entry.evidenceDocumentVersionId)}
               <TechDetails context="ID・識別子">
                 <p>証跡バージョンID: {entry.evidenceDocumentVersionId ?? '—'}</p>
                 <p>承認証跡識別子: {entry.evidenceIdentifier ?? '—'}</p>

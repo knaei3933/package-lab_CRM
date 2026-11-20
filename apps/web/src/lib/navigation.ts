@@ -110,17 +110,17 @@ export function isCurrentPath(pathname: string | null, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
-/** A line under the menu for a role that only reads (Korean guide copy, lang="ko"). */
+/** A line under the menu for a role that only reads, or whose role could not be read. */
 export function navRoleNote(role: string | null | undefined): string | null {
-  if (role === null || role === undefined) return '역할을 확인하지 못했습니다. 새로고침해 주세요.';
-  return navRole(role) === 'viewer' ? '閲覧者: 보기 전용입니다（記録・変更はできません）.' : null;
+  if (role === null || role === undefined) return '役割を確認できませんでした。再読み込みしてください。';
+  return navRole(role) === 'viewer' ? '閲覧者のため、どの画面でも記録・変更はできません（閲覧のみ）。' : null;
 }
 
 /**
- * The one-line 「이 화면에서 할 일 / 다음 단계」 above each screen. Korean guide
- * copy that keeps the screen and button names in their Japanese wording, so
- * the operator finds the same words on the screen. `next` names the screen
- * that usually follows; null when the screen is not a step of the flow.
+ * The one-line 「この画面でやること／次の段階」 above each screen, in the
+ * screens' own Japanese wording (screen, button and state names as shown).
+ * `next` names the screen that usually follows; null when the screen is not
+ * a step of the flow.
  */
 export interface ScreenGuide {
   step: number | null;
@@ -133,49 +133,49 @@ export const SCREEN_GUIDES: Readonly<Record<string, ScreenGuide>> = {
   [DASHBOARD_PATH]: {
     step: null,
     phase: 'ホーム',
-    doHere: '「지금 내가 할 일」부터 위에서 차례로 처리합니다. 항목을 누르면 그 작업을 하는 화면이 열립니다.',
+    doHere: '「いま自分がやること」を上から順に進めます。項目を押すと、その作業をする画面（該当の発注）が開きます。',
     next: null
   },
   '/orders': {
     step: 1,
     phase: '受付・発注',
-    doHere: 'セブン化学発注書를 등록·公式登録·真性行チェックリスト까지 마치고, フィルム発注을 만들어 상태를 진행합니다（生産中・発送済み 진행도 이 화면）.',
-    next: { href: '/documents', label: '文書', text: '「セブン確認済み」가 되면 文書 화면에서 デザイン入稿データ를 등록합니다.' }
+    doHere: 'セブン化学発注書を登録し、公式登録日と真性行チェックリストを記録してから、フィルム発注を作成して状態を進めます（「フィルム製造中」「フィルム発送済み」への変更もこの画面です）。',
+    next: { href: '/documents', label: '文書', text: '「セブン化学発注書確認済」になったら、文書画面でデザイン入稿データを登録します。' }
   },
   '/documents': {
     step: 2,
     phase: 'デザイン・校正',
-    doHere: 'デザイン入稿データ・校正ゲラ・承認証跡・受領証跡 파일을 올리고 確認 결과를 기록합니다.',
-    next: { href: '/approvals', label: '承認（校了）', text: '校正ゲラ를 올렸으면 承認 화면에서 版을 등록하고 校了를 기록합니다.' }
+    doHere: 'デザイン入稿データ・校正ゲラ・承認証跡・受領証跡のファイルを登録し、確認の結果を記録します。',
+    next: { href: '/approvals', label: '承認（校了）', text: '校正ゲラを登録したら、承認画面で版を登録して校了を記録します。' }
   },
   '/approvals': {
     step: 2,
     phase: 'デザイン・校正',
-    doHere: '校正ゲラの版을 등록하고, 같은 版에 대한 顧客 承認과 セブン化学 承認을 각각 기록합니다（순서 무관, 둘 다 필요）.',
-    next: { href: '/maker-po', label: 'メーカー発注', text: '「校了（ダブル承認）」이 되면 発注을 「製造先発注準備完了」로 진행한 뒤 メーカー発注 화면으로.' }
+    doHere: '校正ゲラの版を登録し、同じ版に対する顧客の承認とセブン化学の承認をそれぞれ記録します（順番は問いません。両方そろって校了です）。',
+    next: { href: '/maker-po', label: 'メーカー発注', text: '「校了（顧客・セブン化学）」になったら、発注を「製造先発注準備完了」へ進めてメーカー発注画面へ。' }
   },
   '/maker-po': {
     step: 3,
     phase: 'メーカー発注',
-    doHere: 'メーカー発注書 작성·代表承認（代表者）→ 送信済みメール原本（EML）로 手動送信 기록 → 受入（仮）·最終受入 순서로 진행합니다.',
-    next: { href: '/orders', label: '案件（発注）', text: '受入確認이 끝나면 発注 화면에서 「生産中」「発送済み」로 진행합니다.' }
+    doHere: 'メーカー発注書の作成と代表承認（代表者）→ 送信済みメールの原本（EML）で手動送信を記録 → 受入（仮）と最終受入、の順に進めます。',
+    next: { href: '/orders', label: '案件（発注）', text: '最終受入が済んだら、発注画面で「フィルム製造中」「フィルム発送済み」へ進めます。' }
   },
   '/deliveries': {
     step: 4,
     phase: '納品・手数料',
-    doHere: '納品을 기록하고, 受領証跡을 인용해 納品確認을 한 뒤 手数料準備状態를 다시 평가합니다.',
+    doHere: '納品を記録し、受領証跡を引用して納品確認をしたあと、手数料準備状態を評価し直します。',
     next: null
   },
   [GUIDE_PATH]: {
     step: null,
     phase: '参照',
-    doHere: '처음 쓰는 분을 위한 안내입니다. 역할별 하루 흐름, 용어, 자주 막히는 상황을 정리했습니다.',
+    doHere: '初めて使う人のための案内です。作業の順番、役割ごとの一日の流れ、用語、よく止まる場面をまとめています。',
     next: null
   },
   '/status': {
     step: null,
     phase: '参照',
-    doHere: '화면에 나오는 상태 이름（日本語ラベル）의 목록입니다. 기록은 하지 않습니다.',
+    doHere: '画面に出てくる状態名（日本語ラベル）の一覧です。ここでは記録はしません。',
     next: null
   }
 };

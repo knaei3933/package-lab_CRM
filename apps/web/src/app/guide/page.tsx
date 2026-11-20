@@ -1,18 +1,32 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import type { ReactNode } from 'react';
 import { Card } from '@astryxdesign/core/Card';
 import { Heading } from '@astryxdesign/core/Heading';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import { AstryxIsland } from '../../components/AstryxIsland';
 import { loadSessionUser } from '../../lib/api';
-import { GUIDE_DAYS, GUIDE_STEPS, GUIDE_TERMS, GUIDE_TROUBLES } from '../../lib/guide';
+import { GUIDE_DAYS, GUIDE_FORBIDDEN, GUIDE_STEPS, GUIDE_TERMS, GUIDE_TROUBLES } from '../../lib/guide';
 import { normalizeRole } from '../../lib/permissions';
 import { SCREEN_NAMES } from '../../lib/project-data';
 
 export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = { title: '使い方ガイド' };
+
+/**
+ * The Korean explanation under one guide section: closed by default, marked
+ * lang="ko" (the page itself is Japanese, like every screen).
+ */
+function KoreanNote({ children }: { children: ReactNode }) {
+  return (
+    <details className="guide-ko" lang="ko">
+      <summary>한국어 설명</summary>
+      <div className="guide-ko-body">{children}</div>
+    </details>
+  );
+}
 
 /**
  * UI nav-dashboard (C): the guide for a first-time operator — the order of the
@@ -30,26 +44,24 @@ export default async function GuidePage() {
         <VStack gap={2}>
           <Heading level={1}>使い方ガイド</Heading>
           <Text as="p" type="supporting">
-            <span lang="ko">
-              KANEI CRM（F1）은 セブン化学発注書 접수부터 納品・受領確認・手数料準備까지의 필름 発注을 기록하는 장부입니다.
-              메일・発注은 사람이 직접 보내고, CRM에는 그 증거（証跡）를 남깁니다.
-            </span>
+            KANEI CRM（F1）は、セブン化学発注書の受付から納品・受領確認・手数料準備までのフィルム発注を記録する台帳です。メールや発注は人が送り、CRMにはその証跡を残します。
           </Text>
+          <KoreanNote>
+            <p>KANEI CRM(F1)은 セブン化学発注書 접수부터 납품·수령 확인·수수료 준비까지의 필름 발주를 기록하는 장부입니다. 메일·발주는 사람이 직접 보내고, CRM에는 그 증빙을 남깁니다.</p>
+          </KoreanNote>
         </VStack>
 
         <Card>
           <VStack gap={3}>
-            <Heading level={2}><span lang="ko">업무 순서（8段階）</span></Heading>
-            <Text as="p" type="supporting">
-              <span lang="ko">각 화면 위의 진행 표시（済・いま）와 같은 이름입니다. 앞 단계가 끝나야 다음으로 진행할 수 있습니다.</span>
-            </Text>
-            <ol className="guide-steps" lang="ko">
+            <Heading level={2}>作業の順番（8段階）</Heading>
+            <Text as="p" type="supporting">各画面の上の進み具合（済・いま）と同じ名前です。前の段階が終わると次へ進めます。</Text>
+            <ol className="guide-steps">
               {GUIDE_STEPS.map((step) => (
                 <li key={step.name}>
-                  <p className="guide-step-name" lang="ja">{step.name}</p>
+                  <p className="guide-step-name">{step.name}</p>
                   <p>{step.what}</p>
                   <p className="guide-step-meta">
-                    담당: {step.who}　화면:{' '}
+                    担当: {step.who}　画面:{' '}
                     {step.screens.map((screen, index) => (
                       <span key={screen}>
                         {index > 0 ? '・' : null}
@@ -60,21 +72,25 @@ export default async function GuidePage() {
                 </li>
               ))}
             </ol>
-            <p className="guide-rule" lang="ko">
-              금지: デザイン 업로드만으로, 또는 顧客 단독 승인만으로 メーカー 발주를 할 수 없습니다. セブン化学発注書도 メーカー発注書를 대신하지 않습니다.
-            </p>
+            <p className="guide-rule">{GUIDE_FORBIDDEN.text}</p>
+            <KoreanNote>
+              <ol>
+                {GUIDE_STEPS.map((step) => <li key={step.name}><span lang="ja">{step.name}</span>: {step.ko}</li>)}
+              </ol>
+              <p>{GUIDE_FORBIDDEN.ko}</p>
+            </KoreanNote>
           </VStack>
         </Card>
 
         <Card>
           <VStack gap={3}>
-            <Heading level={2}><span lang="ko">역할별 하루 흐름</span></Heading>
-            <div className="guide-days" lang="ko">
+            <Heading level={2}>役割ごとの一日の流れ</Heading>
+            <div className="guide-days">
               {days.map((day) => (
                 <div key={day.role}>
                   <h3>
                     {day.title}
-                    {day.role === role ? <span className="guide-you">（지금 로그인한 역할）</span> : null}
+                    {day.role === role ? <span className="guide-you">（いまログインしている役割）</span> : null}
                   </h3>
                   <ol>
                     {day.steps.map((step) => <li key={step}>{step}</li>)}
@@ -82,27 +98,47 @@ export default async function GuidePage() {
                 </div>
               ))}
             </div>
+            <KoreanNote>
+              {days.map((day) => (
+                <div key={day.role}>
+                  <p className="guide-ko-head"><span lang="ja">{day.title}</span></p>
+                  <ol>
+                    {day.ko.map((step) => <li key={step}>{step}</li>)}
+                  </ol>
+                </div>
+              ))}
+            </KoreanNote>
           </VStack>
         </Card>
 
         <Card>
           <VStack gap={3}>
-            <Heading level={2}><span lang="ko">용어집</span></Heading>
-            <dl className="guide-terms" lang="ko">
+            <Heading level={2}>用語集</Heading>
+            <dl className="guide-terms">
               {GUIDE_TERMS.map((entry) => (
                 <div key={entry.term}>
-                  <dt lang="ja">{entry.term}</dt>
+                  <dt>{entry.term}</dt>
                   <dd>{entry.meaning}</dd>
                 </div>
               ))}
             </dl>
+            <KoreanNote>
+              <dl className="guide-terms">
+                {GUIDE_TERMS.map((entry) => (
+                  <div key={entry.term}>
+                    <dt lang="ja">{entry.term}</dt>
+                    <dd>{entry.ko}</dd>
+                  </div>
+                ))}
+              </dl>
+            </KoreanNote>
           </VStack>
         </Card>
 
         <Card>
           <VStack gap={3}>
-            <Heading level={2}><span lang="ko">자주 막히는 상황</span></Heading>
-            <div className="guide-troubles" lang="ko">
+            <Heading level={2}>よく止まる場面</Heading>
+            <div className="guide-troubles">
               {GUIDE_TROUBLES.map((trouble) => (
                 <details key={trouble.question}>
                   <summary>{trouble.question}</summary>
@@ -110,6 +146,13 @@ export default async function GuidePage() {
                 </details>
               ))}
             </div>
+            <KoreanNote>
+              <ul>
+                {GUIDE_TROUBLES.map((trouble) => (
+                  <li key={trouble.question}><span lang="ja">{trouble.question}</span>: {trouble.ko}</li>
+                ))}
+              </ul>
+            </KoreanNote>
           </VStack>
         </Card>
       </VStack>

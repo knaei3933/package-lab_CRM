@@ -20,9 +20,9 @@ vi.mock('next/navigation', () => ({
 
 const { navGroupsForRole, navHrefsForRole, navRoleNote, screenGuideFor, SCREEN_GUIDES, NAV_GROUPS } = await import('../apps/web/src/lib/navigation.js');
 const { SideNav, isCurrentNavItem } = await import('../apps/web/src/components/NavLinks.js');
-const { NavDrawerToggle, SIDEBAR_ID } = await import('../apps/web/src/components/NavDrawer.js');
+const { DRAWER_TITLE_ID, drawerDialogAttributes, NavDrawerToggle, SIDEBAR_ID } = await import('../apps/web/src/components/NavDrawer.js');
 const { ScreenGuideLine } = await import('../apps/web/src/components/ScreenGuide.js');
-const { buildDashboard, dashboardAmount, itemHref, STALE_AFTER_DAYS, ACTIVITY_LIMIT, ACTIVITY_READ_LIMIT } = await import('../apps/web/src/lib/dashboard.js');
+const { buildDashboard, CHANGE_REVIEW_NOTE, dashboardAmount, itemHref, STALE_AFTER_DAYS, STALE_BASIS, TODO_SCOPE, ACTIVITY_LIMIT, ACTIVITY_READ_LIMIT } = await import('../apps/web/src/lib/dashboard.js');
 const { DashboardFlow, DashboardItemList, DashboardActivity } = await import('../apps/web/src/components/DashboardParts.js');
 const { GUIDE_STEPS, GUIDE_DAYS } = await import('../apps/web/src/lib/guide.js');
 const { PROGRESS_STEPS } = await import('../apps/web/src/lib/project-data.js');
@@ -127,7 +127,7 @@ describe('sidebar menu by role (A)', () => {
   it('an unknown or missing role never gets more than the viewer menu', () => {
     expect(navHrefsForRole(null)).toEqual(navHrefsForRole('viewer'));
     expect(navHrefsForRole('superuser')).toEqual(navHrefsForRole('viewer'));
-    expect(navRoleNote(null)).toContain('새로고침');
+    expect(navRoleNote(null)).toBe('役割を確認できませんでした。再読み込みしてください。');
     expect(navRoleNote('viewer')).toContain('閲覧者');
     expect(navRoleNote('admin')).toBeNull();
     expect(navRoleNote('staff')).toBeNull();
@@ -151,7 +151,9 @@ describe('sidebar menu by role (A)', () => {
     expect(html).not.toMatch(/<h[1-6]/);
     expect(html).not.toContain('href="/documents"');
     expect(html).not.toContain('href="/approvals"');
-    expect(html).toContain('lang="ko"');
+    // Japanese like every screen (no Korean in the menu).
+    expect(html).not.toMatch(/[\uAC00-\uD7A3]/);
+    expect(html).toContain('閲覧者のため、どの画面でも記録・変更はできません（閲覧のみ）。');
     expect(html).toContain(`id="${SIDEBAR_ID}"`);
     // Closed by default: no backdrop in the markup.
     expect(html).toContain('data-open="false"');
@@ -162,6 +164,39 @@ describe('sidebar menu by role (A)', () => {
     const html = markup(<NavDrawerToggle />);
     expect(html).toMatch(/^<button type="button" class="app-menu-toggle" aria-expanded="false" aria-controls="app-sidebar">/);
     expect(html).toContain('メニュー');
+  });
+
+  it('the open drawer is a named modal dialog; closed (and on a wide screen) it is a plain sidebar (review M-2)', () => {
+    expect(drawerDialogAttributes(true)).toEqual({ role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': DRAWER_TITLE_ID });
+    expect(drawerDialogAttributes(false)).toEqual({});
+    const html = markup(<SideNav groups={navGroupsForRole('admin')} roleNote={null} />);
+    expect(html).toContain(`<span id="${DRAWER_TITLE_ID}">メニュー</span>`);
+    expect(html).not.toContain('role="dialog"');
+  });
+
+  it('the drawer makes the page behind it inert, locks its scroll and gives focus back to 「メニュー」 on every close (review M-2, M-3)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const drawer = readFileSync(new URL('../apps/web/src/components/NavDrawer.tsx', import.meta.url), 'utf8');
+    const links = readFileSync(new URL('../apps/web/src/components/NavLinks.tsx', import.meta.url), 'utf8');
+    expect(drawer).toContain("const BACKGROUND_SELECTORS = ['.app-header', '#main'] as const;");
+    expect(drawer).toMatch(/for \(const element of background\) element\.inert = true;/);
+    expect(drawer).toMatch(/for \(const element of background\) element\.inert = false;/);
+    expect(drawer).toContain("document.body.style.overflow = 'hidden';");
+    // Focus goes back only after the header is interactive again (cleanup order).
+    expect(drawer).toMatch(/element\.inert = false;[\s\S]*if \(restoreFocusRef\.current\) \{\s*restoreFocusRef\.current = false;\s*toggleRef\.current\?\.focus\(\);/);
+    // A menu link closes through the same close() that restores focus.
+    expect(links).toMatch(/closest\('a\[href\]'\)\) close\(\);/);
+    expect(links).toContain('{...drawerDialogAttributes(open)}');
+  });
+
+  it('every top-bar and drawer control is a 44px touch target on a phone or tablet (review M-4)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const css = readFileSync(new URL('../apps/web/src/app/globals.css', import.meta.url), 'utf8');
+    const narrow = css.slice(css.indexOf('@media (max-width: 1023px)'));
+    expect(narrow).toMatch(/\.app-menu-toggle,\s*\.app-sidebar-close,\s*\.app-help-link,\s*\.app-logout,\s*\.app-header-project \.project-picker-submit,\s*\.dash-next-link \{\s*min-height: 44px;/);
+    expect(narrow).toMatch(/\.app-sidebar \.app-nav a \{\s*min-height: 44px;/);
+    const logout = readFileSync(new URL('../apps/web/src/components/LogoutButton.tsx', import.meta.url), 'utf8');
+    expect(logout).toContain('className="app-logout"');
   });
 
   it('the layout keeps the main region and wires the sidebar, the toggle and the guide line', async () => {
@@ -177,7 +212,7 @@ describe('sidebar menu by role (A)', () => {
 });
 
 describe('screen guide lines (C)', () => {
-  it('every menu screen has a 「이 화면에서 할 일」 line', () => {
+  it('every menu screen has a 「この画面でやること」 line', () => {
     for (const group of NAV_GROUPS) {
       for (const item of group.items) expect(SCREEN_GUIDES[item.href], item.href).toBeDefined();
     }
@@ -190,10 +225,12 @@ describe('screen guide lines (C)', () => {
     nav.pathname = '/orders';
     const html = markup(<ScreenGuideLine />);
     expect(html).toContain('手順1｜受付・発注');
-    expect(html).toContain('이 화면에서 할 일');
-    expect(html).toContain('<a href="/documents">文書 화면 열기</a>');
+    expect(html).toContain('この画面でやること');
+    expect(html).toContain('<a href="/documents">文書画面を開く</a>');
+    expect(html).not.toMatch(/[\uAC00-\uD7A3]/);
+    expect(html).not.toContain('<aside');
     nav.pathname = '/deliveries';
-    expect(markup(<ScreenGuideLine />)).not.toContain('다음 단계');
+    expect(markup(<ScreenGuideLine />)).not.toContain('次の段階');
     nav.pathname = '/';
     expect(markup(<ScreenGuideLine />)).toBe('');
     nav.pathname = '/orders';
@@ -234,7 +271,7 @@ describe('dashboard: flow counts (B)', () => {
   });
 });
 
-describe('dashboard: 「지금 내가 할 일」 by role (B)', () => {
+describe('dashboard: 「いま自分がやること」 by role (B)', () => {
   it('admin: the representative’s decisions — the 代表承認 of a drafted maker PO and the hold — not the staff work', () => {
     const view = buildDashboard(input('admin', MIXED));
     expect(view.todo.map((item) => item.key)).toEqual(['order-ready', 'order-hold']);
@@ -262,6 +299,28 @@ describe('dashboard: 「지금 내가 할 일」 by role (B)', () => {
       cancelled: { state: 'none' as const, livePapers: 0, cancellablePapers: 0, acknowledgementPapers: 0 }
     } } };
     expect(buildDashboard(settled).todo).toEqual([]);
+  });
+
+  it('変更レビュー follows the server: resumed through film_order:transition, so it is staff work; the admin sees it as staff work (review R-1)', () => {
+    const cr = [order('cr', 'CHANGE_REVIEW', { lastNormalStatus: 'APPROVAL_PENDING' })];
+    const staff = buildDashboard(input('staff', cr));
+    expect(staff.todo.map((item) => item.key)).toEqual(['order-cr']);
+    expect(staff.todo[0]!.owner).toBe('担当者・代表者');
+    expect(staff.todo[0]!.detail).toBe(CHANGE_REVIEW_NOTE);
+    expect(CHANGE_REVIEW_NOTE).toContain('担当者・代表者が行えます');
+    expect(CHANGE_REVIEW_NOTE).toContain('印刷開始（フィルム製造中）以降の変更は、代表者の承認と実費の記録が必要です');
+    const admin = buildDashboard(input('admin', cr));
+    expect(admin.todo).toEqual([]);
+    expect(admin.others.map((item) => item.key)).toEqual(['order-cr']);
+    // Only the hold release and the cancellation review are the representative's own.
+    for (const status of ['ON_HOLD', 'CANCELLATION_REVIEW']) {
+      const own = buildDashboard(input('admin', [order('x', status, { lastNormalStatus: 'APPROVAL_PENDING' })]));
+      expect(own.todo.map((item) => item.key), status).toEqual(['order-x']);
+      expect(buildDashboard(input('staff', [order('x', status, { lastNormalStatus: 'APPROVAL_PENDING' })])).todo, status).toEqual([]);
+    }
+    expect(TODO_SCOPE.admin).toContain('保留の解除、取消レビューの処理');
+    expect(TODO_SCOPE.admin).not.toContain('変更レビュー');
+    expect(TODO_SCOPE.staff).toContain('変更レビューからの再開');
   });
 
   it('staff: the records staff makes; the representative’s steps are listed as waiting, never as staff work', () => {
@@ -375,10 +434,14 @@ describe('dashboard: 막힌 건 (blocked)', () => {
     const old = new Date(NOW.getTime() - 9 * 86_400_000).toISOString();
     const stalled = [order('artwork', 'ARTWORK_RECEIVED', { updatedAt: old })];
     const staff = buildDashboard(input('staff', stalled));
-    expect(staff.blocked.map((item) => item.key)).toEqual(['stale-artwork']);
-    expect(staff.blocked[0]!.detail).toMatch(/^証跡が未登録: この発注の校正ゲラの版が、承認画面にまだ登録されていません。（最後の記録: /);
+    // Its own neutral list, never 「止まっている発注」 (review M-1).
+    expect(staff.blocked).toEqual([]);
+    expect(staff.stalled.map((item) => item.key)).toEqual(['stale-artwork']);
+    expect(staff.stalled[0]!.detail).toMatch(/^待っているもの: メーカーの校正ゲラ／証跡が未登録: この発注の校正ゲラの版が、承認画面にまだ登録されていません。／最後の記録: /);
+    // A viewer does not read the linked records: nothing is judged, and it says why.
     const viewer = buildDashboard(input('viewer', stalled));
-    expect(viewer.blocked[0]!.detail).toMatch(/^最後の記録: /);
+    expect(viewer.stalled).toEqual([]);
+    expect(viewer.stalledNote).toContain('閲覧者には関連する記録の一部が表示されない');
     expect([...viewer.others, ...viewer.blocked].some((item) => (item.detail ?? '').includes('証跡が未登録'))).toBe(false);
   });
 
@@ -414,8 +477,14 @@ describe('dashboard: 막힌 건 (blocked)', () => {
       order('making', 'FILM_IN_PRODUCTION', { updatedAt: at(30) }),
       order('shipping', 'FILM_SHIPPED', { updatedAt: at(30) })
     ]));
-    expect(view.blocked.map((item) => item.key)).toEqual(['stale-old']);
-    expect(view.blocked[0]!.title).toBe(`${STALE_AFTER_DAYS}日間、記録が更新されていません（いま: 校正・校了）。`);
+    expect(view.blocked).toEqual([]);
+    expect(view.stalled.map((item) => item.key)).toEqual(['stale-old']);
+    // Neutral: 「更新が止まっています」, never a delay; it names what the order waits on.
+    expect(view.stalled[0]!.title).toBe(`更新が止まっています（${STALE_AFTER_DAYS}日間記録なし、いま: 校正・校了）。`);
+    expect(view.stalled[0]!.detail).toMatch(/^待っているもの: 顧客・セブン化学の校了／最後の記録: /);
+    expect(view.stalled.map((item) => item.title).join()).not.toMatch(/遅延|遅れ/);
+    expect(STALE_BASIS).toContain(`最後の記録から${STALE_AFTER_DAYS}日以上`);
+    expect(STALE_BASIS).toContain('納期は記録されていないため、遅れかどうかは判定していません');
   });
 
   it('work recorded on a linked record (an approval, a document) keeps the order from looking stalled (review M)', () => {
@@ -425,9 +494,19 @@ describe('dashboard: 막힌 건 (blocked)', () => {
       afterState: { filmSupplyOrderId: 'old', organization: 'customer' }, requestMetadata: null, occurredAt: at(1), actor: null
     };
     const orders = [order('old', 'APPROVAL_PENDING', { updatedAt: at(10) })];
-    expect(buildDashboard(input('staff', orders, { activity: [approval] })).blocked).toEqual([]);
-    // Without a usable activity read only the order's own records count.
-    expect(buildDashboard(input('staff', orders, { activity: null })).blocked.map((item) => item.key)).toEqual(['stale-old']);
+    expect(buildDashboard(input('staff', orders, { activity: [approval] })).stalled).toEqual([]);
+    // A セブン化学発注書 record counts for the orders made from it (review M-1 c).
+    const poEvent = { ...approval, id: 'ev2', entityType: 'seven_purchase_order', entityId: 'po-1', afterState: { status: 'verified' } };
+    expect(buildDashboard(input('staff', orders, { activity: [poEvent] })).stalled).toEqual([]);
+    // Reading a document is not work on the order.
+    const viewed = { ...approval, id: 'ev3', action: 'DOCUMENT_VERSION_VIEWED', entityType: 'document_version' };
+    expect(buildDashboard(input('staff', orders, { activity: [viewed] })).stalled.map((item) => item.key)).toEqual(['stale-old']);
+    // A failed or capped activity read cannot see the linked records: no judgement, and the note says so (review M-1 b).
+    for (const activity of [null, Array.from({ length: ACTIVITY_READ_LIMIT }, (_, index) => ({ ...viewed, id: `c${index}` }))]) {
+      const view = buildDashboard(input('staff', orders, { activity }));
+      expect(view.stalled).toEqual([]);
+      expect(view.stalledNote).toContain('判定していません');
+    }
   });
 
   it('a send that could not be verified, a refused payment gate and readiness blockers', () => {
@@ -471,11 +550,11 @@ describe('dashboard: recent activity', () => {
   });
 
   it('a failed read and a capped read are said, never shown as 「まだ記録はありません」', () => {
-    expect(buildDashboard(input('staff', [], { activity: null })).activityNote).toBe('最近の活動を読み込めませんでした。');
+    expect(buildDashboard(input('staff', [], { activity: null })).activityNote).toBe('最近の記録を読み込めませんでした。');
     const capped = Array.from({ length: ACTIVITY_READ_LIMIT }, (_, index) => event(index, 'FILM_SUPPLY_ORDER_TRANSITIONED'));
     const view = buildDashboard(input('staff', [], { activity: capped }));
     expect(view.activity).toEqual([]);
-    expect(view.activityNote).toContain('最近の活動はここに表示できません');
+    expect(view.activityNote).toContain('最近の記録はここに表示できません');
     expect(buildDashboard(input('staff', [], { activity: [] })).activityNote).toBe('まだ記録はありません。');
   });
 });

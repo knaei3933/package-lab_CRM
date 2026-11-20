@@ -1247,6 +1247,10 @@ div.anchor-target:target {
   border-color: var(--primary);
 }
 
+.dash-item > * {
+  min-width: 0;
+}
+
 .dash-item-head {
   display: flex;
   flex-wrap: wrap;
@@ -1382,7 +1386,7 @@ div.anchor-target:target {
 
 .guide-terms > div {
   display: grid;
-  grid-template-columns: 15em minmax(0, 1fr);
+  grid-template-columns: minmax(0, min(15em, 35%)) minmax(0, 1fr);
   gap: var(--space-3);
   padding: 6px 0;
   border-bottom: 1px solid var(--line);
@@ -1407,6 +1411,41 @@ div.anchor-target:target {
 
 .guide-troubles p {
   margin: var(--space-1) 0 0;
+}
+
+/* The Korean explanation under a guide section: closed, quiet, one rule above. */
+.guide-ko {
+  padding-top: var(--space-2);
+  font-size: 13px;
+  color: var(--ink-sub);
+  border-top: 1px dashed var(--line);
+}
+
+.guide-ko > summary {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.guide-ko-body {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.guide-ko-body p,
+.guide-ko-body ol,
+.guide-ko-body ul {
+  margin: 0;
+}
+
+.guide-ko-body ol,
+.guide-ko-body ul {
+  padding-left: 1.5em;
+}
+
+.guide-ko-head {
+  font-weight: 700;
+  color: var(--ink);
 }
 
 /* Under 1024px the sidebar is a drawer opened by 「メニュー」 (NavDrawer.tsx). */
@@ -1440,6 +1479,20 @@ div.anchor-target:target {
 
   .app-sidebar-head {
     display: flex;
+  }
+
+  /* Review M-4: every control of the top bar and the drawer is a 44px touch target. */
+  .app-menu-toggle,
+  .app-sidebar-close,
+  .app-help-link,
+  .app-logout,
+  .app-header-project .project-picker-submit,
+  .dash-next-link {
+    min-height: 44px;
+  }
+
+  .app-sidebar .app-nav a {
+    min-height: 44px;
   }
 
   .app-sidebar-backdrop {

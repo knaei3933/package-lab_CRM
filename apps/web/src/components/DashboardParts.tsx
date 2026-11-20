@@ -30,13 +30,13 @@ export function DashboardFlow({ view }: { view: DashboardView }) {
               {step.count}
               <span className="dash-flow-unit">件</span>
             </span>
-            {step.mine > 0 ? <span className="dash-flow-mine" lang="ko">내 할 일 {step.mine}</span> : null}
+            {step.mine > 0 ? <span className="dash-flow-mine">自分の作業 {step.mine}件</span> : null}
           </li>
         ))}
       </ol>
       {outside.length > 0 ? <p className="dash-flow-outside">段階の外: {outside.join('、')}</p> : null}
       <div className="dash-next">
-        <p className="dash-next-label" lang="ko">다음 행동</p>
+        <p className="dash-next-label">次にやること</p>
         <p className="dash-next-text">
           {view.nextAction.text}
           {view.nextAction.owner ? <span className="dash-next-owner">（担当: {view.nextAction.owner}）</span> : null}
@@ -84,7 +84,7 @@ export function DashboardActivity({ view }: { view: DashboardView }) {
   return (
     <>
       {view.activity.length > 0 ? (
-        <ol className="dash-activity" aria-label="最近の活動（新しい順）">
+        <ol className="dash-activity" aria-label="最近の記録（新しい順）">
           {view.activity.map((row) => (
             <li key={row.key}>
               <span className="dash-activity-at">{row.at}</span>

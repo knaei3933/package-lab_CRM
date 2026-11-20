@@ -5,7 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useRef } from 'react';
 import { isCurrentPath } from '../lib/navigation';
 import type { NavGroup } from '../lib/navigation';
-import { SIDEBAR_ID, useDrawerKeyboard, useNavDrawer } from './NavDrawer';
+import { DRAWER_TITLE_ID, drawerDialogAttributes, SIDEBAR_ID, useDrawerKeyboard, useNavDrawer } from './NavDrawer';
 
 /** True when `pathname` is the item's screen or one of its sub-paths. */
 export const isCurrentNavItem = isCurrentPath;
@@ -19,7 +19,7 @@ export const isCurrentNavItem = isCurrentPath;
  */
 export function SideNav({ groups, roleNote }: { groups: readonly NavGroup[]; roleNote: string | null }) {
   const pathname = usePathname();
-  const { open, setOpen } = useNavDrawer();
+  const { open } = useNavDrawer();
   const container = useRef<HTMLDivElement | null>(null);
   const close = useDrawerKeyboard(container);
 
@@ -33,13 +33,15 @@ export function SideNav({ groups, roleNote }: { groups: readonly NavGroup[]; rol
         ref={container}
         className="app-sidebar"
         data-open={open ? 'true' : 'false'}
-        // A menu link always closes the drawer, also one to the screen already open.
+        {...drawerDialogAttributes(open)}
+        // A menu link always closes the drawer — also one to the screen already
+        // open — and focus goes back to 「メニュー」 (review M-3).
         onClick={(event) => {
-          if (open && (event.target as HTMLElement).closest('a[href]')) setOpen(false);
+          if (open && (event.target as HTMLElement).closest('a[href]')) close();
         }}
       >
         <div className="app-sidebar-head">
-          <span>メニュー</span>
+          <span id={DRAWER_TITLE_ID}>メニュー</span>
           <button type="button" className="app-sidebar-close" onClick={close}>
             閉じる
           </button>
@@ -73,7 +75,7 @@ export function SideNav({ groups, roleNote }: { groups: readonly NavGroup[]; rol
             </div>
           ))}
         </nav>
-        {roleNote ? <p className="app-nav-role" lang="ko">{roleNote}</p> : null}
+        {roleNote ? <p className="app-nav-role">{roleNote}</p> : null}
       </div>
     </>
   );

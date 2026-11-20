@@ -33,8 +33,37 @@ import { formatMoney, formatTimestamp, READINESS_BLOCKING_LABELS } from './vocab
  * every role as the audit history answered it.
  */
 
-/** Days without any recorded change after which an open order is called stalled. */
+/**
+ * Days without any recorded work after which an open order is listed as
+ * 「更新が止まっている」. The API records no due date, so this is never called
+ * a delay — only a quiet order worth a look (review M-1).
+ */
 export const STALE_AFTER_DAYS = 7;
+
+/** Dashboard panel titles and the per-role scope line (Japanese, like every screen). */
+export const TODO_TITLE = 'いま自分がやること';
+
+/**
+ * What 「いま自分がやること」 holds per role, in the server's terms: only the
+ * hold release, the cancellation review and the maker paper decisions are the
+ * representative's alone; a 変更レビュー is resumed by 担当者・代表者.
+ */
+export const TODO_SCOPE: Record<'admin' | 'staff' | 'viewer', string> = {
+  admin: '代表者だけが行う作業: メーカー発注書の作成・代表承認、最終受入、保留の解除、取消レビューの処理、取消後のメーカー発注書の整理。',
+  staff: '担当者の作業: 発注書と状態の記録、証跡の登録、承認・送信・受入（仮）・納品の記録、変更レビューからの再開。',
+  viewer: '閲覧者は記録・変更をしません。下の「止まっている発注」と「進行中の作業」で状況を確認します。'
+};
+
+export const STALLED_TITLE = '更新が止まっている発注（確認用）';
+
+export const OTHERS_TITLE: Record<'admin' | 'staff' | 'viewer', string> = {
+  admin: '担当者が進めている作業',
+  staff: '代表者の対応待ち（代表者が行う作業）',
+  viewer: '進行中の作業（誰が何をするか）'
+};
+
+/** The basis line shown under the 「更新が止まっている発注」 list. */
+export const STALE_BASIS = `基準: 発注と関連する記録（明細・書類・版・承認・納品・セブン化学発注書）の最後の記録から${STALE_AFTER_DAYS}日以上。納期は記録されていないため、遅れかどうかは判定していません。フィルム製造中・発送済みは対象外です。`;
 
 /** The newest activity rows the dashboard lists. */
 export const ACTIVITY_LIMIT = 8;
@@ -92,11 +121,15 @@ export interface DashboardView {
   hiddenCount: number;
   /** Orders in a state the flow table does not name (never guessed onto a step). */
   unknownCount: number;
-  /** The 「지금 내가 할 일」 list of the signed-in role. */
+  /** The 「いま自分がやること」 list of the signed-in role. */
   todo: DashboardItem[];
   /** Work that is someone else's: the representative's for staff, the staff's for admin, all for viewer. */
   others: DashboardItem[];
   blocked: DashboardItem[];
+  /** Open orders with no recorded work for STALE_AFTER_DAYS (neutral: not a delay). */
+  stalled: DashboardItem[];
+  /** Why the stalled list was not judged (role or read), or null. */
+  stalledNote: string | null;
   /** The one next action shown under the flow strip. */
   nextAction: { text: string; href: string | null; linkLabel: string | null; owner: string | null };
   activity: ActivityItem[];
@@ -178,10 +211,35 @@ const OUTSIDE_WAIT_STATUSES = new Set(['FILM_IN_PRODUCTION', 'FILM_SHIPPED']);
 /** Maker PO statuses that wait for the representative's 代表承認. */
 const CEO_APPROVAL_STATUSES = new Set(['DRAFT', 'SNAPSHOT_VOIDED']);
 
-/** States whose next step the representative takes (or decides) — the admin's own list. */
+/**
+ * States whose next step only the representative takes — the admin's own list.
+ * The server makes admin-only the hold release (film_order:release_hold) and
+ * the cancellation review (film_order:resolve_cancellation_review), plus the
+ * maker paper decisions; a CHANGE_REVIEW is resumed through the general
+ * transition (film_order:transition), which assigned staff may run — so it is
+ * staff work, not the representative's (review R-1).
+ */
 function isRepresentativeStep(status: string): boolean {
-  return status in REPRESENTATIVE_WORK || status === 'CHANGE_REVIEW';
+  return status in REPRESENTATIVE_WORK;
 }
+
+/** The note on a 変更レビュー item: who may resume it, and the print-start rule (app.ts PRINTED_CHANGE_ADMIN_APPROVAL_REQUIRED). */
+export const CHANGE_REVIEW_NOTE = '変更レビューからの再開は担当者・代表者が行えます（再開先は「デザインデータ受領」「校正ゲラ準備完了」「校了確認待ち」）。印刷開始（フィルム製造中）以降の変更は、代表者の承認と実費の記録が必要です。';
+
+/** Who or what an open order is waiting on, by state (shown on a stalled order). */
+const WAITING_ON: Readonly<Record<string, string>> = {
+  DRAFT: 'セブン化学発注書の確認とフィルム発注の確定（社内）',
+  SEVEN_PO_VERIFIED: '顧客・セブン化学からのデザイン入稿',
+  ARTWORK_RECEIVED: 'メーカーの校正ゲラ',
+  PROOF_READY: '「校了確認待ち」への変更（社内）',
+  APPROVAL_PENDING: '顧客・セブン化学の校了',
+  DUAL_APPROVED: '「製造先発注準備完了」への変更（社内）',
+  MAKER_PO_READY: '代表者のメーカー発注書作成・代表承認',
+  APPROVED_FOR_MANUAL_SEND: 'メーカーへのメール送信と送信の記録',
+  MAKER_PO_SENT_MANUALLY: 'メーカーの受入',
+  MAKER_PO_ACCEPTED: 'メーカーの製造開始',
+  FILM_DELIVERED: '受領確認'
+};
 
 /**
  * The newest recorded work per film order: its own events and the events of
@@ -189,17 +247,37 @@ function isRepresentativeStep(status: string): boolean {
  * deliveries — as far as the role reads that link). Null when the activity
  * read failed or hit the cap (then only the order's own updatedAt is known).
  */
-function lastWorkByOrder(activity: DashboardInput['activity']): Map<string, string> | null {
+function lastWorkByOrder(
+  activity: DashboardInput['activity'],
+  orders: readonly FilmSupplyOrderView[]
+): Map<string, string> | null {
   if (activity === null || activity.length >= ACTIVITY_READ_LIMIT) return null;
+  // A セブン化学発注書 event counts for the orders made from that PO.
+  const ordersByPo = new Map<string, string[]>();
+  for (const order of orders) {
+    if (!order.sevenPurchaseOrderId) continue;
+    ordersByPo.set(order.sevenPurchaseOrderId, [...(ordersByPo.get(order.sevenPurchaseOrderId) ?? []), order.id]);
+  }
   const last = new Map<string, string>();
+  const touch = (orderId: string, at: string) => {
+    const previous = last.get(orderId);
+    if (!previous || Date.parse(at) > Date.parse(previous)) last.set(orderId, at);
+  };
   for (const event of activity) {
+    // Reading a document is not work on the order (review L).
+    if (READ_ONLY_ACTIONS.has(event.action)) continue;
+    if (event.entityType === 'film_supply_order') {
+      touch(event.entityId, event.occurredAt);
+      continue;
+    }
+    if (event.entityType === 'seven_purchase_order') {
+      for (const orderId of ordersByPo.get(event.entityId) ?? []) touch(orderId, event.occurredAt);
+      continue;
+    }
     const linked = event.afterState && typeof event.afterState.filmSupplyOrderId === 'string'
       ? event.afterState.filmSupplyOrderId
       : null;
-    const orderId = event.entityType === 'film_supply_order' ? event.entityId : linked;
-    if (!orderId) continue;
-    const previous = last.get(orderId);
-    if (!previous || Date.parse(event.occurredAt) > Date.parse(previous)) last.set(orderId, event.occurredAt);
+    if (linked) touch(linked, event.occurredAt);
   }
   return last;
 }
@@ -239,14 +317,22 @@ export function buildDashboard(input: DashboardInput): DashboardView {
   const todo: DashboardItem[] = [];
   const others: DashboardItem[] = [];
   const blocked: DashboardItem[] = [];
+  const stalled: DashboardItem[] = [];
   const flow: FlowStepCount[] = PROGRESS_STEPS.map((name, index) => ({ index, name, count: 0, mine: 0 }));
   let completedCount = 0;
   let exceptionCount = 0;
   let cancelledCount = 0;
   let hiddenCount = 0;
   let unknownCount = 0;
-  const lastWork = lastWorkByOrder(input.activity);
+  const lastWork = lastWorkByOrder(input.activity, workspace.filmOrders);
   const readFailed = Boolean(workspace.error);
+  // The stalled check needs every linked record: a viewer does not read the
+  // links, and a failed or capped activity read misses them (review M-1).
+  const stalledNote = effective === 'viewer'
+    ? '閲覧者には関連する記録の一部が表示されないため、更新が止まっているかどうかは判定していません。'
+    : lastWork === null
+      ? '記録を読み込めなかったか件数が多すぎるため、更新が止まっているかどうかは判定していません。'
+      : null;
 
   for (const order of workspace.filmOrders) {
     const progress = orderProgress(order);
@@ -283,7 +369,9 @@ export function buildDashboard(input: DashboardInput): DashboardView {
           : action.text,
         detail: approvalPaper
           ? `発注書の状態: ${MAKER_PO_STATUS_LABELS[approvalPaper.status] ?? approvalPaper.status}`
-          : order.hold && status === 'ON_HOLD' ? holdSummaryText(order.hold) : gapText,
+          : order.hold && status === 'ON_HOLD'
+            ? holdSummaryText(order.hold)
+            : status === 'CHANGE_REVIEW' ? CHANGE_REVIEW_NOTE : gapText,
         owner: action.owner,
         href: itemHref(approvalPaper ? '/maker-po' : screen, order.id),
         linkLabel: linkLabelFor(approvalPaper ? '/maker-po' : screen),
@@ -397,21 +485,26 @@ export function buildDashboard(input: DashboardInput): DashboardView {
       });
     }
 
-    // ---- blocked: an open order with no recorded work for STALE_AFTER_DAYS
-    // (its own records and the records linked to it), outside the steps that
-    // wait on the maker or the carrier. A missing evidence of the next step is
-    // named here; while the order is moving it is only the next task's note.
-    if (progress.phase === 'active' && !OUTSIDE_WAIT_STATUSES.has(status)) {
-      const linked = lastWork?.get(order.id);
+    // ---- stalled (neutral, its own list): an open order with no recorded work
+    // for STALE_AFTER_DAYS — its own records and the records linked to it —
+    // outside the steps that wait on the maker or the carrier. It names what
+    // the order waits on and, if any, the missing evidence of the next step.
+    if (stalledNote === null && lastWork !== null && progress.phase === 'active' && !OUTSIDE_WAIT_STATUSES.has(status)) {
+      const linked = lastWork.get(order.id);
       const lastAt = linked && Date.parse(linked) > Date.parse(order.updatedAt) ? linked : order.updatedAt;
       const idle = daysBetween(lastAt, now);
       if (idle !== null && idle >= STALE_AFTER_DAYS) {
-        blocked.push({
+        const waiting = WAITING_ON[status];
+        stalled.push({
           key: `stale-${order.id}`,
           kind: 'order',
           orderCode: order.code,
-          title: `${idle}日間、記録が更新されていません（いま: ${PROGRESS_STEPS[progress.currentStep!]}）。`,
-          detail: gapText ? `${gapText}（最後の記録: ${formatTimestamp(lastAt)}）` : `最後の記録: ${formatTimestamp(lastAt)}`,
+          title: `更新が止まっています（${idle}日間記録なし、いま: ${PROGRESS_STEPS[progress.currentStep!]}）。`,
+          detail: [
+            waiting ? `待っているもの: ${waiting}` : null,
+            gapText,
+            `最後の記録: ${formatTimestamp(lastAt)}`
+          ].filter((part): part is string => part !== null).join('／'),
           owner: null,
           href: itemHref('/orders', order.id),
           linkLabel: linkLabelFor('/orders'),
@@ -474,6 +567,8 @@ export function buildDashboard(input: DashboardInput): DashboardView {
     todo,
     others,
     blocked,
+    stalled,
+    stalledNote,
     nextAction: dashboardNextAction(input, todo, others),
     ...recentActivity(input)
   };
@@ -590,12 +685,12 @@ const ENTITY_LABELS: Readonly<Record<string, { label: string; screen: ScreenPath
  */
 function recentActivity(input: DashboardInput): Pick<DashboardView, 'activity' | 'activityNote'> {
   if (input.activity === null) {
-    return { activity: [], activityNote: '最近の活動を読み込めませんでした。' };
+    return { activity: [], activityNote: '最近の記録を読み込めませんでした。' };
   }
   if (input.activity.length >= ACTIVITY_READ_LIMIT) {
     return {
       activity: [],
-      activityNote: `記録が${ACTIVITY_READ_LIMIT}件を超えたため、最近の活動はここに表示できません。各画面の履歴を確認してください。`
+      activityNote: `記録が${ACTIVITY_READ_LIMIT}件を超えたため、最近の記録はここに表示できません。各画面の履歴を確認してください。`
     };
   }
   const stateLabel = labelLookup(input.workspace.labels, 'filmSupplyOrderStates');

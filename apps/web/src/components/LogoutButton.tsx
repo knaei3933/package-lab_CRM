@@ -24,7 +24,7 @@ export function LogoutButton() {
   }
 
   return (
-    <button type="button" onClick={onClick} disabled={pending} style={subtleButtonStyle}>
+    <button type="button" className="app-logout" onClick={onClick} disabled={pending} style={subtleButtonStyle}>
       {pending ? 'ログアウト中…' : 'ログアウト'}
     </button>
   );
