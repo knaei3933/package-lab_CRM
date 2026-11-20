@@ -18,7 +18,9 @@ const events: Record<string, unknown[]> = {
   document_version: [
     row('DOCUMENT_VERSION_UPLOADED', 'document_version', VERSION, { documentId: DOC, versionNumber: 1, originalFilename: 'approval.eml' }, 2),
     ...Array.from({ length: 5 }, (_, i) => row('DOCUMENT_VERSION_VIEWED', 'document_version', VERSION, { documentId: DOC }, 3 + i)),
-    row('DOCUMENT_VERSION_DOWNLOADED', 'document_version', VERSION, { documentId: DOC }, 9)
+    row('DOCUMENT_VERSION_DOWNLOADED', 'document_version', VERSION, { documentId: DOC }, 9),
+    // A read row of a version id with no upload row in the window: never a version.
+    row('DOCUMENT_VERSION_VIEWED', 'document_version', '01a1f7d6-0000-7000-8000-00000000beef', { documentId: DOC }, 10)
   ]
 };
 vi.mock('../apps/web/src/lib/api.js', () => ({

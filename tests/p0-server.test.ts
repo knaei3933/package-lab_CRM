@@ -1225,11 +1225,15 @@ describe('P0 integration: audit-history action filter', () => {
     const sevenPoId = await verifiedSevenPo();
     const { orderId } = await createOrder(sevenPoId);
     const uploaded = await upload(sevenPoId, orderId, { documentType: 'approval_evidence', issuerEntity: 'seven', designKey: 'label-front' });
-    for (let i = 0; i < 3; i += 1) await send('staff', 'GET', `/api/document-versions/${uploaded.version.id}/evidence-message-id`);
+    for (let i = 0; i < 2; i += 1) {
+      const download = await send('staff', 'GET', `/api/document-versions/${uploaded.version.id}/download`);
+      expect(download.status).toBe(200);
+    }
     const all = await send('staff', 'GET', `/api/projects/${projectId}/audit-history?entityType=document_version&entityId=${uploaded.version.id}&limit=500`);
     expect(all.status).toBe(200);
     const allActions = (all.body.events as Array<{ action: string }>).map((event) => event.action);
     expect(allActions).toContain('DOCUMENT_VERSION_UPLOADED');
+    expect(allActions).toContain('DOCUMENT_VERSION_DOWNLOADED');
     const onlyUploads = await send('staff', 'GET', `/api/projects/${projectId}/audit-history?entityType=document_version&entityId=${uploaded.version.id}&action=DOCUMENT_VERSION_UPLOADED`);
     expect(onlyUploads.status).toBe(200);
     expect((onlyUploads.body.events as Array<{ action: string }>).map((event) => event.action)).toEqual(['DOCUMENT_VERSION_UPLOADED']);
