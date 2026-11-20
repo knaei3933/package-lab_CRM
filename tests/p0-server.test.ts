@@ -1196,4 +1196,26 @@ describe('P0 review fixes (REVIEW_REPORT H1, M1-M9)', () => {
     const after = await send('staff', 'GET', `/api/maker-purchase-orders/${second.body.id}/send-evidence-candidates`);
     expect(after.body.candidates.map((candidate: any) => candidate.versionId)).toContain(fresh.version.id);
   });
+
+  it('M6: a cancelled paper\'s mail without a Message-ID is still recognized by its bytes', async () => {
+    const chain = await readyOrder();
+    const first = await createPaper(chain.orderId);
+    expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/ceo-approval`)).status).toBe(200);
+    const noId = buildMakerPoEml({ orderCode: chain.code, headers: { 'Message-ID': null } });
+    expect(Buffer.from(noId.contentBase64, 'base64').toString('utf8')).not.toMatch(/^Message-ID:/im);
+    const firstSend = await post('staff', `/api/maker-purchase-orders/${first.body.id}/send-evidence`, {
+      contentBase64: noId.contentBase64, senderAddress: noId.senderAddress, recipients: [noId.recipientAddress], sentAt: noId.sentAtIso
+    });
+    expect(firstSend.status, JSON.stringify(firstSend.body)).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/cancel`, { note: '再作成' })).status).toBe(200);
+    const second = await createPaper(chain.orderId);
+    expect((await post('admin', `/api/maker-purchase-orders/${second.body.id}/ceo-approval`)).status).toBe(200);
+    const renamed = await upload(chain.sevenPoId, chain.orderId, {
+      documentType: 'send_evidence', issuerEntity: 'kanei', contentType: 'message/rfc822', filename: `noid-${nextTag()}.eml`, contentBase64: noId.contentBase64
+    });
+    const cited = await post('staff', `/api/maker-purchase-orders/${second.body.id}/send-evidence`, {
+      evidenceDocumentVersionId: renamed.version.id, senderAddress: noId.senderAddress, recipients: [noId.recipientAddress], sentAt: new Date().toISOString()
+    });
+    expect(cited.body.code).toBe('SEND_EVIDENCE_FROM_CANCELLED_PO');
+  });
 });
