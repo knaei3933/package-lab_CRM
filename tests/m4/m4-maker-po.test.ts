@@ -772,7 +772,7 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     const first = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       po.id,
-      { orderCode: 'FSO-M4-T24A', sentAtIso, subject: '製造先発注書（件名に発注コードなし）' }
+      { orderCode: 'FSO-M4-T24A', sentAtIso, messageId: '<maker-po-FSO-M4-T24A@mail.kanei.example>', subject: '製造先発注書（件名に発注コードなし）' }
     );
     expect(first.status).toBe(200);
     expect((first.body as { verificationStatus: string }).verificationStatus)
@@ -801,7 +801,7 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     const second = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       po.id,
-      { orderCode: 'FSO-M4-T24A', sentAtIso, subject: '製造先発注書（件名に発注コードなし）' }
+      { orderCode: 'FSO-M4-T24A', sentAtIso, messageId: '<maker-po-FSO-M4-T24A@mail.kanei.example>', subject: '製造先発注書（件名に発注コードなし）' }
     );
     expect(second.status).toBe(200);
     expect((second.body as { verificationStatus: string }).verificationStatus)
