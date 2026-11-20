@@ -180,8 +180,8 @@ export async function selectProjectAction(_prev: ActionState | null, formData: F
 /**
  * ui/fix-project-select: a project card on the dashboard. The same check and
  * cookie as the header selector; afterwards the dashboard is shown again — for
- * the opened project, or (when the API refused it) with the cards again, the
- * refused project no longer remembered.
+ * the opened project, or (when the API refused it, so nothing was written)
+ * with the cards again.
  */
 export async function openProjectFromCardAction(formData: FormData): Promise<void> {
   await selectProjectAction(null, formData);
