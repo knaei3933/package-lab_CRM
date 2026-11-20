@@ -19,7 +19,10 @@ const SAMPLES = [
 ];
 
 function formatInChildProcess(tz: string): string[] {
-  const script = `const m = await import(${JSON.stringify(vocabularyUrl)});
+  // apps/web has no "type":"module", so tsx loads vocabulary.ts as CJS in this
+  // eval context and the named exports arrive under `default`; accept both.
+  const script = `const mod = await import(${JSON.stringify(vocabularyUrl)});
+const m = typeof mod.formatTimestamp === 'function' ? mod : mod.default;
 process.stdout.write(JSON.stringify(${JSON.stringify(SAMPLES)}.map((v) => m.formatTimestamp(v))));`;
   const output = execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
     cwd: repoRoot,
