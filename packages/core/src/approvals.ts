@@ -721,3 +721,68 @@ export function evaluateApprovalEvidenceBinding(
   }
   return { ok: true, boundOn: 'order_design_project' };
 }
+
+/**
+ * P0 R02 (policy P-1): who issued the approval evidence must be the
+ * organization whose approval it records. A customer approval rests on
+ * evidence the customer created; a Seven approval rests on evidence Seven
+ * issued. Citing one evidence version for both organizations is refused by
+ * default. The one exception is an explicitly declared shared evidence (one
+ * mail that carries both organizations' approvals) with a stated reason; such
+ * an approval never counts by itself — it waits for the representative's
+ * manual verification.
+ */
+export const APPROVAL_ORGANIZATION_ISSUER: Readonly<Record<ApprovalOrganization, string>> = {
+  customer: 'customer_generated',
+  seven: 'seven'
+};
+
+export type ApprovalEvidenceIssuerCheck =
+  | { ok: true; issuerMatchesOrganization: boolean; requiresManualVerification: boolean }
+  | {
+      ok: false;
+      code: 'EVIDENCE_ISSUER_MISMATCH' | 'EVIDENCE_SHARED_ACROSS_ORGANIZATIONS' | 'SHARED_EVIDENCE_ISSUER_INVALID';
+      message: string;
+    };
+
+export function evaluateApprovalEvidenceIssuer(input: {
+  organization: ApprovalOrganization;
+  issuerEntity: string;
+  /** Another organization already cites this exact evidence version on the order. */
+  citedByOtherOrganization: boolean;
+  /** The recorder explicitly declared one shared evidence for both organizations. */
+  sharedEvidenceDeclared: boolean;
+}): ApprovalEvidenceIssuerCheck {
+  const expected = APPROVAL_ORGANIZATION_ISSUER[input.organization];
+  const matches = input.issuerEntity === expected;
+  if (input.sharedEvidenceDeclared) {
+    // The shared mail must come from one of the two approving organizations;
+    // a Kanei memo, a maker paper or an unknown issuer is never approval
+    // evidence of either organization.
+    if (!(Object.values(APPROVAL_ORGANIZATION_ISSUER) as string[]).includes(input.issuerEntity)) {
+      return {
+        ok: false,
+        code: 'SHARED_EVIDENCE_ISSUER_INVALID',
+        message: '共有証跡として使えるのは、顧客作成またはセブン化学が発行した承認書類だけです'
+      };
+    }
+    return { ok: true, issuerMatchesOrganization: matches, requiresManualVerification: true };
+  }
+  if (input.citedByOtherOrganization) {
+    return {
+      ok: false,
+      code: 'EVIDENCE_SHARED_ACROSS_ORGANIZATIONS',
+      message: 'この承認証跡はもう一方の組織の承認にすでに使われています。組織ごとに別の承認書類を登録してください'
+    };
+  }
+  if (!matches) {
+    return {
+      ok: false,
+      code: 'EVIDENCE_ISSUER_MISMATCH',
+      message: input.organization === 'customer'
+        ? '顧客の承認には、発行元が「顧客作成」の承認書類だけを使えます'
+        : 'セブン化学の承認には、発行元が「セブン化学」の承認書類だけを使えます'
+    };
+  }
+  return { ok: true, issuerMatchesOrganization: true, requiresManualVerification: false };
+}

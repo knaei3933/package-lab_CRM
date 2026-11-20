@@ -145,6 +145,7 @@ async function createFilmOrder(
   const response = await app.request(
     `/api/projects/${projectIdValue}/film-supply-orders`,
     jsonPost(staffToken, {
+      paymentTerms: 'undetermined',
       code,
       sevenPurchaseOrderId,
       lines: [{ lineNumber: 1, description: '合成フィルム', orderedQuantity, unit }]

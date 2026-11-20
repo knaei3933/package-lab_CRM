@@ -1535,19 +1535,25 @@ describe('seventh recheck server hardening', () => {
     ]);
   });
 
-  it('rejects future manual verification times', async () => {
+  // P0 R11 supersedes the future-time refusal: the verification time is the
+  // server clock, so a client-sent future (or any) verifiedAt never lands.
+  it('never records a client-sent future manual verification time', async () => {
     const chain = await reachMakerPoReady(`R8L5-${nextTag()}`);
     const poId = ((await createMakerPo(chain.orderId)).body as { id: string }).id;
     expect((await approveMakerPo(poId)).status).toBe(200);
     const pending = await sendHeaderCleanEml(poId, chain.orderCode, { kind: 'none', artworkBytes: chain.artworkBytes });
     const pendingBody = pending.body as { verificationStatus: string; event: { id: string } };
+    const before = Date.now();
     const response = await postAs(adminToken, `/api/maker-po-events/${pendingBody.event.id}/send-manual-verification`, {
-      result: 'confirmed', verifierName: '合成代表者', verifiedAt: '2099-01-01T00:00:00.000Z', reasonNote: 'future'
+      result: 'confirmed', verifierName: '別人の名前', verifiedAt: '2099-01-01T00:00:00.000Z', reasonNote: 'future'
     });
-    expect(response.status).toBe(422);
-    expect(response.body).toMatchObject({ code: 'VERIFIED_AT_IN_FUTURE' });
-    expect(await db.select().from(makerPoSendManualVerifications)
-      .where(eq(makerPoSendManualVerifications.makerPoEventId, pendingBody.event.id))).toHaveLength(0);
+    const after = Date.now();
+    expect(response.status).toBe(201);
+    const [recorded] = await db.select().from(makerPoSendManualVerifications)
+      .where(eq(makerPoSendManualVerifications.makerPoEventId, pendingBody.event.id));
+    expect(recorded?.verifiedAt.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    expect(recorded?.verifiedAt.getTime()).toBeLessThanOrEqual(after + 1000);
+    expect(recorded?.verifierName).not.toBe('別人の名前');
   });
 
   it('rechecks acknowledgement evidence under a shared lock before recording', async () => {
@@ -1597,9 +1603,10 @@ describe('seventh recheck server hardening', () => {
       to: 'ON_HOLD', holdReason: 'a'.repeat(1001)
     });
     expect(missing.status).toBe(422);
-    expect(missing.body).toMatchObject({ code: 'HOLD_REASON_REQUIRED', error: '保留理由（holdReason）は必須です' });
+    // P0 R09: the Japanese text no longer carries the field name.
+    expect(missing.body).toMatchObject({ code: 'HOLD_REASON_REQUIRED', error: '保留理由は必須です' });
     expect(tooLong.status).toBe(422);
-    expect(tooLong.body).toMatchObject({ code: 'HOLD_REASON_TOO_LONG', error: '保留理由（holdReason）は1000文字以下で入力してください' });
+    expect(tooLong.body).toMatchObject({ code: 'HOLD_REASON_TOO_LONG', error: '保留理由は1000文字以下で入力してください' });
   });
 
   it('logs unexpected errors and returns a JSON 500 contract', async () => {
@@ -1670,12 +1677,15 @@ describe('eighth recheck server regressions', () => {
     expect((await approveMakerPo(poId)).status).toBe(200);
     const pending = await sendHeaderCleanEml(poId, chain.orderCode, { kind: 'none', artworkBytes: chain.artworkBytes });
     const pendingBody = pending.body as { verificationStatus: string; event: { id: string } };
+    // P0 R11: a lenient client verifiedAt is ignored (server clock recorded).
     const badVerifiedAt = await postAs(adminToken, `/api/maker-po-events/${pendingBody.event.id}/send-manual-verification`, {
-      result: 'confirmed', verifierName: '合成代表者', verifiedAt: '2026-02-30T10:00:00.000Z', reasonNote: 'invalid calendar'
+      result: 'rejected', verifierName: '合成代表者', verifiedAt: '2026-02-30T10:00:00.000Z', reasonNote: 'invalid calendar'
     });
-    expect(badVerifiedAt.status).toBe(422);
-    expect(await db.select().from(makerPoSendManualVerifications)
-      .where(eq(makerPoSendManualVerifications.makerPoEventId, pendingBody.event.id))).toHaveLength(0);
+    expect(badVerifiedAt.status).toBe(201);
+    const [ignored] = await db.select().from(makerPoSendManualVerifications)
+      .where(eq(makerPoSendManualVerifications.makerPoEventId, pendingBody.event.id));
+    expect(ignored?.verifiedAt.toISOString().startsWith('2026-03-02')).toBe(false);
+    expect(Math.abs((ignored?.verifiedAt.getTime() ?? 0) - Date.now())).toBeLessThan(60_000);
 
     expect((await cancelMakerPo(poId, 'date contract check')).status).toBe(200);
     const badAcknowledgedAt = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, {
@@ -1709,9 +1719,14 @@ describe('eighth recheck server regressions', () => {
       reasonNote: 'JST calendar date differs from UTC date'
     });
     expect(jstAfterMidnight.status).toBe(201);
-    const [recorded] = await db.select().from(makerPoSendManualVerifications)
+    // P0 R11: the recorded time is the server clock, not the client value.
+    const recorded = await db.select().from(makerPoSendManualVerifications)
       .where(eq(makerPoSendManualVerifications.makerPoEventId, pendingBody.event.id));
-    expect(recorded?.verifiedAt.toISOString()).toBe('2026-11-18T02:00:00.000Z');
+    expect(recorded).toHaveLength(2);
+    for (const row of recorded) {
+      expect(row.verifiedAt.toISOString()).not.toBe('2026-11-18T02:00:00.000Z');
+      expect(Math.abs(row.verifiedAt.getTime() - Date.now())).toBeLessThan(60_000);
+    }
 
   });
 });

@@ -1071,3 +1071,33 @@ export function evaluateMakerPoAcceptEvidence(
     acceptedAt: request.acceptedAt
   };
 }
+
+/**
+ * P0 R10: the maker PO recipient is the maker's mail address the paper is sent
+ * to. The send evidence is later checked against it, so a postal address or a
+ * display-name form is refused when the paper is created, not at send time.
+ * The check is deliberately plain: one bare address, no spaces or angle
+ * brackets, a dotted domain, at most 254 characters.
+ */
+const RECIPIENT_EMAIL_PATTERN = /^[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/;
+
+export type RecipientAddressValidation =
+  | { ok: true; address: string }
+  | { ok: false; code: 'RECIPIENT_ADDRESS_REQUIRED' | 'RECIPIENT_ADDRESS_INVALID'; message: string };
+
+export function validateMakerPoRecipientAddress(value: unknown): RecipientAddressValidation {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return { ok: false, code: 'RECIPIENT_ADDRESS_REQUIRED', message: 'メーカーの送信先メールアドレスが必要です' };
+  }
+  const address = value.trim();
+  const local = address.split('@')[0] ?? '';
+  if (address.length > 254 || local.length > 64 || local.startsWith('.') || local.endsWith('.')
+    || local.includes('..') || !RECIPIENT_EMAIL_PATTERN.test(address)) {
+    return {
+      ok: false,
+      code: 'RECIPIENT_ADDRESS_INVALID',
+      message: 'メーカーの送信先はメールアドレスの形式で入力してください（例: order@maker.example.jp）。住所や名前は入力できません'
+    };
+  }
+  return { ok: true, address };
+}

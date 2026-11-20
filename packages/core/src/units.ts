@@ -77,3 +77,12 @@ export function validateQuantity(value: unknown): QuantityValidation {
 export function toQuantityString(quantity: number): string {
   return quantity.toFixed(3);
 }
+
+/** P0 R09: Japanese unit names for refusal texts (the enum value never reaches a person). */
+export const UNIT_LABELS_JA: Readonly<Record<MeasureUnit, string>> = {
+  rolls: 'ロール',
+  meters: 'メートル',
+  sheets: '枚',
+  pods: 'ポッド',
+  pieces: '個'
+};

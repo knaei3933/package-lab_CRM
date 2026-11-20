@@ -220,7 +220,7 @@ beforeAll(async () => {
   }
   await transition(ready.orderId, 'MAKER_PO_READY');
   const paper = await call('admin', `/api/film-supply-orders/${ready.orderId}/maker-purchase-orders`, {
-    recipientAddress: '大阪府 合成メーカー 第2工場', amounts: { currency: 'JPY', totalAmount: '480000' }
+    recipientAddress: 'order@osaka-maker.example.jp', amounts: { currency: 'JPY', totalAmount: '480000' }
   });
   expect(paper.status, JSON.stringify(paper.body)).toBe(201);
   chain.readyId = ready.orderId;

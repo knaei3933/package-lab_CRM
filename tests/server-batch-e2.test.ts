@@ -127,7 +127,7 @@ describe('server batch E follow-ups', () => {
     });
 
     const created = await requestAs(staffToken, 'POST', `/api/seven-purchase-orders/${sevenPoId}/supply-orders`, {
-      code: 'FSO-E2-SUPPLY-001',
+      paymentTerms: 'undetermined', code: 'FSO-E2-SUPPLY-001',
       lines: [{ lineNumber: 1, description: '合成フィルムE2', orderedQuantity: 10, unit: 'rolls' }]
     });
     expect(created.status).toBe(201);
@@ -160,7 +160,10 @@ describe('server batch E follow-ups', () => {
     });
     expect(mismatched.status).toBe(422);
     expect(mismatched.body).toMatchObject({ code: 'DELIVERY_UNIT_MISMATCH' });
-    expect((mismatched.body as { error: string }).error).toContain('rolls');
+    // P0 R09: the line's unit reads in Japanese; the enum values travel as fields.
+    expect((mismatched.body as { error: string }).error).toContain('ロール');
+    expect((mismatched.body as { error: string }).error).not.toContain('rolls');
+    expect(mismatched.body).toMatchObject({ lineUnit: 'rolls', deliveredUnit: 'sheets' });
     expect(await db.select().from(filmDeliveries).where(eq(filmDeliveries.filmSupplyOrderId, orderId))).toHaveLength(0);
   });
 
@@ -194,7 +197,9 @@ describe('server batch E follow-ups', () => {
     });
     expect(mismatched.status).toBe(422);
     expect(mismatched.body).toMatchObject({ code: 'DELIVERY_UNIT_MISMATCH' });
-    expect((mismatched.body as { error: string }).error).toContain('pods');
+    expect((mismatched.body as { error: string }).error).toContain('ポッド');
+    expect((mismatched.body as { error: string }).error).not.toContain('pods');
+    expect(mismatched.body).toMatchObject({ lineUnit: 'pods', deliveredUnit: 'pieces' });
     expect(await db.select().from(fillingDeliveries).where(eq(fillingDeliveries.fillingOrderId, orderId))).toHaveLength(0);
   });
 

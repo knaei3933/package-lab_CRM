@@ -9,6 +9,8 @@ export interface ApiEnv {
   /** True only when the API expects a web relay and trusts its explicit CIDRs. */
   trustedProxyConfigured: boolean;
   isProduction: boolean;
+  /** P0 R04: login answer deadline (LOGIN_TIMEOUT_MS, default 15000). */
+  loginTimeoutMs: number;
 }
 
 
@@ -44,6 +46,9 @@ export function loadApiEnv(
       ? configuredCidrs
       : ['127.0.0.1/32', '::1/128'],
     trustedProxyConfigured: configuredCidrs.length > 0,
-    isProduction
+    isProduction,
+    loginTimeoutMs: Number.isInteger(Number(env.LOGIN_TIMEOUT_MS)) && Number(env.LOGIN_TIMEOUT_MS) > 0
+      ? Number(env.LOGIN_TIMEOUT_MS)
+      : 15_000
   };
 }
