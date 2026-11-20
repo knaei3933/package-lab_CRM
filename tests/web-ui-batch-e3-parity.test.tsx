@@ -41,6 +41,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   readSessionToken: async () => signedIn.token,
   readSelectedProjectId: async () => signedIn.projectId,
   loadSessionUser: async () => ({ id: signedIn.userId, role: signedIn.role, displayName: '合成' }),
+  loadSession: async () => ({ kind: 'user', user: ({ id: signedIn.userId, role: signedIn.role, displayName: '合成' }) }),
   callApi: async (apiPath: string, options: { method?: string; body?: unknown } = {}) => {
     const response = await app.request(apiPath, {
       method: options.method ?? 'GET',
@@ -227,11 +228,11 @@ describe('E3: the 決済条件 is public, amounts are not (representative decisi
     for (const role of ['staff', 'viewer'] as const) {
       signIn(role);
       const html = await render(OrdersPage);
-      expect(headers(html), role).toContain('決済条件');
+      expect(headers(html), role).toContain('支払条件');
       const header = headers(html);
-      const termsColumn = header.indexOf('決済条件');
+      const termsColumn = header.indexOf('支払条件');
       const cells = (row: string) => [...row.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/g)].map((match) => match[1]!);
-      expect(cells(orderRow(html, orderId))[termsColumn], role).toBe('搬入時払い');
+      expect(cells(orderRow(html, orderId))[termsColumn], role).toBe('納品後払い');
       expect(cells(orderRow(html, draftOnlyOrderId))[termsColumn], role).toBe('前払い');
       // The stored code is never shown as text (it is only the value of staff's recording form option).
       expect(html, role).not.toMatch(/>\s*(on_delivery|prepaid|undetermined)\s*</);

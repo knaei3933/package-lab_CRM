@@ -7,6 +7,7 @@ import { DateTimeInputs } from './DateTimeInputs';
 import { SelectField, TextField } from './fields';
 import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, resolverFromOptions, SubmitLock } from './form-feedback';
 import type { ConfirmOptions, ConfirmResolver } from './form-feedback';
+import { FILE_TOO_LARGE_MESSAGE, isUploadTooLarge, megabytesText } from '../lib/form-validation';
 import { MAKER_PO_SEND_CONFIRM_TITLE, MAKER_PO_SEND_SUBMIT_LABEL, makerPoSendConfirmSpec } from '../lib/confirm-summary';
 import { datetimeLocalToIso } from '../lib/datetime';
 import { FILE_FIELD } from '../lib/form-messages';
@@ -134,6 +135,14 @@ export function MakerPoSendEvidenceForm({
         text: '送信証跡には送信済みメールの原本（.eml）を選んでください。PDFやスクリーンショットでは送信は確認できません。',
         tone: 'error'
       });
+      setContentBase64('');
+      setEmlFilename('');
+      if (fileInput.current) fileInput.current.value = '';
+      return;
+    }
+    // P0 R07 (H15): the API stores at most 5MB; a larger EML is explained before it is read.
+    if (isUploadTooLarge(file.size)) {
+      setMessage({ text: `${FILE_TOO_LARGE_MESSAGE}（選んだファイル: ${megabytesText(file.size)}）`, tone: 'error' });
       setContentBase64('');
       setEmlFilename('');
       if (fileInput.current) fileInput.current.value = '';

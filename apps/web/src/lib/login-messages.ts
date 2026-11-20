@@ -11,6 +11,14 @@ export const LOGIN_INVALID_MESSAGE = 'ユーザー名またはパスワードが
 export const LOGIN_EMPTY_MESSAGE = 'ユーザー名とパスワードを入力してください。';
 export const LOGIN_UNAVAILABLE_MESSAGE = 'ログインできませんでした。時間をおいてもう一度お試しください。';
 
+/**
+ * P0 R04 (B4): the login form gives up after 15 s; the relay asks the API for
+ * at most LOGIN_RELAY_TIMEOUT_MS so it can still answer in Japanese first.
+ */
+export const LOGIN_TIMEOUT_MS = 15_000;
+export const LOGIN_RELAY_TIMEOUT_MS = 12_000;
+export const LOGIN_TIMEOUT_MESSAGE = 'システムが応答していないため、ログインできませんでした。数分後にもう一度お試しください。急ぎの場合は代表者へ連絡してください。';
+
 /** 「約3分20秒」-style wait, rounded up to whole seconds; 1 hour is the API's cap. */
 export function waitText(seconds: number): string {
   const total = Math.max(1, Math.ceil(seconds));

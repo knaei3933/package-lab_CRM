@@ -29,6 +29,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   readSessionToken: async () => captured.token,
   readSelectedProjectId: async () => null,
   loadSessionUser: async () => null,
+  loadSession: async () => ({ kind: 'anonymous' }),
   callApi: async (apiPath: string, options: { body?: unknown } = {}) => {
     captured.bodies.push({ path: apiPath, body: options.body });
     return captured.answer ?? { ok: true, status: 201, data: {}, error: null };
@@ -286,6 +287,7 @@ const PROOF = '01a1ec53-af67-75da-a932-e03a00000003';
 
 function revisionForm(entries: Record<string, string>): FormData {
   const data = new FormData();
+  data.set('_kaneiRenderedProjectId', ''); // P0 R03: the form was drawn for the selected project
   const base = { orderId: ORDER, designKey: 'label-front', fileDocumentVersionId: PROOF };
   for (const [key, value] of Object.entries({ ...base, ...entries })) data.set(key, value);
   return data;
@@ -310,7 +312,7 @@ describe('registerArtworkRevisionAction: change request facts (R1-9 / F2)', () =
   });
 
   it('an initial revision posts no changeRequest (as before)', async () => {
-    expect(await registerArtworkRevisionAction(null, revisionForm({ lotMarking: 'L1' }))).toEqual({ ok: true, message: '記録しました。' });
+    expect(await registerArtworkRevisionAction(null, revisionForm({ lotMarking: 'L1' }))).toEqual({ ok: true, message: '記録しました。', changedId: null });
     expect(captured.bodies[0]!.body).toEqual({ designKey: 'label-front', fileDocumentVersionId: PROOF, lotMarking: 'L1' });
   });
 
@@ -403,6 +405,7 @@ describe('registerArtworkRevisionAction: change request facts (R1-9 / F2)', () =
     captured.answer = { ok: true, status: 201, data: { id: 'r2', status: 'APPROVAL_PENDING', invalidatedApprovals: false }, error: null };
     expect(await registerArtworkRevisionAction(null, revisionForm(COMPLETE))).toEqual({
       ok: true,
+      changedId: 'r2',
       message: '版を記録しました。このデザインには承認の記録（承認・取消）がないため、変更依頼の項目（依頼組織・理由・証憑・影響・実費）は記録されていません（通常の版として登録されました）。'
     });
     expect(captured.bodies[0]!.body).toHaveProperty('changeRequest');
@@ -410,14 +413,14 @@ describe('registerArtworkRevisionAction: change request facts (R1-9 / F2)', () =
 
   it('facts sent and the API invalidated approvals (controlled change): the plain recorded message', async () => {
     captured.answer = { ok: true, status: 201, data: { id: 'r2', status: 'CHANGE_REVIEW', invalidatedApprovals: true }, error: null };
-    expect(await registerArtworkRevisionAction(null, revisionForm(COMPLETE))).toEqual({ ok: true, message: '記録しました。' });
+    expect(await registerArtworkRevisionAction(null, revisionForm(COMPLETE))).toEqual({ ok: true, message: '記録しました。', changedId: 'r2' });
   });
 
   it('no facts sent: an ordinary revision keeps the plain message whatever the API says about history', async () => {
     captured.answer = { ok: true, status: 201, data: { id: 'r1', invalidatedApprovals: false }, error: null };
-    expect(await registerArtworkRevisionAction(null, revisionForm({ lotMarking: 'L1' }))).toEqual({ ok: true, message: '記録しました。' });
+    expect(await registerArtworkRevisionAction(null, revisionForm({ lotMarking: 'L1' }))).toEqual({ ok: true, message: '記録しました。', changedId: 'r1' });
     captured.answer = { ok: true, status: 201, data: null, error: null };
-    expect(await registerArtworkRevisionAction(null, revisionForm(COMPLETE))).toEqual({ ok: true, message: '記録しました。' });
+    expect(await registerArtworkRevisionAction(null, revisionForm(COMPLETE))).toEqual({ ok: true, message: '記録しました。', changedId: null });
   });
 });
 

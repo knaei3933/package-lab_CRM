@@ -95,9 +95,9 @@ describe('F-08: the representative approval lists what is approved', () => {
     );
     expect(facts).toEqual([
       { label: '発注コード', value: 'FSO-E-1' },
-      { label: '宛先（メーカーの送り先）', value: '大阪府 合成メーカー' },
+      { label: 'メーカーの送信先', value: '大阪府 合成メーカー' },
       { label: '金額', value: '¥480,000' },
-      { label: '決済条件', value: '前払い' }
+      { label: '支払条件', value: '前払い' }
     ]);
   });
   it('a value the answer does not carry is named as missing, never invented', () => {

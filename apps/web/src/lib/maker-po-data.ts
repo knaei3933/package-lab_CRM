@@ -188,8 +188,8 @@ export const MAKER_PO_EVENT_TYPE_LABELS: Readonly<Record<string, string>> = {
 /** UI batch B (⑤): Japanese only; the stored values stay prepaid / on_delivery / undetermined. */
 export const PAYMENT_TERMS_LABELS: Readonly<Record<string, string>> = {
   prepaid: '前払い',
-  on_delivery: '搬入時払い',
-  undetermined: '未確定'
+  on_delivery: '納品後払い',
+  undetermined: '未定'
 };
 
 /**
@@ -202,7 +202,7 @@ export function nextActionForStatus(status: string, role: string): string {
     case 'DRAFT':
     case 'SNAPSHOT_VOIDED':
       return admin
-        ? '次のアクション：代表承認（G6の決済条件が確定している場合のみ記録できます）'
+        ? '次のアクション：代表承認（支払条件が「未定」でない場合のみ記録できます）'
         : '次のアクション：代表者による代表承認を待ちます（担当者は承認できません）';
     case 'APPROVED_FOR_MANUAL_SEND':
       return '次のアクション：送信済みメールの原本（.eml）を送信証跡として手動送信を記録する';

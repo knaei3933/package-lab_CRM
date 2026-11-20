@@ -31,7 +31,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   callApi: (...args: unknown[]) => callApi(...args),
   readSessionToken: async () => 'token',
   readSelectedProjectId: async () => PROJECT_ID,
-  loadSessionUser: async () => ({ id: USER_ID, role: sessionRole.current, displayName: '合成' })
+  loadSessionUser: async () => ({ id: USER_ID, role: sessionRole.current, displayName: '合成' }),
+  loadSession: async () => ({ kind: 'user', user: ({ id: USER_ID, role: sessionRole.current, displayName: '合成' }) })
 }));
 
 const { makerPoStages, papersNewestFirst, paymentGateDecides, stageHeadline, stageLabel, upcomingStagesLine } = await import(
@@ -48,6 +49,7 @@ const {
   VERIFICATION_STATUS_TONES
 } = await import('../apps/web/src/lib/status-tone.js');
 const { StatusBadge } = await import('../apps/web/src/components/StatusBadge.js');
+const { webErrorText } = await import('../apps/web/src/lib/error-dictionary.js');
 const { DataTable } = await import('../apps/web/src/components/DataTable.js');
 const { MAKER_PO_STATUS_LABELS } = await import('../apps/web/src/lib/maker-po-data.js');
 const { VERIFICATION_STATUS_LABELS } = await import('../apps/web/src/lib/vocabulary.js');
@@ -670,10 +672,10 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
     expect(done).toContain('<li>② 代表承認: 代表承認（2026/11/18 10:00 JST）</li>');
   });
 
-  it('admin: the G6 box is large only before the approval; after it, one line', async () => {
+  it('admin: the 支払条件 box is large only before the approval; after it, one line', async () => {
     serveAs('admin');
     const html = await renderPage(MakerPoPage);
-    expect(html.match(/<strong>決済条件（G6）の状態: <\/strong>/g) ?? []).toHaveLength(1); // FSO-READY (①)
+    expect(html.match(/<strong>支払条件の状態: <\/strong>/g) ?? []).toHaveLength(1); // FSO-READY (①)
     expect(html.match(/<p class="gate-line">/g) ?? []).toHaveLength(3); // FSO-SEND (③), FSO-DONE, FSO-DELIV
     expect(html).not.toContain('檢証');
     expect(html).not.toContain('現在はまだ記録操作がありません');
@@ -688,7 +690,7 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
       if (apiPath.endsWith('/payment-gate')) {
         return {
           ok: true, status: 200, error: null,
-          data: { orderId: 'x', orderStatus: 'x', paymentTerms: 'undetermined', gate: { satisfied: false, code: 'G6_PAYMENT_TERMS_UNDETERMINED', reason }, paymentConfirmedAt: null }
+          data: { orderId: 'x', orderStatus: 'x', paymentTerms: 'undetermined', gate: { satisfied: false, code: 'PAYMENT_GATE_UNSATISFIED', reason }, paymentConfirmedAt: null }
         };
       }
       const cancelledRow = { ...MAKER_PO_ROW, status: 'CANCELLED' };
@@ -702,7 +704,7 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
     });
     const html = await renderPage(MakerPoPage);
     // FSO-READY (①) and FSO-SEND (every paper cancelled → ① again) take the large box.
-    expect(html.match(/<strong>決済条件（G6）の状態: <\/strong>/g) ?? []).toHaveLength(2);
+    expect(html.match(/<strong>支払条件の状態: <\/strong>/g) ?? []).toHaveLength(2);
     expect(html).toContain('<span class="stage-now">いまの段階</span><strong>取り消し済み（新しい発注書の作成待ち）</strong>');
     // The one-line form (orders past the acceptance): a short nowrap badge, then the reason as ordinary text.
     const lines = [...html.matchAll(/<p class="gate-line">([\s\S]*?)<\/p>/g)].map(([, inner]) => inner!);
@@ -710,7 +712,9 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
     for (const line of lines) {
       expect(line.match(/class="status-badge /g) ?? []).toHaveLength(1);
       expect(line).toContain('<span class="status-badge-mark" aria-hidden="true">✕</span>満たしていません</span>');
-      expect(line).toContain(`<span class="gate-line-reason">（${reason}）</span>`);
+      // P0 R09: the API's own reason is never shown; the dictionary sentence of the gate code is.
+      expect(line).toContain(`<span class="gate-line-reason">（${webErrorText('PAYMENT_GATE_UNSATISFIED').message}）</span>`);
+      expect(line).not.toContain(reason);
     }
   });
 
@@ -729,7 +733,7 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
   it('the new film order card and the audit dashboard are folded (closed <details>)', async () => {
     serveAs('admin');
     const html = await renderPage(MakerPoPage);
-    expect(html).toMatch(/<details class="collapsed-card"[^>]*><summary><h2[^>]*>新しいフィルム発注を作成する（決済条件つき）<\/h2><\/summary>/);
+    expect(html).toMatch(/<details class="collapsed-card"[^>]*><summary><h2[^>]*>新しいフィルム発注を作成する（支払条件つき）<\/h2><\/summary>/);
     expect(html).toMatch(/<details class="collapsed-card"[^>]*><summary><h2[^>]*>⑤ 監査ダッシュボード（役割に応じた表示）— 1件<\/h2><\/summary>/);
     expect(html).not.toContain('<h2 style="font-size:20px;margin:0 0 4px">決済条件を設定して発注を作成する</h2>');
     expect(html).not.toMatch(/<details class="collapsed-card"[^>]* open/);

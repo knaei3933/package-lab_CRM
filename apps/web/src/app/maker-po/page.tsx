@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { webErrorText } from '../../lib/error-dictionary';
 import { ActionForm } from '../../components/ActionForm';
 import { MakerPoSendEvidenceForm } from '../../components/MakerPoSendEvidenceForm';
 import { OrderCreateForm } from '../../components/OrderCreateForm';
@@ -96,6 +97,11 @@ import {
   recordProvisionalAcceptanceAction,
   verifyMakerPoSendAction
 } from './actions';
+
+/** P0 R09: the payment-gate block in operator words (never the API's English reason or a code). */
+function paymentGateBlockText(code: string | null | undefined): string {
+  return code ? webErrorText(code).message : '支払条件が「未定」です';
+}
 
 export const dynamic = 'force-dynamic';
 
@@ -298,14 +304,14 @@ export default async function MakerPoPage() {
       <details className="collapsed-card" style={cardStyle}>
         <summary>
           <h2 style={{ display: 'inline', fontSize: 'var(--text-md)', margin: 0 }}>
-            新しいフィルム発注を作成する（決済条件つき）
+            新しいフィルム発注を作成する（支払条件つき）
           </h2>
         </summary>
         <RoleGate role={role} operation="film_order:create" label="フィルム発注の作成">
           <p style={noteStyle}>
-            フィルム発注を作るときに決済条件（G6: 前払い／搬入時払い／未確定）を設定できます。
-            決済条件は発注が下書きの間だけ変更でき、ここでの記録は入金確認ではありません
-            — 入金の確認は別の手動ステップです。未確定のままでは代表承認（G6）は拒否されます。
+            フィルム発注を作るときに支払条件（前払い／納品後払い／未定）を必ず選びます。
+            代表承認の前なら発注一覧で変更でき、ここでの記録は入金確認ではありません
+            — 入金の確認は別の手順です。「未定」のままでは代表承認できません。
           </p>
           <OrderCreateForm
             action={createFilmSupplyOrderAction}
@@ -411,7 +417,7 @@ function MakerPoCreateSection({
         <ActionForm
           action={createMakerPoAction}
           submitLabel="メーカー発注書を作成する"
-          hint="宛先住所はメーカーへの送り先です。金額は代表者のみ入力できます（担当者の画面には金額欄がありません）。"
+          hint="送信先メールアドレスは、メーカーへ発注書を送るメールの宛先です（郵便の住所ではありません）。送信の記録では、送ったメールの宛先にこのアドレスが含まれている必要があります。金額は代表者のみ入力できます（担当者の画面には金額欄がありません）。"
           confirm={{
             title: 'メーカー発注書を作成しますか？',
             body: '宛先と内容（明細・金額）をこの時点の内容で確定します。確定した内容は変えられないため、直すときはこの発注書を取り消して作り直します。',
@@ -424,11 +430,17 @@ function MakerPoCreateSection({
         >
           <div className="form-row">
             <SelectField name="orderId" label="対象のフィルム発注" required choices={orderChoices} width={420} />
+            {/* P0 R10 (H5): an e-mail address, checked as one before the paper is frozen —
+                a postal address here could only be found out at the send record (re-create). */}
             <TextField
               name="recipientAddress"
-              label="宛先住所（メーカーの送り先）"
+              label="メーカーの送信先メールアドレス"
+              type="email"
               required
               width={320}
+              autoComplete="off"
+              spellCheck={false}
+              autoCapitalize="none"
               defaultValue={defaultRecipientAddress}
               hint={defaultRecipientAddress ? 'この案件の前回のメーカー発注書の宛先を入れています。違う場合は書き換えてください。' : undefined}
             />
@@ -741,33 +753,33 @@ function MakerPoOrderSection({
       {/* G6 payment gate: 決済条件の状態 and the block reason, always visible. */}
       {closure ? null : gateDecides ? (
         <div style={{ ...infoBoxStyle, marginTop: 12, borderColor: gate?.gate.satisfied ? 'var(--ok)' : 'var(--danger)', color: gate?.gate.satisfied ? 'var(--ok)' : 'var(--danger)', background: gate?.gate.satisfied ? 'var(--ok-tint)' : 'var(--danger-tint)' }}>
-          <strong>決済条件（G6）の状態: </strong>
+          <strong>支払条件の状態: </strong>
           {gate ? (
             <>
               {PAYMENT_TERMS_LABELS[gate.paymentTerms] ?? gate.paymentTerms}
               {gate.gate.satisfied
-                ? ' ／ ゲート: 満たしています（代表承認の前提を満たしています）'
-                : ` ／ ゲート: 満たしていません（ブロック理由: ${gate.gate.reason ?? gate.gate.code ?? '未確定'}）`}
+                ? ' ／ 代表承認の前提: 満たしています'
+                : ` ／ 代表承認の前提: 満たしていません（${paymentGateBlockText(gate.gate.code)}）`}
               <div style={noteStyle}>
                 入金確認: {gate.paymentConfirmedAt ? formatTimestamp(gate.paymentConfirmedAt) : '未確認'}。
-                決済条件の記録（前払い・搬入時払い）は入金確認ではありません。入金の確認は別に記録する
+                支払条件の記録（前払い・納品後払い）は入金確認ではありません。入金の確認は別に記録する
                 手動のステップで、入金確認の記録はこの画面ではできません。
               </div>
             </>
           ) : (
-            <>決済条件の状態を取得できませんでした。{entry.paymentGateError ?? ''}</>
+            <>支払条件の状態を取得できませんでした。{entry.paymentGateError ?? ''}</>
           )}
         </div>
       ) : (
         <p className="gate-line">
-          決済条件（G6）:{' '}
+          支払条件:{' '}
           {gate ? (
             <>
               {PAYMENT_TERMS_LABELS[gate.paymentTerms] ?? gate.paymentTerms}{' '}
               {/* The badge holds the state only (it does not wrap); the reason is ordinary text. */}
               <StatusBadge tone={gate.gate.satisfied ? 'done' : 'blocked'} label={gate.gate.satisfied ? '満たしています' : '満たしていません'} />
               {gate.gate.satisfied ? null : (
-                <span className="gate-line-reason">（{gate.gate.reason ?? gate.gate.code ?? '未確定'}）</span>
+                <span className="gate-line-reason">（{paymentGateBlockText(gate.gate.code)}）</span>
               )}
               {' '}／ 入金確認: {gate.paymentConfirmedAt ? formatTimestamp(gate.paymentConfirmedAt) : '未確認'}
             </>
@@ -798,7 +810,7 @@ function MakerPoOrderSection({
           </thead>
           <tbody>
             {list.map((po) => (
-              <tr key={po.id}>
+              <tr key={po.id} data-record-id={po.id}>
                 <td style={tdStyle}>
                   {shortId(po.id)}
                   <TechDetails context="ID">{po.id}</TechDetails>
@@ -1075,7 +1087,7 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
   const gateBlocks = gate !== null && !gate.gate.satisfied;
   const voided = pending.some((po) => po.status === 'SNAPSHOT_VOIDED');
   const blocks = [
-    gateBlocks ? '決済条件が未確定です（発注画面で決済条件を記録してください）' : null,
+    gateBlocks ? '支払条件が「未定」です（下の「発注一覧で支払条件を選ぶ」から決めてください）' : null,
     voided ? '作成時の内容が無効になっています（もう一度承認が必要です）' : null
   ].filter((part): part is string => part !== null);
 
@@ -1086,13 +1098,21 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
         作成したときの内容（宛先・明細・金額）に対して承認します。
         {blocks.length > 0 ? `承認できない理由: ${blocks.join('。')}。` : '承認の前提はそろっています。'}
       </p>
+      {/* P0 R01 (B1): the fix sits where the refusal is — the order's own 支払条件 form. */}
+      {gateBlocks ? (
+        <p style={{ margin: '0 0 12px' }}>
+          <a className="dash-next-link" href={`/orders#order-${entry.order.id}`}>
+            発注一覧で支払条件を選ぶ（{entry.order.code}）
+          </a>
+        </p>
+      ) : null}
       {pending.map((po) => (
         <div key={po.id} style={{ marginBottom: 12 }}>
           {canApprove ? (
             <ActionForm
               action={approveMakerPoAction}
               submitLabel="代表承認を記録する"
-              hint="決済条件が未確定のときは、承認は記録されず、理由がここに表示されます。"
+              hint="支払条件が「未定」のときは、承認は記録されず、理由がここに表示されます。"
               confirm={{
                 title: '代表承認を記録しますか？',
                 body: `メーカー発注書（${po.snapshot?.order?.code ?? po.orderCode ?? entry.order.code}）を、下の内容で承認します。承認すると送信の記録へ進み、承認は取り消せません。内容を直すときは、承認せずにこの発注書を取り消して作り直します。`,
@@ -1162,7 +1182,7 @@ function MakerPoWorkBlocks({
           <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>③ 手動送信記録（担当者・代表者が記録）</h3>
           <RoleGate role={role} operation="maker_po:send_evidence" label="送信の記録">
             <p style={noteStyle}>
-              送信はシステムの外（メール）で行うので、ここでは証跡を記録します。宛先は発注書の宛先住所と一致が必要です。
+              送信はシステムの外（メール）で行うので、ここでは証跡を記録します。宛先には発注書の送信先メールアドレスが含まれている必要があります。
               送信証跡は、メールソフトの送信済みフォルダから書き出した原本のEML（.eml）です。PDFやスクリーンショット、
               メモでは送信は「確認済み」になりません。
             </p>

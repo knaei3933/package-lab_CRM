@@ -49,6 +49,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   readSessionToken: async () => signedIn.token,
   readSelectedProjectId: async () => projectId,
   loadSessionUser: async () => ({ id: signedIn.role === 'admin' ? adminId : staffId, role: signedIn.role, displayName: '合成' }),
+  loadSession: async () => ({ kind: 'user', user: ({ id: signedIn.role === 'admin' ? adminId : staffId, role: signedIn.role, displayName: '合成' }) }),
   // The real API, in process: the same request the web would send over HTTP.
   callApi: async (apiPath: string, options: { method?: string; body?: unknown } = {}) => {
     // A read the test makes fail (an outage of that one request).
@@ -108,6 +109,7 @@ const postAs = (token: string, url: string, body: unknown = {}) => call(token, '
 
 function form(entries: Record<string, string>): FormData {
   const data = new FormData();
+  data.set('_kaneiRenderedProjectId', projectId); // P0 R03: the form was drawn for the selected project
   for (const [key, value] of Object.entries(entries)) data.set(key, value);
   return data;
 }
@@ -317,6 +319,7 @@ describe('Medium-B (W2): an internal cancel that reached the maker — decision 
     const recorded = await acknowledgeMakerPoCancellationAction(null, form({ poId, note: 'メーカーから受信済みと連絡があった' }));
     expect(recorded).toEqual({
       ok: true,
+      changedId: expect.any(String),
       message: 'メーカー到達の事後確認を記録しました（記録のみ。発注の状態と新しい発注書の作成可否は変わりません）。'
     });
     // Contract: record only — the order keeps its step.
@@ -431,7 +434,7 @@ describe('Medium-B: the 取り消し承認 of a proven send keeps its meaning', 
     expect(owed).toContain('取り消し承認を記録する（メーカー取消確認・代表者のみ）');
     expect(owed).not.toContain('メーカー到達の事後確認を記録する（記録のみ・代表者のみ）');
     expect(await acknowledgeMakerPoCancellationAction(null, form({ poId, note: 'メーカーが取り消しを承諾' })))
-      .toEqual({ ok: true, message: '取り消し承認を記録しました。' });
+      .toEqual({ ok: true, message: '取り消し承認を記録しました。', changedId: expect.any(String) });
     const after = orderCard(await render(MakerPoPage), chain.orderCode);
     expect(after).toContain('取り消し承認（メーカー取消確認）: 記録済み');
     expect(after).toContain('送信ずみの発注書の取消に対する取り消し承認は記録済みです。');

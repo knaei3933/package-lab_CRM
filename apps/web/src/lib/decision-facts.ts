@@ -29,9 +29,9 @@ export function ceoApprovalFacts(
   const amounts = po.snapshot?.amounts ?? null;
   return [
     { label: '発注コード', value: po.snapshot?.order?.code ?? po.orderCode ?? orderCode },
-    { label: '宛先（メーカーの送り先）', value: po.snapshot?.recipient?.address ?? po.recipientAddress ?? '（記録なし）' },
+    { label: 'メーカーの送信先', value: po.snapshot?.recipient?.address ?? po.recipientAddress ?? '（記録なし）' },
     { label: '金額', value: amounts ? formatMoney(amounts.currency, amounts.totalAmount) : '（記録なし）' },
-    { label: '決済条件', value: paymentTerms ? PAYMENT_TERMS_LABELS[paymentTerms] ?? paymentTerms : '（確認できません）' }
+    { label: '支払条件', value: paymentTerms ? PAYMENT_TERMS_LABELS[paymentTerms] ?? paymentTerms : '（確認できません）' }
   ];
 }
 

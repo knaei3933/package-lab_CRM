@@ -209,7 +209,7 @@ export default async function DeliveriesPage() {
             </thead>
             <tbody>
               {workspace.deliveries.map((delivery) => (
-                <tr key={delivery.id}>
+                <tr key={delivery.id} data-record-id={delivery.id}>
                   <td style={tdStyle}>{delivery.kind === 'film' ? 'フィルム納品' : '充填製品納品'}</td>
                   <td style={tdStyle}>
                     {orderText(delivery)}

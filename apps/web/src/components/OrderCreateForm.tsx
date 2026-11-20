@@ -18,6 +18,14 @@ import { normalizeQuantityText } from '../lib/form-validation';
 import type { Choice } from '../lib/types';
 import { buttonStyle, inputStyle, noteStyle, subtleButtonStyle } from '../lib/ui';
 
+/** P0 R01: the term that keeps 代表承認 closed (the API's undetermined). */
+export const UNDECIDED_TERMS = 'undetermined';
+
+export const UNDECIDED_TERMS_WARNING =
+  '「未定」のままでは代表承認できません。決まったら代表承認の前に支払条件を変更してください。';
+
+export const PAYMENT_TERMS_HINT = '支払条件の記録は入金確認ではありません（入金の確認は別の手順です）。';
+
 interface LineRow {
   description: string;
   quantity: string;
@@ -140,9 +148,12 @@ export function OrderCreateForm({
   successHint
 }: OrderCreateFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
+  const undecidedWarningId = useId();
   const [lines, setLines] = useState<LineRow[]>([{ description: '', quantity: '', unit: unitChoices[0]?.value ?? '' }]);
   const [code, setCode] = useState('');
   const [sevenPurchaseOrderId, setSevenPurchaseOrderId] = useState('');
+  // P0 R01 (B1): no default — 「未定」 is chosen on purpose, and then warned about.
+  const [paymentTerms, setPaymentTerms] = useState('');
 
   const serialized = JSON.stringify(
     // A quantity typed with spaces or full-width digits still posts ASCII digits.
@@ -158,6 +169,14 @@ export function OrderCreateForm({
       action={formAction}
       state={state}
       pending={pending}
+      // P0 R05/R06: after a success the controlled fields empty too (the shell resets only
+      // after a success), so the next order never starts from the code just registered.
+      onReset={() => {
+        setCode('');
+        setLines([{ description: '', quantity: '', unit: unitChoices[0]?.value ?? '' }]);
+        setSevenPurchaseOrderId('');
+        setPaymentTerms('');
+      }}
       confirm={resolverFromOptions(confirm, SUBMIT_LABEL)}
       dialogDefaults={confirm ? { options: confirm, confirmLabel: confirm.confirmLabel ?? SUBMIT_LABEL } : undefined}
       style={{ display: 'grid', gap: 10 }}
@@ -232,16 +251,23 @@ export function OrderCreateForm({
             <div className="field" style={{ display: 'grid', gap: 4, maxWidth: '100%' }}>
               <label className="field-label">
                 <span style={{ fontSize: 13 }}>
-                  決済条件（G6）<span style={{ color: 'var(--danger)' }}>（必須）</span>
+                  支払条件<span style={{ color: 'var(--danger)' }}>（必須）</span>
                 </span>
+                {/* P0 R01 (B1): required with no preselected value — the operator picks one.
+                    「未定」 is a real choice, but never the silent default it used to be. */}
                 <select
                   name="paymentTerms"
-                  defaultValue="undetermined"
-                  aria-describedby={paymentFeedback.describedBy}
+                  value={paymentTerms}
+                  onChange={(event) => setPaymentTerms(event.target.value)}
+                  required
+                  aria-describedby={[paymentFeedback.describedBy, paymentTerms === UNDECIDED_TERMS ? undecidedWarningId : null].filter(Boolean).join(' ') || undefined}
                   aria-invalid={paymentFeedback.invalid}
-                  data-feedback-label="決済条件"
+                  data-feedback-label="支払条件"
                   style={{ ...inputStyle, width: '100%', maxWidth: 340 }}
                 >
+                  <option value="" disabled>
+                    選んでください
+                  </option>
                   {paymentTermsChoices.map((choice) => (
                     <option key={choice.value} value={choice.value}>
                       {choice.label}
@@ -250,9 +276,13 @@ export function OrderCreateForm({
                 </select>
               </label>
               <FieldError id={paymentFeedback.errorId} message={paymentFeedback.error} />
+              {paymentTerms === UNDECIDED_TERMS ? (
+                <p id={undecidedWarningId} className="field-warning" role="status">
+                  <span aria-hidden="true">⚠</span> {UNDECIDED_TERMS_WARNING}
+                </p>
+              ) : null}
               <span id={paymentFeedback.hintId} style={noteStyle}>
-                発注が下書きの間だけ変更できます。ここでの記録は入金確認ではありません —
-                入金の確認は別の手動ステップです。
+                {PAYMENT_TERMS_HINT}
               </span>
             </div>
           )}

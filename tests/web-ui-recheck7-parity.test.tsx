@@ -55,6 +55,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   readSessionToken: async () => signedIn.token,
   readSelectedProjectId: async () => projectId,
   loadSessionUser: async () => ({ id: signedIn.role === 'admin' ? adminId : staffId, role: signedIn.role, displayName: '合成' }),
+  loadSession: async () => ({ kind: 'user', user: ({ id: signedIn.role === 'admin' ? adminId : staffId, role: signedIn.role, displayName: '合成' }) }),
   // The real API, in process: the same request the web would send over HTTP.
   callApi: async (apiPath: string, options: { method?: string; body?: unknown } = {}) => {
     // A read the test makes fail (an outage of that one request).
@@ -122,6 +123,7 @@ const postAs = (token: string, url: string, body: unknown = {}) => call(token, '
 
 function form(entries: Record<string, string>): FormData {
   const data = new FormData();
+  data.set('_kaneiRenderedProjectId', projectId); // P0 R03: the form was drawn for the selected project
   for (const [key, value] of Object.entries(entries)) data.set(key, value);
   return data;
 }
@@ -348,7 +350,7 @@ describe('Medium-1 (W1): a cancelled paper\'s pending send is history, never ③
       const refused = await verifyMakerPoSendAction(null, form({
         eventId, result, verifierName: '合成代表者', verifiedAt: '2026-11-18T21:00:00+09:00', reasonNote: 'メーカー到達を後から確認'
       }));
-      expect(refused).toEqual({ ok: false, message: '取り消し済みのメーカー発注書の送信は確認できません' });
+      expect(refused).toEqual({ ok: false, message: '取り消し済みのメーカー発注書の送信は確認できません', messageKo: null, code: null });
     }
 
     // A replacement paper does not bring A's ③′ back.

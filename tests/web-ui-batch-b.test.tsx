@@ -41,7 +41,12 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   readSelectedProjectId: async () => selectedProject.current,
   loadSessionUser: async () => (sessionRole.current === null
     ? null
-    : { id: USER_ID, role: sessionRole.current, displayName: '合成' })
+    : { id: USER_ID, role: sessionRole.current, displayName: '合成' }),
+  // P0 R04/R08: the project selection reads the session told apart. The "role unreadable" case
+  // (loadSessionUser → null, the screen still drawn) keeps a user session here so the screen is
+  // drawn as before; the real layout draws the notice instead for a session that is not a user
+  // (covered in web-p0-session-outage.test.tsx).
+  loadSession: async () => ({ kind: 'user', user: { id: USER_ID, role: sessionRole.current ?? 'staff', displayName: '合成' } })
 }));
 
 const {
@@ -929,8 +934,8 @@ describe('⑥ shortId', () => {
 // ---------------------------------------------------------------------------
 
 const FORM_MARKERS = {
-  // 決済条件 (FSO-DRAFT) and 受領確認 (FSO-DELIV): both staff work, gated per role.
-  orders: ['発注書を登録する', '状態を進める', '発注を作成する', '決済条件を記録する', '受領確認を記録する'],
+  // 支払条件 (FSO-DRAFT, P0 R01: label 「支払条件を変更する」) and 受領確認 (FSO-DELIV): both staff work, gated per role.
+  orders: ['発注書を登録する', '状態を進める', '発注を作成する', '支払条件を変更する', '受領確認を記録する'],
   documents: ['書類をアップロードする', '確認を記録する'],
   approvals: ['版を登録する'],
   'maker-po': ['手動送信を記録する', '発注を作成する'],
@@ -1012,11 +1017,11 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
     expect(html).toContain('メーカー発注書の作成は、閲覧権限のため操作できません。');
   });
 
-  it('maker-po (admin): a DRAFT order is not on the board, so no 決済条件 form here (L10)', async () => {
+  it('maker-po (admin): a DRAFT order is not on the board, so no 支払条件 form here (L10)', async () => {
     serveAs('admin');
     const html = await renderPage(MakerPoPage);
     expect(html).not.toContain('フィルム発注 FSO-DRAFT');
-    expect(html).not.toContain('>決済条件を記録する</button>');
+    expect(html).not.toContain('>支払条件を変更する</button>');
     expect(html).toContain('フィルム発注 FSO-READY');
   });
 

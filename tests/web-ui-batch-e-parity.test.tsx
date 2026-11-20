@@ -49,6 +49,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   readSessionToken: async () => signedIn.token,
   readSelectedProjectId: async () => signedIn.projectId,
   loadSessionUser: async () => ({ id: signedIn.role === 'admin' ? adminId : staffId, role: signedIn.role, displayName: '合成' }),
+  loadSession: async () => ({ kind: 'user', user: ({ id: signedIn.role === 'admin' ? adminId : staffId, role: signedIn.role, displayName: '合成' }) }),
   callApi: async (apiPath: string, options: { method?: string; body?: unknown } = {}) => {
     const response = await app.request(apiPath, {
       method: options.method ?? 'GET',
@@ -322,9 +323,9 @@ describe('F-08, F-15, F-21: the maker paper and its approval', () => {
     expect(Array.isArray(rows), JSON.stringify(list.data)).toBe(true);
     expect(ceoApprovalFacts(rows[0]!, chain.orderCode, 'prepaid')).toEqual([
       { label: '発注コード', value: chain.orderCode },
-      { label: '宛先（メーカーの送り先）', value: 'order@osaka-maker.example.jp' },
+      { label: 'メーカーの送信先', value: 'order@osaka-maker.example.jp' },
       { label: '金額', value: '¥480,000' },
-      { label: '決済条件', value: '前払い' }
+      { label: '支払条件', value: '前払い' }
     ]);
   });
 });
@@ -521,13 +522,14 @@ describe('E2 (server follow-up db4bd88): document identity for staff, the unit m
     // The same form in the line's unit is accepted.
     expect(await recordDeliveryAction(null, formOf({
       kind: 'film', orderId, lineId: line.id, unit: 'sheets', deliveredQuantity: '10'
-    }))).toEqual({ ok: true, message: '記録しました。' });
+    }))).toEqual({ ok: true, message: '記録しました。', changedId: expect.any(String) });
     signIn('admin');
   });
 });
 
 function formOf(entries: Record<string, string>): FormData {
   const data = new FormData();
+  data.set('_kaneiRenderedProjectId', signedIn.projectId); // P0 R03: the form was drawn for the selected project
   for (const [key, value] of Object.entries(entries)) data.set(key, value);
   return data;
 }

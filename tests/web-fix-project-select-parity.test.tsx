@@ -48,6 +48,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   readSessionToken: async () => signedIn.token,
   readSelectedProjectId: async () => signedIn.projectId || null,
   loadSessionUser: async () => ({ id: signedIn.userId, role: signedIn.role, displayName: '合成' }),
+  loadSession: async () => ({ kind: 'user', user: ({ id: signedIn.userId, role: signedIn.role, displayName: '合成' }) }),
   callApi: async (apiPath: string, options: { method?: string; body?: unknown; sessionToken?: string | null } = {}) => {
     const token = options.sessionToken !== undefined ? options.sessionToken : signedIn.token;
     const response = await app.request(apiPath, {

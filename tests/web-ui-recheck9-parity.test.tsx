@@ -51,6 +51,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   readSessionToken: async () => signedIn.token,
   readSelectedProjectId: async () => projectId,
   loadSessionUser: async () => ({ id: signedIn.role === 'admin' ? adminId : staffId, role: signedIn.role, displayName: '合成' }),
+  loadSession: async () => ({ kind: 'user', user: ({ id: signedIn.role === 'admin' ? adminId : staffId, role: signedIn.role, displayName: '合成' }) }),
   // The real API, in process: the same request the web would send over HTTP.
   callApi: async (apiPath: string, options: { method?: string; body?: unknown } = {}) => {
     // A read the test makes fail (an outage of that one request).

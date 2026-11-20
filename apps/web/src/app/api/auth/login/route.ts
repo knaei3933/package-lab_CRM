@@ -4,6 +4,8 @@ import {
   CROSS_SITE_REFUSAL,
   isJsonRequest,
   isSameOriginPost,
+  LOGIN_RELAY_TIMEOUT_MS,
+  LOGIN_TIMEOUT_MESSAGE,
   LOGIN_UNAVAILABLE_MESSAGE,
   loginRefusal,
   loginRelayHeaders,
@@ -44,14 +46,24 @@ export async function POST(request: Request): Promise<Response> {
       method: 'POST',
       headers: loginRelayHeaders(trustedClientAddress(request.headers)),
       body: JSON.stringify({ username: body?.username, password: body?.password }),
-      cache: 'no-store'
+      cache: 'no-store',
+      // P0 R04 (B4): a stalled API is answered, not waited on (the form gives up at 15 s).
+      signal: AbortSignal.timeout(LOGIN_RELAY_TIMEOUT_MS)
     });
-  } catch {
+  } catch (failure) {
     // The API address is configuration, not something an anonymous visitor needs.
-    return refusal(502, { error: LOGIN_UNAVAILABLE_MESSAGE });
+    const timedOut = failure instanceof Error && (failure.name === 'TimeoutError' || failure.name === 'AbortError');
+    return timedOut
+      ? refusal(504, { error: LOGIN_TIMEOUT_MESSAGE, code: 'API_TIMEOUT' })
+      : refusal(502, { error: LOGIN_UNAVAILABLE_MESSAGE });
   }
 
-  const payload = await upstream.text();
+  let payload: string;
+  try {
+    payload = await upstream.text();
+  } catch {
+    return refusal(504, { error: LOGIN_TIMEOUT_MESSAGE, code: 'API_TIMEOUT' });
+  }
   if (!upstream.ok) {
     let parsed: unknown = null;
     try {

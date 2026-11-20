@@ -52,7 +52,7 @@ export function DashboardFlow({ view }: { view: DashboardView }) {
 function ItemMeta({ item }: { item: DashboardItem }) {
   const parts = [
     item.owner ? `担当: ${item.owner}` : null,
-    item.paymentTerms ? `決済条件: ${item.paymentTerms}` : null,
+    item.paymentTerms ? `支払条件: ${item.paymentTerms}` : null,
     item.amount ? `金額: ${item.amount}` : null
   ].filter((part): part is string => part !== null);
   return parts.length > 0 ? <span className="dash-item-meta">{parts.join('　')}</span> : null;

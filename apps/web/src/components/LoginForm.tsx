@@ -9,7 +9,8 @@ import { TextInput } from '@astryxdesign/core/TextInput';
 import { HStack } from '@astryxdesign/core/HStack';
 import { VStack } from '@astryxdesign/core/VStack';
 import { errorMessageStyle, noteStyle } from '../lib/ui';
-import { LOGIN_INVALID_MESSAGE, LOGIN_LOCKED_CODE, lockedMessage, waitText } from '../lib/login-messages';
+import { LOGIN_INVALID_MESSAGE, LOGIN_LOCKED_CODE, LOGIN_TIMEOUT_MESSAGE, LOGIN_TIMEOUT_MS, lockedMessage, waitText } from '../lib/login-messages';
+import { DEFAULT_AFTER_LOGIN, safeReturnPath } from '../lib/return-path';
 
 /**
  * Criterion 1: the login form posts username/password to POST /api/auth/login.
@@ -28,7 +29,7 @@ import { LOGIN_INVALID_MESSAGE, LOGIN_LOCKED_CODE, lockedMessage, waitText } fro
  * button stays locked until the wait is over — the API still refuses anything
  * sent early.
  */
-export function LoginForm() {
+export function LoginForm({ returnTo = null }: { returnTo?: string | null } = {}) {
   const router = useRouter();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -86,19 +87,25 @@ export function LoginForm() {
     }
     setPending(true);
     setError(null);
+    // P0 R04 (B4): the wait has an end — after LOGIN_TIMEOUT_MS the request is
+    // abandoned and the operator reads that the system is not answering.
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), LOGIN_TIMEOUT_MS);
     try {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ username, password }),
-        credentials: 'include'
+        credentials: 'include',
+        signal: controller.signal
       });
       const payload = (await response.json().catch(() => null)) as
         | { error?: string; code?: string; retryAfterSeconds?: number }
         | null;
       if (response.ok) {
         // Stays pending while the next screen loads, so the button cannot post again.
-        router.replace('/dashboard');
+        // P0 R08: back to the screen whose session had ended, when there is one.
+        router.replace(safeReturnPath(returnTo) ?? DEFAULT_AFTER_LOGIN);
         router.refresh();
         return;
       }
@@ -119,10 +126,13 @@ export function LoginForm() {
       setError(payload?.error ?? LOGIN_INVALID_MESSAGE);
       setInvalid({ username: response.status === 401, password: response.status === 401 });
       setPending(false);
-    } catch {
-      setError('ログイン要求を送信できませんでした。通信を確認してください。');
+    } catch (failure) {
+      const timedOut = failure instanceof DOMException && failure.name === 'AbortError';
+      setError(timedOut ? LOGIN_TIMEOUT_MESSAGE : 'ログイン要求を送信できませんでした。通信を確認してください。');
       setInvalid({ username: false, password: false });
       setPending(false);
+    } finally {
+      window.clearTimeout(timer);
     }
   }
 

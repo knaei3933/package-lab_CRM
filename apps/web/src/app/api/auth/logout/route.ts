@@ -1,4 +1,5 @@
-import { apiBaseUrl, PROJECT_COOKIE, SESSION_COOKIE } from '../../../../lib/api';
+import { apiBaseUrl, apiTimeoutMs, PROJECT_COOKIE, SESSION_COOKIE } from '../../../../lib/api';
+import { webErrorText } from '../../../../lib/error-dictionary';
 import { DISPLAY_NAME_COOKIE } from '../../../../lib/session-display';
 import { CROSS_SITE_REFUSAL, isSameOriginPost } from '../../../../lib/login-relay';
 
@@ -34,13 +35,16 @@ export async function POST(request: Request): Promise<Response> {
     upstream = await fetch(`${apiBaseUrl}/api/auth/logout`, {
       method: 'POST',
       headers,
-      cache: 'no-store'
+      cache: 'no-store',
+      // P0 R04: the logout never waits on a stalled API (the cookies are dropped regardless).
+      signal: AbortSignal.timeout(apiTimeoutMs())
     });
   } catch {
     // The API is unreachable, but the browser session must still end: the
     // 502 answer drops both cookies locally (the body and status are as before).
     const unreachable = Response.json(
-      { error: `API（${apiBaseUrl}）に接続できません。APIの起動を確認してください。` },
+      // P0 R04 (H9): no internal address on screen.
+      { error: webErrorText('API_UNREACHABLE').message, code: 'API_UNREACHABLE' },
       { status: 502 }
     );
     unreachable.headers.append('set-cookie', CLEARED_SESSION_COOKIE);
@@ -49,7 +53,7 @@ export async function POST(request: Request): Promise<Response> {
     return unreachable;
   }
 
-  const payload = await upstream.text();
+  const payload = await upstream.text().catch(() => '');
   const response = new Response(payload, {
     status: upstream.status,
     headers: { 'content-type': 'application/json; charset=utf-8' }

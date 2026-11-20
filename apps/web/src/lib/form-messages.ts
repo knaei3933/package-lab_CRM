@@ -11,6 +11,12 @@
  * tests/web-ui-batch-c-forms.test.tsx).
  */
 
+/** P0 R01 (B1): the server actions' refusal when no 支払条件 was chosen (no default any more). */
+export const PAYMENT_TERMS_REQUIRED_MESSAGE = '支払条件を選んでください（決まっていない場合は「未定」を選びます）。';
+
+/** P0 R10 (H5): the maker PO's recipient must be an e-mail address (checked before the paper is frozen). */
+export const RECIPIENT_EMAIL_INVALID_MESSAGE = 'メーカーの送信先メールアドレスの形（例 order@maker.example）で入力してください。郵便の住所ではありません。';
+
 export type MessageMatch = 'exact' | 'prefix' | 'suffix';
 
 export interface ActionMessageField {
@@ -56,12 +62,7 @@ export const ACTION_MESSAGE_FIELDS: readonly ActionMessageField[] = [
   { message: 'の明細の単位が正しくありません。', match: 'suffix', field: lineField(0, 'unit'), source: 'actions' },
   // UI batch E2: the API's DELIVERY_UNIT_MISMATCH (db4bd88), read back in Japanese by recordDeliveryAction.
   { message: '単位を明細と同じ単位に直して、もう一度記録してください。', match: 'suffix', field: 'unit', source: 'actions' },
-  {
-    message: '決済条件（prepaid／on_delivery／undetermined）を選択してください。',
-    match: 'exact',
-    field: 'paymentTerms',
-    source: 'actions'
-  },
+  { message: PAYMENT_TERMS_REQUIRED_MESSAGE, match: 'exact', field: 'paymentTerms', source: 'actions' },
   { message: '検証結果（確認／却下）を選択してください。', match: 'exact', field: 'result', source: 'actions' },
   { message: '検証者名を入力してください。', match: 'exact', field: 'verifierName', source: 'actions' },
   { message: '検証日時を入力してください。', match: 'exact', field: 'verifiedAt', source: 'actions' },
@@ -155,14 +156,15 @@ export const ACTION_MESSAGE_FIELDS: readonly ActionMessageField[] = [
   },
   // app/maker-po/actions.ts
   { message: 'フィルム発注を選択してください。', match: 'exact', field: 'orderId', source: 'maker-po-actions' },
+  { message: RECIPIENT_EMAIL_INVALID_MESSAGE, match: 'exact', field: 'recipientAddress', source: 'maker-po-actions' },
   {
-    message: '宛先住所（メーカーの送り先）を入力してください。',
+    message: 'メーカーの送信先メールアドレスを入力してください。',
     match: 'exact',
     field: 'recipientAddress',
     source: 'maker-po-actions'
   },
   {
-    message: '決済条件（prepaid／on_delivery／undetermined）を選択してください。',
+    message: PAYMENT_TERMS_REQUIRED_MESSAGE,
     match: 'exact',
     field: 'paymentTerms',
     source: 'maker-po-actions'
@@ -219,11 +221,11 @@ export function resolveActionFieldError(
   return { kind: 'field', field, message: displayActionMessage(state.message) };
 }
 
-/** Mirror of lib/maker-po-data PAYMENT_TERMS_LABELS (pinned equal by test). */
+/** Mirror of lib/maker-po-data PAYMENT_TERMS_LABELS (pinned equal by test). P0 R01: P-10 glossary words. */
 export const PAYMENT_TERMS_DISPLAY: Readonly<Record<string, string>> = {
   prepaid: '前払い',
-  on_delivery: '搬入時払い',
-  undetermined: '未確定'
+  on_delivery: '納品後払い',
+  undetermined: '未定'
 };
 
 /** Mirror of @kanei/core COMMISSION_READINESS_STATE_LABELS (pinned equal by test). */
@@ -246,9 +248,9 @@ const INTERNAL_CODE_SUFFIXES = ['（verifierName）', '（verifiedAt）', '（re
 export function displayActionMessage(message: string): string {
   if (message === NO_PROJECT_ORIGINAL) return NO_PROJECT_DISPLAY;
   let text = message
-    .replace(/^決済条件を記録しました（([a-z_]+)）。/, (whole, code: string) => {
+    .replace(/^(?:決済|支払)条件を記録しました（([a-z_]+)）。/, (whole, code: string) => {
       const label = PAYMENT_TERMS_DISPLAY[code];
-      return label ? `決済条件を記録しました（${label}）。` : whole;
+      return label ? `支払条件を記録しました（${label}）。` : whole;
     })
     .replace(/^準備状態：([A-Z_]+)（/, (whole, code: string) => {
       const label = READINESS_STATE_DISPLAY[code];

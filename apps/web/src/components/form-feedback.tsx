@@ -20,6 +20,11 @@ import {
 } from '../lib/form-validation';
 import type { ControlDescriptor, ControlKind } from '../lib/form-validation';
 import type { ActionState } from '../lib/types';
+import { createSubmitInFlight, SAVED_RECORD_EVENT } from '../lib/saved-record';
+import type { SavedRecordDetail } from '../lib/saved-record';
+import { IDEMPOTENCY_FIELD, newIdempotencyKey, PROJECT_CONTEXT_MISMATCH } from '../lib/project-context';
+import { loginHrefFor } from '../lib/return-path';
+import { RenderedProjectField, useRenderedContext } from './RenderedContext';
 
 /**
  * UI batch C (1-①, 1-③): the feedback layer every operator form shares.
@@ -342,6 +347,8 @@ export function FormErrorSummary() {
 export function FormResult({ state, successHint }: { state: ActionState | null; successHint?: string | undefined }) {
   const failed = state !== null && !state.ok;
   const succeeded = state !== null && state.ok;
+  const context = useRenderedContext();
+  const korean = failed && context?.showKorean && state.messageKo ? state.messageKo : null;
   return (
     <>
       <span role="alert" className="form-result form-result--error">
@@ -350,7 +357,15 @@ export function FormResult({ state, successHint }: { state: ActionState | null; 
             <span className="form-result-mark" aria-hidden="true">
               ✕
             </span>
-            <span>{displayActionMessage(state.message)}</span>
+            <span>
+              {displayActionMessage(state.message)}
+              {korean ? (
+                <span className="form-result-ko" lang="ko">
+                  {korean}
+                </span>
+              ) : null}
+              <ResultRemedy state={state} />
+            </span>
           </>
         ) : null}
       </span>
@@ -367,6 +382,41 @@ export function FormResult({ state, successHint }: { state: ActionState | null; 
       </span>
     </>
   );
+}
+
+/**
+ * P0: the one way out next to a refusal — reload after another tab switched
+ * the project (R03), log in again in a new tab so this tab keeps every entered
+ * value (R08), open the record a duplicate number belongs to (R05).
+ */
+function ResultRemedy({ state }: { state: ActionState }) {
+  if (state.code === PROJECT_CONTEXT_MISMATCH) {
+    return (
+      <button type="button" className="form-result-action" onClick={() => window.location.reload()}>
+        画面を再読み込みする
+      </button>
+    );
+  }
+  if (state.code === 'SESSION_EXPIRED') {
+    return (
+      <a
+        className="form-result-action"
+        href={loginHrefFor(typeof window === 'undefined' ? '/' : `${window.location.pathname}${window.location.search}`)}
+        target="_blank"
+        rel="noopener"
+      >
+        別のタブでログインする（入力内容はこの画面に残ります）
+      </a>
+    );
+  }
+  if (state.link) {
+    return (
+      <a className="form-result-action" href={state.link.href}>
+        {state.link.label}
+      </a>
+    );
+  }
+  return null;
 }
 
 /** Builds the dialog for a held submit; null means this submit needs no confirmation. */
@@ -417,6 +467,10 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
   const [summaryCount, setSummaryCount] = useState(0);
   const [mounted, setMounted] = useState(false);
   const [gate] = useState(createSubmitGate);
+  // P0 R05 (H7): a ref-held lock — React's pending arrives a render later, so a
+  // second click in the same tick passed the gate and posted twice.
+  const [inFlight] = useState(createSubmitInFlight);
+  inFlight.observe(state, pending === true);
   const [held, setHeld] = useState<{
     options: ConfirmOptions;
     summary: ConfirmSummaryItem[];
@@ -427,6 +481,13 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
   useEffect(() => {
     setMounted(true);
   }, []);
+
+  // P0 R05: one key per submit attempt, drawn after mount (never in the server markup)
+  // and again after every result, so a corrected resubmit is a new request.
+  const [submitKey, setSubmitKey] = useState('');
+  useEffect(() => {
+    setSubmitKey(newIdempotencyKey());
+  }, [state]);
 
   const resetHandler = useRef(onReset);
   useEffect(() => {
@@ -441,12 +502,15 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
   }, []);
 
   // Review H1: only a success empties the form (once per result); a refusal keeps every value.
+  // P0 R06: a success also tells the layout to refresh the screen and highlight the changed row.
   const resetFor = useRef<ActionState | null>(null);
   useEffect(() => {
     const form = formRef.current;
     if (!form || !shouldResetAfterResult(state, resetFor.current)) return;
     resetFor.current = state;
     form.reset();
+    const detail: SavedRecordDetail = { changedId: state?.changedId ?? null };
+    window.dispatchEvent(new CustomEvent(SAVED_RECORD_EVENT, { detail }));
   }, [state]);
 
   // A refusal that names a field marks that field and moves focus to it.
@@ -471,6 +535,7 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
 
   /** Runs the action with this submit's FormData (React then skips its own dispatch and reset). */
   function dispatch(form: HTMLFormElement, submitter: HTMLElement | null): void {
+    if (!inFlight.acquire(state)) return;
     const formData = formDataFor(form, submitter);
     startTransition(() => action(formData));
   }
@@ -481,6 +546,8 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
     const form = event.currentTarget;
     const native = event.nativeEvent as SubmitEvent;
     const submitter = native.submitter instanceof HTMLElement ? native.submitter : null;
+    // P0 R05: dropped before anything else while this form's action is running.
+    if (inFlight.busy) return;
     const check = checkForm(form);
     const dialog = !pending && check.count === 0 && confirm ? confirm(form, submitter) : null;
     const decision = gate.submit({ invalid: check.count > 0, needsConfirm: dialog !== null, pending });
@@ -543,6 +610,9 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
       className={className ? `form-shell ${className}` : 'form-shell'}
       style={style}
     >
+      {/* P0 R03 (B3): the project this form was drawn for; the server action refuses a mismatch. */}
+      <RenderedProjectField />
+      {submitKey ? <input type="hidden" readOnly name={IDEMPOTENCY_FIELD} value={submitKey} /> : null}
       <FormFeedbackContext.Provider value={value}>{children}</FormFeedbackContext.Provider>
       {confirm ? (
         <ConfirmDialog

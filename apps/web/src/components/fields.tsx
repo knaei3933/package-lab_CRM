@@ -88,7 +88,7 @@ export function TextField({
   spellCheck,
   autoCapitalize
 }: FieldProps & {
-  type?: 'text' | 'password' | 'datetime-local' | 'date' | 'number';
+  type?: 'text' | 'password' | 'datetime-local' | 'date' | 'number' | 'email';
   defaultValue?: string | undefined;
   placeholder?: string | undefined;
   /** Maximum control width in px (UI batch C: no longer a fixed width). */
