@@ -350,7 +350,7 @@ describe('Medium-1 (W1): a cancelled paper\'s pending send is history, never ③
       const refused = await verifyMakerPoSendAction(null, form({
         eventId, result, verifierName: '合成代表者', verifiedAt: '2026-11-18T21:00:00+09:00', reasonNote: 'メーカー到達を後から確認'
       }));
-      expect(refused).toEqual({ ok: false, message: '取り消し済みのメーカー発注書の送信は確認できません', messageKo: null, code: null });
+      expect(refused).toMatchObject({ ok: false, message: '取り消し済みのメーカー発注書の送信は確認できません', messageKo: null, code: null });
     }
 
     // A replacement paper does not bring A's ③′ back.
@@ -450,7 +450,7 @@ describe('Low-7: hold wording, hold reason refusals, and the 取り消し承認 
     const chain = await reachMakerPoReady();
     signIn('admin');
     const tooLong = await transitionFilmSupplyOrderAction(null, form({ orderId: chain.orderId, to: 'ON_HOLD', holdReason: 'あ'.repeat(1001) }));
-    expect(tooLong).toEqual({ ok: false, message: '保留にする理由は1000字以内で入力してください。' });
+    expect(tooLong).toMatchObject({ ok: false, message: '保留にする理由は1000字以内で入力してください。' });
     expect(await orderStatus(chain.orderId)).toBe('MAKER_PO_READY');
   });
 

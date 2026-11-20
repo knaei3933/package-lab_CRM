@@ -1,5 +1,5 @@
 import { callApi } from './api';
-import { ACTIVITY_READ_LIMIT } from './dashboard';
+import { ACTIVITY_EXCLUDED_ACTIONS, ACTIVITY_READ_LIMIT } from './dashboard';
 import { loadMakerPaperCleanup, loadMakerPoBoard } from './maker-po-data';
 import type { MakerPoBoard } from './maker-po-data';
 import type { AuditEventView } from './project-data';
@@ -11,15 +11,17 @@ import type { AuditEventView } from './project-data';
  */
 export interface DashboardData {
   board: MakerPoBoard;
-  /** Oldest first, as the API answers; null when the read failed. */
+  /** Oldest first within the newest ACTIVITY_READ_LIMIT work rows; null when the read failed. */
   activity: AuditEventView[] | null;
 }
 
 export async function loadDashboardData(projectId: string): Promise<DashboardData> {
   const [board, activity] = await Promise.all([
     loadMakerPoBoard(projectId),
+    // P0 review M3: the newest rows, without reads (a document version's views and
+    // downloads pile up on every approvals render and filled the whole window).
     callApi<{ events: AuditEventView[] }>(
-      `/api/projects/${encodeURIComponent(projectId)}/audit-history?limit=${ACTIVITY_READ_LIMIT}`
+      `/api/projects/${encodeURIComponent(projectId)}/audit-history?limit=${ACTIVITY_READ_LIMIT}&order=desc&excludeAction=${encodeURIComponent(ACTIVITY_EXCLUDED_ACTIONS.join(','))}`
     )
   ]);
   // Review H: loadMakerPoBoard skips the maker paper cleanup of cancelled and
@@ -29,6 +31,7 @@ export async function loadDashboardData(projectId: string): Promise<DashboardDat
   const makerPaperCleanup = closed.length > 0 ? await loadMakerPaperCleanup(projectId, closed) : {};
   return {
     board: { ...board, workspace: { ...board.workspace, makerPaperCleanup } },
-    activity: activity.ok && activity.data && Array.isArray(activity.data.events) ? activity.data.events : null
+    // Asked newest first (so a full window still holds the latest work); handed on oldest first, as before.
+    activity: activity.ok && activity.data && Array.isArray(activity.data.events) ? [...activity.data.events].reverse() : null
   };
 }

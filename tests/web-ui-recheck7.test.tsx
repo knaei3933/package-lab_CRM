@@ -234,10 +234,10 @@ describe('Low-7', () => {
       ok: false, status: 422, data: { error: '보류 사유는 1000자 이하로 입력해야 합니다', code: 'HOLD_REASON_TOO_LONG' }, error: '보류 사유는 1000자 이하로 입력해야 합니다'
     });
     const state = await transitionFilmSupplyOrderAction(null, form({ orderId: 'o1', to: 'ON_HOLD', holdReason: 'x' }));
-    expect(state).toEqual({ ok: false, message: '保留にする理由は1000字以内で入力してください。' });
+    expect(state).toMatchObject({ ok: false, message: '保留にする理由は1000字以内で入力してください。' });
     callApi.mockResolvedValueOnce({ ok: false, status: 422, data: { error: 'その他', code: 'OTHER' }, error: 'その他' });
     expect(await transitionFilmSupplyOrderAction(null, form({ orderId: 'o1', to: 'ON_HOLD', holdReason: 'x' })))
-      .toEqual({ ok: false, message: 'その他', messageKo: null, code: null });
+      .toEqual({ ok: false, message: 'その他', messageKo: null, code: null, settled: true });
   });
 
   it('(d) both hold-reason refusals name the folded field, so the form opens and focuses it', () => {

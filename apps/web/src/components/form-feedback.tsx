@@ -22,7 +22,7 @@ import type { ControlDescriptor, ControlKind } from '../lib/form-validation';
 import type { ActionState } from '../lib/types';
 import { createSubmitInFlight, SAVED_RECORD_EVENT } from '../lib/saved-record';
 import type { SavedRecordDetail } from '../lib/saved-record';
-import { IDEMPOTENCY_FIELD, newIdempotencyKey, PROJECT_CONTEXT_MISMATCH } from '../lib/project-context';
+import { IDEMPOTENCY_FIELD, newIdempotencyKey, PROJECT_CONTEXT_MISMATCH, shouldRenewSubmitKey } from '../lib/project-context';
 import { loginHrefFor } from '../lib/return-path';
 import { RenderedProjectField, useRenderedContext } from './RenderedContext';
 
@@ -482,11 +482,13 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
     setMounted(true);
   }, []);
 
-  // P0 R05: one key per submit attempt, drawn after mount (never in the server markup)
-  // and again after every result, so a corrected resubmit is a new request.
+  // P0 R05 / review H1: one key per submit intent, drawn after mount (never in the
+  // server markup). It is renewed only when the submit is over (success, or a
+  // refusal the API answered); after a timeout the retry carries the same key,
+  // so a write the API stored while the answer was lost is not stored twice.
   const [submitKey, setSubmitKey] = useState('');
   useEffect(() => {
-    setSubmitKey(newIdempotencyKey());
+    if (shouldRenewSubmitKey(state)) setSubmitKey(newIdempotencyKey());
   }, [state]);
 
   const resetHandler = useRef(onReset);

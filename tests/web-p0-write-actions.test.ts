@@ -191,7 +191,7 @@ describe('R06: a success refreshes the screen and reports the changed id', () =>
 
   it('maker-po send(): refresh and changedId', async () => {
     callApi.mockResolvedValue(ok({ id: 'mpo-1' }));
-    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'mpo-1' }));
+    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid' }));
     expect(result).toMatchObject({ ok: true, changedId: 'mpo-1' });
     expect(revalidatePath).toHaveBeenCalledTimes(1);
     expect(revalidatePath).toHaveBeenCalledWith('/', 'layout');
@@ -217,7 +217,7 @@ describe('R06: a success refreshes the screen and reports the changed id', () =>
 
   it('maker-po send(): a refusal does not refresh', async () => {
     callApi.mockResolvedValue(refused(409, 'x', null, 'MAKER_PO_NOT_APPROVABLE'));
-    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'mpo-1' }));
+    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid' }));
     expect(result.ok).toBe(false);
     expect(revalidatePath).not.toHaveBeenCalled();
   });
@@ -238,7 +238,7 @@ describe('R06: a success refreshes the screen and reports the changed id', () =>
 // ---------------------------------------------------------------------------
 describe('R09: the refusal text is the dictionary text, with its code and Korean line', () => {
   it('refusalState carries message, messageKo and code', () => {
-    expect(refusalState({ error: 'テキスト', errorKo: '텍스트', code: 'X_CODE', status: 422 })).toEqual({ ok: false, message: 'テキスト', messageKo: '텍스트', code: 'X_CODE' });
+    expect(refusalState({ error: 'テキスト', errorKo: '텍스트', code: 'X_CODE', status: 422 })).toMatchObject({ ok: false, message: 'テキスト', messageKo: '텍스트', code: 'X_CODE' });
   });
 
   it('refusalState without an error text still gives a Japanese sentence', () => {
@@ -251,14 +251,14 @@ describe('R09: the refusal text is the dictionary text, with its code and Korean
   it('post() returns the callApi text, never the raw body text', async () => {
     callApi.mockResolvedValue({ ok: false, status: 422, data: { error: 'English core message', code: 'SOME_CODE' }, error: '辞書の文', errorKo: '사전 문장', code: 'SOME_CODE' });
     const result = await actions.registerSevenPurchaseOrderAction(null, form({ poId: 'p', officialRegisteredAt: '2026-11-20' }));
-    expect(result).toEqual({ ok: false, message: '辞書の文', messageKo: '사전 문장', code: 'SOME_CODE' });
+    expect(result).toMatchObject({ ok: false, message: '辞書の文', messageKo: '사전 문장', code: 'SOME_CODE' });
     expect(JSON.stringify(result)).not.toContain('English core message');
   });
 
   it('maker-po send() returns the same shape', async () => {
     callApi.mockResolvedValue({ ok: false, status: 401, data: null, error: 'ログイン切れ', errorKo: null, code: 'SESSION_EXPIRED' });
-    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'p' }));
-    expect(result).toEqual({ ok: false, message: 'ログイン切れ', messageKo: null, code: 'SESSION_EXPIRED' });
+    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'p', expectedPaymentTerms: 'prepaid' }));
+    expect(result).toEqual({ ok: false, message: 'ログイン切れ', messageKo: null, code: 'SESSION_EXPIRED', settled: true });
   });
 });
 
@@ -339,7 +339,7 @@ describe('R05: idempotency key', () => {
 
   it('maker-po send() forwards it too', async () => {
     callApi.mockResolvedValue(ok());
-    await makerActions.approveMakerPoAction(null, form({ poId: 'p', [IDEMPOTENCY_FIELD]: 'maker-key-0001' }));
+    await makerActions.approveMakerPoAction(null, form({ poId: 'p', expectedPaymentTerms: 'prepaid', [IDEMPOTENCY_FIELD]: 'maker-key-0001' }));
     expect(callApi.mock.calls[0]![1].idempotencyKey).toBe('maker-key-0001');
   });
 });

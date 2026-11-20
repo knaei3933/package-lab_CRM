@@ -621,7 +621,8 @@ function dashboardNextAction(
 }
 
 /** Audit actions that only record a read (not work done): left out of the activity. */
-const READ_ONLY_ACTIONS = new Set(['DOCUMENT_VERSION_VIEWED', 'DOCUMENT_VERSION_DOWNLOADED']);
+export const ACTIVITY_EXCLUDED_ACTIONS = ['DOCUMENT_VERSION_VIEWED', 'DOCUMENT_VERSION_DOWNLOADED'] as const;
+const READ_ONLY_ACTIONS: ReadonlySet<string> = new Set(ACTIVITY_EXCLUDED_ACTIONS);
 
 const ACTION_LABELS: Readonly<Record<string, string>> = {
   PROJECT_CREATED: '案件を作成',
@@ -687,12 +688,8 @@ function recentActivity(input: DashboardInput): Pick<DashboardView, 'activity' |
   if (input.activity === null) {
     return { activity: [], activityNote: '最近の記録を読み込めませんでした。' };
   }
-  if (input.activity.length >= ACTIVITY_READ_LIMIT) {
-    return {
-      activity: [],
-      activityNote: `記録が${ACTIVITY_READ_LIMIT}件を超えたため、最近の記録はここに表示できません。各画面の履歴を確認してください。`
-    };
-  }
+  // P0 review M3: the read is the newest work rows (reads excluded), so a full window
+  // still lists the latest records — the list never empties because history is long.
   const stateLabel = labelLookup(input.workspace.labels, 'filmSupplyOrderStates');
   const orders = new Map(input.workspace.filmOrders.map((order) => [order.id, order]));
   const rows = input.activity

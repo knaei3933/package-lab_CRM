@@ -458,7 +458,7 @@ describe('Low-5: an order with live maker paper is not a revision choice', () =>
     const refused = await registerArtworkRevisionAction(null, form({
       orderId: chain.orderId, designKey: 'label-front', fileDocumentVersionId: uuidv7()
     }));
-    expect(refused).toEqual({ ok: false, message: ARTWORK_REVISION_LIVE_PAPER_REFUSAL });
+    expect(refused).toMatchObject({ ok: false, message: ARTWORK_REVISION_LIVE_PAPER_REFUSAL });
     const direct = await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/artwork-revisions`, {
       designKey: 'label-front', fileDocumentVersionId: uuidv7()
     });

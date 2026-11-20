@@ -12,16 +12,40 @@ import { describeApiFailure, dictionaryEntry, isOperatorSafeText, unexpectedErro
  */
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+/** Every .ts file under a source directory, subdirectories included (review L2 / MG). */
 function sourceFiles(dir: string): string[] {
-  return readdirSync(path.join(root, dir))
-    .filter((name) => name.endsWith('.ts'))
-    .map((name) => path.join(root, dir, name));
+  const base = path.join(root, dir);
+  return readdirSync(base, { recursive: true, encoding: 'utf8' })
+    .filter((name) => name.endsWith('.ts') && !name.endsWith('.d.ts'))
+    .map((name) => path.join(base, name));
+}
+
+/**
+ * The refusal codes a source text can answer (review L2):
+ * - `code: 'X'`, `code: "X"`, `` code: `X` `` (MC: any quote);
+ * - `code: NAME` where NAME is a string constant of the same file (MD);
+ * - both arms of `code: cond ? 'X' : 'Y'` (MB).
+ */
+export function codesIn(text: string): string[] {
+  const codes = new Set<string>();
+  for (const match of text.matchAll(/code\s*:\s*(['"`])([A-Z][A-Z0-9_]+)\1/g)) codes.add(match[2]!);
+  for (const match of text.matchAll(/code\s*:\s*[^,}\n]*\?\s*(['"`])([A-Z][A-Z0-9_]+)\1\s*:\s*(['"`])([A-Z][A-Z0-9_]+)\3/g)) {
+    codes.add(match[2]!);
+    codes.add(match[4]!);
+  }
+  const constants = new Map<string, string>();
+  for (const match of text.matchAll(/\b(?:const|let)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(['"`])([A-Z][A-Z0-9_]+)\2/g)) {
+    constants.set(match[1]!, match[3]!);
+  }
+  for (const match of text.matchAll(/code\s*:\s*([A-Za-z_$][\w$]*)\s*[,}\n]/g)) {
+    const value = constants.get(match[1]!);
+    if (value) codes.add(value);
+  }
+  return [...codes];
 }
 
 const serverCodes = [...new Set(
-  [...sourceFiles('apps/api/src'), ...sourceFiles('packages/core/src')].flatMap((file) =>
-    [...readFileSync(file, 'utf8').matchAll(/code: ?'([A-Z][A-Z0-9_]+)'/g)].map((match) => match[1]!)
-  )
+  [...sourceFiles('apps/api/src'), ...sourceFiles('packages/core/src')].flatMap((file) => codesIn(readFileSync(file, 'utf8')))
 )].sort();
 
 const ALLOWED_ASCII = new Set(['MB', 'PDF', 'EML', 'ID']);
@@ -263,5 +287,22 @@ describe('code ↔ dictionary sync with the server contract', () => {
     expect(core.PAYMENT_TERMS_LABELS_JA).toEqual({ prepaid: '前払い', on_delivery: '納品後払い', undetermined: '未定' });
     expect(documented.length).toBeGreaterThan(0);
     expect(readFileSync(path.join(root, 'docs/api/ERROR_CODES.md'), 'utf8')).not.toContain('納品時払い');
+  });
+});
+
+describe('the code scan itself (review L2: MC double quotes, MD constants, MB ternary, MG subdirectories)', () => {
+  it('finds a code in any quote style', () => {
+    expect(codesIn(`return c.json({ error: "x", code: "DQ_CODE" }, 418);`)).toEqual(['DQ_CODE']);
+    expect(codesIn("return c.json({ error: 'x', code: `BT_CODE` });")).toEqual(['BT_CODE']);
+  });
+  it('finds a code held in a string constant of the file', () => {
+    expect(codesIn(`const C = 'CONST_CODE';\nreturn c.json({ error: 'x', code: C }, 418);`)).toEqual(['CONST_CODE']);
+  });
+  it('finds both arms of a ternary code', () => {
+    expect(codesIn(`code: tooLong ? 'A_TOO_LONG' : 'A_REQUIRED'`).sort()).toEqual(['A_REQUIRED', 'A_TOO_LONG']);
+  });
+  it('reads the source tree recursively', () => {
+    expect(sourceFiles('apps/api/src').some((file) => file.endsWith(path.join('apps', 'api', 'src', 'app.ts')))).toBe(true);
+    expect(sourceFiles('packages/core/src').length).toBeGreaterThan(5);
   });
 });

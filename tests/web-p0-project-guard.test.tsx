@@ -165,7 +165,7 @@ describe('every write action refuses before the API (runtime)', () => {
   });
 
   it('a matching form reaches the API (approveMakerPoAction)', async () => {
-    const result = await makerActions.approveMakerPoAction(null, formWith('project-a', { poId: 'po1' }));
+    const result = await makerActions.approveMakerPoAction(null, formWith('project-a', { poId: 'po1', expectedPaymentTerms: 'prepaid' }));
     expect(result.ok).toBe(true);
     expect(callApi).toHaveBeenCalledTimes(1);
   });

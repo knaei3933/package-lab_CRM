@@ -19,12 +19,24 @@ export function renderedProjectMatches(rendered: unknown, current: string | null
 }
 
 /**
- * P0 R05 (H7): the per-submit key every write form carries. The server action
- * forwards it as the API's Idempotency-Key, so a repeat of the same submit
- * (double click, a resubmit after a lost answer) is answered with the first
- * result instead of writing twice. A new key is drawn after every result.
+ * P0 R05 (H7) / review H1: the per-submit key every write form carries. The
+ * server action forwards it as the API's Idempotency-Key, so a repeat of the
+ * same submit (double click, a resubmit after a lost answer or a timeout) is
+ * answered with the first result instead of writing twice. The key is kept
+ * until the submit is over — a success, or a refusal the API answered itself
+ * (shouldRenewSubmitKey) — and only then a new one is drawn.
  */
 export const IDEMPOTENCY_FIELD = '_kaneiIdempotencyKey';
+
+/**
+ * P0 review H1: whether the form draws a new key after this result. Yes at the
+ * start (no result yet), after a success and after a refusal the API decided
+ * (settled). No after a timeout, an unreachable API, a 5xx or a refusal made on
+ * the web: the same intent is retried with the same key.
+ */
+export function shouldRenewSubmitKey(state: { ok: boolean; settled?: boolean | undefined } | null): boolean {
+  return state === null || state.ok || state.settled === true;
+}
 
 /** The API's own key rule (p0-server idempotency.ts). */
 export function isIdempotencyKey(value: unknown): value is string {

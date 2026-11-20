@@ -549,12 +549,15 @@ describe('dashboard: recent activity', () => {
     expect(html).toContain('合成担当者');
   });
 
-  it('a failed read and a capped read are said, never shown as 「まだ記録はありません」', () => {
+  it('a failed read is said, never shown as 「まだ記録はありません」; a full window still lists the newest (review M3)', () => {
     expect(buildDashboard(input('staff', [], { activity: null })).activityNote).toBe('最近の記録を読み込めませんでした。');
-    const capped = Array.from({ length: ACTIVITY_READ_LIMIT }, (_, index) => event(index, 'FILM_SUPPLY_ORDER_TRANSITIONED'));
-    const view = buildDashboard(input('staff', [], { activity: capped }));
-    expect(view.activity).toEqual([]);
-    expect(view.activityNote).toContain('最近の記録はここに表示できません');
+    // The read is the newest work rows (order=desc, reads excluded), handed on oldest first:
+    // a full window lists its newest rows instead of emptying the list.
+    const full = Array.from({ length: ACTIVITY_READ_LIMIT }, (_, index) => event(index, 'FILM_SUPPLY_ORDER_TRANSITIONED'));
+    const view = buildDashboard(input('staff', [], { activity: full }));
+    expect(view.activity.length).toBeGreaterThan(0);
+    expect(view.activity[0]!.key).toBe(full.at(-1)!.id);
+    expect(view.activityNote ?? '').not.toContain('表示できません');
     expect(buildDashboard(input('staff', [], { activity: [] })).activityNote).toBe('まだ記録はありません。');
   });
 });

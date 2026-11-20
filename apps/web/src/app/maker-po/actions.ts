@@ -5,7 +5,7 @@ import { callApi } from '../../lib/api';
 import { offsetDateTimeField } from '../../lib/datetime';
 import type { ActionState } from '../../lib/types';
 import { recordIdOf, refusalState } from '../../lib/action-result';
-import { PAYMENT_TERMS_REQUIRED_MESSAGE, RECIPIENT_EMAIL_INVALID_MESSAGE } from '../../lib/form-messages';
+import { EXPECTED_TERMS_MISSING_MESSAGE, PAYMENT_TERMS_REQUIRED_MESSAGE, RECIPIENT_EMAIL_INVALID_MESSAGE } from '../../lib/form-messages';
 import { refuseIfProjectSwitched } from '../../lib/project-guard';
 import { idempotencyKeyOf } from '../../lib/project-context';
 import { revalidatePath } from 'next/cache';
@@ -85,12 +85,13 @@ export async function approveMakerPoAction(_prev: ActionState | null, formData: 
   // P0 review: the 支払条件 the approval screen showed; the API refuses with 409
   // PAYMENT_TERMS_CHANGED when it changed meanwhile (the approval never certifies
   // a term the representative did not see).
+  // P0 review M1: never sent without it — a screen that could not read the term
+  // holds the approval instead of certifying a term nobody saw.
   const expectedPaymentTerms = field(formData, 'expectedPaymentTerms');
-  return post(
-    formData,
-    `/api/maker-purchase-orders/${encodeURIComponent(poId)}/ceo-approval`,
-    ['prepaid', 'on_delivery', 'undetermined'].includes(expectedPaymentTerms) ? { expectedPaymentTerms } : {}
-  );
+  if (!['prepaid', 'on_delivery', 'undetermined'].includes(expectedPaymentTerms)) {
+    return { ok: false, message: EXPECTED_TERMS_MISSING_MESSAGE };
+  }
+  return post(formData, `/api/maker-purchase-orders/${encodeURIComponent(poId)}/ceo-approval`, { expectedPaymentTerms });
 }
 
 /** Screen 2 support: record the G6 transaction terms while the order is a draft. */

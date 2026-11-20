@@ -501,7 +501,7 @@ describe('E2 (server follow-up db4bd88): document identity for staff, the unit m
     const film = await recordDeliveryAction(null, formOf({
       kind: 'film', orderId, lineId: line.id, unit: 'rolls', deliveredQuantity: '10'
     }));
-    expect(film).toEqual({
+    expect(film).toMatchObject({
       ok: false,
       message: '納品単位（ロール）が明細の単位（枚）と異なります。単位を明細と同じ単位に直して、もう一度記録してください。'
     });

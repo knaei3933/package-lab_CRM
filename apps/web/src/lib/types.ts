@@ -14,6 +14,14 @@ export interface ActionState {
   link?: { href: string; label: string } | null | undefined;
   /** P0 R06: the id of the record this success wrote, so its row is highlighted after the refresh. */
   changedId?: string | null | undefined;
+  /**
+   * P0 review H1: the API answered this refusal itself (a 4xx it decided), so
+   * the submit is over and the next one is a new request with a new
+   * Idempotency-Key. Absent for a timeout, an unreachable API, a 5xx or a
+   * refusal made on the web before the API was asked: the API may have stored
+   * the write (or never saw it), and a retry must carry the same key.
+   */
+  settled?: boolean | undefined;
 }
 
 export interface Choice {

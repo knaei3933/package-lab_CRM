@@ -20,6 +20,19 @@ export const RECIPIENT_EMAIL_INVALID_MESSAGE = 'メーカーの送信先メー�
 /** P0 R02: the shared-evidence exception needs its reason (mapped to the reason field). */
 export const SHARED_EVIDENCE_REASON_MESSAGE = '両組織で同じ承認証跡を使う理由を入力してください。';
 
+/**
+ * P0 review M1: the approval is held when the 支払条件 the screen shows could not
+ * be read — the approval must certify the term the representative saw.
+ */
+export const EXPECTED_TERMS_MISSING_MESSAGE =
+  '支払条件を確認できないため、代表承認を保留しています。画面を再読み込みして支払条件が表示されてから承認してください。';
+
+/** P0 review M2: PAYMENT_TERMS_LOCKED by its reason (the server rule, not 「下書きの間だけ」). */
+export const PAYMENT_TERMS_LOCKED_MESSAGES: Readonly<Record<string, string>> = {
+  ceo_approved: '代表承認済みのメーカー発注書があるため、支払条件は変更できません。変更する場合は、メーカー発注書を取り消して作り直してください。',
+  order_frozen: '保留・変更レビュー・取消レビュー中の発注は、支払条件を変更できません。状態を解決してから変更してください。'
+};
+
 export type MessageMatch = 'exact' | 'prefix' | 'suffix';
 
 export interface ActionMessageField {

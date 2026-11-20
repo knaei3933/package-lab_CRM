@@ -1250,3 +1250,29 @@ describe('P0 integration: audit-history action filter', () => {
     expect([200, 403]).toContain(response.status);
   });
 });
+
+describe('P0 review M3: audit-history newest first and read rows excluded', () => {
+  it('order=desc returns the newest rows first; excludeAction leaves the reads out', async () => {
+    const sevenPoId = await verifiedSevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    const uploaded = await upload(sevenPoId, orderId, { documentType: 'approval_evidence', issuerEntity: 'seven', designKey: 'label-front' });
+    for (let i = 0; i < 2; i += 1) expect((await send('staff', 'GET', `/api/document-versions/${uploaded.version.id}/download`)).status).toBe(200);
+    const newest = await send('staff', 'GET', `/api/projects/${projectId}/audit-history?limit=3&order=desc`);
+    expect(newest.status).toBe(200);
+    const times = (newest.body.events as Array<{ occurredAt: string }>).map((event) => Date.parse(event.occurredAt));
+    expect(times).toEqual([...times].sort((a, b) => b - a));
+    expect((newest.body.events as Array<{ action: string }>)[0]!.action).toBe('DOCUMENT_VERSION_DOWNLOADED');
+    const work = await send('staff', 'GET', `/api/projects/${projectId}/audit-history?limit=5&order=desc&excludeAction=DOCUMENT_VERSION_VIEWED,DOCUMENT_VERSION_DOWNLOADED`);
+    expect(work.status).toBe(200);
+    const actions = (work.body.events as Array<{ action: string }>).map((event) => event.action);
+    expect(actions).not.toContain('DOCUMENT_VERSION_DOWNLOADED');
+    expect(actions).not.toContain('DOCUMENT_VERSION_VIEWED');
+    expect(['DOCUMENT_VERSION_UPLOADED', 'DOCUMENT_CREATED']).toContain(actions[0]);
+  });
+
+  it('without order the answer stays oldest first (unchanged contract)', async () => {
+    const answer = await send('staff', 'GET', `/api/projects/${projectId}/audit-history?limit=5`);
+    const times = (answer.body.events as Array<{ occurredAt: string }>).map((event) => Date.parse(event.occurredAt));
+    expect(times).toEqual([...times].sort((a, b) => a - b));
+  });
+});

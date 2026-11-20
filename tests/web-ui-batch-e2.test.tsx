@@ -86,7 +86,7 @@ describe('E2: DELIVERY_UNIT_MISMATCH reaches the screen in Japanese', () => {
     const state = await recordDeliveryAction(null, form({
       kind: 'film', orderId: 'o1', lineId: 'l1', unit: 'rolls', deliveredQuantity: '10'
     }));
-    expect(state).toEqual({
+    expect(state).toMatchObject({
       ok: false,
       message: '納品単位（ロール）が明細の単位（枚）と異なります。単位を明細と同じ単位に直して、もう一度記録してください。'
     });
@@ -110,7 +110,7 @@ describe('E2: DELIVERY_UNIT_MISMATCH reaches the screen in Japanese', () => {
       .toBe('納品単位が明細の単位と異なります。単位を明細と同じ単位に直して、もう一度記録してください。');
     callApi.mockResolvedValueOnce({ ok: false, status: 422, data: { error: '単位が不正です', code: 'UNIT_DOMAIN_MISMATCH' }, error: '単位が不正です' });
     expect(await recordDeliveryAction(null, form({ kind: 'film', orderId: 'o1', lineId: 'l1', unit: 'pods', deliveredQuantity: '1' })))
-      .toEqual({ ok: false, message: '単位が不正です', messageKo: null, code: null });
+      .toMatchObject({ ok: false, message: '単位が不正です', messageKo: null, code: null });
   });
 
   it('the refusal marks and focuses the 単位 field of the delivery form', () => {

@@ -278,7 +278,7 @@ describe('R1-9 / F2: the controlled change request through the revision form', (
     const bare = await registerArtworkRevisionAction(null, form({
       orderId: chain.orderId, designKey: 'label-front', fileDocumentVersionId: chain.newProofVersionId
     }));
-    expect(bare).toEqual({
+    expect(bare).toMatchObject({
       ok: false,
       message: 'このデザインには承認の記録があるため、変更依頼として登録する必要があります。「変更依頼として登録する」にチェックを入れ、各項目を入力してください。'
     });
@@ -295,7 +295,7 @@ describe('R1-9 / F2: the controlled change request through the revision form', (
       orderId: chain.orderId, designKey: 'label-front', fileDocumentVersionId: chain.newProofVersionId,
       ...FACTS, changeEvidenceDocumentVersionId: other.changeEvidenceVersionId
     }));
-    expect(foreign).toEqual({
+    expect(foreign).toMatchObject({
       ok: false,
       message: '変更依頼の証憑は、この発注（デザインを指定した証跡はそのデザイン）に紐付けた承認証跡から選んでください。'
     });
@@ -333,7 +333,7 @@ describe('R1-9 / F2: the controlled change request through the revision form', (
       ...FACTS, changeEvidenceDocumentVersionId: chain.changeEvidenceVersionId
     };
     signIn('staff');
-    expect(await registerArtworkRevisionAction(null, form(entries))).toEqual({
+    expect(await registerArtworkRevisionAction(null, form(entries))).toMatchObject({
       ok: false,
       message: '印刷開始後の変更は代表者だけが登録できます。代表者に登録を依頼してください（版も状態も記録されていません）。'
     });
@@ -502,7 +502,7 @@ describe('server-batch-f4 M-6: the web approval-history judgement equals the API
     const bare = await registerArtworkRevisionAction(null, form({
       orderId: chain.orderId, designKey: 'label-front', fileDocumentVersionId: chain.newProofVersionId
     }));
-    expect(bare).toEqual({
+    expect(bare).toMatchObject({
       ok: false,
       message: 'このデザインには承認の記録があるため、変更依頼として登録する必要があります。「変更依頼として登録する」にチェックを入れ、各項目を入力してください。'
     });

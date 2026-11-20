@@ -33,7 +33,11 @@ const projectId = uuidv7();
 let app: ReturnType<typeof createApp>;
 
 const jar = vi.hoisted(() => ({ session: '' as string | null, project: '' as string | null }));
-const seen = vi.hoisted(() => ({ requests: [] as Array<{ path: string; method: string; headers: Record<string, string> }> }));
+const seen = vi.hoisted(() => ({
+  requests: [] as Array<{ path: string; method: string; headers: Record<string, string> }>,
+  /** P0 review H1: the next request whose path contains this is stored by the API, but its answer is lost (timeout). */
+  loseAnswerOnce: null as string | null
+}));
 const revalidatePath = vi.hoisted(() => vi.fn());
 vi.mock('next/headers', () => ({
   cookies: async () => ({
@@ -49,6 +53,7 @@ vi.mock('next/navigation', () => ({ redirect: () => undefined }));
 
 const api = await import('../apps/web/src/lib/api.js');
 const actions = await import('../apps/web/src/app/actions.js');
+const { shouldRenewSubmitKey } = await import('../apps/web/src/lib/project-context.js');
 const makerActions = await import('../apps/web/src/app/maker-po/actions.js');
 const { loadWorkspace } = await import('../apps/web/src/lib/project-data.js');
 const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
@@ -182,6 +187,13 @@ beforeAll(async () => {
     if (url.startsWith(api.apiBaseUrl)) {
       const requestPath = url.slice(api.apiBaseUrl.length);
       seen.requests.push({ path: requestPath, method: init?.method ?? 'GET', headers: { ...((init?.headers as Record<string, string>) ?? {}) } });
+      if (seen.loseAnswerOnce && requestPath.includes(seen.loseAnswerOnce) && (init?.method ?? 'GET') !== 'GET') {
+        seen.loseAnswerOnce = null;
+        // The API commits the write; the web never hears back (AbortSignal.timeout).
+        const { signal: _signal, ...withoutSignal } = init ?? {};
+        await app.request(requestPath, withoutSignal);
+        throw Object.assign(new Error('The operation was aborted due to timeout'), { name: 'TimeoutError' });
+      }
       return app.request(requestPath, init);
     }
     return realFetch(input, init);
@@ -476,3 +488,54 @@ describe('R07: the upload limit is the API limit (real API)', () => {
     expect(result.message).not.toMatch(/[A-Za-z]{4,}/);
   });
 });
+
+describe('review H1: a timeout, then the same intent again, is written once (real API)', () => {
+  async function fillingLine() {
+    signIn('staff');
+    const created = await actions.createFillingOrderAction(null, form({
+      code: `FIL-H1-${nextTag()}`,
+      lines: JSON.stringify([{ description: '合成充填', orderedQuantity: '300', unit: 'pods' }])
+    }));
+    expect(created.ok, created.message).toBe(true);
+    const orderId = created.changedId!;
+    const lines = await db.execute(sql`select id from filling_order_lines where filling_order_id = ${orderId}`);
+    return { orderId, lineId: (lines.rows[0] as { id: string }).id };
+  }
+  const deliveries = async (lineId: string) =>
+    Number((await db.execute(sql`select count(*)::int as n from filling_deliveries where filling_order_line_id = ${lineId}`)).rows[0]!.n);
+  const deliveryForm = (orderId: string, lineId: string, key: string) =>
+    form({ kind: 'filling', orderId, lineId, unit: 'pods', deliveredQuantity: '300', _kaneiIdempotencyKey: key });
+
+  it('the lost answer is a retryable timeout, the key is kept, and the resubmit replays: one delivery row', async () => {
+    const { orderId, lineId } = await fillingLine();
+    const key = `p0-h1-${nextTag()}`;
+    seen.loseAnswerOnce = '/deliveries';
+    const first = await actions.recordDeliveryAction(null, deliveryForm(orderId, lineId, key));
+    expect(first).toMatchObject({ ok: false, code: 'API_TIMEOUT' });
+    expect(first.settled).toBeFalsy();
+    expect(shouldRenewSubmitKey(first)).toBe(false);
+    expect(await deliveries(lineId)).toBe(1); // stored although the web never heard back
+    // The form kept its key: the same intent goes out again with it.
+    const second = await actions.recordDeliveryAction(null, deliveryForm(orderId, lineId, key));
+    expect(second.ok, second.message).toBe(true);
+    expect(await deliveries(lineId)).toBe(1);
+    expect(shouldRenewSubmitKey(second)).toBe(true);
+  });
+
+  it('control: with a new key after the timeout (the old behaviour) the delivery is stored twice', async () => {
+    const { orderId, lineId } = await fillingLine();
+    seen.loseAnswerOnce = '/deliveries';
+    await actions.recordDeliveryAction(null, deliveryForm(orderId, lineId, `p0-h1-a-${nextTag()}`));
+    await actions.recordDeliveryAction(null, deliveryForm(orderId, lineId, `p0-h1-b-${nextTag()}`));
+    expect(await deliveries(lineId)).toBe(2);
+  });
+
+  it('a refusal the API answered (4xx) is settled: the next submit gets a new key', async () => {
+    const { orderId, lineId } = await fillingLine();
+    const refused = await actions.recordDeliveryAction(null, form({ kind: 'filling', orderId, lineId, unit: 'pieces', deliveredQuantity: '300', _kaneiIdempotencyKey: `p0-h1-c-${nextTag()}` }));
+    expect(refused.ok).toBe(false);
+    expect(refused.settled).toBe(true);
+    expect(shouldRenewSubmitKey(refused)).toBe(true);
+  });
+});
+

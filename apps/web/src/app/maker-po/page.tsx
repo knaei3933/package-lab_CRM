@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { webErrorText } from '../../lib/error-dictionary';
+import { EXPECTED_TERMS_MISSING_MESSAGE } from '../../lib/form-messages';
 import { ActionForm } from '../../components/ActionForm';
 import { MakerPoSendEvidenceForm } from '../../components/MakerPoSendEvidenceForm';
 import { OrderCreateForm } from '../../components/OrderCreateForm';
@@ -97,6 +98,9 @@ import {
   recordProvisionalAcceptanceAction,
   verifyMakerPoSendAction
 } from './actions';
+
+/** P0 review M1: shown in place of the approval form when the 支払条件 could not be read. */
+const APPROVAL_HELD_NO_TERMS = EXPECTED_TERMS_MISSING_MESSAGE;
 
 /** P0 R09: the payment-gate block in operator words (never the API's English reason or a code). */
 function paymentGateBlockText(code: string | null | undefined): string {
@@ -1108,7 +1112,11 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
       ) : null}
       {pending.map((po) => (
         <div key={po.id} style={{ marginBottom: 12 }}>
-          {canApprove ? (
+          {canApprove && !gate?.paymentTerms ? (
+            // P0 review M1: the approval certifies the 支払条件 the representative saw
+            // (expectedPaymentTerms). When it cannot be read, the approval waits.
+            <p className="role-notice" role="status">{APPROVAL_HELD_NO_TERMS}</p>
+          ) : canApprove ? (
             <ActionForm
               action={approveMakerPoAction}
               submitLabel="代表承認を記録する"
@@ -1121,7 +1129,7 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
               }}
               successHint="次の手順: ③ 送信の記録（送信済みメールの原本 .eml を登録します）"
             >
-              {gate?.paymentTerms ? <input type="hidden" readOnly name="expectedPaymentTerms" value={gate.paymentTerms} /> : null}
+              <input type="hidden" readOnly name="expectedPaymentTerms" value={gate?.paymentTerms ?? ''} />
               <input type="hidden" readOnly name="poId" value={po.id} />
             </ActionForm>
           ) : (

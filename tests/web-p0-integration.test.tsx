@@ -27,7 +27,10 @@ const actions = await import('../apps/web/src/app/actions.js');
 const makerActions = await import('../apps/web/src/app/maker-po/actions.js');
 const { ApprovalDecisionForm, matchesOrganization } = await import('../apps/web/src/components/ApprovalDecisionForm.js');
 const { RENDERED_PROJECT_FIELD } = await import('../apps/web/src/lib/project-context.js');
-const { SHARED_EVIDENCE_REASON_MESSAGE, fieldForActionMessage } = await import('../apps/web/src/lib/form-messages.js');
+const { EXPECTED_TERMS_MISSING_MESSAGE, PAYMENT_TERMS_LOCKED_MESSAGES, SHARED_EVIDENCE_REASON_MESSAGE, fieldForActionMessage } = await import('../apps/web/src/lib/form-messages.js');
+const { shouldRenewSubmitKey } = await import('../apps/web/src/lib/project-context.js');
+const { isSettledRefusal, refusalState } = await import('../apps/web/src/lib/action-result.js');
+const { ERROR_DICTIONARY } = await import('../apps/web/src/lib/error-dictionary-data.js');
 
 function form(entries: Record<string, string>): FormData {
   const data = new FormData();
@@ -145,9 +148,15 @@ describe('p0-server review contract (aac8634)', () => {
     expect(lastBody()).toEqual({ expectedPaymentTerms: 'prepaid' });
   });
 
-  it('an unknown expectedPaymentTerms is not forwarded', async () => {
-    await makerActions.approveMakerPoAction(null, form({ poId: 'po-1', expectedPaymentTerms: 'cash' }));
-    expect(lastBody()).toEqual({});
+  it('review M1: without a readable expectedPaymentTerms the approval is held — the API is not asked', async () => {
+    for (const value of [undefined, '', 'cash']) {
+      callApi.mockClear();
+      const entries: Record<string, string> = { poId: 'po-1' };
+      if (value !== undefined) entries.expectedPaymentTerms = value;
+      const result = await makerActions.approveMakerPoAction(null, form(entries));
+      expect(result).toEqual({ ok: false, message: EXPECTED_TERMS_MISSING_MESSAGE });
+      expect(callApi).not.toHaveBeenCalled();
+    }
   });
 
   it('PAYMENT_TERMS_CHANGED reads as the dictionary sentence', async () => {
@@ -170,5 +179,65 @@ describe('p0-server review contract (aac8634)', () => {
     callApi.mockResolvedValue(ok({ document: { id: 'd-2' }, version: { id: 'v-2' }, warnings: [] }));
     const result = await actions.uploadDocumentAction(null, form({ filename: 'a.txt', contentBase64: 'YQ==', documentType: 'film_quote_kanei', issuerEntity: 'kanei', contentType: 'text/plain' }));
     expect(result.message).toBe('記録しました。');
+  });
+});
+
+
+describe('review H1: the Idempotency-Key lives until the submit is over', () => {
+  it('renewed at the start, after a success and after a settled refusal; kept otherwise', () => {
+    expect(shouldRenewSubmitKey(null)).toBe(true);
+    expect(shouldRenewSubmitKey({ ok: true })).toBe(true);
+    expect(shouldRenewSubmitKey({ ok: false, settled: true })).toBe(true);
+    expect(shouldRenewSubmitKey({ ok: false })).toBe(false);
+    expect(shouldRenewSubmitKey({ ok: false, settled: false })).toBe(false);
+  });
+
+  it('only an answered 4xx is settled: timeout, unreachable and 5xx keep the key', () => {
+    expect(isSettledRefusal({ status: 422, failure: null })).toBe(true);
+    expect(isSettledRefusal({ status: 409, failure: null })).toBe(true);
+    expect(isSettledRefusal({ status: 0, failure: 'timeout' })).toBe(false);
+    expect(isSettledRefusal({ status: 0, failure: 'unreachable' })).toBe(false);
+    expect(isSettledRefusal({ status: 500, failure: null })).toBe(false);
+    expect(isSettledRefusal({ status: 503, failure: null })).toBe(false);
+    expect(refusalState({ status: 0, failure: 'timeout', error: 'x', code: 'API_TIMEOUT' }).settled).toBe(false);
+    expect(refusalState({ status: 422, failure: null, error: 'x', code: 'DOCUMENT_TOO_LARGE' }).settled).toBe(true);
+  });
+
+  it('every write form path: a timed-out write (any action) is not settled', async () => {
+    callApi.mockResolvedValue({ ok: false, status: 0, data: null, error: 'システムが応答していません。', errorKo: null, code: 'API_TIMEOUT', failure: 'timeout' });
+    const results = [
+      await actions.recordDeliveryAction(null, form({ kind: 'film', orderId: 'o-1', lineId: 'l-1', unit: 'meters', deliveredQuantity: '10' })),
+      await actions.transitionFilmSupplyOrderAction(null, form({ orderId: 'o-1', to: 'PROOF_READY' })),
+      await makerActions.approveMakerPoAction(null, form({ poId: 'po-1', expectedPaymentTerms: 'prepaid' })),
+      await makerActions.recordProvisionalAcceptanceAction(null, form({ poId: 'po-1' }))
+    ];
+    for (const result of results) {
+      expect(result.ok).toBe(false);
+      expect(shouldRenewSubmitKey(result)).toBe(false);
+    }
+  });
+
+  it('a refusal made on the web (the API never asked) keeps the key too', async () => {
+    const result = await actions.recordDeliveryAction(null, form({ kind: 'film', orderId: 'o-1', lineId: '', unit: 'meters', deliveredQuantity: '10' }));
+    expect(result.ok).toBe(false);
+    expect(shouldRenewSubmitKey(result)).toBe(false);
+  });
+});
+
+describe('review M2: PAYMENT_TERMS_LOCKED says the real rule', () => {
+  it('never 「下書きの間だけ」, in the dictionary or by reason', () => {
+    expect(ERROR_DICTIONARY.PAYMENT_TERMS_LOCKED!.ja).not.toContain('下書き');
+    expect(ERROR_DICTIONARY.PAYMENT_TERMS_LOCKED!.ja).toContain('代表承認');
+  });
+
+  it('by reason: 代表承認済み → cancel and re-create; 保留・レビュー → resolve first', async () => {
+    for (const reason of ['ceo_approved', 'order_frozen'] as const) {
+      callApi.mockResolvedValue({ ok: false, status: 422, data: { code: 'PAYMENT_TERMS_LOCKED', reason }, error: ERROR_DICTIONARY.PAYMENT_TERMS_LOCKED!.ja, errorKo: null, code: 'PAYMENT_TERMS_LOCKED', failure: null });
+      const result = await actions.updateFilmPaymentTermsAction(null, form({ orderId: 'o-1', paymentTerms: 'prepaid' }));
+      expect(result.message).toBe(PAYMENT_TERMS_LOCKED_MESSAGES[reason]);
+      expect(result.settled).toBe(true);
+    }
+    expect(PAYMENT_TERMS_LOCKED_MESSAGES.ceo_approved).toContain('取り消して作り直して');
+    expect(PAYMENT_TERMS_LOCKED_MESSAGES.order_frozen).toContain('保留');
   });
 });

@@ -56,7 +56,9 @@ export function duplicateState(kind: DuplicateKind, existingId: string | null): 
     message: text.message,
     messageKo: text.messageKo,
     code: DUPLICATE_CODE,
-    link: existingId ? { href: ANCHOR[kind](existingId), label: LINK_LABEL[kind] } : null
+    link: existingId ? { href: ANCHOR[kind](existingId), label: LINK_LABEL[kind] } : null,
+    // The number is registered: the submit is over (a new key for the next one).
+    settled: true
   };
 }
 

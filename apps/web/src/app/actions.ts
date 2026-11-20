@@ -5,7 +5,7 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { FILM_UNITS, FILLING_UNITS, OFFICIAL_ARTIFACT_DOCUMENT_TYPES } from '@kanei/core';
 import { callApi, PROJECT_COOKIE, readSelectedProjectId } from '../lib/api';
-import { recordIdOf, refusalState } from '../lib/action-result';
+import { isSettledRefusal, recordIdOf, refusalState } from '../lib/action-result';
 import { refuseIfProjectSwitched } from '../lib/project-guard';
 import { idempotencyKeyOf } from '../lib/project-context';
 import { duplicateRefusal } from '../lib/duplicate-check';
@@ -16,7 +16,7 @@ import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL } from '../lib/maker-po-data';
 import type { ActionState } from '../lib/types';
 import { unitLabel } from '../lib/vocabulary';
 import { EVIDENCE_NOTE_FIELD } from '../lib/transition-evidence';
-import { PAYMENT_TERMS_DISPLAY, PAYMENT_TERMS_REQUIRED_MESSAGE, SHARED_EVIDENCE_REASON_MESSAGE } from '../lib/form-messages';
+import { PAYMENT_TERMS_DISPLAY, PAYMENT_TERMS_LOCKED_MESSAGES, PAYMENT_TERMS_REQUIRED_MESSAGE, SHARED_EVIDENCE_REASON_MESSAGE } from '../lib/form-messages';
 
 /**
  * M6 operator UI server actions: thin forms-over-API adapters. Each action
@@ -129,10 +129,12 @@ async function post(
     const state = success?.(result.data) ?? { ok: true, message: '記録しました。' };
     return { ...state, changedId: state.changedId ?? recordIdOf(result.data) };
   }
+  // P0 review H1: a refusal the API answered (4xx) ends the submit — mapped or not.
+  const settled = isSettledRefusal(result);
   const specific = refusal?.(apiCode(result.data), result.data);
-  if (specific) return specific;
+  if (specific) return { ...specific, settled };
   const localized = localizedRefusal(apiCode(result.data));
-  if (localized) return localized;
+  if (localized) return { ...localized, settled };
   return refusalState(result);
 }
 
@@ -159,7 +161,8 @@ async function postCreate(
     refresh();
     return dup;
   }
-  return localizedRefusal(code) ?? refusalState(result);
+  const localized = localizedRefusal(code);
+  return localized ? { ...localized, settled: isSettledRefusal(result) } : refusalState(result);
 }
 
 function parseLines(raw: string, units: readonly string[], label: string):
@@ -351,7 +354,12 @@ export async function updateFilmPaymentTermsAction(_prev: ActionState | null, fo
       changedId: orderId
     };
   }
-  return refusalState(result);
+  // P0 review M2: the lock said by its reason (代表承認済み / 保留・レビュー中).
+  const lockReason = apiCode(result.data) === 'PAYMENT_TERMS_LOCKED' && typeof result.data === 'object' && result.data !== null
+    ? (result.data as { reason?: unknown }).reason
+    : undefined;
+  const lockMessage = typeof lockReason === 'string' ? PAYMENT_TERMS_LOCKED_MESSAGES[lockReason] : undefined;
+  return lockMessage ? { ...refusalState(result), message: lockMessage } : refusalState(result);
 }
 
 /**

@@ -224,6 +224,6 @@ describe('hold / cancellation review actions: required reason, dedicated endpoin
 
   it('the API refusal is shown verbatim (e.g. staff 403)', async () => {
     callApi.mockResolvedValue({ ok: false, status: 403, error: '権限がありません', data: null });
-    expect(await releaseFilmOrderHoldAction(null, form({ orderId: 'o', reason: '理由' }))).toEqual({ ok: false, message: '権限がありません', messageKo: null, code: null });
+    expect(await releaseFilmOrderHoldAction(null, form({ orderId: 'o', reason: '理由' }))).toMatchObject({ ok: false, message: '権限がありません', messageKo: null, code: null });
   });
 });

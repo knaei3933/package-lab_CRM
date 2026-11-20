@@ -394,7 +394,7 @@ describe('registerArtworkRevisionAction: change request facts (R1-9 / F2)', () =
 
   it('the print-start gate (403) says only the representative can record it, and that nothing was written', async () => {
     captured.answer = { ok: false, status: 403, data: { error: '印刷開始後の変更は代表者の承認が必要です', code: 'PRINTED_CHANGE_ADMIN_APPROVAL_REQUIRED' }, error: 'x' };
-    expect(await registerArtworkRevisionAction(null, revisionForm(COMPLETE))).toEqual({
+    expect(await registerArtworkRevisionAction(null, revisionForm(COMPLETE))).toMatchObject({
       ok: false,
       message: '印刷開始後の変更は代表者だけが登録できます。代表者に登録を依頼してください（版も状態も記録されていません）。'
     });

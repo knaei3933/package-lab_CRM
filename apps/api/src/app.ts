@@ -3,7 +3,7 @@ import { deleteCookie, setCookie } from 'hono/cookie';
 import { randomBytes } from 'node:crypto';
 import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray, sql } from 'drizzle-orm';
 import {
   buildMakerPoSnapshot,
   canPerform,
@@ -2813,6 +2813,13 @@ export function createApp({
       ? query.action.split(',').map((name) => name.trim()).filter((name) => /^[A-Z][A-Z0-9_]{2,79}$/.test(name)).slice(0, 10)
       : [];
     const actionFilter = actionNames.length > 0 ? inArray(auditEvents.action, actionNames) : undefined;
+    // P0 review M3: the reverse narrowing (reads left out) and newest-first, for the
+    // dashboard's recent activity. Both only narrow / reorder rows the caller may read.
+    const excludedActionNames = typeof query.excludeAction === 'string' && query.excludeAction.length > 0
+      ? query.excludeAction.split(',').map((name) => name.trim()).filter((name) => /^[A-Z][A-Z0-9_]{2,79}$/.test(name)).slice(0, 10)
+      : [];
+    const excludeFilter = excludedActionNames.length > 0 ? notInArray(auditEvents.action, excludedActionNames) : undefined;
+    const newestFirst = query.order === 'desc';
 
     const rows = await db.select({
       id: auditEvents.id,
@@ -2828,8 +2835,8 @@ export function createApp({
       actorRole: users.role
     }).from(auditEvents)
       .leftJoin(users, eq(users.id, auditEvents.actorUserId))
-      .where(and(eq(auditEvents.projectId, projectId), entityTypeFilter, entityIdFilter, actionFilter))
-      .orderBy(auditEvents.occurredAt, auditEvents.id)
+      .where(and(eq(auditEvents.projectId, projectId), entityTypeFilter, entityIdFilter, actionFilter, excludeFilter))
+      .orderBy(...(newestFirst ? [desc(auditEvents.occurredAt), desc(auditEvents.id)] : [auditEvents.occurredAt, auditEvents.id]))
       .limit(limit);
 
     // M7 security fix S3: the rows are append-only and stay exactly as they were
