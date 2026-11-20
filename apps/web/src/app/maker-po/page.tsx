@@ -720,7 +720,8 @@ function MakerPoOrderSection({
             : null;
 
   return (
-    <div style={cardStyle}>
+    // UI nav-dashboard: the dashboard links to this card (#maker-order-<id>).
+    <div id={`maker-order-${entry.order.id}`} className="anchor-target" style={cardStyle}>
       <h2 className="card-head">
         <span>フィルム発注 {filmOrderChoiceLabel(entry.order, stateLabel)}</span>
         {primary ? (

@@ -98,7 +98,7 @@ export function LoginForm() {
         | null;
       if (response.ok) {
         // Stays pending while the next screen loads, so the button cannot post again.
-        router.replace('/orders');
+        router.replace('/dashboard');
         router.refresh();
         return;
       }

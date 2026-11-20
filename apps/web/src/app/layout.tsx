@@ -2,13 +2,16 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { LogoutButton } from '../components/LogoutButton';
-import { NavLinks } from '../components/NavLinks';
+import { NavDrawerProvider, NavDrawerToggle } from '../components/NavDrawer';
+import { SideNav } from '../components/NavLinks';
 import { ProjectPicker } from '../components/ProjectPicker';
+import { ScreenGuideLine } from '../components/ScreenGuide';
 import { cookies } from 'next/headers';
 import { loadSessionUser, readSelectedProjectId } from '../lib/api';
 import { decodeDisplayNameCookie, DISPLAY_NAME_COOKIE, operatorName, roleLabel } from '../lib/session-display';
 import { loadSelectableProjects } from '../lib/project-data';
 import type { ProjectSummary } from '../lib/project-data';
+import { DASHBOARD_PATH, GUIDE_PATH, navGroupsForRole, navRoleNote } from '../lib/navigation';
 import { selectProjectAction } from './actions';
 // Astryx trial: the layer order first, then the stylesheets (layer-order.css).
 import './layer-order.css';
@@ -20,15 +23,6 @@ export const metadata: Metadata = {
   title: { default: 'KANEI CRM オペレーター画面', template: '%s｜KANEI CRM' },
   description: 'F1フィルム商材の発注から納品確認までをブラウザで行う最小オペレーターUI'
 };
-
-const navItems = [
-  { href: '/orders', label: '案件（発注）一覧／作成' },
-  { href: '/documents', label: '文書' },
-  { href: '/approvals', label: '承認' },
-  { href: '/maker-po', label: 'メーカー発注' },
-  { href: '/deliveries', label: '納品確認・手数料準備' },
-  { href: '/status', label: '状態表示' }
-];
 
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const user = await loadSessionUser();
@@ -57,36 +51,41 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     <html lang="ja" suppressHydrationWarning>
       <body suppressHydrationWarning>
         <a className="skip-link" href="#main">本文へ移動</a>
-        {/* UI batch C (2-⑥): gutters 24px → 16px under 768px (globals.css .app-*). */}
-        <header className="app-header">
-          <div className="app-header-inner">
-            <div className="app-header-top">
-              {/* UI batch E (F-13): on a phone the sub-title folds away so the user line fits beside it. */}
-              <Link href="/" className="app-brand">
+        {/* UI nav-dashboard (A): a thin top bar (project, help, user, logout) and the
+            work menu in a left sidebar — a drawer opened by 「メニュー」 under 1024px. */}
+        <NavDrawerProvider>
+          <header className="app-header">
+            <div className="app-header-inner">
+              {user ? <NavDrawerToggle /> : null}
+              <Link href={user ? DASHBOARD_PATH : '/'} className="app-brand">
                 KANEI CRM<span className="app-brand-sub"> オペレーター画面（F1）</span>
               </Link>
               {user ? (
-                <div className="app-user">
-                  <span>
-                    {operatorName(user, rememberedName)}
-                    <span style={{ color: 'var(--ink-sub)' }}>（{roleLabel(user.role)}）</span>
-                  </span>
-                  <LogoutButton />
-                </div>
+                <>
+                  {/* UI batch B (②): one compact line; the id input is under 「詳細」. */}
+                  <div className="app-header-project">
+                    <ProjectPicker action={selectProjectAction} choices={projectChoices} currentProjectId={projectId} />
+                  </div>
+                  <div className="app-user">
+                    <Link href={GUIDE_PATH} className="app-help-link">使い方</Link>
+                    <span className="app-user-name">
+                      {operatorName(user, rememberedName)}
+                      <span style={{ color: 'var(--ink-sub)' }}>（{roleLabel(user.role)}）</span>
+                    </span>
+                    <LogoutButton />
+                  </div>
+                </>
               ) : null}
             </div>
-            {user ? (
-              <>
-                <NavLinks items={navItems} />
-                {/* UI batch B (②): one compact line; the id input is under 「詳細」. */}
-                <ProjectPicker action={selectProjectAction} choices={projectChoices} currentProjectId={projectId} />
-              </>
-            ) : null}
+          </header>
+          <div className={user ? 'app-body app-body--signed-in' : 'app-body'}>
+            {user ? <SideNav groups={navGroupsForRole(user.role)} roleNote={navRoleNote(user.role)} /> : null}
+            <main id="main" tabIndex={-1} className="app-main">
+              {user ? <ScreenGuideLine /> : null}
+              {children}
+            </main>
           </div>
-        </header>
-        <main id="main" tabIndex={-1} className="app-main">
-          {children}
-        </main>
+        </NavDrawerProvider>
       </body>
     </html>
   );

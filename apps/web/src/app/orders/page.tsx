@@ -216,7 +216,8 @@ export default async function OrdersPage() {
               {workspace.filmOrders.map((order) => {
                 const status = knownStatus(order);
                 return (
-                  <tr key={order.id}>
+                  // UI nav-dashboard: the dashboard links to this row (#order-<id>).
+                  <tr key={order.id} id={`order-${order.id}`} className="anchor-target">
                     <td style={tdStyle}>
                       {order.code}
                       <TechDetails context="ID">{order.id}</TechDetails>

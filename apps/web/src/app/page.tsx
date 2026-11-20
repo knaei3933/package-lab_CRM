@@ -20,7 +20,7 @@ export const metadata: Metadata = { title: 'ログイン' };
  */
 export default async function LoginPage() {
   const user = await loadSessionUser();
-  if (user) redirect('/orders');
+  if (user) redirect('/dashboard');
 
   // Astryx trial: the login screen is an Astryx island (DESIGN_RULES §1).
   // The form sits in a full-width Card, like every other panel (DESIGN_RULES §5).
