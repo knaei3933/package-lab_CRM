@@ -371,6 +371,10 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ja: 'この承認証跡は別の案件の書類です。この案件の承認証跡を選んでください。',
     ko: '이 승인 증빙은 다른 안건의 문서입니다. 이 안건의 승인 증빙을 선택하세요.'
   },
+  EVIDENCE_REQUIRES_REPLACEMENT: {
+    ja: 'この承認は、もう一方の組織と同じ承認証跡、または別の発行元の証跡で記録されているため数えられません。その組織が発行した承認書類で承認を記録し直してください。',
+    ko: '이 승인은 다른 조직과 같은 승인 증빙 또는 다른 발행처의 증빙으로 기록되어 인정되지 않습니다. 그 조직이 발행한 승인 서류로 다시 기록하세요.'
+  },
   EVIDENCE_SHARED_ACROSS_ORGANIZATIONS: {
     ja: 'この承認証跡はもう一方の組織の承認にすでに使われています。組織ごとに別の承認書類を登録してください。',
     ko: '이 승인 증빙은 이미 다른 조직의 승인에 쓰였습니다. 조직마다 별도 승인 서류를 등록하세요.'
@@ -723,6 +727,10 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ja: '支払条件が「未定」のため代表承認できません。発注の支払条件を「前払い」か「納品後払い」に決めてから、もう一度承認してください。',
     ko: '결제 조건이 미정이라 대표 승인을 할 수 없습니다. 발주의 결제 조건을 선불 또는 납품 후 지불로 정한 뒤 다시 승인하세요.'
   },
+  PAYMENT_TERMS_CHANGED: {
+    ja: '承認画面を開いた後に支払条件が変更されました。画面を再読み込みして最新の支払条件を確認してから、もう一度承認してください。',
+    ko: '승인 화면을 연 뒤 결제 조건이 바뀌었습니다. 화면을 다시 불러와 최신 결제 조건을 확인한 뒤 다시 승인하세요.'
+  },
   PAYMENT_TERMS_LOCKED: {
     ja: '支払条件を変更できるのは、発注が「下書き」の間だけです。現在の状態では変更できません。',
     ko: '결제 조건은 발주가 「초안」일 때만 바꿀 수 있습니다. 현재 상태에서는 변경할 수 없습니다.'
@@ -847,6 +855,10 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ja: '指定された操作はありません。画面を再読み込みしてください。',
     ko: '지정한 작업이 없습니다. 화면을 다시 불러오세요.'
   },
+  SAME_CONTENT_OTHER_ISSUER: {
+    ja: '同じ内容の承認証跡が別の発行元ですでに登録されています。組織ごとに別の承認書類を使ってください。',
+    ko: '같은 내용의 승인 증빙이 다른 발행처로 이미 등록되어 있습니다. 조직마다 별도 승인 서류를 쓰세요.'
+  },
   SENDER_ADDRESS_REQUIRED: {
     ja: '送信元のアドレスが入力されていません。送信元を入力してください。',
     ko: '발신 주소가 입력되지 않았습니다. 발신 주소를 입력하세요.'
@@ -934,6 +946,10 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
   SHARED_EVIDENCE_ISSUER_INVALID: {
     ja: '共有証跡として使えるのは、顧客作成またはセブン化学が発行した承認書類だけです。',
     ko: '공유 증빙으로 쓸 수 있는 것은 고객 작성 또는 세븐화학 발행 승인 서류뿐입니다.'
+  },
+  SHARED_EVIDENCE_NOT_CITED_BY_OTHER_ORGANIZATION: {
+    ja: '共有証跡の例外は、もう一方の組織が同じ承認証跡ですでに承認を記録している場合だけ使えます。先にもう一方の組織の承認を記録してください。',
+    ko: '공유 증빙 예외는 다른 조직이 같은 승인 증빙으로 이미 승인을 기록한 경우에만 쓸 수 있습니다. 먼저 다른 조직의 승인을 기록하세요.'
   },
   SHARED_EVIDENCE_REASON_REQUIRED: {
     ja: '両組織で同じ承認証跡を使う理由を入力してください。',

@@ -1121,6 +1121,7 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
               }}
               successHint="次の手順: ③ 送信の記録（送信済みメールの原本 .eml を登録します）"
             >
+              {gate?.paymentTerms ? <input type="hidden" readOnly name="expectedPaymentTerms" value={gate.paymentTerms} /> : null}
               <input type="hidden" readOnly name="poId" value={po.id} />
             </ActionForm>
           ) : (

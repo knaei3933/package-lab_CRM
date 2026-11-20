@@ -82,7 +82,15 @@ export async function approveMakerPoAction(_prev: ActionState | null, formData: 
   if (switched) return switched;
   const poId = field(formData, 'poId');
   if (poId.length === 0) return { ok: false, message: 'メーカー発注書が選択されていません。' };
-  return post(formData, `/api/maker-purchase-orders/${encodeURIComponent(poId)}/ceo-approval`, {});
+  // P0 review: the 支払条件 the approval screen showed; the API refuses with 409
+  // PAYMENT_TERMS_CHANGED when it changed meanwhile (the approval never certifies
+  // a term the representative did not see).
+  const expectedPaymentTerms = field(formData, 'expectedPaymentTerms');
+  return post(
+    formData,
+    `/api/maker-purchase-orders/${encodeURIComponent(poId)}/ceo-approval`,
+    ['prepaid', 'on_delivery', 'undetermined'].includes(expectedPaymentTerms) ? { expectedPaymentTerms } : {}
+  );
 }
 
 /** Screen 2 support: record the G6 transaction terms while the order is a draft. */

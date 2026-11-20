@@ -9,6 +9,7 @@ import { recordIdOf, refusalState } from '../lib/action-result';
 import { refuseIfProjectSwitched } from '../lib/project-guard';
 import { idempotencyKeyOf } from '../lib/project-context';
 import { duplicateRefusal } from '../lib/duplicate-check';
+import { webErrorText } from '../lib/error-dictionary';
 import type { DuplicateKind } from '../lib/duplicate-check';
 import { offsetDateTimeField } from '../lib/datetime';
 import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL } from '../lib/maker-po-data';
@@ -422,6 +423,21 @@ export async function transitionFilmSupplyOrderAction(_prev: ActionState | null,
 }
 
 /**
+ * P0 review H1: an upload the API stores but warns about (e.g. the same content
+ * already registered under another issuer, SAME_CONTENT_OTHER_ISSUER). The
+ * warning is said in the dictionary's words next to 「記録しました」.
+ */
+function uploadWarnings(data: unknown): ActionState | null {
+  const warnings = typeof data === 'object' && data !== null ? (data as { warnings?: unknown }).warnings : undefined;
+  if (!Array.isArray(warnings) || warnings.length === 0) return null;
+  const texts = warnings
+    .map((warning) => (typeof warning === 'object' && warning !== null ? (warning as { code?: unknown }).code : null))
+    .filter((code): code is string => typeof code === 'string')
+    .map((code) => webErrorText(code).message);
+  return texts.length > 0 ? { ok: true, message: `記録しました。注意: ${texts.join(' ')}` } : null;
+}
+
+/**
  * P0 R01: a move the API allows but warns about — moving on with the 支払条件
  * still 「未定」 (warnings[] PAYMENT_TERMS_UNDETERMINED). The success says so.
  */
@@ -556,7 +572,7 @@ export async function uploadDocumentAction(_prev: ActionState | null, formData: 
   if (designKey) body.designKey = designKey;
   const note = optionalField(formData, 'note');
   if (note) body.note = note;
-  return post(formData, `/api/projects/${encodeURIComponent(projectId)}/documents`, body);
+  return post(formData, `/api/projects/${encodeURIComponent(projectId)}/documents`, body, undefined, uploadWarnings);
 }
 
 export async function verifyDocumentAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {

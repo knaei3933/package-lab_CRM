@@ -69,11 +69,19 @@ export interface BuiltMakerPoEml {
   sentAtIso: string;
 }
 
+let messageSerial = 0;
+function nextMessageSerial(): string {
+  messageSerial += 1;
+  return `${Date.now().toString(36)}-${messageSerial}`;
+}
+
 export function buildMakerPoEml(input: MakerPoEmlInput): BuiltMakerPoEml {
   const senderAddress = input.senderAddress ?? MAKER_PO_TEST_SENDER;
   const recipientAddress = input.recipientAddress ?? MAKER_PO_TEST_RECIPIENT;
   const sentAtIso = input.sentAtIso ?? plausibleTestSentAt();
-  const messageId = input.messageId ?? `<maker-po-${input.orderCode}@mail.kanei.example>`;
+  // Every real mail has its own Message-ID; a replacement paper's send is a
+  // new mail (P0 review M6 refuses a cancelled paper's mail by Message-ID).
+  const messageId = input.messageId ?? `<maker-po-${input.orderCode}-${nextMessageSerial()}@mail.kanei.example>`;
   const subject = input.subject ?? `製造先発注書 ${input.orderCode}`;
   const headers: Array<[string, string]> = [
     ['From', `KANEI 担当 <${senderAddress}>`],

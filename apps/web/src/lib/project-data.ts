@@ -330,6 +330,14 @@ export interface PendingManualVerificationView {
   issuerMatchesOrganization: boolean | null;
   sharedEvidenceException: { reason: string | null } | null;
   confirmable: boolean;
+  /** P0 review H1: the other organization's approval rests on the same evidence content. */
+  sameContentUsedByOtherOrganization: boolean;
+  /**
+   * False for an older approval the gate holds back (auto-verified before the
+   * content check): it cannot take a manual check and must be recorded again
+   * on that organization's own evidence (EVIDENCE_REQUIRES_REPLACEMENT).
+   */
+  recordedAsPending: boolean;
 }
 
 export interface DesignApprovalGateView {
@@ -1035,7 +1043,9 @@ export async function loadApprovalGate(orderId: string): Promise<ApprovalGateVie
               ? { reason: text(entry.sharedEvidenceException, 'reason') }
               : entry.sharedEvidenceException === true ? { reason: null } : null,
             // An older API without the field: 「確認」 stays offered and the API decides.
-            confirmable: entry.confirmable !== false
+            confirmable: entry.confirmable !== false,
+            sameContentUsedByOtherOrganization: entry.sameContentUsedByOtherOrganization === true,
+            recordedAsPending: entry.recordedAsPending !== false
           }))
       : []
   };

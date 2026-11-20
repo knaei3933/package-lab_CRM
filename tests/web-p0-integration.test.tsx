@@ -138,3 +138,37 @@ describe('R12 + R01: transitions', () => {
     expect(result.message).toContain('支払条件が「未定」です');
   });
 });
+
+describe('p0-server review contract (aac8634)', () => {
+  it('the CEO approval sends the 支払条件 the screen showed (expectedPaymentTerms)', async () => {
+    await makerActions.approveMakerPoAction(null, form({ poId: 'po-1', expectedPaymentTerms: 'prepaid' }));
+    expect(lastBody()).toEqual({ expectedPaymentTerms: 'prepaid' });
+  });
+
+  it('an unknown expectedPaymentTerms is not forwarded', async () => {
+    await makerActions.approveMakerPoAction(null, form({ poId: 'po-1', expectedPaymentTerms: 'cash' }));
+    expect(lastBody()).toEqual({});
+  });
+
+  it('PAYMENT_TERMS_CHANGED reads as the dictionary sentence', async () => {
+    callApi.mockResolvedValue({ ok: false, status: 409, data: { code: 'PAYMENT_TERMS_CHANGED' }, error: '承認画面を開いた後に支払条件が変更されました。画面を再読み込みして最新の支払条件を確認してから、もう一度承認してください。', errorKo: null, code: 'PAYMENT_TERMS_CHANGED' });
+    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'po-1', expectedPaymentTerms: 'prepaid' }));
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('PAYMENT_TERMS_CHANGED');
+    expect(result.message).toContain('支払条件が変更されました');
+  });
+
+  it('an upload warned SAME_CONTENT_OTHER_ISSUER says so next to 「記録しました」', async () => {
+    callApi.mockResolvedValue(ok({ document: { id: 'd-1' }, version: { id: 'v-1' }, warnings: [{ code: 'SAME_CONTENT_OTHER_ISSUER', message: 'x' }] }));
+    const result = await actions.uploadDocumentAction(null, form({ filename: 'a.txt', contentBase64: 'YQ==', documentType: 'film_quote_kanei', issuerEntity: 'kanei', contentType: 'text/plain' }));
+    expect(result.ok).toBe(true);
+    expect(result.message).toMatch(/^記録しました。注意: 同じ内容の承認証跡が別の発行元/);
+    expect(result.changedId).toBe('d-1');
+  });
+
+  it('an upload without warnings is a plain success', async () => {
+    callApi.mockResolvedValue(ok({ document: { id: 'd-2' }, version: { id: 'v-2' }, warnings: [] }));
+    const result = await actions.uploadDocumentAction(null, form({ filename: 'a.txt', contentBase64: 'YQ==', documentType: 'film_quote_kanei', issuerEntity: 'kanei', contentType: 'text/plain' }));
+    expect(result.message).toBe('記録しました。');
+  });
+});

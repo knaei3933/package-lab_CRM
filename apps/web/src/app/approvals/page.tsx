@@ -435,6 +435,10 @@ function organizationStateText(state: DesignApprovalGateView['customer']): strin
 
 /** The result select of the verification form. */
 /** P0 R02: a mismatched issuer without the declared exception can only be rejected (the API refuses 「確認」). */
+/** P0 review (EVIDENCE_REQUIRES_REPLACEMENT): an older held-back approval is re-recorded, not checked. */
+const REPLACEMENT_GUIDANCE =
+  'この承認は確認の記録ができない古い記録です。上の「承認を記録する」で、この組織が発行した承認証跡を選んで承認を記録し直してください（証跡がなければ文書画面で先に登録します）。';
+
 const REJECT_ONLY_CHOICES: Choice[] = [{ value: 'rejected', label: '却下（発行元が承認する組織と違う／確認できなかった）' }];
 
 /**
@@ -481,6 +485,12 @@ function EvidenceIssuerCheck({
         <dt>識別子</dt>
         <dd translate="no">{entry.evidenceIdentifier ?? '（記録なし）'}</dd>
       </div>
+      {entry.sameContentUsedByOtherOrganization ? (
+        <div>
+          <dt>内容の重複</dt>
+          <dd>もう一方の組織の承認と同じ内容の証跡です（同じ書類またはまったく同じファイル）。共有証跡の例外がなければ数えられません。</dd>
+        </div>
+      ) : null}
       {entry.sharedEvidenceException ? (
         <div>
           <dt>共有証跡の例外</dt>
@@ -554,7 +564,10 @@ function PendingVerificationSection({
               ) : null}
             </div>
           </div>
-          {canVerify ? (
+          {canVerify && !entry.recordedAsPending ? (
+            <p className="role-notice">{REPLACEMENT_GUIDANCE}</p>
+          ) : null}
+          {canVerify && entry.recordedAsPending ? (
             <ActionForm
               action={verifyEvidenceManualAction}
               submitLabel="手動確認を記録する"
