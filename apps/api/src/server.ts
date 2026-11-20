@@ -15,7 +15,9 @@ const app = createApp({
   secureCookies: env.isProduction,
   allowedOrigins: env.allowedOrigins,
   trustedProxyCidrs: env.trustedProxyCidrs,
-  trustedProxyConfigured: env.trustedProxyConfigured
+  trustedProxyConfigured: env.trustedProxyConfigured,
+  port: env.port,
+  loginTimeoutMs: env.loginTimeoutMs
 });
 if (env.isProduction && !env.trustedProxyConfigured) {
   throw new Error('TRUSTED_PROXY_CIDRS is required in production');

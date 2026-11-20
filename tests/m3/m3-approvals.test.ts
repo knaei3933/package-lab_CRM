@@ -165,7 +165,7 @@ interface SupplyOrder {
 /** A supply order whose purchase order is verified and whose state sits in the approval chain. */
 async function createApprovalReadyOrder(projectId: string, tag: string): Promise<SupplyOrder> {
   const po = await setupVerifiedPo(projectId, tag);
-  const created = await postJson(`/api/seven-purchase-orders/${po.id}/supply-orders`, { code: `FSO-M3-${tag}` });
+  const created = await postJson(`/api/seven-purchase-orders/${po.id}/supply-orders`, { paymentTerms: 'undetermined', code: `FSO-M3-${tag}` });
   expect(created.status).toBe(201);
   const order = created.body as { id: string };
   for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
@@ -657,7 +657,7 @@ describe('M3 proof revisions and dual approval', () => {
 
     const foreignCompanyPo = await setupVerifiedPo(projectIdB, 'T35-COMPANY');
     const foreignCompanyOrder = await (async () => {
-      const created = await postJson(`/api/seven-purchase-orders/${foreignCompanyPo.id}/supply-orders`, { code: 'FSO-M3-T35-COMPANY' });
+      const created = await postJson(`/api/seven-purchase-orders/${foreignCompanyPo.id}/supply-orders`, { paymentTerms: 'undetermined', code: 'FSO-M3-T35-COMPANY' });
       expect(created.status).toBe(201);
       return created.body as { id: string };
     })();
@@ -766,7 +766,7 @@ describe('M3 proof revisions and dual approval', () => {
 
   it('rejects revision registration before SEVEN_PO_VERIFIED and persists nothing', async () => {
     const po = await setupVerifiedPo(projectIdA, 'T35-GATE');
-    const created = await postJson(`/api/seven-purchase-orders/${po.id}/supply-orders`, { code: 'FSO-M3-GATE' });
+    const created = await postJson(`/api/seven-purchase-orders/${po.id}/supply-orders`, { paymentTerms: 'undetermined', code: 'FSO-M3-GATE' });
     expect(created.status).toBe(201);
     const draftOrder = created.body as { id: string };
 

@@ -238,7 +238,7 @@ describe('F-05: an order without its セブン化学発注書', () => {
     await verifiedSevenPo();
     const code = `FSO-BE-UNLINKED-${nextTag()}`;
     const created = await call(adminToken, `/api/projects/${projectId}/film-supply-orders`, {
-      code, lines: [{ lineNumber: 1, description: '合成', orderedQuantity: 10, unit: 'rolls' }]
+      paymentTerms: 'undetermined', code, lines: [{ lineNumber: 1, description: '合成', orderedQuantity: 10, unit: 'rolls' }]
     });
     expect(created.status).toBe(201);
     const refused = await call(staffToken, `/api/film-supply-orders/${created.body.id as string}/transitions`, { to: 'SEVEN_PO_VERIFIED' });
@@ -301,7 +301,7 @@ describe('F-08, F-15, F-21: the maker paper and its approval', () => {
   it('the amount reads ¥480,000, the facts come from the admin answer, and the order is not offered for a second paper', async () => {
     const chain = await reachMakerPoReady();
     const created = await call(adminToken, `/api/film-supply-orders/${chain.orderId}/maker-purchase-orders`, {
-      recipientAddress: '大阪府 合成メーカー 第2工場', amounts: { currency: 'JPY', totalAmount: '480000' }
+      recipientAddress: 'order@osaka-maker.example.jp', amounts: { currency: 'JPY', totalAmount: '480000' }
     });
     expect(created.status, JSON.stringify(created.body)).toBe(201);
 
@@ -314,7 +314,7 @@ describe('F-08, F-15, F-21: the maker paper and its approval', () => {
     expect(html).toContain(`${chain.orderCode}: メーカー発注書は作成済みです。`);
     expect(html).not.toMatch(new RegExp(`<option value="${chain.orderId}"`));
     // The second paper the hidden form would have tried: the API refuses it.
-    expect((await call(adminToken, `/api/film-supply-orders/${chain.orderId}/maker-purchase-orders`, { recipientAddress: 'x' })).body.code)
+    expect((await call(adminToken, `/api/film-supply-orders/${chain.orderId}/maker-purchase-orders`, { recipientAddress: 'second@osaka-maker.example.jp' })).body.code)
       .toBe('MAKER_PO_ALREADY_EXISTS');
 
     const list = await callApi<{ makerPurchaseOrders?: unknown[]; purchaseOrders?: unknown[] }>(`/api/film-supply-orders/${chain.orderId}/maker-purchase-orders`);
@@ -322,7 +322,7 @@ describe('F-08, F-15, F-21: the maker paper and its approval', () => {
     expect(Array.isArray(rows), JSON.stringify(list.data)).toBe(true);
     expect(ceoApprovalFacts(rows[0]!, chain.orderCode, 'prepaid')).toEqual([
       { label: '発注コード', value: chain.orderCode },
-      { label: '宛先（メーカーの送り先）', value: '大阪府 合成メーカー 第2工場' },
+      { label: '宛先（メーカーの送り先）', value: 'order@osaka-maker.example.jp' },
       { label: '金額', value: '¥480,000' },
       { label: '決済条件', value: '前払い' }
     ]);

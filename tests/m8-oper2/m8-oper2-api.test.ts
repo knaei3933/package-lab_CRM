@@ -412,6 +412,7 @@ describe('M8-OPER2 FIX 1: the G6 terms are enterable end to end', () => {
       officialRegisteredAt: '2026-11-12T09:00:00.000Z'
     })).status).toBe(200);
     const created = await postAs(staffToken, `/api/seven-purchase-orders/${po.id}/supply-orders`, {
+      paymentTerms: 'undetermined',
       code: `FSO-OPER2-PATCH-${nextTag()}`,
       lines: [{ lineNumber: 1, description: '合成フィルム本体', orderedQuantity: 50000, unit: 'sheets' }]
     });
@@ -442,13 +443,15 @@ describe('M8-OPER2 FIX 1: the G6 terms are enterable end to end', () => {
     const gate = await getAs(staffToken, `/api/film-supply-orders/${order.id}/payment-gate`);
     expect((gate.body as { paymentConfirmedAt: string | null }).paymentConfirmedAt).toBeNull();
 
-    // Once the order leaves DRAFT the write is locked again.
+    // P0 R01 (policy P-5): leaving DRAFT no longer locks the term; it stays
+    // editable until the CEO approves a maker PO (lock covered in
+    // tests/p0-server.test.ts).
     expect((await postAs(staffToken, `/api/film-supply-orders/${order.id}/transitions`, { to: 'SEVEN_PO_VERIFIED' })).status).toBe(200);
-    const locked = await patchAs(adminToken, `/api/film-supply-orders/${order.id}/payment-terms`, {
+    const stillOpen = await patchAs(adminToken, `/api/film-supply-orders/${order.id}/payment-terms`, {
       paymentTerms: 'prepaid'
     });
-    expect(locked.status).toBe(422);
-    expect((locked.body as { code: string }).code).toBe('PAYMENT_TERMS_LOCKED');
+    expect(stillOpen.status).toBe(200);
+    expect((stillOpen.body as { paymentTerms: string }).paymentTerms).toBe('prepaid');
   });
 });
 
@@ -495,9 +498,9 @@ describe('M8-OPER2 FIX 2: the evidence manual verification workflow', () => {
     expect((await postAs(adminToken, `/api/artwork-approval-events/${pending.approvalEvent.id}/verification`, {
       result: 'maybe', verifierName: '合成代表者', verifiedAt: '2026-11-14T10:00:00.000Z', reasonNote: '確認'
     })).status).toBe(422);
-    expect((await postAs(adminToken, `/api/artwork-approval-events/${pending.approvalEvent.id}/verification`, {
-      result: 'confirmed', verifiedAt: '2026-11-14T10:00:00.000Z', reasonNote: '確認'
-    })).status).toBe(422);
+    // P0 R11: the verifier name is the logged-in representative, so a body
+    // without verifierName is no longer an invalid payload (covered in
+    // tests/p0-server.test.ts); only the reason stays required here.
     expect((await postAs(adminToken, `/api/artwork-approval-events/${pending.approvalEvent.id}/verification`, {
       result: 'confirmed', verifierName: '合成代表者', verifiedAt: '2026-11-14T10:00:00.000Z'
     })).status).toBe(422);

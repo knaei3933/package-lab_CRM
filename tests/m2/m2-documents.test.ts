@@ -279,7 +279,7 @@ describe('M2 document intake and PO precedence', () => {
 
     const supplyOrder = await app.request(
       `/api/seven-purchase-orders/${po.id}/supply-orders`,
-      jsonPost(staffToken, { code: 'TEST-M2-T04-SUPPLY' })
+      jsonPost(staffToken, { paymentTerms: 'undetermined', code: 'TEST-M2-T04-SUPPLY' })
     );
     expect(supplyOrder.status).toBe(422);
     expect(await supplyOrder.json()).toMatchObject({ code: 'OFFICIAL_REGISTRATION_REQUIRED' });
@@ -310,7 +310,7 @@ describe('M2 document intake and PO precedence', () => {
 
     const supplyOrder = await app.request(
       `/api/seven-purchase-orders/${po.id}/supply-orders`,
-      jsonPost(staffToken, { code: 'TEST-M2-T05-SUPPLY' })
+      jsonPost(staffToken, { paymentTerms: 'undetermined', code: 'TEST-M2-T05-SUPPLY' })
     );
     expect(supplyOrder.status).toBe(422);
     expect(await supplyOrder.json()).toMatchObject({ code: 'SEVEN_PO_NOT_VERIFIED' });
@@ -407,7 +407,7 @@ describe('M2 document intake and PO precedence', () => {
 
     const supplyOrder = await app.request(
       `/api/seven-purchase-orders/${po.id}/supply-orders`,
-      jsonPost(staffToken, { code: 'TEST-M2-T19-SUPPLY' })
+      jsonPost(staffToken, { paymentTerms: 'undetermined', code: 'TEST-M2-T19-SUPPLY' })
     );
     expect(supplyOrder.status).toBe(422);
     expect(await supplyOrder.json()).toMatchObject({ code: 'PO_REVIEW_PENDING' });
@@ -626,7 +626,7 @@ describe('M2 document intake and PO precedence', () => {
     const filmOrder = await app.request(
       `/api/projects/${projectIdA}/film-supply-orders`,
       jsonPost(staffToken, {
-        code: 'TEST-M2-T09-FILM',
+        paymentTerms: 'undetermined', code: 'TEST-M2-T09-FILM',
         sevenPurchaseOrderId: po.id,
         lines: [{ lineNumber: 1, description: '合成フィルム', orderedQuantity: 500, unit: 'rolls' }]
       })
@@ -662,7 +662,7 @@ describe('M2 document intake and PO precedence', () => {
     const supplyOrder = await app.request(
       `/api/seven-purchase-orders/${po.id}/supply-orders`,
       jsonPost(staffToken, {
-        code: 'TEST-M2-T09-SUPPLY',
+        paymentTerms: 'undetermined', code: 'TEST-M2-T09-SUPPLY',
         lines: [{ lineNumber: 1, description: '合成フィルム', orderedQuantity: 500, unit: 'rolls' }]
       })
     );

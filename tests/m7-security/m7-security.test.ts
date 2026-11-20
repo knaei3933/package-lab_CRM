@@ -818,7 +818,9 @@ describe('M7-SEC3 FIX 1: an evidence identifier must be derivable from the cited
     expect(refused.status).toBe(422);
     const body = refused.body as { code: string; error: string };
     expect(body.code).toBe('EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT');
-    expect(body.error).toContain('evidenceIdentifier');
+    // P0 R09: the text names the identifier in Japanese, never the field name.
+    expect(body.error).toContain('識別子');
+    expect(body.error).not.toContain('evidenceIdentifier');
 
     // The refusal persisted nothing.
     const events = await db.select().from(artworkApprovalEvents)
@@ -929,11 +931,21 @@ describe('M7-SEC3 FIX 2: DUAL_APPROVED is gated on the live dual-approval gate',
 });
 
 describe('M7-SEC3 FIX 3: the G6 payment gate', () => {
-  it('records paymentTerms at creation and defaults to undetermined', async () => {
+  // P0 R01: the term is a required, explicit choice — an omitted term is
+  // refused (PAYMENT_TERMS_REQUIRED) and 'undetermined' must be picked on purpose.
+  it('records paymentTerms at creation and requires an explicit choice', async () => {
     const po = await setupVerifiedPo('SEC3-G6-DEFAULT-PO');
-    const defaulted = await postJson(`/api/projects/${projectId}/film-supply-orders`, {
+    const omitted = await postJson(`/api/projects/${projectId}/film-supply-orders`, {
       code: 'FSO-M7-SEC3-G6-DEFAULT',
       sevenPurchaseOrderId: po.id
+    });
+    expect(omitted.status).toBe(422);
+    expect((omitted.body as { code: string }).code).toBe('PAYMENT_TERMS_REQUIRED');
+    expect(await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.code, 'FSO-M7-SEC3-G6-DEFAULT'))).toHaveLength(0);
+    const defaulted = await postJson(`/api/projects/${projectId}/film-supply-orders`, {
+      code: 'FSO-M7-SEC3-G6-DEFAULT',
+      sevenPurchaseOrderId: po.id,
+      paymentTerms: 'undetermined'
     });
     expect(defaulted.status).toBe(201);
     expect((defaulted.body as { paymentTerms: string }).paymentTerms).toBe('undetermined');
@@ -979,15 +991,16 @@ describe('M7-SEC3 FIX 3: the G6 payment gate', () => {
     expect(invalid.status).toBe(422);
     expect((await invalid.json() as { code: string }).code).toBe('UNKNOWN_PAYMENT_TERMS');
 
-    // Outside DRAFT the terms are the ones the rest of the chain approved.
+    // P0 R01 (policy P-5): outside DRAFT the terms stay editable until the CEO
+    // approves a maker PO; the lock after that approval is covered in
+    // tests/p0-server.test.ts.
     const advanced = await transitionOrder(order.id, 'SEVEN_PO_VERIFIED');
     expect(advanced.status).toBe(200);
-    const locked = await patch('on_delivery');
-    expect(locked.status).toBe(422);
-    expect(await locked.json() as { code: string }).toMatchObject({ code: 'PAYMENT_TERMS_LOCKED', from: 'SEVEN_PO_VERIFIED' });
+    const stillOpen = await patch('on_delivery');
+    expect(stillOpen.status).toBe(200);
     const [after] = await db.select({ paymentTerms: filmSupplyOrders.paymentTerms })
       .from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.id)).limit(1);
-    expect(after?.paymentTerms).toBe('prepaid');
+    expect(after?.paymentTerms).toBe('on_delivery');
   });
 
   it('blocks the maker PO CEO approval while the terms are undetermined', async () => {

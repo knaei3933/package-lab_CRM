@@ -419,7 +419,7 @@ describe('R1 hardening', () => {
 
     const foreignDownload = await requestJson(foreignStaffToken, 'GET', `/api/document-versions/${localDocument.version.id}/download`);
     expect(foreignDownload.status).toBe(403);
-    expect(foreignDownload.body).toEqual({ error: '権限がありません' });
+    expect(foreignDownload.body).toEqual({ error: '権限がありません', code: 'FORBIDDEN' });
 
     // An admin without a project assignment remains globally authorized.
     await db.delete(projectAssignments).where(and(

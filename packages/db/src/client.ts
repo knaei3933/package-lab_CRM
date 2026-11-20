@@ -89,7 +89,45 @@ function guardAppendOnlyWrites<Client extends object>(client: Client): Client {
   });
 }
 
-export function createDatabase(databaseUrl: string) {
-  const pool = new Pool({ connectionString: databaseUrl, max: 10 });
+/**
+ * P0 R04: a database that is down or hanging must fail fast instead of making
+ * every request wait forever. `connectionTimeoutMillis` bounds both opening a
+ * connection and waiting for a free pool client; `statement_timeout` makes the
+ * server cancel one statement that runs too long (SQLSTATE 57014). The API maps
+ * both to DB_UNAVAILABLE / DB_TIMEOUT. Values are starting points; operators
+ * may override them with DB_CONNECT_TIMEOUT_MS / DB_STATEMENT_TIMEOUT_MS.
+ */
+export const DEFAULT_DB_CONNECT_TIMEOUT_MS = 5_000;
+export const DEFAULT_DB_STATEMENT_TIMEOUT_MS = 10_000;
+
+export interface DatabaseOptions {
+  connectionTimeoutMillis?: number;
+  statementTimeoutMs?: number;
+  max?: number;
+}
+
+function positiveIntegerFromEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+export function createDatabase(databaseUrl: string, options: DatabaseOptions = {}) {
+  const pool = new Pool({
+    connectionString: databaseUrl,
+    max: options.max ?? 10,
+    connectionTimeoutMillis: options.connectionTimeoutMillis
+      ?? positiveIntegerFromEnv('DB_CONNECT_TIMEOUT_MS')
+      ?? DEFAULT_DB_CONNECT_TIMEOUT_MS,
+    statement_timeout: options.statementTimeoutMs
+      ?? positiveIntegerFromEnv('DB_STATEMENT_TIMEOUT_MS')
+      ?? DEFAULT_DB_STATEMENT_TIMEOUT_MS
+  });
+  // An idle client that loses its connection emits 'error' on the pool; without
+  // a listener that would crash the process instead of failing one request.
+  pool.on('error', (error) => {
+    console.error('[db] idle client error:', error.message);
+  });
   return { db: guardAppendOnlyWrites(drizzle(pool, { schema })), pool };
 }

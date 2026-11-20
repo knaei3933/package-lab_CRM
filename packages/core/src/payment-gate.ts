@@ -80,8 +80,67 @@ export function evaluatePaymentGate(input: PaymentGateInput): PaymentGate {
       code: 'PAYMENT_GATE_UNSATISFIED',
       paymentTerms,
       message:
-        '決済条件（G6）が未確定のため承認できません。取引条件（paymentTerms: prepaid / on_delivery）を発注に設定してから代表承認してください'
+        '決済条件が「未定」のため代表承認できません。フィルム発注の決済条件を「前払い」または「納品時払い」に変更してから承認してください'
     };
   }
   return { ok: true, gatedOn: 'payment_terms_recorded', paymentTerms };
+}
+
+/** P0 R01: Japanese labels for the payment terms (never shown as raw enum values). */
+export const PAYMENT_TERMS_LABELS_JA: Readonly<Record<PaymentTerms, string>> = {
+  prepaid: '前払い',
+  on_delivery: '納品時払い',
+  undetermined: '未定'
+};
+
+/**
+ * P0 R01 (policy P-5): the payment terms stay editable by the assigned staff and
+ * the representative until the representative approves a maker purchase order
+ * for the film order. After that approval the terms are the ones the paper was
+ * approved against, and correcting them means cancelling the paper and
+ * approving a new one. Exception states (hold / change review / cancellation
+ * review) and the cancelled end state freeze the order, so the terms freeze too.
+ */
+export const PAYMENT_TERMS_EDITABLE_ORDER_STATES = [
+  'DRAFT',
+  'SEVEN_PO_VERIFIED',
+  'ARTWORK_RECEIVED',
+  'PROOF_READY',
+  'APPROVAL_PENDING',
+  'DUAL_APPROVED',
+  'MAKER_PO_READY'
+] as const;
+
+export type PaymentTermsChangeGate =
+  | { ok: true }
+  | {
+      ok: false;
+      code: 'PAYMENT_TERMS_LOCKED';
+      reason: 'order_frozen' | 'ceo_approved';
+      message: string;
+    };
+
+export function evaluatePaymentTermsChange(input: {
+  orderStatus: string;
+  /** True when a non-cancelled maker PO of the order carries a CEO approval. */
+  approvedPaperExists: boolean;
+}): PaymentTermsChangeGate {
+  if (input.approvedPaperExists
+    || !(PAYMENT_TERMS_EDITABLE_ORDER_STATES as readonly string[]).includes(input.orderStatus)) {
+    const frozen = ['ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW', 'CANCELLED'].includes(input.orderStatus);
+    return frozen && !input.approvedPaperExists
+      ? {
+          ok: false,
+          code: 'PAYMENT_TERMS_LOCKED',
+          reason: 'order_frozen',
+          message: '保留・見直し中または取消終了の発注は決済条件を変更できません。状態を解決してから変更してください'
+        }
+      : {
+          ok: false,
+          code: 'PAYMENT_TERMS_LOCKED',
+          reason: 'ceo_approved',
+          message: '代表承認済みのメーカー発注書があるため、決済条件は変更できません。変更する場合はメーカー発注書を取り消して作り直してください'
+        };
+  }
+  return { ok: true };
 }

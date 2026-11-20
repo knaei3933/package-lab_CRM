@@ -1,4 +1,4 @@
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { deleteCookie, setCookie } from 'hono/cookie';
 import { randomBytes } from 'node:crypto';
 import { lstat, readFile, realpath, stat } from 'node:fs/promises';
@@ -29,7 +29,12 @@ import {
   evaluateSevenPoChecklist,
   evaluateSevenPoPrecedenceGate,
   extractStoredEmlMessageId,
-  DEFAULT_PAYMENT_TERMS,
+  evaluatePaymentTermsChange,
+  PAYMENT_TERMS_LABELS_JA,
+  evaluateApprovalEvidenceIssuer,
+  APPROVAL_ORGANIZATION_ISSUER,
+  validateMakerPoRecipientAddress,
+  UNIT_LABELS_JA,
   makerChainTransitionRefusal,
   normalizePaymentTerms,
   validatePaymentTermsInput,
@@ -73,6 +78,7 @@ import {
   type MakerPoSnapshotArtworkFile,
   type MeasureUnit,
   type NormalFilmSupplyOrderState,
+  type PaymentTerms,
   type UnitDomain,
   type EvidenceIdentifierStatus
 } from '@kanei/core';
@@ -126,6 +132,18 @@ import {
 } from './login-guard.js';
 import { buildAuditViewForRole, type AuditHistoryRow } from './audit-view.js';
 import {
+  classifyDatabaseError,
+  ERROR_MESSAGES_JA,
+  normalizeRefusalBody
+} from './error-codes.js';
+import {
+  IDEMPOTENCY_HEADER,
+  IdempotencyStore,
+  isValidIdempotencyKey,
+  sha256Hex,
+  type StoredResponse
+} from './idempotency.js';
+import {
   buildMakerPoEventViewForRole,
   buildMakerPoViewForRole,
   type MakerPoEventRecord,
@@ -139,6 +157,14 @@ export interface AppOptions {
   trustedProxyCidrs?: readonly string[];
   /** True only when operators explicitly configured relay CIDRs. */
   trustedProxyConfigured?: boolean;
+  /** P0 R04/L1: the port this API listens on, reported by /api/health. */
+  port?: number;
+  /** P0 R04: the longest a login may take before it answers LOGIN_TIMEOUT. */
+  loginTimeoutMs?: number;
+  /** P0 R04: the longest the /api/health database probe waits. */
+  healthDbTimeoutMs?: number;
+  /** P0 R05: the in-process idempotency store (one per app by default). */
+  idempotencyStore?: IdempotencyStore;
 }
 
 interface AuthContext {
@@ -211,6 +237,24 @@ function normalizeRequiredReason(
   if (visibleLength === 0) return { ok: false, tooLong: false };
   if (visibleLength > maxLength) return { ok: false, tooLong: true };
   return { ok: true, text: stored };
+}
+
+/**
+ * P0 R01: a film order's payment term is a required, explicit choice. Omitting
+ * it (or sending an empty value) is PAYMENT_TERMS_REQUIRED; an unknown value is
+ * UNKNOWN_PAYMENT_TERMS. 'undetermined' stays a valid, deliberate answer.
+ */
+function requiredPaymentTermsInput(value: unknown):
+  | { ok: true; value: PaymentTerms }
+  | { ok: false; code: string; message: string } {
+  if (value === undefined || value === null || value === '') {
+    return {
+      ok: false,
+      code: 'PAYMENT_TERMS_REQUIRED',
+      message: '決済条件を選んでください（前払い・納品時払い・未定）'
+    };
+  }
+  return validatePaymentTermsInput(value);
 }
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -314,6 +358,13 @@ async function recordAuditEvent(writer: AuditEventWriter, input: AuditEventInput
  * one of two simultaneous transition requests is ever effective.
  */
 class MakerPoStateConflict extends Error {}
+
+/** P0 R01: the payment term read under the order lock closes the G6 gate. */
+class PaymentGateClosedUnderLock extends Error {
+  constructor(readonly paymentTerms: string) {
+    super('payment gate closed under lock');
+  }
+}
 
 /**
  * Progressive maker-PO work re-reads the film order under the transaction's
@@ -555,14 +606,79 @@ async function loadExceptionOrigin(
   return filmSupplyOrderStateForValue((event?.beforeState as { status?: unknown } | null)?.status);
 }
 
+/** Reads a request body up to `cap` bytes; null when it is larger (P0 R05 idempotency). */
+async function readCappedBody(request: Request, cap: number): Promise<Uint8Array | null> {
+  if (!request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 export function createApp({
   db,
   secureCookies = false,
   allowedOrigins = [],
   trustedProxyCidrs = ['127.0.0.1/32', '::1/128'],
-  trustedProxyConfigured = false
+  trustedProxyConfigured = false,
+  port = 3081,
+  loginTimeoutMs = 15_000,
+  healthDbTimeoutMs = 2_000,
+  idempotencyStore = new IdempotencyStore()
 }: AppOptions) {
   const app = new Hono<AuthContext>();
+
+  // P0 R09: the outermost layer guarantees every refusal (status >= 400) is a
+  // JSON body with a stable `code` and a Japanese `error` without English core
+  // messages, enum or field names, or internal URLs (see error-codes.ts).
+  app.use('*', async (context, next) => {
+    await next();
+    const response = context.res;
+    if (response.status < 400) return;
+    let body: Record<string, unknown> | null = null;
+    if ((response.headers.get('content-type') ?? '').includes('application/json')) {
+      try {
+        const parsed: unknown = await response.clone().json();
+        if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          body = parsed as Record<string, unknown>;
+        }
+      } catch {
+        body = null;
+      }
+    }
+    const normalized = normalizeRefusalBody(response.status, body ?? {});
+    if (body !== null && normalized.error === body.error && normalized.code === body.code) return;
+    try {
+      response.headers.delete('content-length');
+    } catch {
+      // Immutable headers: the replacement below still carries its own length.
+    }
+    const headers = new Headers(response.headers);
+    headers.delete('content-length');
+    headers.set('content-type', 'application/json; charset=UTF-8');
+    context.res = new Response(JSON.stringify(normalized), { status: response.status, headers });
+  });
+
+  app.notFound((context) => context.json({
+    error: '指定された操作は存在しません',
+    code: 'ROUTE_NOT_FOUND'
+  }, 404));
 
   app.use('*', async (context, next) => {
     if (['GET', 'HEAD', 'OPTIONS'].includes(context.req.method)) return next();
@@ -573,14 +689,100 @@ export function createApp({
     }, 403);
   });
 
+  // P0 R05: a write may carry an Idempotency-Key. The first completed answer
+  // for (session, key) is replayed to a repeat of the same request, and a
+  // repeat that arrives while the first is still running waits for it — so a
+  // same-tick double submit writes once. See idempotency.ts for the limits.
+  app.use('*', async (context, next) => {
+    if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(context.req.method)) return next();
+    const key = context.req.header(IDEMPOTENCY_HEADER);
+    if (key === undefined) return next();
+    if (!isValidIdempotencyKey(key)) {
+      return context.json({
+        error: '送信の識別キーが正しくありません。画面を再読み込みしてからやり直してください',
+        code: 'IDEMPOTENCY_KEY_INVALID'
+      }, 400);
+    }
+    if (context.req.path.startsWith('/api/auth/')) return next();
+    const token = readSessionToken(context.req.raw);
+    if (!token) return next();
+    // Only a real session is cached (a fake cookie can neither fill the store
+    // nor replay), and a body above the upload limit is never buffered here.
+    const bodyCap = Math.ceil(documentMaxBytes() * 1.4) + 64 * 1024;
+    const declaredLength = Number(context.req.header('content-length') ?? NaN);
+    if (Number.isFinite(declaredLength) && declaredLength > bodyCap) return next();
+    const sessionUser = await getSessionUser(context.req.raw, db);
+    if (!sessionUser) return next();
+    // A multipart retry carries a fresh boundary, so its fingerprint is the
+    // endpoint alone; JSON bodies are fingerprinted by content, read from a
+    // clone with a hard cap (an over-cap body is simply not cached).
+    const multipart = (context.req.header('content-type') ?? '').toLowerCase().startsWith('multipart/');
+    let bodyHash = 'multipart';
+    if (!multipart) {
+      const capped = await readCappedBody(context.req.raw.clone(), bodyCap);
+      if (capped === null) return next();
+      bodyHash = sha256Hex(capped);
+    }
+    const fingerprint = `${sha256Hex(`${context.req.method} ${context.req.path}`)}:${bodyHash}`;
+    const replay = (stored: StoredResponse) => new Response(stored.body, {
+      status: stored.status,
+      headers: {
+        ...(stored.contentType ? { 'content-type': stored.contentType } : {}),
+        'idempotent-replayed': 'true'
+      }
+    });
+    let lookup = idempotencyStore.begin(`${sessionUser.id}:${sha256Hex(token)}`, key, fingerprint);
+    if (lookup.kind === 'wait') {
+      const first = await lookup.pending;
+      if (first) return replay(first);
+      lookup = idempotencyStore.begin(`${sessionUser.id}:${sha256Hex(token)}`, key, fingerprint);
+    }
+    if (lookup.kind === 'mismatch') {
+      return context.json({
+        error: '同じ送信の識別キーで別の内容が送られました。画面を再読み込みしてからやり直してください',
+        code: 'IDEMPOTENCY_KEY_REUSED'
+      }, 422);
+    }
+    if (lookup.kind === 'replay') return replay(lookup.response);
+    if (lookup.kind !== 'execute') return next();
+    try {
+      await next();
+    } catch (error) {
+      lookup.complete(null);
+      throw error;
+    }
+    const response = context.res;
+    try {
+      lookup.complete({
+        status: response.status,
+        body: await response.clone().text(),
+        contentType: response.headers.get('content-type')
+      });
+    } catch {
+      lookup.complete(null);
+    }
+  });
+
   // Any row-lock deadlock is a retryable concurrency conflict, not a server
   // fault. PostgreSQL rolls the transaction back before this handler runs.
-  app.onError((error, context) => {
+  app.onError(async (error, context) => {
     if (isPostgresDeadlockError(error)) {
       return context.json({
         error: '発注状態の処理でロック競合が発生しました',
         code: 'FILM_ORDER_LOCK_CONFLICT'
       }, 409);
+    }
+    // P0 R04: an unreachable or timed-out database answers fast with its own
+    // code, so the screen can show an outage instead of a bug or a logout.
+    const databaseFailure = classifyDatabaseError(error);
+    if (databaseFailure) {
+      console.error(`[api] ${databaseFailure}:`, error instanceof Error ? error.message : String(error));
+      context.header('retry-after', '30');
+      return context.json({ error: ERROR_MESSAGES_JA[databaseFailure]!, code: databaseFailure }, 503);
+    }
+    // P0 R05: a unique violation is the caller's duplicate, not a server fault.
+    if (postgresErrorCode(error) === '23505') {
+      return context.json(await duplicateRefusal(context.req.raw, error), 409);
     }
     // Hono's default handler does not run after an onError rethrow with the
     // node-server adapter; logging here restores observability and preserves a
@@ -589,15 +791,64 @@ export function createApp({
     return context.json({ error: 'サーバーエラーが発生しました', code: 'INTERNAL_ERROR' }, 500);
   });
 
-  app.get('/api/health', (context) => context.json({ status: 'ok', app: 'api', port: 3081 }));
+  // P0 R04 / L1: the API answers its real port, and whether the database
+  // answers within a short probe. `status` stays the API's own liveness, so the
+  // container healthcheck keeps its meaning; `db` tells an outage apart.
+  // The probe result is reused for 5 s so an unauthenticated flood cannot take
+  // pool slots from real requests.
+  let healthProbe: { state: 'ok' | 'down'; at: number } | null = null;
+  app.get('/api/health', async (context) => {
+    if (healthProbe && Date.now() - healthProbe.at < 5_000) {
+      return context.json({ status: 'ok', app: 'api', port, db: healthProbe.state });
+    }
+    let dbState: 'ok' | 'down' = 'down';
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        db.execute(sql`select 1`),
+        new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('health probe timeout')), healthDbTimeoutMs); })
+      ]);
+      dbState = 'ok';
+    } catch {
+      dbState = 'down';
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    healthProbe = { state: dbState, at: Date.now() };
+    return context.json({ status: 'ok', app: 'api', port, db: dbState });
+  });
 
+  // P0 R04: a login answers within loginTimeoutMs. A database that accepts the
+  // connection but never answers would otherwise leave the button spinning.
   app.post('/api/auth/login', async (context) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = { passed: false };
+    const work = handleLogin(context, deadline);
+    work.catch(() => undefined);
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => { deadline.passed = true; resolve('timeout'); }, loginTimeoutMs);
+    });
+    try {
+      const winner = await Promise.race([work, timedOut]);
+      if (winner === 'timeout') {
+        return context.json({
+          error: 'ログイン処理が時間内に終わりませんでした。数分後にもう一度お試しください',
+          code: 'LOGIN_TIMEOUT'
+        }, 503);
+      }
+      return winner;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  });
+
+  async function handleLogin(context: Context<AuthContext>, deadline: { passed: boolean }): Promise<Response> {
     const body = await context.req.json().catch(() => null) as {
       username?: unknown;
       password?: unknown;
     } | null;
     if (typeof body?.username !== 'string' || typeof body?.password !== 'string') {
-      return context.json({ error: 'ユーザー名とパスワードが必要です' }, 400);
+      return context.json({ error: 'ユーザー名とパスワードが必要です', code: 'CREDENTIALS_REQUIRED' }, 400);
     }
 
     const client = clientAddress(context, trustedProxyCidrs);
@@ -704,9 +955,12 @@ export function createApp({
       }, 429);
     }
     if (outcome.outcome === 'invalid_credentials') {
-      return context.json({ error: '認証情報が正しくありません' }, 401);
+      return context.json({ error: '認証情報が正しくありません', code: 'INVALID_CREDENTIALS' }, 401);
     }
 
+    // The caller already answered LOGIN_TIMEOUT: no session is created for a
+    // login nobody will receive.
+    if (deadline.passed) return context.json({ error: ERROR_MESSAGES_JA.LOGIN_TIMEOUT!, code: 'LOGIN_TIMEOUT' }, 503);
     const { token, tokenHash } = issueToken();
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
     await db.insert(sessions).values({ id: uuidv7(), userId: outcome.userId, tokenHash, expiresAt });
@@ -718,7 +972,7 @@ export function createApp({
       expires: expiresAt
     });
     return context.json({ id: outcome.userId, role: outcome.role, displayName: outcome.displayName }, 201);
-  });
+  }
 
   app.post('/api/auth/logout', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
@@ -735,16 +989,16 @@ export function createApp({
 
   app.get('/api/me', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     return context.json({ id: user.id, role: user.role, assignedProjectIds: user.assignedProjectIds });
   });
 
   app.post('/api/projects', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
 
     const decision = canPerform(toActor(user), 'project:create', 'F1');
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const body = await context.req.json().catch(() => null) as any;
     const routeCheck = validateProjectRoute(body?.route);
@@ -758,7 +1012,7 @@ export function createApp({
       typeof body?.sevenAccountId !== 'string' ||
       typeof body?.makerAccountId !== 'string'
     ) {
-      return context.json({ error: '必須項目が不足しています' }, 422);
+      return context.json({ error: '必須項目が不足しています', code: 'PROJECT_FIELDS_REQUIRED' }, 422);
     }
 
     const accountIds = Array.from(new Set([
@@ -766,17 +1020,17 @@ export function createApp({
       body.sevenAccountId,
       body.makerAccountId
     ]));
-    if (accountIds.length !== 3) return context.json({ error: '3種類の取引先が必要です' }, 422);
+    if (accountIds.length !== 3) return context.json({ error: '3種類の取引先が必要です', code: 'PROJECT_ACCOUNTS_REQUIRED' }, 422);
 
     const rows = await db.select().from(accounts).where(inArray(accounts.id, accountIds));
     if (rows.length !== 3 || rows.some((row) => !row.isActive || row.deletedAt)) {
-      return context.json({ error: '取引先が無効です' }, 422);
+      return context.json({ error: '取引先が無効です', code: 'PROJECT_ACCOUNT_INVALID' }, 422);
     }
     const roleById = new Map(rows.map((row) => [row.id, row.role] as const));
     const validRoles = roleById.get(body.endCustomerAccountId) === 'end_customer'
       && roleById.get(body.sevenAccountId) === 'seven'
       && roleById.get(body.makerAccountId) === 'maker';
-    if (!validRoles) return context.json({ error: '取引先役割が正しくありません' }, 422);
+    if (!validRoles) return context.json({ error: '取引先役割が正しくありません', code: 'PROJECT_ACCOUNT_ROLE_INVALID' }, 422);
 
     const projectId = uuidv7();
     const now = new Date();
@@ -822,7 +1076,7 @@ export function createApp({
   // selector renders are returned.
   app.get('/api/projects', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
 
     const selectorColumns = {
       id: projects.id,
@@ -844,7 +1098,7 @@ export function createApp({
 
   app.get('/api/projects/:projectId', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const projectId = context.req.param('projectId');
     if (!isUuid(projectId)) {
       return context.json({
@@ -853,16 +1107,16 @@ export function createApp({
       }, 400);
     }
     const decision = canPerform(toActor(user), 'project:read', 'F1', projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
-    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
+    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません', code: 'PROJECT_NOT_FOUND' }, 404);
     return context.json(project);
   });
 
   app.patch('/api/projects/:projectId', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const projectId = context.req.param('projectId');
     if (!isUuid(projectId)) {
       return context.json({
@@ -877,13 +1131,13 @@ export function createApp({
     }
 
     const decision = canPerform(toActor(user), 'project:update', 'F1', projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
     if (typeof body?.name !== 'string' || body.name.length === 0) {
-      return context.json({ error: '更新項目が無効です' }, 422);
+      return context.json({ error: '更新項目が無効です', code: 'PROJECT_UPDATE_INVALID' }, 422);
     }
 
     const [current] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
-    if (!current || current.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
+    if (!current || current.deletedAt) return context.json({ error: '案件が見つかりません', code: 'PROJECT_NOT_FOUND' }, 404);
     const updated = { name: body.name, updatedAt: new Date() };
     await db.transaction(async (tx) => {
       await tx.update(projects).set(updated).where(eq(projects.id, projectId));
@@ -904,10 +1158,10 @@ export function createApp({
 
   app.post('/api/ceo-approvals', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const decision = canPerform(toActor(user), 'ceo_approve', 'F1');
     if (!decision.allowed) {
-      return context.json({ error: '代表者のみ承認できます' }, 403);
+      return context.json({ error: '代表者のみ承認できます', code: 'CEO_ONLY' }, 403);
     }
     return context.json({ status: 'M2_RESERVED' }, 202);
   });
@@ -916,7 +1170,7 @@ export function createApp({
   // purchase orders and pre-order references (design section 5.6)
   app.post('/api/projects/:projectId/seven-purchase-orders', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const projectId = context.req.param('projectId');
     if (!isUuid(projectId)) {
       return context.json({
@@ -925,10 +1179,10 @@ export function createApp({
       }, 400);
     }
     const decision = canPerform(toActor(user), 'seven_po:create', 'F1', projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
-    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
+    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません', code: 'PROJECT_NOT_FOUND' }, 404);
 
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.poNumber !== 'string' || body.poNumber.length === 0) {
@@ -980,7 +1234,7 @@ export function createApp({
 
   app.post('/api/seven-purchase-orders/:poId/register-official', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const poId = context.req.param('poId');
     if (!isUuid(poId)) {
       return context.json({
@@ -990,7 +1244,7 @@ export function createApp({
     }
 
     const [current] = await db.select().from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, poId)).limit(1);
-    if (!current) return context.json({ error: 'セブン発注書が見つかりません' }, 404);
+    if (!current) return context.json({ error: 'セブン発注書が見つかりません', code: 'SEVEN_PO_NOT_FOUND' }, 404);
     const isOverwrite = current.officialRegisteredAt !== null;
     const decision = canPerform(
       toActor(user),
@@ -998,7 +1252,7 @@ export function createApp({
       'F1',
       current.projectId
     );
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const body = await context.req.json().catch(() => null) as any;
     const registeredAt = parseRequiredDate(body?.officialRegisteredAt);
@@ -1054,7 +1308,7 @@ export function createApp({
     });
     } catch (error) {
       if (error instanceof OfficialRegistrationForbidden) {
-        return context.json({ error: '権限がありません' }, 403);
+        return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
       }
       if (error instanceof OfficialRegistrationRace) {
         return context.json({
@@ -1069,7 +1323,7 @@ export function createApp({
 
   app.post('/api/projects/:projectId/pre-order-references', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const projectId = context.req.param('projectId');
     if (!isUuid(projectId)) {
       return context.json({
@@ -1078,10 +1332,10 @@ export function createApp({
       }, 400);
     }
     const decision = canPerform(toActor(user), 'pre_order:create', 'F1', projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
-    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
+    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません', code: 'PROJECT_NOT_FOUND' }, 404);
 
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.referenceCode !== 'string' || body.referenceCode.length === 0) {
@@ -1121,7 +1375,7 @@ export function createApp({
 
   app.post('/api/pre-order-references/:preOrderId/promote', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const preOrderId = context.req.param('preOrderId');
     if (!isUuid(preOrderId)) {
       return context.json({
@@ -1131,9 +1385,9 @@ export function createApp({
     }
 
     const [reference] = await db.select().from(preOrderReferences).where(eq(preOrderReferences.id, preOrderId)).limit(1);
-    if (!reference) return context.json({ error: '先行発注参照が見つかりません' }, 404);
+    if (!reference) return context.json({ error: '先行発注参照が見つかりません', code: 'PRE_ORDER_REFERENCE_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'pre_order:promote', 'F1', reference.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.poNumber !== 'string' || body.poNumber.length === 0) {
@@ -1180,7 +1434,7 @@ export function createApp({
   // sections 5 and 6.1). Units are film vocabulary only.
   app.post('/api/projects/:projectId/film-supply-orders', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const projectId = context.req.param('projectId');
     if (!isUuid(projectId)) {
       return context.json({
@@ -1189,10 +1443,10 @@ export function createApp({
       }, 400);
     }
     const decision = canPerform(toActor(user), 'film_order:create', 'F1', projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
-    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
+    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません', code: 'PROJECT_NOT_FOUND' }, 404);
 
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.code !== 'string' || body.code.length === 0) {
@@ -1206,11 +1460,10 @@ export function createApp({
       lines.push(lineCheck.line);
     }
     // M7-SEC3 FIX 3: the G6 transaction terms are recorded at creation and are
-    // read again by the maker purchase order approval. An order created without
-    // a stated term starts as 'undetermined', the state that closes G6.
-    const paymentTermsCheck = body?.paymentTerms === undefined
-      ? { ok: true as const, value: DEFAULT_PAYMENT_TERMS }
-      : validatePaymentTermsInput(body.paymentTerms);
+    // read again by the maker purchase order approval. P0 R01: the term is a
+    // required, explicit choice — 'undetermined' must be picked on purpose, so
+    // an omitted term is refused instead of silently closing G6.
+    const paymentTermsCheck = requiredPaymentTermsInput(body?.paymentTerms);
     if (!paymentTermsCheck.ok) {
       return context.json({ error: paymentTermsCheck.message, code: paymentTermsCheck.code }, 422);
     }
@@ -1286,13 +1539,15 @@ export function createApp({
   });
 
   // M7-SEC3 FIX 3: the G6 payment terms are the only mutable field on a film
-  // supply order, and design keeps them writable while the order is a draft
-  // only ("발주 초안까지만"). Once the chain has left DRAFT the terms are the
-  // ones the rest of the chain was approved against, so this endpoint refuses
-  // to renegotiate them.
+  // supply order. P0 R01 (policy P-5): the assigned staff and the
+  // representative may change them in any normal state until the
+  // representative approves a maker purchase order for the order; after that
+  // approval the terms are the ones the paper was approved against, so a
+  // correction is a paper cancellation and a new approval. Every change is an
+  // append-only audit row (before / after / order status / optional reason).
   app.patch('/api/film-supply-orders/:orderId/payment-terms', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -1302,51 +1557,169 @@ export function createApp({
     }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) {
+      return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
+    }
 
     const decision = canPerform(toActor(user), 'film_order:update_payment_terms', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
     if (String(order.status) === 'CANCELLED') {
       return context.json({ error: '取消終了した発注は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
     }
 
     const body = await context.req.json().catch(() => null) as any;
-    const paymentTermsCheck = validatePaymentTermsInput(body?.paymentTerms);
+    const paymentTermsCheck = requiredPaymentTermsInput(body?.paymentTerms);
     if (!paymentTermsCheck.ok) {
       return context.json({ error: paymentTermsCheck.message, code: paymentTermsCheck.code }, 422);
     }
-
-    if (order.status !== 'DRAFT') {
-      return context.json({
-        error: '決済条件（paymentTerms）は発注ドラフト（DRAFT）の間のみ変更できます。現在の状態では変更できません',
-        code: 'PAYMENT_TERMS_LOCKED',
-        from: order.status
-      }, 422);
+    let changeReason: string | null = null;
+    if (body?.reason !== undefined && body?.reason !== null && body?.reason !== '') {
+      const reasonCheck = normalizeRequiredReason(body.reason);
+      if (!reasonCheck.ok) {
+        return context.json({
+          error: reasonCheck.tooLong
+            ? `変更理由は${REASON_MAX_LENGTH}文字以下で入力してください`
+            : '変更理由が空です。理由を書くか、欄を空のままにしてください',
+          code: reasonCheck.tooLong ? 'PAYMENT_TERMS_REASON_TOO_LONG' : 'PAYMENT_TERMS_REASON_INVALID'
+        }, 422);
+      }
+      changeReason = reasonCheck.text;
     }
 
     const now = new Date();
-    const updated = { paymentTerms: paymentTermsCheck.value, updatedAt: now };
-    await db.transaction(async (tx) => {
+    const outcome = await db.transaction(async (tx) => {
+      // The order row lock serializes this change with the CEO approval, which
+      // re-reads the terms under the same lock: the approval can never certify
+      // a term that changed while it was being decided.
+      const [locked] = await tx.select().from(filmSupplyOrders)
+        .where(eq(filmSupplyOrders.id, orderId)).limit(1).for('update');
+      if (!locked || locked.deletedAt) return { kind: 'gone' as const };
+      const [approvedPaper] = await tx.select({ id: makerPurchaseOrders.id, status: makerPurchaseOrders.status })
+        .from(makerPurchaseOrders)
+        .where(and(
+          eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
+          isNull(makerPurchaseOrders.deletedAt),
+          ne(makerPurchaseOrders.status, 'CANCELLED'),
+          isNotNull(makerPurchaseOrders.ceoApprovedAt)
+        ))
+        .limit(1);
+      const gate = evaluatePaymentTermsChange({
+        orderStatus: String(locked.status),
+        approvedPaperExists: approvedPaper !== undefined
+      });
+      if (!gate.ok) return { kind: 'locked' as const, gate, status: locked.status, makerPurchaseOrderId: approvedPaper?.id ?? null };
+
+      const before = normalizePaymentTerms(locked.paymentTerms);
+      if (before === paymentTermsCheck.value) return { kind: 'unchanged' as const, order: locked };
+      const updated = { paymentTerms: paymentTermsCheck.value, updatedAt: now };
       await tx.update(filmSupplyOrders).set(updated).where(eq(filmSupplyOrders.id, orderId));
       await recordAuditEvent(tx, {
-        projectId: order.projectId,
+        projectId: locked.projectId,
         id: uuidv7(now),
         actorUserId: user.id,
         action: 'FILM_SUPPLY_ORDER_PAYMENT_TERMS_UPDATED',
         entityType: 'film_supply_order',
         entityId: orderId,
-        beforeState: { paymentTerms: normalizePaymentTerms(order.paymentTerms) },
+        beforeState: { paymentTerms: before },
         afterState: { paymentTerms: paymentTermsCheck.value },
         occurredAt: now,
-        requestMetadata: { operation: 'film_order:update_payment_terms' }
+        requestMetadata: {
+          operation: 'film_order:update_payment_terms',
+          actorRole: user.role,
+          orderStatus: locked.status,
+          reason: changeReason
+        }
       });
+      return { kind: 'updated' as const, order: { ...locked, ...updated } };
     });
-    return context.json({ ...order, ...updated });
+
+    if (outcome.kind === 'gone') {
+      return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
+    }
+    if (outcome.kind === 'locked') {
+      return context.json({
+        error: outcome.gate.message,
+        code: outcome.gate.code,
+        reason: outcome.gate.reason,
+        from: outcome.status,
+        ...(outcome.makerPurchaseOrderId ? { makerPurchaseOrderId: outcome.makerPurchaseOrderId } : {})
+      }, 422);
+    }
+    return context.json({
+      ...outcome.order,
+      paymentTermsLabel: PAYMENT_TERMS_LABELS_JA[normalizePaymentTerms(outcome.order.paymentTerms)],
+      changed: outcome.kind === 'updated'
+    });
+  });
+
+  // P0 R01: the order list the dashboard's 「止まっている発注」 reads. Each open
+  // order carries the reasons it needs attention; an 'undetermined' payment
+  // term is one from creation on, because it will block the CEO approval.
+  // Payment terms are public to every role on an assigned project (policy:
+  // 決済条件は公開); amounts are not part of this answer.
+  app.get('/api/projects/:projectId/film-supply-orders', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
+    const projectId = context.req.param('projectId');
+    if (!isUuid(projectId)) {
+      return context.json({
+        error: '経路パラメータ（projectId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
+    const decision = canPerform(toActor(user), 'project:read', 'F1', projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
+    const [project] = await db.select({ id: projects.id, deletedAt: projects.deletedAt })
+      .from(projects).where(eq(projects.id, projectId)).limit(1);
+    if (!project || project.deletedAt) {
+      return context.json({ error: '案件が見つかりません', code: 'PROJECT_NOT_FOUND' }, 404);
+    }
+    const onlyAttention = context.req.query('attention') === 'true';
+    const rows = await db.select({
+      id: filmSupplyOrders.id,
+      code: filmSupplyOrders.code,
+      status: filmSupplyOrders.status,
+      paymentTerms: filmSupplyOrders.paymentTerms,
+      createdAt: filmSupplyOrders.createdAt,
+      updatedAt: filmSupplyOrders.updatedAt
+    }).from(filmSupplyOrders)
+      .where(and(eq(filmSupplyOrders.projectId, projectId), isNull(filmSupplyOrders.deletedAt)))
+      .orderBy(asc(filmSupplyOrders.code));
+    const approvedPapers = rows.length === 0 ? [] : await db.select({ filmSupplyOrderId: makerPurchaseOrders.filmSupplyOrderId })
+      .from(makerPurchaseOrders)
+      .where(and(
+        inArray(makerPurchaseOrders.filmSupplyOrderId, rows.map((row) => row.id)),
+        isNull(makerPurchaseOrders.deletedAt),
+        ne(makerPurchaseOrders.status, 'CANCELLED'),
+        isNotNull(makerPurchaseOrders.ceoApprovedAt)
+      ));
+    const approvedOrderIds = new Set(approvedPapers.map((paper) => paper.filmSupplyOrderId));
+    const orders = rows.map((row) => {
+      const paymentTerms = normalizePaymentTerms(row.paymentTerms);
+      const closed = String(row.status) === 'CANCELLED' || row.status === 'FILM_RECEIPT_ASSUMED_NO_ISSUE';
+      const attention = !closed && paymentTerms === 'undetermined'
+        ? [{
+            code: 'PAYMENT_TERMS_UNDETERMINED',
+            message: '決済条件が「未定」です。代表承認の前に「前払い」または「納品時払い」を選んでください'
+          }]
+        : [];
+      return {
+        ...row,
+        paymentTerms,
+        paymentTermsLabel: PAYMENT_TERMS_LABELS_JA[paymentTerms],
+        paymentTermsEditable: evaluatePaymentTermsChange({
+          orderStatus: String(row.status),
+          approvedPaperExists: approvedOrderIds.has(row.id)
+        }).ok,
+        attention
+      };
+    });
+    return context.json({ orders: onlyAttention ? orders.filter((order) => order.attention.length > 0) : orders });
   });
 
   app.post('/api/film-supply-orders/:orderId/lines', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -1356,9 +1729,9 @@ export function createApp({
     }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'film_order_line:create', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
     if (String(order.status) === 'CANCELLED') {
       return context.json({ error: '取消終了した発注は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
     }
@@ -1396,7 +1769,7 @@ export function createApp({
 
   app.post('/api/film-supply-orders/:orderId/deliveries', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -1406,9 +1779,9 @@ export function createApp({
     }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'film_delivery:create', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
     if (String(order.status) === 'CANCELLED') {
       return context.json({ error: '取消終了した発注は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
     }
@@ -1436,8 +1809,10 @@ export function createApp({
     if (!line) return context.json({ error: '明細が見つかりません', code: 'FILM_ORDER_LINE_NOT_FOUND' }, 422);
     if (unitCheck.unit !== line.unit) {
       return context.json({
-        error: `納品単位は明細単位（${line.unit}）と一致させてください`,
-        code: 'DELIVERY_UNIT_MISMATCH'
+        error: `納品単位は明細単位（${UNIT_LABELS_JA[line.unit as MeasureUnit] ?? '明細の単位'}）と一致させてください`,
+        code: 'DELIVERY_UNIT_MISMATCH',
+        lineUnit: line.unit,
+        deliveredUnit: unitCheck.unit
       }, 422);
     }
 
@@ -1493,7 +1868,7 @@ export function createApp({
 
   app.post('/api/film-supply-orders/:orderId/transitions', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -1503,9 +1878,9 @@ export function createApp({
     }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'film_order:transition', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     if (String(order.status) === 'CANCELLED') {
       return context.json({ error: '取消終了した発注は遷移できません', code: 'FILM_ORDER_CANCELLED' }, 409);
@@ -1623,10 +1998,25 @@ export function createApp({
     if (target === 'ON_HOLD' && !holdReasonCheck.ok) {
       return context.json({
         error: holdReasonCheck.tooLong
-          ? `保留理由（holdReason）は${REASON_MAX_LENGTH}文字以下で入力してください`
-          : '保留理由（holdReason）は必須です',
+          ? `保留理由は${REASON_MAX_LENGTH}文字以下で入力してください`
+          : '保留理由は必須です',
         code: holdReasonCheck.tooLong ? 'HOLD_REASON_TOO_LONG' : 'HOLD_REASON_REQUIRED'
       }, 422);
+    }
+
+    // P0 R12: the reason for moving on without the expected evidence used to be
+    // a confirmation-only field that was thrown away. It is now kept in the
+    // transition's audit row (optional; blank means none was given).
+    let evidenceNote: string | null = null;
+    if (body?.evidenceNote !== undefined && body?.evidenceNote !== null && body?.evidenceNote !== '') {
+      const noteCheck = normalizeRequiredReason(body.evidenceNote);
+      if (!noteCheck.ok && noteCheck.tooLong) {
+        return context.json({
+          error: `証跡がないまま進める理由は${REASON_MAX_LENGTH}文字以下で入力してください`,
+          code: 'EVIDENCE_NOTE_TOO_LONG'
+        }, 422);
+      }
+      evidenceNote = noteCheck.ok ? noteCheck.text : null;
     }
 
     const now = new Date();
@@ -1657,9 +2047,9 @@ export function createApp({
           entityType: 'film_supply_order',
           entityId: orderId,
           beforeState: { status: current.status, holdReason: current.holdReason },
-          afterState: { status: target, holdReason },
+          afterState: { status: target, holdReason, ...(evidenceNote ? { evidenceNote } : {}) },
           occurredAt: now,
-          requestMetadata: { operation: 'film_order:transition', holdReason }
+          requestMetadata: { operation: 'film_order:transition', holdReason, ...(evidenceNote ? { evidenceNote } : {}) }
         });
       });
     } catch (error) {
@@ -1673,7 +2063,16 @@ export function createApp({
       }
       throw error;
     }
-    return context.json({ ...order, ...updated });
+    // P0 R01: an order that reaches the verified seven PO with its payment term
+    // still 'undetermined' is moved on, but the answer warns that the CEO
+    // approval will be refused until the term is chosen.
+    const warnings = target === 'SEVEN_PO_VERIFIED' && normalizePaymentTerms(order.paymentTerms) === 'undetermined'
+      ? [{
+          code: 'PAYMENT_TERMS_UNDETERMINED',
+          message: '決済条件が「未定」のままです。代表承認の前に「前払い」または「納品時払い」を選んでください'
+        }]
+      : [];
+    return context.json({ ...order, ...updated, ...(evidenceNote ? { evidenceNote } : {}), warnings });
   });
 
   // Holds are a recovery side-channel, not a shortcut around the maker chain.
@@ -1681,7 +2080,7 @@ export function createApp({
   // only the representative release the hold to that same normal state.
   app.post('/api/film-supply-orders/:orderId/hold-release', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -1691,9 +2090,9 @@ export function createApp({
     }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'film_order:release_hold', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     if (String(order.status) === 'CANCELLED') {
       return context.json({ error: '取消終了した発注は解除できません', code: 'FILM_ORDER_CANCELLED' }, 409);
@@ -1871,7 +2270,7 @@ export function createApp({
   // exact entry origin or closes the film order as CANCELLED in one audit row.
   app.post('/api/film-supply-orders/:orderId/cancellation-review-resolve', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -1881,9 +2280,9 @@ export function createApp({
     }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'film_order:resolve_cancellation_review', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     if (String(order.status) === 'CANCELLED') {
       return context.json({ error: 'すでに取消終了しています', code: 'FILM_ORDER_CANCELLED' }, 409);
@@ -2105,7 +2504,7 @@ export function createApp({
   // acknowledgment, and the audit row is written in the same transaction.
   app.post('/api/film-supply-orders/:orderId/receipt-assumption', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -2115,9 +2514,9 @@ export function createApp({
     }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'film_order:assume_receipt', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
     if (String(order.status) === 'CANCELLED') {
       return context.json({ error: '取消終了した発注は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
     }
@@ -2244,7 +2643,7 @@ export function createApp({
     kind: 'film' | 'filling'
   ): Promise<Response> {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const deliveryId = context.req.param('deliveryId');
     if (!isUuid(deliveryId)) {
       return context.json({
@@ -2254,9 +2653,9 @@ export function createApp({
     }
 
     const target = await loadDeliveryConfirmationTarget(kind, deliveryId);
-    if (!target || target.orderDeletedAt) return context.json({ error: '納品行が見つかりません' }, 404);
+    if (!target || target.orderDeletedAt) return context.json({ error: '納品行が見つかりません', code: 'DELIVERY_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'delivery_confirmation:record', 'F1', target.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
     if (kind === 'film' && String(target.orderStatus) === 'CANCELLED') {
       return context.json({ error: '取消終了した発注は確認できません', code: 'FILM_ORDER_CANCELLED' }, 409);
     }
@@ -2347,7 +2746,7 @@ export function createApp({
   // endpoint; the vocabulary itself is not project-scoped.
   app.get('/api/status-labels', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     return context.json(japaneseStatusSurface());
   });
 
@@ -2360,7 +2759,7 @@ export function createApp({
   // kind appears.
   app.get('/api/projects/:projectId/audit-history', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const projectId = context.req.param('projectId');
     if (!isUuid(projectId)) {
       return context.json({
@@ -2372,9 +2771,9 @@ export function createApp({
     // company learn nothing about a project that does not exist.
     const [project] = await db.select({ id: projects.id, deletedAt: projects.deletedAt }).from(projects)
       .where(eq(projects.id, projectId)).limit(1);
-    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
+    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません', code: 'PROJECT_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'audit_history:read', 'F1', projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const query = context.req.query();
     const requestedLimit = Number(query.limit ?? '200');
@@ -2434,7 +2833,7 @@ export function createApp({
   // section 5). Units are filling vocabulary only.
   app.post('/api/projects/:projectId/filling-orders', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const projectId = context.req.param('projectId');
     if (!isUuid(projectId)) {
       return context.json({
@@ -2443,10 +2842,10 @@ export function createApp({
       }, 400);
     }
     const decision = canPerform(toActor(user), 'filling_order:create', 'F1', projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
-    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
+    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません', code: 'PROJECT_NOT_FOUND' }, 404);
 
     const body = await context.req.json().catch(() => null) as any;
     if (typeof body?.code !== 'string' || body.code.length === 0) {
@@ -2503,7 +2902,7 @@ export function createApp({
 
   app.post('/api/filling-orders/:orderId/lines', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -2513,9 +2912,9 @@ export function createApp({
     }
 
     const [order] = await db.select().from(fillingOrders).where(eq(fillingOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: '充填発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: '充填発注が見つかりません', code: 'FILLING_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'filling_order_line:create', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const body = await context.req.json().catch(() => null) as any;
     const lineCheck = validateOrderLineInput('filling', body);
@@ -2550,7 +2949,7 @@ export function createApp({
 
   app.post('/api/filling-orders/:orderId/deliveries', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -2560,9 +2959,9 @@ export function createApp({
     }
 
     const [order] = await db.select().from(fillingOrders).where(eq(fillingOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: '充填発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: '充填発注が見つかりません', code: 'FILLING_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'filling_delivery:create', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const body = await context.req.json().catch(() => null) as any;
     const unitCheck = validateUnit(body?.unit, 'filling');
@@ -2587,8 +2986,10 @@ export function createApp({
     if (!line) return context.json({ error: '明細が見つかりません', code: 'FILLING_ORDER_LINE_NOT_FOUND' }, 422);
     if (unitCheck.unit !== line.unit) {
       return context.json({
-        error: `納品単位は明細単位（${line.unit}）と一致させてください`,
-        code: 'DELIVERY_UNIT_MISMATCH'
+        error: `納品単位は明細単位（${UNIT_LABELS_JA[line.unit as MeasureUnit] ?? '明細の単位'}）と一致させてください`,
+        code: 'DELIVERY_UNIT_MISMATCH',
+        lineUnit: line.unit,
+        deliveredUnit: unitCheck.unit
       }, 422);
     }
 
@@ -2649,7 +3050,7 @@ export function createApp({
   // ever happens as a side effect of recording a delivery.
   app.post('/api/projects/:projectId/commission-readiness', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const projectId = context.req.param('projectId');
     if (!isUuid(projectId)) {
       return context.json({
@@ -2658,10 +3059,10 @@ export function createApp({
       }, 400);
     }
     const decision = canPerform(toActor(user), 'commission_readiness:evaluate', 'F1', projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
-    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
+    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません', code: 'PROJECT_NOT_FOUND' }, 404);
 
     const now = new Date();
 
@@ -2849,7 +3250,7 @@ export function createApp({
 
   app.post('/api/projects/:projectId/documents', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const projectId = context.req.param('projectId');
     if (!isUuid(projectId)) {
       return context.json({
@@ -2858,10 +3259,10 @@ export function createApp({
       }, 400);
     }
     const decision = canPerform(toActor(user), 'document:create', 'F1', projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const [project] = await db.select().from(projects).where(eq(projects.id, projectId)).limit(1);
-    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません' }, 404);
+    if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません', code: 'PROJECT_NOT_FOUND' }, 404);
 
     const payload = await readDocumentUpload(context);
     if (!payload.ok) return context.json({ error: payload.message, code: payload.code }, 422);
@@ -3104,7 +3505,7 @@ export function createApp({
 
   app.post('/api/documents/:documentId/verify', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const documentId = context.req.param('documentId');
     if (!isUuid(documentId)) {
       return context.json({
@@ -3114,9 +3515,9 @@ export function createApp({
     }
 
     const [current] = await db.select().from(documents).where(eq(documents.id, documentId)).limit(1);
-    if (!current) return context.json({ error: '書類が見つかりません' }, 404);
+    if (!current) return context.json({ error: '書類が見つかりません', code: 'DOCUMENT_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'document:verify', 'F1', current.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const body = await context.req.json().catch(() => null) as any;
     const status = body?.verificationStatus;
@@ -3163,7 +3564,7 @@ export function createApp({
   // impossible by construction.
   app.post('/api/seven-purchase-orders/:poId/verification-checklist', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const poId = context.req.param('poId');
     if (!isUuid(poId)) {
       return context.json({
@@ -3173,9 +3574,9 @@ export function createApp({
     }
 
     const [current] = await db.select().from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, poId)).limit(1);
-    if (!current) return context.json({ error: 'セブン発注書が見つかりません' }, 404);
+    if (!current) return context.json({ error: 'セブン発注書が見つかりません', code: 'SEVEN_PO_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'seven_po:verify', 'F1', current.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const body = await context.req.json().catch(() => null) as any;
     const evaluation = evaluateSevenPoChecklist(body);
@@ -3228,7 +3629,7 @@ export function createApp({
   // purchase order passed the authenticity checklist.
   app.post('/api/pre-order-references/:preOrderId/promote-official', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const preOrderId = context.req.param('preOrderId');
     if (!isUuid(preOrderId)) {
       return context.json({
@@ -3238,9 +3639,9 @@ export function createApp({
     }
 
     const [reference] = await db.select().from(preOrderReferences).where(eq(preOrderReferences.id, preOrderId)).limit(1);
-    if (!reference) return context.json({ error: '先行発注参照が見つかりません' }, 404);
+    if (!reference) return context.json({ error: '先行発注参照が見つかりません', code: 'PRE_ORDER_REFERENCE_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'pre_order:promote', 'F1', reference.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const [po] = await db.select().from(sevenPurchaseOrders)
       .where(eq(sevenPurchaseOrders.preOrderReferenceId, reference.id))
@@ -3318,7 +3719,7 @@ export function createApp({
       });
     } catch (error) {
       if (error instanceof OfficialRegistrationForbidden) {
-        return context.json({ error: '権限がありません' }, 403);
+        return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
       }
       if (error instanceof OfficialRegistrationReviewPending) {
         return context.json({ error: '見積と発注書の突合レビューが未解決です', code: 'PO_REVIEW_PENDING' }, 422);
@@ -3341,7 +3742,7 @@ export function createApp({
   // the precedence gate is evaluated before anything is written.
   app.post('/api/seven-purchase-orders/:poId/supply-orders', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const poId = context.req.param('poId');
     if (!isUuid(poId)) {
       return context.json({
@@ -3351,9 +3752,9 @@ export function createApp({
     }
 
     const [po] = await db.select().from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, poId)).limit(1);
-    if (!po) return context.json({ error: 'セブン発注書が見つかりません' }, 404);
+    if (!po) return context.json({ error: 'セブン発注書が見つかりません', code: 'SEVEN_PO_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'supply_order:create', 'F1', po.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const gate = evaluateSevenPoPrecedenceGate(po);
     if (!gate.ok) return context.json({ error: gate.message, code: gate.code }, 422);
@@ -3369,11 +3770,9 @@ export function createApp({
       if (!lineCheck.ok) return context.json({ error: lineCheck.message, code: lineCheck.code }, 422);
       lines.push(lineCheck.line);
     }
-    // M7-SEC3 FIX 3: the G6 transaction terms are recorded at creation; an
-    // unstated term starts as 'undetermined', the state that closes G6.
-    const paymentTermsCheck = body?.paymentTerms === undefined
-      ? { ok: true as const, value: DEFAULT_PAYMENT_TERMS }
-      : validatePaymentTermsInput(body.paymentTerms);
+    // M7-SEC3 FIX 3 / P0 R01: the G6 transaction terms are a required,
+    // explicit choice at creation ('undetermined' only when picked on purpose).
+    const paymentTermsCheck = requiredPaymentTermsInput(body?.paymentTerms);
     if (!paymentTermsCheck.ok) {
       return context.json({ error: paymentTermsCheck.message, code: paymentTermsCheck.code }, 422);
     }
@@ -3685,7 +4084,7 @@ export function createApp({
 
   app.post('/api/film-supply-orders/:orderId/artwork-revisions', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -3695,9 +4094,9 @@ export function createApp({
     }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'artwork_revision:create', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
     if (String(order.status) === 'CANCELLED') {
       return context.json({ error: '取消終了した発注には版を追加できません', code: 'FILM_ORDER_CANCELLED' }, 409);
     }
@@ -4022,7 +4421,7 @@ export function createApp({
 
   app.post('/api/artwork-revisions/:revisionId/approvals', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const revisionId = context.req.param('revisionId');
     if (!isUuid(revisionId)) {
       return context.json({
@@ -4040,13 +4439,13 @@ export function createApp({
     }).from(artworkRevisions)
       .innerJoin(documentVersions, eq(documentVersions.id, artworkRevisions.fileDocumentVersionId))
       .where(eq(artworkRevisions.id, revisionId)).limit(1);
-    if (!revision) return context.json({ error: '版が見つかりません' }, 404);
+    if (!revision) return context.json({ error: '版が見つかりません', code: 'ARTWORK_REVISION_NOT_FOUND' }, 404);
 
     const [order] = await db.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, revision.filmSupplyOrderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'artwork_approval:record', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
     if (String(order.status) === 'CANCELLED') {
       return context.json({ error: '取消終了した発注は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
     }
@@ -4078,7 +4477,9 @@ export function createApp({
       filmSupplyOrderId: documents.filmSupplyOrderId,
       designKey: documents.designKey,
       storagePath: documentVersions.storagePath,
-      declaredMimeType: documentVersions.declaredMimeType
+      declaredMimeType: documentVersions.declaredMimeType,
+      documentId: documents.id,
+      issuerEntity: documents.issuerEntity
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(documentVersions.id, body.evidenceDocumentVersionId)).limit(1);
@@ -4099,6 +4500,56 @@ export function createApp({
       revision: { designKey: revision.designKey }
     });
     if (!binding.ok) return context.json({ error: binding.message, code: binding.code }, 422);
+
+    // P0 R02 (policy P-1): the evidence issuer must be the approving
+    // organization, and one evidence document is not cited for both
+    // organizations — unless the recorder explicitly declares a shared
+    // evidence with a reason, which then always waits for the representative.
+    const sharedEvidenceDeclared = body?.sharedEvidence === true;
+    let sharedEvidenceReason: string | null = null;
+    if (sharedEvidenceDeclared) {
+      const reasonCheck = normalizeRequiredReason(body?.sharedEvidenceReason);
+      if (!reasonCheck.ok) {
+        return context.json({
+          error: reasonCheck.tooLong
+            ? `共有証跡の理由は${REASON_MAX_LENGTH}文字以下で入力してください`
+            : '両組織で同じ承認証跡を使う理由が必要です',
+          code: reasonCheck.tooLong ? 'SHARED_EVIDENCE_REASON_TOO_LONG' : 'SHARED_EVIDENCE_REASON_REQUIRED'
+        }, 422);
+      }
+      sharedEvidenceReason = reasonCheck.text;
+    } else if (body?.sharedEvidence !== undefined && body?.sharedEvidence !== null && body?.sharedEvidence !== false) {
+      return context.json({
+        error: '共有証跡の指定が不正です',
+        code: 'SHARED_EVIDENCE_FLAG_INVALID'
+      }, 422);
+    }
+    const [otherOrganizationCitation] = await db.select({ id: artworkApprovalEvents.id })
+      .from(artworkApprovalEvents)
+      .innerJoin(artworkRevisions, eq(artworkRevisions.id, artworkApprovalEvents.artworkRevisionId))
+      .innerJoin(documentVersions, eq(documentVersions.id, artworkApprovalEvents.evidenceDocumentVersionId))
+      .where(and(
+        eq(artworkRevisions.filmSupplyOrderId, order.id),
+        eq(documentVersions.documentId, evidence.documentId),
+        ne(artworkApprovalEvents.organization, organization)
+      ))
+      .limit(1);
+    const issuerCheck = evaluateApprovalEvidenceIssuer({
+      organization,
+      issuerEntity: evidence.issuerEntity,
+      citedByOtherOrganization: otherOrganizationCitation !== undefined,
+      sharedEvidenceDeclared
+    });
+    if (!issuerCheck.ok) {
+      return context.json({
+        error: issuerCheck.message,
+        code: issuerCheck.code,
+        organization,
+        evidenceIssuerEntity: evidence.issuerEntity,
+        expectedIssuerEntity: APPROVAL_ORGANIZATION_ISSUER[organization]
+      }, 422);
+    }
+    const sharedEvidenceException = sharedEvidenceReason !== null ? { reason: sharedEvidenceReason } : null;
 
     // M7-SEC3 FIX 1: the identifier must be derivable from the evidence it
     // cites. M8-OPERATOR FIX 4 makes the rule content-type aware: text-like
@@ -4151,8 +4602,12 @@ export function createApp({
     // A revocation never contributes to an approval, so its status reads
     // not_applicable regardless of the evidence kind — the identifier itself is
     // still checked above and an invented one is refused.
+    // P0 R02: a declared shared evidence never completes an approval by itself;
+    // the representative's manual verification is required even for an EML.
     const evidenceIdentifierStatus: EvidenceIdentifierStatus =
-      decisionCheck.value === 'APPROVE' ? identifierCheck.status : 'not_applicable';
+      decisionCheck.value !== 'APPROVE'
+        ? 'not_applicable'
+        : issuerCheck.requiresManualVerification ? 'pending_manual_verification' : identifierCheck.status;
     const countsTowardDualApproval =
       decisionCheck.value === 'APPROVE' && evidenceIdentifierStatus !== 'pending_manual_verification';
 
@@ -4269,7 +4724,14 @@ export function createApp({
         action: decisionCheck.value === 'APPROVE' ? 'ARTWORK_APPROVAL_RECORDED' : 'ARTWORK_APPROVAL_REVOKED',
         entityType: 'artwork_approval_event',
         entityId: eventId,
-        afterState: { ...approvalEvent, designKey: revision.designKey, revisionNo: revision.revisionNo },
+        afterState: {
+          ...approvalEvent,
+          designKey: revision.designKey,
+          revisionNo: revision.revisionNo,
+          evidenceIssuerEntity: evidence.issuerEntity,
+          issuerMatchesOrganization: issuerCheck.issuerMatchesOrganization,
+          sharedEvidenceException
+        },
         occurredAt: now,
         requestMetadata: { operation: 'artwork_approval:record', filmSupplyOrderId: order.id }
       });
@@ -4307,6 +4769,9 @@ export function createApp({
       // the dual approval — the order stays where it was.
       evidenceIdentifierStatus,
       countsTowardDualApproval,
+      evidenceIssuerEntity: evidence.issuerEntity,
+      issuerMatchesOrganization: issuerCheck.issuerMatchesOrganization,
+      sharedEvidenceException,
       orderStatus: recordedOrderStatus,
       dualApproved: gateAfter.dualApproved,
       missingApprovals: gateAfter.missingApprovals
@@ -4329,7 +4794,7 @@ export function createApp({
    */
   app.get('/api/document-versions/:versionId/evidence-message-id', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const versionId = context.req.param('versionId');
     if (!isUuid(versionId)) {
       return context.json({
@@ -4347,11 +4812,11 @@ export function createApp({
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(documentVersions.id, versionId)).limit(1);
-    if (!evidence) return context.json({ error: '書類バージョンが見つかりません' }, 404);
+    if (!evidence) return context.json({ error: '書類バージョンが見つかりません', code: 'DOCUMENT_VERSION_NOT_FOUND' }, 404);
     // canPerform preserves admin's global recovery access while foreign
     // staff/viewer still cannot learn whether the version exists (403).
     const readDecision = canPerform(toActor(user), 'document:read', 'F1', evidence.projectId);
-    if (!readDecision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!readDecision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
     if (evidence.documentType !== 'approval_evidence') {
       return context.json({
         error: 'Message-IDの自動抽出は承認証跡（approval_evidence）だけが対象です',
@@ -4403,7 +4868,7 @@ export function createApp({
 
   app.get('/api/document-versions/:versionId/download', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const versionId = context.req.param('versionId');
     if (!isUuid(versionId)) {
       return context.json({
@@ -4423,9 +4888,9 @@ export function createApp({
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(documentVersions.id, versionId)).limit(1);
-    if (!row) return context.json({ error: '書類バージョンが見つかりません' }, 404);
+    if (!row) return context.json({ error: '書類バージョンが見つかりません', code: 'DOCUMENT_VERSION_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'document:read', 'F1', row.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const storageRoot = documentStorageRoot();
     const resolvedRoot = path.resolve(storageRoot);
@@ -4494,7 +4959,7 @@ export function createApp({
   // original decision keeps reading exactly as it was recorded.
   app.post('/api/artwork-approval-events/:eventId/verification', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const eventId = context.req.param('eventId');
     if (!isUuid(eventId)) {
       return context.json({
@@ -4505,7 +4970,7 @@ export function createApp({
 
     const [target] = await db.select().from(artworkApprovalEvents)
       .where(eq(artworkApprovalEvents.id, eventId)).limit(1);
-    if (!target) return context.json({ error: '承認イベントが見つかりません' }, 404);
+    if (!target) return context.json({ error: '承認イベントが見つかりません', code: 'APPROVAL_EVENT_NOT_FOUND' }, 404);
 
     const [revision] = await db.select({
       id: artworkRevisions.id,
@@ -4513,15 +4978,15 @@ export function createApp({
       designKey: artworkRevisions.designKey,
       revisionNo: artworkRevisions.revisionNo
     }).from(artworkRevisions).where(eq(artworkRevisions.id, target.artworkRevisionId)).limit(1);
-    if (!revision) return context.json({ error: '版が見つかりません' }, 404);
+    if (!revision) return context.json({ error: '版が見つかりません', code: 'ARTWORK_REVISION_NOT_FOUND' }, 404);
     const [order] = await db.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, revision.filmSupplyOrderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
 
     // Representative only: this decision is what lets an approval complete the
     // dual approval, so it is never delegated to staff or a viewer.
     const decision = canPerform(toActor(user), 'artwork_approval:verify_evidence', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
     if (String(order.status) === 'CANCELLED') {
       return context.json({ error: '取消終了した発注は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
     }
@@ -4531,19 +4996,11 @@ export function createApp({
     if (!resultCheck.ok) {
       return context.json({ error: resultCheck.message, code: resultCheck.code }, 422);
     }
-    if (typeof body?.verifierName !== 'string' || body.verifierName.trim().length === 0) {
-      return context.json({
-        error: '検証者名（verifierName）は必須です。原本証跡を確認した人を記録してください',
-        code: 'VERIFIER_NAME_REQUIRED'
-      }, 422);
-    }
-    const verifiedAt = parseStrictRequiredDate(body?.verifiedAt);
-    if (!verifiedAt.ok) {
-      return context.json({
-        error: '検証日時（verifiedAt）が必要です',
-        code: 'VERIFIED_AT_REQUIRED'
-      }, 422);
-    }
+    // P0 R11: who verified and when is never typed in. The server records the
+    // logged-in representative and its own clock; client-sent verifierName /
+    // verifiedAt are ignored, so the audit trail cannot carry another name or
+    // a back-dated time.
+    const verifier = await sessionVerifierIdentity(user.id);
     if (typeof body?.reasonNote !== 'string' || body.reasonNote.trim().length === 0) {
       return context.json({
         error: '根拠（reasonNote）は必須です。原本証跡のどこで識別子を確認したかを記録してください',
@@ -4575,6 +5032,25 @@ export function createApp({
       }, 422);
     }
 
+    // P0 R02: confirming is the representative's assertion that the cited
+    // evidence is this organization's approval. Evidence issued by someone
+    // else (an approval recorded before R02) can only be confirmed when a
+    // shared evidence was explicitly declared with a reason; otherwise it can
+    // be rejected, and the organization's own evidence must be recorded.
+    if (resultCheck.value === 'confirmed') {
+      const issuerFacts = await loadApprovalEvidenceIssuerFacts(target.id, target.evidenceDocumentVersionId);
+      const expectedIssuer = APPROVAL_ORGANIZATION_ISSUER[target.organization as ApprovalOrganization];
+      if (issuerFacts.issuerEntity !== expectedIssuer && issuerFacts.sharedEvidenceException === null) {
+        return context.json({
+          error: '承認証跡の発行元が承認する組織と違うため、確認済みにできません。「相違あり」として記録し、その組織が発行した承認書類を登録してください',
+          code: 'EVIDENCE_ISSUER_MISMATCH',
+          organization: target.organization,
+          evidenceIssuerEntity: issuerFacts.issuerEntity,
+          expectedIssuerEntity: expectedIssuer
+        }, 422);
+      }
+    }
+
     // A 'confirmed' verification is final: the only append-only way to
     // invalidate an approved decision afterwards is the organization's own
     // REVOKE — the same rule the approval log itself follows (migration 0007).
@@ -4600,8 +5076,8 @@ export function createApp({
       evidenceDocumentVersionId: target.evidenceDocumentVersionId,
       approvedFileSha256: target.approvedFileSha256,
       result: resultCheck.value,
-      verifierName: body.verifierName.trim(),
-      verifiedAt: verifiedAt.date,
+      verifierName: verifier.name,
+      verifiedAt: now,
       reasonNote: body.reasonNote.trim(),
       recordedByUserId: user.id,
       recordedAt: now
@@ -4734,7 +5210,7 @@ export function createApp({
 
   app.get('/api/film-supply-orders/:orderId/approval-gate', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -4744,9 +5220,9 @@ export function createApp({
     }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'artwork_approval:read', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const approvalContext = await loadApprovalContext(orderId);
     const gate = deriveOrderApprovalGate(
@@ -4782,6 +5258,26 @@ export function createApp({
           })
         ));
 
+    // P0 R02: the representative's confirm card shows who issued the evidence
+    // next to the organization it is recorded for. A mismatch without a
+    // declared shared evidence cannot be confirmed (the verification endpoint
+    // refuses it with EVIDENCE_ISSUER_MISMATCH), so the card says so up front.
+    const pendingWithIssuer = await Promise.all(pendingManualVerifications.map(async (item) => {
+      const facts = item.evidenceDocumentVersionId
+        ? await loadApprovalEvidenceIssuerFacts(item.approvalEventId, item.evidenceDocumentVersionId)
+        : { issuerEntity: null, sharedEvidenceException: null };
+      const expectedIssuerEntity = APPROVAL_ORGANIZATION_ISSUER[item.organization];
+      const issuerMatchesOrganization = facts.issuerEntity === expectedIssuerEntity;
+      return {
+        ...item,
+        evidenceIssuerEntity: facts.issuerEntity,
+        expectedIssuerEntity,
+        issuerMatchesOrganization,
+        sharedEvidenceException: facts.sharedEvidenceException,
+        confirmable: issuerMatchesOrganization || facts.sharedEvidenceException !== null
+      };
+    }));
+
     return context.json({
       orderId,
       orderStatus: order.status,
@@ -4789,7 +5285,7 @@ export function createApp({
       requiredDesignKeys: gate.requiredDesignKeys,
       missingApprovals: gate.missingApprovals,
       designs: gate.designs,
-      pendingManualVerifications
+      pendingManualVerifications: pendingWithIssuer
     });
   });
 
@@ -4871,6 +5367,140 @@ export function createApp({
       amounts: storedSnapshot.amounts ?? null,
       recipientAddress: storedSnapshot.recipient.address
     });
+  }
+
+  /**
+   * P0 R12: whether a send_evidence version belongs to a cancelled maker PO
+   * other than `currentPoId` — bound to it at upload, or cited by one of its
+   * send events.
+   */
+  async function sendEvidenceBelongsToCancelledPaper(
+    executor: MakerPoQueryExecutor,
+    evidence: { versionId: string; makerPurchaseOrderId: string | null },
+    currentPoId: string
+  ): Promise<boolean> {
+    if (evidence.makerPurchaseOrderId !== null && evidence.makerPurchaseOrderId !== currentPoId) {
+      const [bound] = await executor.select({ status: makerPurchaseOrders.status })
+        .from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, evidence.makerPurchaseOrderId)).limit(1);
+      if (bound?.status === 'CANCELLED') return true;
+    }
+    const [cited] = await executor.select({ id: makerPoEvents.id })
+      .from(makerPoEvents)
+      .innerJoin(makerPurchaseOrders, eq(makerPurchaseOrders.id, makerPoEvents.makerPurchaseOrderId))
+      .where(and(
+        eq(makerPoEvents.evidenceDocumentVersionId, evidence.versionId),
+        ne(makerPoEvents.makerPurchaseOrderId, currentPoId),
+        eq(makerPurchaseOrders.status, 'CANCELLED')
+      ))
+      .limit(1);
+    return cited !== undefined;
+  }
+
+  /**
+   * P0 R05: the 409 DUPLICATE answer for a unique violation. The constraint
+   * names the field; for the human-entered numbers the existing record is
+   * looked up by the value the database reported, and its identity (id,
+   * project id and code) is returned only when the caller may read that
+   * project — a duplicate never reveals another project's record.
+   */
+  async function duplicateRefusal(request: Request, error: unknown): Promise<Record<string, unknown>> {
+    let constraint: string | null = null;
+    let detail: string | null = null;
+    let current: unknown = error;
+    for (let depth = 0; depth < 5 && current !== null && typeof current === 'object'; depth += 1) {
+      const candidate = current as { constraint?: unknown; detail?: unknown; cause?: unknown };
+      if (constraint === null && typeof candidate.constraint === 'string') constraint = candidate.constraint;
+      if (detail === null && typeof candidate.detail === 'string') detail = candidate.detail;
+      current = candidate.cause;
+    }
+    const known: Record<string, { field: string; label: string; entityType: string }> = {
+      seven_purchase_orders_po_number_unique: { field: 'poNumber', label: '発注番号', entityType: 'seven_purchase_order' },
+      film_supply_orders_code_unique: { field: 'code', label: '発注コード', entityType: 'film_supply_order' },
+      filling_orders_code_unique: { field: 'code', label: '充填発注コード', entityType: 'filling_order' },
+      projects_code_unique: { field: 'code', label: '案件コード', entityType: 'project' },
+      pre_order_references_reference_code_unique: { field: 'referenceCode', label: '参照コード', entityType: 'pre_order_reference' }
+    };
+    const spec = constraint ? known[constraint] : undefined;
+    const base = {
+      code: 'DUPLICATE',
+      field: spec?.field ?? null,
+      error: spec ? `この${spec.label}はすでに登録されています。登録済みの記録を確認してください` : ERROR_MESSAGES_JA.DUPLICATE!
+    };
+    const value = detail ? /^Key \([^)]*\)=\((.*)\) already exists\.?$/s.exec(detail)?.[1] ?? null : null;
+    if (!spec || value === null) return base;
+    try {
+      let existing: { id: string; projectId: string } | undefined;
+      if (spec.entityType === 'seven_purchase_order') {
+        [existing] = await db.select({ id: sevenPurchaseOrders.id, projectId: sevenPurchaseOrders.projectId })
+          .from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.poNumber, value)).limit(1);
+      } else if (spec.entityType === 'film_supply_order') {
+        [existing] = await db.select({ id: filmSupplyOrders.id, projectId: filmSupplyOrders.projectId })
+          .from(filmSupplyOrders).where(eq(filmSupplyOrders.code, value)).limit(1);
+      } else if (spec.entityType === 'filling_order') {
+        [existing] = await db.select({ id: fillingOrders.id, projectId: fillingOrders.projectId })
+          .from(fillingOrders).where(eq(fillingOrders.code, value)).limit(1);
+      } else if (spec.entityType === 'project') {
+        [existing] = await db.select({ id: projects.id, projectId: projects.id })
+          .from(projects).where(eq(projects.code, value)).limit(1);
+      } else if (spec.entityType === 'pre_order_reference') {
+        [existing] = await db.select({ id: preOrderReferences.id, projectId: preOrderReferences.projectId })
+          .from(preOrderReferences).where(eq(preOrderReferences.referenceCode, value)).limit(1);
+      }
+      if (!existing) return base;
+      const user = await getSessionUser(request, db);
+      if (!user || !canPerform(toActor(user), 'project:read', 'F1', existing.projectId).allowed) return base;
+      const [project] = await db.select({ code: projects.code }).from(projects)
+        .where(eq(projects.id, existing.projectId)).limit(1);
+      return {
+        ...base,
+        // The project code is user data and may contain Latin letters, so it is
+        // carried in `existing.projectCode` for the screen, not in the text.
+        error: `この${spec.label}はすでに別の記録で登録されています。登録済みの記録を確認してください`,
+        existing: { entityType: spec.entityType, id: existing.id, projectId: existing.projectId, projectCode: project?.code ?? null }
+      };
+    } catch {
+      return base;
+    }
+  }
+
+  /** P0 R11: the name a manual verification records is the session user's own. */
+  async function sessionVerifierIdentity(userId: string): Promise<{ name: string }> {
+    const [row] = await db.select({ displayName: users.displayName, username: users.username })
+      .from(users).where(eq(users.id, userId)).limit(1);
+    const name = row?.displayName?.trim() || row?.username || userId;
+    return { name };
+  }
+
+  /**
+   * P0 R02: the issuer of the evidence an approval event cites, and whether the
+   * recorder declared a shared evidence for it (kept in the append-only
+   * ARTWORK_APPROVAL_RECORDED audit row; events recorded before R02 have none).
+   */
+  async function loadApprovalEvidenceIssuerFacts(
+    approvalEventId: string,
+    evidenceDocumentVersionId: string
+  ): Promise<{ issuerEntity: string | null; sharedEvidenceException: { reason: string } | null }> {
+    const [document] = await db.select({ issuerEntity: documents.issuerEntity })
+      .from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(eq(documentVersions.id, evidenceDocumentVersionId)).limit(1);
+    const [recorded] = await db.select({ afterState: auditEvents.afterState })
+      .from(auditEvents)
+      .where(and(
+        eq(auditEvents.entityType, 'artwork_approval_event'),
+        eq(auditEvents.entityId, approvalEventId),
+        eq(auditEvents.action, 'ARTWORK_APPROVAL_RECORDED')
+      ))
+      .orderBy(asc(auditEvents.occurredAt), asc(auditEvents.id))
+      .limit(1);
+    const exception = (recorded?.afterState as { sharedEvidenceException?: unknown } | null)?.sharedEvidenceException;
+    const reason = exception !== null && typeof exception === 'object'
+      ? (exception as { reason?: unknown }).reason
+      : undefined;
+    return {
+      issuerEntity: document?.issuerEntity ?? null,
+      sharedEvidenceException: typeof reason === 'string' && reason.length > 0 ? { reason } : null
+    };
   }
 
   async function loadMakerPoEvidenceDocument(
@@ -5051,7 +5681,7 @@ export function createApp({
 
   app.post('/api/film-supply-orders/:orderId/maker-purchase-orders', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -5061,9 +5691,9 @@ export function createApp({
     }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'maker_po:create', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     // Progressive maker-PO work stays frozen during CR/CANCELLED. Cleanup
     // endpoints remain available, but replacement paper cannot be created.
@@ -5083,8 +5713,11 @@ export function createApp({
     }
 
     const body = await context.req.json().catch(() => null) as any;
-    if (typeof body?.recipientAddress !== 'string' || body.recipientAddress.trim().length === 0) {
-      return context.json({ error: '宛先住所が必要です', code: 'RECIPIENT_ADDRESS_REQUIRED' }, 422);
+    // P0 R10: the recipient is the maker's mail address and is checked as one
+    // here, when the paper is written — not first at the send.
+    const recipientCheck = validateMakerPoRecipientAddress(body?.recipientAddress);
+    if (!recipientCheck.ok) {
+      return context.json({ error: recipientCheck.message, code: recipientCheck.code }, 422);
     }
     let amounts: { currency: string; totalAmount: string } | null = null;
     if (body?.amounts !== undefined && body?.amounts !== null) {
@@ -5185,7 +5818,7 @@ export function createApp({
           items: parts.lines,
           artworkFiles: parts.artworkFiles,
           amounts,
-          recipientAddress: body.recipientAddress
+          recipientAddress: recipientCheck.address
         });
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         const poId = uuidv7(now);
@@ -5258,7 +5891,7 @@ export function createApp({
 
   app.post('/api/maker-purchase-orders/:poId/ceo-approval', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const poId = context.req.param('poId');
     if (!isUuid(poId)) {
       return context.json({
@@ -5269,15 +5902,15 @@ export function createApp({
 
     const [existing] = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.id, poId)).limit(1);
-    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
     const [order] = await db.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
-    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
 
     // CEO approval is intentionally never delegated: staff attempts get 403
     // (T-31 pattern).
     const decision = canPerform(toActor(user), 'ceo_approve', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '代表者のみ承認できます' }, 403);
+    if (!decision.allowed) return context.json({ error: '代表者のみ承認できます', code: 'CEO_ONLY' }, 403);
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
@@ -5331,13 +5964,30 @@ export function createApp({
     });
     if (approvalRecheck) return context.json(approvalRecheck, 422);
 
+    // P0 R10: the paper is sent to its recipient mail address and the send
+    // evidence is checked against it. A paper frozen before R10 with a postal
+    // address or a name could never pass that check, so it is refused before
+    // the approval rather than after the send.
+    const recipientCheck = validateMakerPoRecipientAddress((existing.snapshot as MakerPoSnapshot | null)?.recipient?.address);
+    if (!recipientCheck.ok) {
+      return context.json({
+        error: 'このメーカー発注書の送信先がメールアドレスではないため承認できません。発注書を取り消し、送信先メールアドレスを入力して作り直してください',
+        code: 'RECIPIENT_ADDRESS_INVALID'
+      }, 422);
+    }
+
     const now = new Date();
     try {
       const outcome = await db.transaction(async (tx) => {
-        await lockMakerPoOrderForProgressive(tx, {
+        const lockedOrder = await lockMakerPoOrderForProgressive(tx, {
           filmSupplyOrderId: existing.filmSupplyOrderId,
           expectedStatus: order.status
         });
+        // P0 R01: the payment terms stay editable until this approval, so the
+        // G6 gate is decided again on the row this transaction holds locked —
+        // a change committed while the request waited cannot be approved over.
+        const lockedPaymentGate = evaluatePaymentGate({ paymentTerms: lockedOrder.paymentTerms });
+        if (!lockedPaymentGate.ok) throw new PaymentGateClosedUnderLock(lockedPaymentGate.paymentTerms);
         const [po] = await tx.select().from(makerPurchaseOrders)
           .where(eq(makerPurchaseOrders.id, poId)).limit(1).for('update');
         if (!po || po.status !== approval.from) throw new MakerPoStateConflict();
@@ -5388,8 +6038,8 @@ export function createApp({
             paymentGate: {
               applicable: true,
               satisfied: true,
-              paymentTerms: paymentGate.paymentTerms,
-              gatedOn: paymentGate.gatedOn
+              paymentTerms: lockedPaymentGate.paymentTerms,
+              gatedOn: lockedPaymentGate.gatedOn
             }
           },
           occurredAt: now,
@@ -5442,6 +6092,14 @@ export function createApp({
       if (isPostgresDeadlockError(error)) {
         return context.json({ error: '発注状態の処理でロック競合が発生しました', code: 'MAKER_PO_LOCK_CONFLICT' }, 409);
       }
+      if (error instanceof PaymentGateClosedUnderLock) {
+        const closed = evaluatePaymentGate({ paymentTerms: error.paymentTerms });
+        return context.json({
+          error: closed.ok ? '決済条件がすでに変わっています' : closed.message,
+          code: 'PAYMENT_GATE_UNSATISFIED',
+          paymentTerms: error.paymentTerms
+        }, 422);
+      }
       if (error instanceof MakerPoStateConflict) {
 
         return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
@@ -5450,9 +6108,63 @@ export function createApp({
     }
   });
 
+  // P0 R12: the send-evidence picker reads its choices here. Only this order's
+  // send_evidence versions are offered, and those that belong to a cancelled
+  // maker PO (bound to it or cited by its send) are left out — the count of the
+  // hidden ones is returned so the screen can say why fewer files appear.
+  app.get('/api/maker-purchase-orders/:poId/send-evidence-candidates', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
+    const poId = context.req.param('poId');
+    if (!isUuid(poId)) {
+      return context.json({
+        error: '経路パラメータ（poId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
+    const [paper] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1);
+    if (!paper || paper.deletedAt) {
+      return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
+    }
+    const [order] = await db.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, paper.filmSupplyOrderId)).limit(1);
+    if (!order || order.deletedAt) {
+      return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
+    }
+    const decision = canPerform(toActor(user), 'maker_po:send_evidence', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
+
+    const versions = await db.select({
+      documentId: documents.id,
+      versionId: documentVersions.id,
+      versionNumber: documentVersions.versionNumber,
+      originalFilename: documentVersions.originalFilename,
+      makerPurchaseOrderId: documents.makerPurchaseOrderId,
+      createdAt: documentVersions.createdAt
+    }).from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(and(
+        eq(documents.projectId, order.projectId),
+        eq(documents.filmSupplyOrderId, order.id),
+        eq(documents.documentType, 'send_evidence')
+      ))
+      .orderBy(desc(documentVersions.createdAt));
+    const candidates: Array<Omit<(typeof versions)[number], 'makerPurchaseOrderId'>> = [];
+    let excludedCancelledCount = 0;
+    for (const version of versions) {
+      if (await sendEvidenceBelongsToCancelledPaper(db, version, poId)) {
+        excludedCancelledCount += 1;
+        continue;
+      }
+      const { makerPurchaseOrderId: _bound, ...visible } = version;
+      candidates.push(visible);
+    }
+    return context.json({ makerPurchaseOrderId: poId, candidates, excludedCancelledCount });
+  });
+
   app.post('/api/maker-purchase-orders/:poId/send-evidence', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const poId = context.req.param('poId');
     if (!isUuid(poId)) {
       return context.json({
@@ -5463,12 +6175,12 @@ export function createApp({
 
     const [existing] = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.id, poId)).limit(1);
-    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
     const [order] = await db.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
-    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'maker_po:send_evidence', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
@@ -5607,6 +6319,17 @@ export function createApp({
           evidenceDocumentVersionId = stored.versionId;
         } else if (requestedEvidenceId !== null) {
           evidenceDocument = await loadMakerPoEvidenceDocument(tx, requestedEvidenceId);
+          // P0 R12: the send mail of a cancelled paper proves that paper's send,
+          // never a replacement paper's. A version bound to, or already cited
+          // by, a cancelled maker PO is refused before anything is recorded.
+          if (evidenceDocument !== null
+            && await sendEvidenceBelongsToCancelledPaper(tx, evidenceDocument, poId)) {
+            return {
+              kind: 'invalid' as const,
+              code: 'SEND_EVIDENCE_FROM_CANCELLED_PO',
+              message: 'この送信証跡は取り消し済みのメーカー発注書の送信メールです。現在の発注書を送信したメールのEMLを登録してください'
+            };
+          }
           if (evidenceDocument !== null) {
             try {
               emlBytes = await readFile(evidenceDocument.storagePath ?? '');
@@ -5920,7 +6643,7 @@ export function createApp({
   // enforces with its append-only trigger.
   app.post('/api/maker-po-events/:eventId/send-manual-verification', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const eventId = context.req.param('eventId');
     if (!isUuid(eventId)) {
       return context.json({
@@ -5931,18 +6654,18 @@ export function createApp({
 
     const [target] = await db.select().from(makerPoEvents)
       .where(eq(makerPoEvents.id, eventId)).limit(1);
-    if (!target) return context.json({ error: 'メーカー発注イベントが見つかりません' }, 404);
+    if (!target) return context.json({ error: 'メーカー発注イベントが見つかりません', code: 'MAKER_PO_EVENT_NOT_FOUND' }, 404);
     const [po] = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.id, target.makerPurchaseOrderId)).limit(1);
-    if (!po) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    if (!po) return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
     const [order] = await db.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
-    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
 
     // Representative only: this record asserts a delivery, so it is never
     // delegated (the same rule as the approval evidence verification).
     const decision = canPerform(toActor(user), 'maker_po:verify_send', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
@@ -5964,22 +6687,9 @@ export function createApp({
     const body = await context.req.json().catch(() => null) as any;
     const resultCheck = validateEvidenceVerificationResult(body?.result);
     if (!resultCheck.ok) return context.json({ error: resultCheck.message, code: resultCheck.code }, 422);
-    if (typeof body?.verifierName !== 'string' || body.verifierName.trim().length === 0) {
-      return context.json({
-        error: '検証者名（verifierName）は必須です。原本を確認した人を記録してください',
-        code: 'VERIFIER_NAME_REQUIRED'
-      }, 422);
-    }
-    const verifiedAt = parseStrictRequiredDate(body?.verifiedAt);
-    if (!verifiedAt.ok) {
-      return context.json({ error: '検証日時（verifiedAt）が必要です', code: 'VERIFIED_AT_REQUIRED' }, 422);
-    }
-    if (verifiedAt.date.getTime() > Date.now() + 5 * 60 * 1000) {
-      return context.json({ error: '検証日時（verifiedAt）に未来時刻は記録できません', code: 'VERIFIED_AT_IN_FUTURE' }, 422);
-    }
-    if (verifiedAt.date.getTime() < Date.UTC(2000, 0, 1)) {
-      return context.json({ error: '検証日時（verifiedAt）が許容範囲外です', code: 'VERIFIED_AT_OUT_OF_RANGE' }, 422);
-    }
+    // P0 R11: the verifier and the verification time are the logged-in
+    // representative and the server clock, never client input.
+    const verifier = await sessionVerifierIdentity(user.id);
     if (typeof body?.reasonNote !== 'string' || body.reasonNote.trim().length === 0) {
       return context.json({
         error: '根拠（reasonNote）は必須です。何を確認して納品を断定したかを記録してください',
@@ -6016,8 +6726,8 @@ export function createApp({
       makerPoEventId: target.id,
       makerPurchaseOrderId: po.id,
       result: resultCheck.value,
-      verifierName: body.verifierName.trim(),
-      verifiedAt: verifiedAt.date,
+      verifierName: verifier.name,
+      verifiedAt: now,
       reasonNote: body.reasonNote.trim(),
       recordedByUserId: user.id,
       recordedAt: now
@@ -6176,7 +6886,7 @@ export function createApp({
   // decision, exactly like freezing it was.
   app.post('/api/maker-purchase-orders/:poId/cancel', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const poId = context.req.param('poId');
     if (!isUuid(poId)) {
       return context.json({
@@ -6187,12 +6897,12 @@ export function createApp({
 
     const [existing] = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.id, poId)).limit(1);
-    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
     const [order] = await db.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
-    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'maker_po:cancel', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '代表者のみ取り消せます' }, 403);
+    if (!decision.allowed) return context.json({ error: '代表者のみ取り消せます', code: 'CEO_ONLY' }, 403);
 
     const body = await context.req.json().catch(() => null) as any;
     const noteCheck = normalizeRequiredReason(body?.note);
@@ -6396,7 +7106,7 @@ export function createApp({
   // paper it acknowledges, admin-only like the cancellation itself.
   app.post('/api/maker-purchase-orders/:poId/cancellation-acknowledgement', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const poId = context.req.param('poId');
     if (!isUuid(poId)) {
       return context.json({
@@ -6407,10 +7117,10 @@ export function createApp({
 
     const [existing] = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.id, poId)).limit(1);
-    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
     const [order] = await db.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
-    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const [cancellationEvent] = await db.select({ recordedAt: makerPoEvents.recordedAt })
       .from(makerPoEvents)
       .where(and(
@@ -6422,7 +7132,7 @@ export function createApp({
     // The same act as cancelling: freeing (or keeping closed) the order's
     // production step is the representative's decision, never staff work.
     const decision = canPerform(toActor(user), 'maker_po:cancel', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '代表者のみ承認を記録できます' }, 403);
+    if (!decision.allowed) return context.json({ error: '代表者のみ承認を記録できます', code: 'CEO_ONLY' }, 403);
     const ackProjectId = order.projectId;
     const ackActorUserId = user.id;
     const now = new Date();
@@ -6744,7 +7454,7 @@ export function createApp({
 
   app.post('/api/maker-purchase-orders/:poId/accept-evidence', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const poId = context.req.param('poId');
     if (!isUuid(poId)) {
       return context.json({
@@ -6755,12 +7465,12 @@ export function createApp({
 
     const [existing] = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.id, poId)).limit(1);
-    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
     const [order] = await db.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
-    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'maker_po:accept_evidence', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
@@ -6986,7 +7696,7 @@ export function createApp({
   // so an admin still reads the frozen paper while staff and viewer cannot.
   app.get('/api/maker-purchase-orders/:poId', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const poId = context.req.param('poId');
     if (!isUuid(poId)) {
       return context.json({
@@ -6996,12 +7706,12 @@ export function createApp({
     }
 
     const [po] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1);
-    if (!po) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    if (!po) return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
     const [order] = await db.select({ projectId: filmSupplyOrders.projectId })
       .from(filmSupplyOrders).where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
-    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'maker_po:read', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const events = await db.select().from(makerPoEvents)
       .where(eq(makerPoEvents.makerPurchaseOrderId, poId))
@@ -7014,7 +7724,7 @@ export function createApp({
 
   app.get('/api/film-supply-orders/:orderId/maker-purchase-orders', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -7025,9 +7735,9 @@ export function createApp({
 
     const [order] = await db.select({ projectId: filmSupplyOrders.projectId })
       .from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
-    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'maker_po:read', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const rows = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.filmSupplyOrderId, orderId))
@@ -7043,7 +7753,7 @@ export function createApp({
   // the provisional record it confirms. Nothing here can close the paper.
   app.post('/api/maker-purchase-orders/:poId/provisional-acceptance', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const poId = context.req.param('poId');
     if (!isUuid(poId)) {
       return context.json({
@@ -7054,12 +7764,12 @@ export function createApp({
 
     const [existing] = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.id, poId)).limit(1);
-    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません' }, 404);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
     const [order] = await db.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
-    if (!order) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'maker_po:accept_provisional', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     // A hold freezes the whole maker-PO workflow. Letting the paper advance
     // while the order stays behind makes release unable to catch up (M2).
@@ -7173,7 +7883,7 @@ export function createApp({
   // never a statement that money arrived.
   app.get('/api/film-supply-orders/:orderId/payment-gate', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return context.json({ error: '認証が必要です' }, 401);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const orderId = context.req.param('orderId');
     if (!isUuid(orderId)) {
       return context.json({
@@ -7183,9 +7893,9 @@ export function createApp({
     }
 
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
-    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません' }, 404);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'maker_po:read', 'F1', order.projectId);
-    if (!decision.allowed) return context.json({ error: '権限がありません' }, 403);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
 
     const paymentGate = evaluatePaymentGate({ paymentTerms: order.paymentTerms });
     return context.json({
