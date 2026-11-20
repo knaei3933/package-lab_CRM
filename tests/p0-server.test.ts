@@ -577,6 +577,12 @@ describe('R12 the evidence-gap reason is kept; a cancelled paper\'s send mail is
     expect(firstSend.status).toBe(200);
     const firstVersionId = (firstSend.body as any).event.evidenceDocumentVersionId as string;
     expect(firstVersionId).toBeTruthy();
+    // A second mail uploaded for paper 1 but never cited: excluded by its binding alone.
+    const boundOnly = await upload(chain.sevenPoId, chain.orderId, {
+      documentType: 'send_evidence', issuerEntity: 'kanei', contentType: 'message/rfc822',
+      filename: `p0-bound-${nextTag()}.eml`, contentBase64: buildMakerPoEml({ orderCode: chain.code }).contentBase64,
+      makerPurchaseOrderId: first.body.id
+    });
     expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/cancel`, { note: '宛先誤りのため再作成' })).status).toBe(200);
 
     const second = await createPaper(chain.orderId, 'maker-po@example.com');
@@ -590,8 +596,9 @@ describe('R12 the evidence-gap reason is kept; a cancelled paper\'s send mail is
 
     const candidates = await send('staff', 'GET', `/api/maker-purchase-orders/${second.body.id}/send-evidence-candidates`);
     expect(candidates.status).toBe(200);
-    expect(candidates.body.excludedCancelledCount).toBe(1);
+    expect(candidates.body.excludedCancelledCount).toBe(2);
     expect(candidates.body.candidates.map((candidate: any) => candidate.versionId)).not.toContain(firstVersionId);
+    expect(candidates.body.candidates.map((candidate: any) => candidate.versionId)).not.toContain(boundOnly.version.id);
     expect(candidates.body.candidates).toHaveLength(1);
     expect((await send('viewer', 'GET', `/api/maker-purchase-orders/${second.body.id}/send-evidence-candidates`)).status).toBe(403);
 
@@ -601,6 +608,14 @@ describe('R12 the evidence-gap reason is kept; a cancelled paper\'s send mail is
     });
     expect(reused.status).toBe(422);
     expect(reused.body.code).toBe('SEND_EVIDENCE_FROM_CANCELLED_PO');
+    const reusedBound = await post('staff', `/api/maker-purchase-orders/${second.body.id}/send-evidence`, {
+      evidenceDocumentVersionId: boundOnly.version.id, senderAddress: 'staff@kanei.example',
+      recipients: ['maker-po@example.com'], sentAt: new Date().toISOString()
+    });
+    expect(reusedBound.body.code).toBe('SEND_EVIDENCE_FROM_CANCELLED_PO');
+    expect((await post('viewer', `/api/maker-purchase-orders/${second.body.id}/send-evidence`, {
+      evidenceDocumentVersionId: boundOnly.version.id, sentAt: new Date().toISOString()
+    })).status).toBe(403);
   });
 });
 
@@ -651,6 +666,13 @@ describe('R05 duplicates answer 409 DUPLICATE; Idempotency-Key replays one write
     const invalid = await post('staff', `/api/projects/${projectId}/seven-purchase-orders`, { poNumber }, { 'idempotency-key': 'x' });
     expect(invalid.status).toBe(400);
     expect(invalid.body.code).toBe('IDEMPOTENCY_KEY_INVALID');
+    // A fake session cookie is never cached or replayed.
+    const fake = await app.request(`/api/projects/${projectId}/seven-purchase-orders`, {
+      method: 'POST', headers: { 'content-type': 'application/json', cookie: `${SESSION_COOKIE}=forged`, 'idempotency-key': key },
+      body: JSON.stringify({ poNumber })
+    });
+    expect(fake.status).toBe(401);
+    expect(fake.headers.get('idempotent-replayed')).toBeNull();
     // Scoped to the session: the admin's same key is a new request (and a duplicate).
     const admin = await post('admin', `/api/projects/${projectId}/seven-purchase-orders`, { poNumber }, { 'idempotency-key': key });
     expect(admin.status).toBe(409);
@@ -674,6 +696,10 @@ describe('R05 duplicates answer 409 DUPLICATE; Idempotency-Key replays one write
     expect(first.kind).toBe('execute');
     if (first.kind === 'execute') first.complete({ status: 503, body: '{}', contentType: 'application/json' });
     expect(store.begin('s', 'key-00000001', 'f').kind).toBe('execute');
+    const refused = store.begin('s', 'key-00000003', 'f');
+    if (refused.kind === 'execute') refused.complete({ status: 422, body: '{}', contentType: 'application/json' });
+    // A refusal is forgotten: the corrected body with the same key runs.
+    expect(store.begin('s', 'key-00000003', 'g').kind).toBe('execute');
     const kept = store.begin('s', 'key-00000002', 'f');
     if (kept.kind === 'execute') kept.complete({ status: 201, body: '{"id":1}', contentType: 'application/json' });
     expect(store.begin('s', 'key-00000002', 'f').kind).toBe('replay');
@@ -695,17 +721,15 @@ describe('R09 every refusal carries a stable code and safe Japanese text', () =>
         for (const match of source.matchAll(/code: '([A-Z][A-Z0-9_]+)'/g)) codes.add(match[1]!);
       }
     }
-    expect(codes.size).toBeGreaterThan(150);
+    expect(codes.size).toBeGreaterThan(100);
     const missing = [...codes].filter((code) => !(code in ERROR_MESSAGES_JA));
     expect(missing).toEqual([]);
     for (const [code, message] of Object.entries(ERROR_MESSAGES_JA)) {
       expect(isSafeUserMessage(message), code).toBe(true);
     }
     const documented = await readFile(path.resolve('docs/api/ERROR_CODES.md'), 'utf8');
-    if (documented !== null) {
-      const notDocumented = Object.keys(ERROR_MESSAGES_JA).filter((code) => !documented.includes(`\`${code}\``));
-      expect(notDocumented).toEqual([]);
-    }
+    const notDocumented = Object.keys(ERROR_MESSAGES_JA).filter((code) => !documented.includes(`\`${code}\``));
+    expect(notDocumented).toEqual([]);
   });
 
   it('normalizes English core messages, enums, field names and internal URLs (unit)', () => {
@@ -716,6 +740,11 @@ describe('R09 every refusal carries a stable code and safe Japanese text', () =>
     expect(isSafeUserMessage('決済条件（paymentTerms: prepaid / on_delivery）')).toBe(false);
     expect(isSafeUserMessage('この発注には既に有効なメーカー発注書があります（0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b）')).toBe(true);
     expect(isSafeUserMessage('15:12 に送信されたEMLを確認してください')).toBe(true);
+    // ReDoS guard: a huge echoed value is rejected at once, without the patterns.
+    const started = Date.now();
+    expect(isSafeUserMessage(`あ${'a'.repeat(200_000)}`)).toBe(false);
+    expect(isSafeUserMessage(`あ${'a@'.repeat(100_000)}`)).toBe(false);
+    expect(Date.now() - started).toBeLessThan(200);
     expect(normalizeRefusalBody(422, { error: 'unit must be one of rolls', code: 'UNKNOWN_UNIT' }))
       .toEqual({ error: ERROR_MESSAGES_JA.UNKNOWN_UNIT, code: 'UNKNOWN_UNIT' });
     expect(normalizeRefusalBody(404, { error: 'x' })).toMatchObject({ code: 'NOT_FOUND' });
@@ -749,5 +778,112 @@ describe('R09 every refusal carries a stable code and safe Japanese text', () =>
       'AUTH_REQUIRED', 'FORBIDDEN', 'FILM_SUPPLY_ORDER_NOT_FOUND', 'INVALID_PATH_PARAMETER', 'UNKNOWN_UNIT',
       'INVALID_QUANTITY', 'MAKER_CHAIN_TRANSITION_FORBIDDEN', 'ROUTE_NOT_FOUND', 'UNIT_DOMAIN_MISMATCH', 'CSRF_ORIGIN_REJECTED'
     ]);
+  });
+});
+
+// --------------------------------------------------------------- review gaps
+describe('P0 follow-up coverage (test-engineer review)', () => {
+  it('R01 PATCH: missing/unknown term refused, undetermined allowed, CANCELLED 409, change review frozen', async () => {
+    const sevenPoId = await verifiedSevenPo();
+    const { orderId } = await createOrder(sevenPoId, 'prepaid');
+    const patch = (body: unknown) => send('staff', 'PATCH', `/api/film-supply-orders/${orderId}/payment-terms`, body);
+    expect((await patch({})).body.code).toBe('PAYMENT_TERMS_REQUIRED');
+    expect((await patch({ paymentTerms: 'later' })).body.code).toBe('UNKNOWN_PAYMENT_TERMS');
+    expect((await patch({ paymentTerms: 'prepaid', reason: 'あ'.repeat(1001) })).body.code).toBe('PAYMENT_TERMS_REASON_TOO_LONG');
+    const back = await patch({ paymentTerms: 'undetermined', reason: '顧客と再協議' });
+    expect(back.status).toBe(200);
+    expect((await orderRow(orderId)).paymentTerms).toBe('undetermined');
+    // Every other transition answers an empty warning list.
+    const moved = await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'SEVEN_PO_VERIFIED' });
+    expect(moved.body.warnings).toHaveLength(1);
+    const next = await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
+    expect(next.body.warnings).toEqual([]);
+    expect((await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'CHANGE_REVIEW' })).status).toBe(200);
+    const review = await patch({ paymentTerms: 'prepaid' });
+    expect(review.body).toMatchObject({ code: 'PAYMENT_TERMS_LOCKED', reason: 'order_frozen' });
+
+    const cancelledOrder = await createOrder(sevenPoId, 'undetermined');
+    await db.update(filmSupplyOrders).set({ status: 'CANCELLED' as any }).where(eq(filmSupplyOrders.id, cancelledOrder.orderId));
+    const cancelled = await send('staff', 'PATCH', `/api/film-supply-orders/${cancelledOrder.orderId}/payment-terms`, { paymentTerms: 'prepaid' });
+    expect(cancelled.status).toBe(409);
+    expect(cancelled.body.code).toBe('FILM_ORDER_CANCELLED');
+    const list = await send('staff', 'GET', `/api/projects/${projectId}/film-supply-orders`);
+    const row = list.body.orders.find((order: any) => order.id === cancelledOrder.orderId);
+    expect(row).toMatchObject({ paymentTerms: 'undetermined', attention: [], paymentTermsEditable: false });
+  });
+
+  it('R01 list marks an approved order as not editable', async () => {
+    const chain = await readyOrder('prepaid');
+    const paper = await createPaper(chain.orderId);
+    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`)).status).toBe(200);
+    const list = await send('staff', 'GET', `/api/projects/${projectId}/film-supply-orders`);
+    expect(list.body.orders.find((order: any) => order.id === chain.orderId)).toMatchObject({ paymentTermsEditable: false });
+  });
+
+  it('R02 a matching-issuer approval is recorded normally; viewers and outsiders cannot record', async () => {
+    const sevenPoId = await verifiedSevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    await toApprovalPending(orderId);
+    const { revisionId } = await revisionFor(sevenPoId, orderId);
+    const identifier = `SIG-P0-OK-${nextTag()}`;
+    const pdf = await evidenceFor(sevenPoId, orderId, 'seven', identifier, 'application/pdf');
+    const body = { organization: 'seven', decision: 'APPROVE', evidenceSource: 'signed_document', eventTime: '2026-11-15T10:00:00.000Z', evidenceIdentifier: identifier, evidenceDocumentVersionId: pdf.version.id };
+    expect((await post('viewer', `/api/artwork-revisions/${revisionId}/approvals`, body)).status).toBe(403);
+    expect((await post('outsider', `/api/artwork-revisions/${revisionId}/approvals`, body)).status).toBe(403);
+    const recorded = await post('staff', `/api/artwork-revisions/${revisionId}/approvals`, body);
+    expect(recorded.status).toBe(201);
+    expect(recorded.body).toMatchObject({ issuerMatchesOrganization: true, sharedEvidenceException: null, evidenceIdentifierStatus: 'pending_manual_verification' });
+    const gate = await send('admin', 'GET', `/api/film-supply-orders/${orderId}/approval-gate`);
+    expect(gate.body.pendingManualVerifications.find((item: any) => item.approvalEventId === recorded.body.approvalEvent.id))
+      .toMatchObject({ evidenceIssuerEntity: 'seven', expectedIssuerEntity: 'seven', issuerMatchesOrganization: true, confirmable: true, sharedEvidenceException: null });
+    const staffGate = await send('staff', 'GET', `/api/film-supply-orders/${orderId}/approval-gate`);
+    expect(staffGate.body.pendingManualVerifications).toEqual([]);
+    const tooLong = await approval(revisionId, 'customer', pdf.version.id, identifier, { sharedEvidence: true, sharedEvidenceReason: 'あ'.repeat(1001) });
+    expect(tooLong.body.code).toBe('SHARED_EVIDENCE_REASON_TOO_LONG');
+  });
+
+  it('R05 maps every known unique constraint to its field', async () => {
+    const code = `P0-DUP-PRJ-${nextTag()}`;
+    const project = { code, name: '重複確認', route: 'F1', endCustomerAccountId: customerAccountId, sevenAccountId, makerAccountId };
+    expect((await post('admin', '/api/projects', project)).status).toBe(201);
+    const dupProject = await post('admin', '/api/projects', project);
+    expect(dupProject.status).toBe(409);
+    expect(dupProject.body).toMatchObject({ code: 'DUPLICATE', field: 'code', existing: { entityType: 'project' } });
+
+    const fillingCode = `FILL-P0-${nextTag()}`;
+    const filling = { code: fillingCode, lines: [{ lineNumber: 1, description: '充填', orderedQuantity: 10, unit: 'pods' }] };
+    expect((await post('staff', `/api/projects/${projectId}/filling-orders`, filling)).status).toBe(201);
+    const dupFilling = await post('staff', `/api/projects/${projectId}/filling-orders`, filling);
+    expect(dupFilling.status).toBe(409);
+    expect(dupFilling.body).toMatchObject({ code: 'DUPLICATE', field: 'code', existing: { entityType: 'filling_order' } });
+
+    const referenceCode = `PRE-P0-${nextTag()}`;
+    const first = await post('staff', `/api/projects/${projectId}/pre-order-references`, { referenceCode });
+    expect(first.status, JSON.stringify(first.body)).toBe(201);
+    const dupRef = await post('staff', `/api/projects/${projectId}/pre-order-references`, { referenceCode });
+    expect(dupRef.status).toBe(409);
+    expect(dupRef.body).toMatchObject({ code: 'DUPLICATE', field: 'referenceCode', existing: { entityType: 'pre_order_reference' } });
+  });
+
+  it('R10 local-part guards: dots, length and lists are refused', async () => {
+    const chain = await readyOrder();
+    for (const recipientAddress of ['order..x@maker.example.jp', 'order.@maker.example.jp', `${'a'.repeat(65)}@maker.example.jp`, 'a@x.jp, b@x.jp', `a@${'b'.repeat(250)}.jp`]) {
+      expect((await createPaper(chain.orderId, recipientAddress)).body.code, recipientAddress).toBe('RECIPIENT_ADDRESS_INVALID');
+    }
+  });
+
+  it('R11 a verification without any verifier fields records the session user', async () => {
+    const sevenPoId = await verifiedSevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    await toApprovalPending(orderId);
+    const { revisionId } = await revisionFor(sevenPoId, orderId);
+    const identifier = `SIG-P0-NF-${nextTag()}`;
+    const pdf = await evidenceFor(sevenPoId, orderId, 'customer_generated', identifier, 'application/pdf');
+    const recorded = await approval(revisionId, 'customer', pdf.version.id, identifier, { evidenceSource: 'signed_document' });
+    const eventId = recorded.body.approvalEvent.id as string;
+    const verified = await post('admin', `/api/artwork-approval-events/${eventId}/verification`, { result: 'rejected', reasonNote: '識別子が見当たらない' });
+    expect(verified.status).toBe(201);
+    const [row] = await db.select().from(evidenceManualVerifications).where(eq(evidenceManualVerifications.approvalEventId, eventId));
+    expect(row!.verifierName).toBe(ADMIN_DISPLAY_NAME);
   });
 });

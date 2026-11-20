@@ -312,11 +312,13 @@ const ALLOWED_LATIN_WORDS = new Set(['PO', 'EML', 'eml', 'PDF', 'ID', 'CSV', 'MB
  * address are allowed.
  */
 export function isSafeUserMessage(text: unknown): text is string {
-  if (typeof text !== 'string' || text.length === 0) return false;
+  // A refusal sentence is short; a long text (e.g. echoing a huge client value)
+  // is replaced without running any pattern over it (ReDoS guard).
+  if (typeof text !== 'string' || text.length === 0 || text.length > 400) return false;
   if (!JAPANESE_CHARACTER.test(text)) return false;
   if (INTERNAL_LOCATION.test(text)) return false;
   // Mail addresses are business data (the maker's recipient), not internals.
-  const withoutIds = text.replace(UUID_TEXT, ' ').replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, ' ');
+  const withoutIds = text.replace(UUID_TEXT, ' ').replace(/[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63}){1,8}/g, ' ');
   for (const word of withoutIds.match(/[A-Za-z][A-Za-z0-9_]*/g) ?? []) {
     if (!ALLOWED_LATIN_WORDS.has(word)) return false;
   }

@@ -14,7 +14,10 @@ import { createHash } from 'node:crypto';
  *   remain the durable guard.
  * - the scope is the SHA-256 of the session token, so a key never replays
  *   another user's answer; requests without a session cookie are not cached.
- * - 5xx answers are not kept, so a retry after an outage really runs again.
+ * - only 2xx answers are kept: a refusal or an outage is forgotten, so a
+ *   corrected or retried submit really runs again.
+ * - only valid sessions are cached, and bodies larger than the upload limit are
+ *   not read by this layer.
  */
 export const IDEMPOTENCY_HEADER = 'idempotency-key';
 export const IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
@@ -78,7 +81,9 @@ export class IdempotencyStore {
     return {
       kind: 'execute',
       complete: (response) => {
-        const keep = response !== null && response.status < 500
+        // Only a successful write is replayed. A refusal (4xx) or an outage
+        // (5xx) is forgotten so a corrected or retried submit really runs.
+        const keep = response !== null && response.status >= 200 && response.status < 300
           && Buffer.byteLength(response.body, 'utf8') <= MAX_CACHED_BODY_BYTES;
         if (keep) {
           entry.response = response;

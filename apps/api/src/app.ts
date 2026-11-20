@@ -606,6 +606,31 @@ async function loadExceptionOrigin(
   return filmSupplyOrderStateForValue((event?.beforeState as { status?: unknown } | null)?.status);
 }
 
+/** Reads a request body up to `cap` bytes; null when it is larger (P0 R05 idempotency). */
+async function readCappedBody(request: Request, cap: number): Promise<Uint8Array | null> {
+  if (!request.body) return new Uint8Array(0);
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+}
+
 export function createApp({
   db,
   secureCookies = false,
@@ -644,10 +669,10 @@ export function createApp({
     } catch {
       // Immutable headers: the replacement below still carries its own length.
     }
-    context.res = new Response(JSON.stringify(normalized), {
-      status: response.status,
-      headers: { 'content-type': 'application/json; charset=UTF-8' }
-    });
+    const headers = new Headers(response.headers);
+    headers.delete('content-length');
+    headers.set('content-type', 'application/json; charset=UTF-8');
+    context.res = new Response(JSON.stringify(normalized), { status: response.status, headers });
   });
 
   app.notFound((context) => context.json({
@@ -681,8 +706,24 @@ export function createApp({
     if (context.req.path.startsWith('/api/auth/')) return next();
     const token = readSessionToken(context.req.raw);
     if (!token) return next();
-    const bodyBytes = new Uint8Array(await context.req.raw.clone().arrayBuffer());
-    const fingerprint = `${sha256Hex(`${context.req.method} ${context.req.path}`)}:${sha256Hex(bodyBytes)}`;
+    // Only a real session is cached (a fake cookie can neither fill the store
+    // nor replay), and a body above the upload limit is never buffered here.
+    const bodyCap = Math.ceil(documentMaxBytes() * 1.4) + 64 * 1024;
+    const declaredLength = Number(context.req.header('content-length') ?? NaN);
+    if (Number.isFinite(declaredLength) && declaredLength > bodyCap) return next();
+    const sessionUser = await getSessionUser(context.req.raw, db);
+    if (!sessionUser) return next();
+    // A multipart retry carries a fresh boundary, so its fingerprint is the
+    // endpoint alone; JSON bodies are fingerprinted by content, read from a
+    // clone with a hard cap (an over-cap body is simply not cached).
+    const multipart = (context.req.header('content-type') ?? '').toLowerCase().startsWith('multipart/');
+    let bodyHash = 'multipart';
+    if (!multipart) {
+      const capped = await readCappedBody(context.req.raw.clone(), bodyCap);
+      if (capped === null) return next();
+      bodyHash = sha256Hex(capped);
+    }
+    const fingerprint = `${sha256Hex(`${context.req.method} ${context.req.path}`)}:${bodyHash}`;
     const replay = (stored: StoredResponse) => new Response(stored.body, {
       status: stored.status,
       headers: {
@@ -690,11 +731,11 @@ export function createApp({
         'idempotent-replayed': 'true'
       }
     });
-    let lookup = idempotencyStore.begin(sha256Hex(token), key, fingerprint);
+    let lookup = idempotencyStore.begin(`${sessionUser.id}:${sha256Hex(token)}`, key, fingerprint);
     if (lookup.kind === 'wait') {
       const first = await lookup.pending;
       if (first) return replay(first);
-      lookup = idempotencyStore.begin(sha256Hex(token), key, fingerprint);
+      lookup = idempotencyStore.begin(`${sessionUser.id}:${sha256Hex(token)}`, key, fingerprint);
     }
     if (lookup.kind === 'mismatch') {
       return context.json({
@@ -753,7 +794,13 @@ export function createApp({
   // P0 R04 / L1: the API answers its real port, and whether the database
   // answers within a short probe. `status` stays the API's own liveness, so the
   // container healthcheck keeps its meaning; `db` tells an outage apart.
+  // The probe result is reused for 5 s so an unauthenticated flood cannot take
+  // pool slots from real requests.
+  let healthProbe: { state: 'ok' | 'down'; at: number } | null = null;
   app.get('/api/health', async (context) => {
+    if (healthProbe && Date.now() - healthProbe.at < 5_000) {
+      return context.json({ status: 'ok', app: 'api', port, db: healthProbe.state });
+    }
     let dbState: 'ok' | 'down' = 'down';
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -767,6 +814,7 @@ export function createApp({
     } finally {
       if (timer) clearTimeout(timer);
     }
+    healthProbe = { state: dbState, at: Date.now() };
     return context.json({ status: 'ok', app: 'api', port, db: dbState });
   });
 
@@ -774,10 +822,11 @@ export function createApp({
   // connection but never answers would otherwise leave the button spinning.
   app.post('/api/auth/login', async (context) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const work = handleLogin(context);
+    const deadline = { passed: false };
+    const work = handleLogin(context, deadline);
     work.catch(() => undefined);
     const timedOut = new Promise<'timeout'>((resolve) => {
-      timer = setTimeout(() => resolve('timeout'), loginTimeoutMs);
+      timer = setTimeout(() => { deadline.passed = true; resolve('timeout'); }, loginTimeoutMs);
     });
     try {
       const winner = await Promise.race([work, timedOut]);
@@ -793,7 +842,7 @@ export function createApp({
     }
   });
 
-  async function handleLogin(context: Context<AuthContext>): Promise<Response> {
+  async function handleLogin(context: Context<AuthContext>, deadline: { passed: boolean }): Promise<Response> {
     const body = await context.req.json().catch(() => null) as {
       username?: unknown;
       password?: unknown;
@@ -909,6 +958,9 @@ export function createApp({
       return context.json({ error: '認証情報が正しくありません', code: 'INVALID_CREDENTIALS' }, 401);
     }
 
+    // The caller already answered LOGIN_TIMEOUT: no session is created for a
+    // login nobody will receive.
+    if (deadline.passed) return context.json({ error: ERROR_MESSAGES_JA.LOGIN_TIMEOUT!, code: 'LOGIN_TIMEOUT' }, 503);
     const { token, tokenHash } = issueToken();
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
     await db.insert(sessions).values({ id: uuidv7(), userId: outcome.userId, tokenHash, expiresAt });
