@@ -957,7 +957,7 @@ describe('M8-HARDEN2 FIX 3: the confirmed manual verification carries the chain 
       poId: chain.poId,
       makerPoId: poId
     });
-    expect((await postAs(staffToken, `/api/documents/${acceptance.document.id}/verify`, {
+    expect((await postAs(adminToken, `/api/documents/${acceptance.document.id}/verify`, {
       verificationStatus: 'verified'
     })).status).toBe(200);
     const blockedWhilePending = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {
@@ -1288,7 +1288,7 @@ describe('sixth recheck server residual fixes', () => {
     expect(unverified.status).toBe(422);
     expect(unverified.body).toMatchObject({ code: 'MAKER_CANCELLATION_ACK_EVIDENCE_NOT_VERIFIED' });
 
-    expect((await postAs(staffToken, `/api/documents/${evidence.document.id}/verify`, {
+    expect((await postAs(adminToken, `/api/documents/${evidence.document.id}/verify`, {
       verificationStatus: 'verified'
     })).status).toBe(200);
     const acknowledged = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancellation-acknowledgement`, {
@@ -1568,7 +1568,7 @@ describe('seventh recheck server hardening', () => {
       documentType: 'acceptance_evidence', issuerEntity: 'kanei', orderId: chain.orderId,
       poId: chain.poId, makerPoId: poId, content: 'ack evidence\n'
     });
-    expect((await postAs(staffToken, `/api/documents/${evidence.document.id}/verify`, {
+    expect((await postAs(adminToken, `/api/documents/${evidence.document.id}/verify`, {
       verificationStatus: 'verified'
     })).status).toBe(200);
 

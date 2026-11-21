@@ -298,7 +298,7 @@ async function reachProduction(tag: string) {
     // M8-HARDEN FIX B2 (d): acceptance evidence names the paper it closes.
     makerPoId: poId
   });
-  expect((await postAs(staffToken, `/api/documents/${acceptEvidence.document.id}/verify`, {
+  expect((await postAs(adminToken, `/api/documents/${acceptEvidence.document.id}/verify`, {
     verificationStatus: 'verified'
   })).status).toBe(200);
   expect((await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {

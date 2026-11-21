@@ -52,7 +52,6 @@ import {
   isFrozenFilmOrderStatus,
   isTerminalFilmSupplyOrderState,
   japaneseStatusSurface,
-  shouldAdvanceToDualApproved,
   resolveCancellationReview,
   toQuantityString,
   transitionFilmSupplyOrder,
@@ -2208,7 +2207,7 @@ export function createApp({
     const target = await loadAutoAdvanceTarget(context);
     if ('response' in target) return target.response;
     const { order } = target;
-    const facts = await loadAutoAdvanceFacts(db, order);
+    const facts = await loadAutoAdvanceFacts(db, order, { lockSevenPo: false });
     const plan = planAutoAdvance(order.status, facts);
     const manualTarget = MANUAL_NEXT_STEP[plan.finalStatus as FilmOrderStatus] ?? null;
     return context.json({
@@ -2247,6 +2246,9 @@ export function createApp({
     } catch (error) {
       if (error instanceof AutoAdvanceConflict) {
         return context.json({ error: '発注状態がすでに変わっています', code: 'FILM_ORDER_STATE_CHANGED' }, 409);
+      }
+      if (isPostgresDeadlockError(error)) {
+        return context.json({ error: '発注状態の処理でロック競合が発生しました', code: 'FILM_ORDER_LOCK_CONFLICT' }, 409);
       }
       throw error;
     }
@@ -2875,7 +2877,10 @@ export function createApp({
       return context.json({ error: evaluation.message, code: evaluation.code }, 422);
     }
 
-    const selfCheck = await selfVerificationFacts(user, [evidence!.versionId]);
+    const selfDecision = await selfVerificationFacts(user, [evidence!.versionId]);
+    // P-4 (decision 2): staff never confirm a delivery on evidence they uploaded.
+    if ('refusal' in selfDecision) return context.json(selfDecision.refusal, 403);
+    const selfCheck = selfDecision.facts;
     const now = new Date();
     const confirmationId = uuidv7(now);
     const auditId = uuidv7(now);
@@ -2983,6 +2988,8 @@ export function createApp({
         deliveredDisplay: formatQuantityDisplay(fromMilli(delivered), line.unit),
         confirmedQuantity: fromMilli(confirmed),
         confirmedDisplay: formatQuantityDisplay(fromMilli(confirmed), line.unit),
+        // P1 review H1/L7: the confirmed quantity reached the ordered quantity.
+        quantityComplete: confirmed >= toMilli(String(line.orderedQuantity)),
         deliveries: own.map((delivery) => ({
           id: delivery.id,
           sequence: delivery.sequence,
@@ -3003,17 +3010,23 @@ export function createApp({
     });
     const unconfirmed = deliveries.filter((delivery) => !delivery.confirmationId).map((delivery) => delivery.id);
     const status = String(order.status);
+    const closedAsDelivered = status === 'FILM_DELIVERED' || status === 'FILM_RECEIPT_ASSUMED_NO_ISSUE';
+    const allLinesComplete = lineViews.every((line) => line.quantityComplete);
     const stage = status === 'FILM_RECEIPT_ASSUMED_NO_ISSUE'
       ? 'completed'
       : deliveries.length === 0
         ? 'not_delivered'
         : unconfirmed.length > 0
           ? 'quantity_pending_confirmation'
-          : 'quantity_confirmed';
+          : !allLinesComplete && !closedAsDelivered
+            ? 'partially_delivered'
+            : 'quantity_confirmed';
     const nextAction = status === 'CANCELLED' || isExceptionFilmSupplyOrderState(order.status)
       ? null
       : stage === 'not_delivered'
         ? { action: 'RECORD_DELIVERY', label: '納品を記録する' }
+        : stage === 'partially_delivered'
+          ? { action: 'RECORD_DELIVERY', label: '残りの納品を記録する' }
         : stage === 'quantity_pending_confirmation'
           ? { action: 'CONFIRM_DELIVERY', label: '納品数量を確認する', deliveryIds: unconfirmed }
           : stage === 'quantity_confirmed' && status === 'FILM_SHIPPED'
@@ -3444,7 +3457,34 @@ export function createApp({
     const [anyFillingOrder] = await db.select({ id: fillingOrders.id }).from(fillingOrders)
       .where(eq(fillingOrders.projectId, projectId)).limit(1);
     const fillingApplicable = anyFillingOrder !== undefined;
+    // P1 review H1: per live film order (not deleted, not CANCELLED) — does it
+    // have any delivery, and has every line been delivered up to its ordered
+    // quantity? An order closed as delivered (FILM_DELIVERED or the assumed
+    // receipt) counts as fixed even when delivered short. Confirmation of each
+    // delivery stays the separate FILM_DELIVERY_PENDING_CONFIRMATION rule, so
+    // READY needs both: the full quantity, and every delivery confirmed.
+    const filmOrderFacts = await db.execute(sql`
+      select o.id,
+             exists (select 1 from film_deliveries d where d.film_supply_order_id = o.id) as has_delivery,
+             o.status::text in ('FILM_DELIVERED', 'FILM_RECEIPT_ASSUMED_NO_ISSUE')
+               or not exists (
+                 select 1 from film_supply_order_lines l
+                 where l.film_supply_order_id = o.id
+                   and coalesce((select sum(d.delivered_quantity) from film_deliveries d
+                                 where d.film_supply_order_line_id = l.id), 0)
+                       < l.ordered_quantity
+               ) as quantity_fixed
+      from film_supply_orders o
+      where o.project_id = ${projectId} and o.deleted_at is null and o.status::text <> 'CANCELLED'
+    `);
+    const filmOrderRows = (filmOrderFacts as unknown as { rows: Array<{ has_delivery: boolean; quantity_fixed: boolean }> }).rows;
+    const filmOrders = {
+      total: filmOrderRows.length,
+      withoutDelivery: filmOrderRows.filter((row) => !row.has_delivery).length,
+      quantityIncomplete: filmOrderRows.filter((row) => row.has_delivery && !row.quantity_fixed).length
+    };
     const evaluation = evaluateCommissionReadiness({
+      filmOrders,
       filmDeliveryRecorded,
       fillingDeliveryRecorded,
       sevenPoOfficiallyRegistered,
@@ -3511,6 +3551,7 @@ export function createApp({
       commissionCalculationAllowed: isCommissionCalculationAllowed(evaluation.state),
       fillingRequirement: fillingApplicable ? 'required' : 'not_applicable',
       basis: fillingApplicable ? 'film_and_filling_deliveries_confirmed' : 'film_delivered_quantity_confirmed',
+      filmOrders,
       filmDeliveredQuantities: quantityRows.map((row) => ({
         ...row,
         display: {
@@ -3913,7 +3954,10 @@ export function createApp({
 
     const versionRows = await db.select({ id: documentVersions.id }).from(documentVersions)
       .where(eq(documentVersions.documentId, documentId));
-    const selfCheck = await selfVerificationFacts(user, versionRows.map((row) => row.id), [current.createdByUserId]);
+    const selfDecision = await selfVerificationFacts(user, versionRows.map((row) => row.id), [current.createdByUserId]);
+    // P-4 (decision 2): staff never confirm evidence they uploaded themselves.
+    if ('refusal' in selfDecision) return context.json(selfDecision.refusal, 403);
+    const selfCheck = selfDecision.facts;
     const now = new Date();
     const updated = {
       verificationStatus: status,
@@ -4596,7 +4640,8 @@ export function createApp({
    */
   async function loadAutoAdvanceFacts(
     executor: MakerPoReadWriteExecutor,
-    order: { id: string; status: string; sevenPurchaseOrderId: string | null; paymentTerms: string | null }
+    order: { id: string; status: string; sevenPurchaseOrderId: string | null; paymentTerms: string | null },
+    options: { lockSevenPo?: boolean } = {}
   ): Promise<AutoAdvanceFacts> {
     let sevenPoGateRefusal: { code: string; message: string } | null = null;
     let sevenPoGateOpen = false;
@@ -4604,18 +4649,24 @@ export function createApp({
       // Security review L3: the PO row is share-locked (order row first, then
       // the PO) so a concurrent date overwrite or verification change cannot
       // slip between this gate decision and the automatic step.
-      if (order.sevenPurchaseOrderId) {
+      // Review L5: only inside the applying transaction (a preview reads plainly).
+      if (order.sevenPurchaseOrderId && options.lockSevenPo !== false) {
         await (executor as unknown as AppDatabase).select({ id: sevenPurchaseOrders.id }).from(sevenPurchaseOrders)
           .where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).limit(1).for('share');
       }
       sevenPoGateRefusal = await sevenPoPrecedenceRefusal(order, executor);
       sevenPoGateOpen = sevenPoGateRefusal === null;
     }
-    // Security review M1: a change review restarts the artwork cycle. Only a
-    // proof registered since the order last entered CHANGE_REVIEW (the revision
-    // that caused it included) can take the proof steps again, so a restart
-    // into デザインデータ受領 waits for new artwork instead of re-running on
-    // the old proof and its old approvals.
+    // Change review restarts the artwork cycle (security review M1, P1 review
+    // M3/M4). Facts are read relative to the order's last entry into
+    // CHANGE_REVIEW and to how it left it:
+    // - proof steps: a restart into デザインデータ受領 waits for a proof
+    //   registered since the review began (the revision that caused it
+    //   included); a restart into 校正ゲラ準備完了 / 校了確認待ち is the
+    //   decision to keep the current proof, so the current revisions count;
+    // - approvals: only approvals recorded since the review began count for
+    //   the automatic DUAL_APPROVED / MAKER_PO_READY steps (re-approval after
+    //   a review). The dual-approval gate itself is unchanged elsewhere.
     const [lastReview] = await executor.select({ occurredAt: auditEvents.occurredAt }).from(auditEvents)
       .where(and(
         eq(auditEvents.entityType, 'film_supply_order'),
@@ -4625,24 +4676,38 @@ export function createApp({
       ))
       .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
       .limit(1);
+    let keepCurrentProof = false;
+    if (lastReview) {
+      const [reviewExit] = await executor.select({ afterState: auditEvents.afterState }).from(auditEvents)
+        .where(and(
+          eq(auditEvents.entityType, 'film_supply_order'),
+          eq(auditEvents.entityId, order.id),
+          eq(auditEvents.action, 'FILM_SUPPLY_ORDER_TRANSITIONED'),
+          sql`${auditEvents.beforeState} ->> 'status' = 'CHANGE_REVIEW'`,
+          sql`${auditEvents.occurredAt} >= ${lastReview.occurredAt}`
+        ))
+        .orderBy(asc(auditEvents.occurredAt), asc(auditEvents.id))
+        .limit(1);
+      const exitStatus = (reviewExit?.afterState as { status?: unknown } | null)?.status;
+      keepCurrentProof = exitStatus === 'PROOF_READY' || exitStatus === 'APPROVAL_PENDING';
+    }
+    const cycleStart = lastReview && !keepCurrentProof ? lastReview.occurredAt : null;
     const [revision] = await executor.select({ id: artworkRevisions.id }).from(artworkRevisions)
       .where(and(
         eq(artworkRevisions.filmSupplyOrderId, order.id),
-        lastReview ? sql`${artworkRevisions.createdAt} >= ${lastReview.occurredAt}` : undefined
+        cycleStart ? sql`${artworkRevisions.createdAt} >= ${cycleStart}` : undefined
       )).limit(1);
     const hasArtworkRevision = revision !== undefined;
-    // The dual-approval gate is derived from the current revisions themselves
-    // (never transferred across revisions), so it is read whenever any exists.
     const [anyRevision] = hasArtworkRevision ? [revision] : await executor.select({ id: artworkRevisions.id })
       .from(artworkRevisions).where(eq(artworkRevisions.filmSupplyOrderId, order.id)).limit(1);
     let dualApproved = false;
     if (anyRevision) {
       const approvalContext = await loadApprovalContext(order.id, executor);
-      dualApproved = deriveOrderApprovalGate(
-        approvalContext.revisions,
-        approvalContext.events,
-        approvalContext.verifications
-      ).dualApproved;
+      const since = lastReview ? new Date(lastReview.occurredAt).getTime() : null;
+      const events = since === null
+        ? approvalContext.events
+        : approvalContext.events.filter((event) => new Date(event.recordedAt).getTime() >= since);
+      dualApproved = deriveOrderApprovalGate(approvalContext.revisions, events, approvalContext.verifications).dualApproved;
     }
     return { sevenPoGateOpen, sevenPoGateRefusal, hasArtworkRevision, dualApproved, paymentTerms: order.paymentTerms };
   }
@@ -4720,7 +4785,10 @@ export function createApp({
       verifierUserId: verifier.id,
       originatorUserIds: [...recorderUserIds, ...uploaders.map((row) => row.createdByUserId)]
     });
-    return { selfVerification: decision.selfVerification, selfVerificationBasis: decision.basis };
+    if (!decision.allowed) {
+      return { refusal: { error: decision.message, code: decision.code } } as const;
+    }
+    return { facts: { selfVerification: decision.selfVerification, selfVerificationBasis: decision.basis } } as const;
   }
 
   /** P0 R01: reaching SEVEN_PO_VERIFIED with an undetermined term answers a warning (not a refusal). */
@@ -4883,14 +4951,53 @@ export function createApp({
     // (T-11). Approvals stay readable as audit history.
     const approvalContext = await loadApprovalContext(orderId);
     const invalidatedApprovals = hasApprovalHistoryForDesign(approvalContext.revisions, approvalContext.events, designKey);
+    // P1 review M3: a change review that began after this design's last
+    // approval already covers the change. A new proof inside that cycle (for
+    // example after a restart into デザインデータ受領) neither re-enters the
+    // review nor asks for the change facts a second time once a revision of
+    // this cycle has recorded them.
+    const [lastReviewEntry] = await db.select({ occurredAt: auditEvents.occurredAt }).from(auditEvents)
+      .where(and(
+        eq(auditEvents.entityType, 'film_supply_order'),
+        eq(auditEvents.entityId, orderId),
+        eq(auditEvents.action, 'FILM_SUPPLY_ORDER_TRANSITIONED'),
+        sql`${auditEvents.afterState} ->> 'status' = 'CHANGE_REVIEW'`
+      ))
+      .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+      .limit(1);
+    const designRevisionIds = new Set(approvalContext.revisions
+      .filter((candidate) => candidate.designKey === designKey).map((candidate) => candidate.id));
+    const latestDesignApprovalAt = approvalContext.events
+      .filter((event) => designRevisionIds.has(event.artworkRevisionId))
+      .reduce<number | null>((latest, event) => {
+        const at = new Date(event.recordedAt).getTime();
+        return latest === null || at > latest ? at : latest;
+      }, null);
+    const reviewCycleCoversApprovals = lastReviewEntry !== undefined && latestDesignApprovalAt !== null
+      && new Date(lastReviewEntry.occurredAt).getTime() >= latestDesignApprovalAt;
+    const [factsInCycle] = reviewCycleCoversApprovals
+      ? await db.select({ id: artworkRevisions.id }).from(artworkRevisions)
+        .where(and(
+          eq(artworkRevisions.filmSupplyOrderId, orderId),
+          eq(artworkRevisions.designKey, designKey),
+          isNotNull(artworkRevisions.changeReason),
+          sql`${artworkRevisions.createdAt} >= ${lastReviewEntry!.occurredAt}`
+        )).limit(1)
+      : [];
     const entersChangeReview = invalidatedApprovals
+      && !reviewCycleCoversApprovals
       && order.status !== 'CHANGE_REVIEW'
       && !isExceptionFilmSupplyOrderState(order.status)
       && !isTerminalFilmSupplyOrderState(order.status);
     // Q-A4 facts are required for every superseding revision, including one
     // recorded while ON_HOLD or an existing review. Entering CHANGE_REVIEW is
     // only the state-machine decision and may happen after the hold is released.
-    const requiresChangeFacts = invalidatedApprovals;
+    // The facts may be skipped only for a normal order before printing; any
+    // printed, held or reviewed order keeps the full rule (incl. the
+    // representative's printed-change approval).
+    const statusIndex = FILM_SUPPLY_ORDER_STATES.indexOf(order.status as typeof FILM_SUPPLY_ORDER_STATES[number]);
+    const beforePrinting = statusIndex >= 0 && statusIndex < FILM_SUPPLY_ORDER_STATES.indexOf('FILM_IN_PRODUCTION');
+    const requiresChangeFacts = invalidatedApprovals && !(factsInCycle !== undefined && beforePrinting);
     const statusAfter = entersChangeReview ? 'CHANGE_REVIEW' as const : order.status;
 
     let changeRequestFields: {
@@ -5420,8 +5527,6 @@ export function createApp({
         [...lockedApprovalContext.events, approvalEvent],
         lockedApprovalContext.verifications
       );
-      const advancesToDualApproved = decisionCheck.value === 'APPROVE'
-        && shouldAdvanceToDualApproved(gateAfter, lockedStatus);
       await tx.insert(artworkApprovalEvents).values(approvalEvent);
       await recordAuditEvent(tx, {
         projectId: order.projectId,
@@ -5441,33 +5546,16 @@ export function createApp({
         occurredAt: now,
         requestMetadata: { operation: 'artwork_approval:record', filmSupplyOrderId: order.id }
       });
-      if (advancesToDualApproved && !isFrozenFilmOrderStatus(lockedStatus)) {
-        const advanced = await tx.update(filmSupplyOrders)
-          .set({ status: 'DUAL_APPROVED', updatedAt: now })
-          .where(and(
-            eq(filmSupplyOrders.id, order.id),
-            sql`${filmSupplyOrders.status}::text = ${lockedStatus}::text`
-          ))
-          .returning({ id: filmSupplyOrders.id });
-        if (advanced.length === 0) throw new MakerPoStateConflict();
-        await recordAuditEvent(tx, {
-          projectId: order.projectId,
-          id: uuidv7(now),
-          actorUserId: user.id,
-          action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
-          entityType: 'film_supply_order',
-          entityId: order.id,
-          beforeState: { status: lockedStatus },
-          afterState: { status: 'DUAL_APPROVED' },
-          occurredAt: now,
-          requestMetadata: { operation: 'artwork_approval:record', reason: 'dual_approval_reached' }
-        });
-        recordedOrderStatus = 'DUAL_APPROVED';
-        // P1 R23: 校了 with a decided payment term is 製造先発注準備完了.
+      // P1 review M1/M2: the approval never writes an order state itself. The
+      // automatic steps take the order forward one audited normal step at a
+      // time (PROOF_READY → APPROVAL_PENDING → DUAL_APPROVED → MAKER_PO_READY),
+      // so no state is skipped, and a re-approval after a revoke can never
+      // leave the order sitting at DUAL_APPROVED. デザインデータ受領 stays a
+      // human record: an approval recorded before it waits there.
+      recordedOrderStatus = lockedStatus;
+      if (!isFrozenFilmOrderStatus(lockedStatus)) {
         autoAdvanced = await applyAutoAdvance(tx, { orderId: order.id, actorUserId: user.id, trigger: 'artwork_approval:record', now });
         if (autoAdvanced.length > 0) recordedOrderStatus = autoAdvanced[autoAdvanced.length - 1]!.to;
-      } else {
-        recordedOrderStatus = lockedStatus;
       }
     });
 
@@ -5795,7 +5883,9 @@ export function createApp({
     }
 
     const approvalContext = await loadApprovalContext(order.id);
-    const selfCheck = await selfVerificationFacts(user, [target.evidenceDocumentVersionId], [target.recordedByUserId]);
+    const selfDecision = await selfVerificationFacts(user, [target.evidenceDocumentVersionId], [target.recordedByUserId]);
+    if ('refusal' in selfDecision) return context.json(selfDecision.refusal, 403);
+    const selfCheck = selfDecision.facts;
     const now = new Date();
     const verificationId = uuidv7(now);
     const verification = {
@@ -5852,8 +5942,6 @@ export function createApp({
         lockedApprovalContext.events,
         lockedApprovalContext.verifications
       );
-      const advancesToDualApproved = resultCheck.value === 'confirmed'
-        && shouldAdvanceToDualApproved(gateAfter, lockedStatus);
       await recordAuditEvent(tx, {
         projectId: order.projectId,
         id: uuidv7(now),
@@ -5877,35 +5965,12 @@ export function createApp({
           filmSupplyOrderId: order.id
         }
       });
-      if (advancesToDualApproved && !isFrozenFilmOrderStatus(lockedStatus)) {
-        const advanced = await tx.update(filmSupplyOrders)
-          .set({ status: 'DUAL_APPROVED', updatedAt: now })
-          .where(and(
-            eq(filmSupplyOrders.id, order.id),
-            sql`${filmSupplyOrders.status}::text = ${lockedStatus}::text`
-          ))
-          .returning({ id: filmSupplyOrders.id });
-        if (advanced.length === 0) throw new MakerPoStateConflict();
-        await recordAuditEvent(tx, {
-          projectId: order.projectId,
-          id: uuidv7(now),
-          actorUserId: user.id,
-          action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
-          entityType: 'film_supply_order',
-          entityId: order.id,
-          beforeState: { status: lockedStatus },
-          afterState: { status: 'DUAL_APPROVED' },
-          occurredAt: now,
-          requestMetadata: {
-            operation: 'artwork_approval:verify_evidence',
-            reason: 'dual_approval_reached_after_manual_verification'
-          }
-        });
-        recordedOrderStatus = 'DUAL_APPROVED';
+      // P1 review M1/M2: as for the approval record — the automatic steps
+      // move the order, one audited normal step at a time.
+      recordedOrderStatus = lockedStatus;
+      if (!isFrozenFilmOrderStatus(lockedStatus)) {
         autoAdvanced = await applyAutoAdvance(tx, { orderId: order.id, actorUserId: user.id, trigger: 'artwork_approval:verify_evidence', now });
         if (autoAdvanced.length > 0) recordedOrderStatus = autoAdvanced[autoAdvanced.length - 1]!.to;
-      } else {
-        recordedOrderStatus = lockedStatus;
       }
     });
 
@@ -7437,61 +7502,74 @@ export function createApp({
     };
     const items: Array<Record<string, unknown> & { waitingSince: Date | string | null; key: string; kind: string }> = [];
 
-    // 1. 承認証跡の確認: a pending approval evidence nobody has verified yet.
-    const pendingApprovalOrders = capped(await db.selectDistinct({ ...orderColumns })
-      .from(artworkApprovalEvents)
+    // 1. 承認証跡の確認: the latest approval of a current revision, recorded as
+    // pending manual verification, with no verification yet. One bounded query
+    // (P1 review M8: no per-order context load), then one batch for the
+    // shared-evidence exceptions.
+    const pendingEvidenceRows = capped(await db.select({
+      ...orderColumns,
+      eventId: artworkApprovalEvents.id,
+      organization: sql<string>`${artworkApprovalEvents.organization}::text`,
+      eventRecordedAt: artworkApprovalEvents.recordedAt,
+      designKey: artworkRevisions.designKey,
+      revisionNo: artworkRevisions.revisionNo,
+      recorderId: users.id,
+      recorderName: users.displayName,
+      evidenceIssuerEntity: sql<string | null>`(select d.issuer_entity::text from document_versions v join documents d on d.id = v.document_id where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`
+    }).from(artworkApprovalEvents)
       .innerJoin(artworkRevisions, eq(artworkRevisions.id, artworkApprovalEvents.artworkRevisionId))
       .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, artworkRevisions.filmSupplyOrderId))
       .innerJoin(projects, eq(projects.id, filmSupplyOrders.projectId))
+      .leftJoin(users, eq(users.id, artworkApprovalEvents.recordedByUserId))
       .where(and(
         eq(artworkApprovalEvents.evidenceIdentifierStatus, 'pending_manual_verification'),
+        eq(artworkApprovalEvents.decision, 'APPROVE'),
         sql`not exists (select 1 from evidence_manual_verifications v where v.approval_event_id = ${artworkApprovalEvents.id})`,
+        sql`${artworkRevisions.revisionNo} = (select max(r2.revision_no) from artwork_revisions r2 where r2.film_supply_order_id = ${artworkRevisions.filmSupplyOrderId} and r2.design_key = ${artworkRevisions.designKey})`,
+        sql`not exists (select 1 from artwork_approval_events e2 where e2.artwork_revision_id = ${artworkApprovalEvents.artworkRevisionId} and e2.organization = ${artworkApprovalEvents.organization} and (e2.recorded_at, e2.id) > (${artworkApprovalEvents.recordedAt}, ${artworkApprovalEvents.id}))`,
         liveOrder
       ))
+      .orderBy(asc(artworkApprovalEvents.recordedAt), asc(artworkApprovalEvents.id))
       .limit(limit + 1));
-    for (const row of pendingApprovalOrders) {
-      const approvalContext = await loadApprovalContext(row.orderId);
-      const gate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events, approvalContext.verifications);
-      for (const design of gate.designs) {
-        for (const organization of ['customer', 'seven'] as const) {
-          const state = design[organization];
-          if (!state.pendingEvidenceIdentifier || !state.latestEventId || state.manualVerification) continue;
-          const event = approvalContext.events.find((candidate) => candidate.id === state.latestEventId);
-          if (!event || event.evidenceIdentifierStatus !== 'pending_manual_verification') continue;
-          const facts = event.evidenceDocumentVersionId
-            ? await loadApprovalEvidenceIssuerFacts(event.id, event.evidenceDocumentVersionId)
-            : { issuerEntity: null, sharedEvidenceException: null };
-          const expectedIssuerEntity = APPROVAL_ORGANIZATION_ISSUER[organization];
-          const [recorder] = await db.select({ id: users.id, displayName: users.displayName })
-            .from(artworkApprovalEvents).innerJoin(users, eq(users.id, artworkApprovalEvents.recordedByUserId))
-            .where(eq(artworkApprovalEvents.id, event.id)).limit(1);
-          items.push({
-            key: `approval_evidence_verification:${event.id}`,
-            kind: 'approval_evidence_verification',
-            label: '承認証跡の確認',
-            project: projectOf(row),
-            order: orderOf(row),
-            makerPurchaseOrder: null,
-            subjectId: event.id,
-            waitingSince: event.recordedAt,
-            requestedBy: recorder ?? null,
-            detail: {
-              designKey: design.designKey,
-              revisionNo: design.currentRevisionNo,
-              organization,
-              evidenceIssuerEntity: facts.issuerEntity,
-              expectedIssuerEntity,
-              issuerMatchesOrganization: facts.issuerEntity === expectedIssuerEntity,
-              sharedEvidenceException: facts.sharedEvidenceException,
-              confirmable: facts.issuerEntity === expectedIssuerEntity || facts.sharedEvidenceException !== null
-            },
-            deepLink: link('approval', row, {
-              subjectId: event.id,
-              action: { method: 'POST', path: `/api/artwork-approval-events/${event.id}/verification` }
-            })
-          });
-        }
-      }
+    const exceptionRows = pendingEvidenceRows.length === 0 ? [] : await db.select({
+      entityId: auditEvents.entityId,
+      reason: sql<string | null>`${auditEvents.afterState} -> 'sharedEvidenceException' ->> 'reason'`
+    }).from(auditEvents)
+      .where(and(
+        eq(auditEvents.entityType, 'artwork_approval_event'),
+        eq(auditEvents.action, 'ARTWORK_APPROVAL_RECORDED'),
+        inArray(auditEvents.entityId, pendingEvidenceRows.map((row) => row.eventId))
+      ));
+    const exceptionByEvent = new Map(exceptionRows.filter((row) => row.reason).map((row) => [row.entityId, { reason: row.reason! }]));
+    for (const row of pendingEvidenceRows) {
+      const organization = row.organization as ApprovalOrganization;
+      const expectedIssuerEntity = APPROVAL_ORGANIZATION_ISSUER[organization];
+      const sharedEvidenceException = exceptionByEvent.get(row.eventId) ?? null;
+      items.push({
+        key: `approval_evidence_verification:${row.eventId}`,
+        kind: 'approval_evidence_verification',
+        label: '承認証跡の確認',
+        project: projectOf(row),
+        order: orderOf(row),
+        makerPurchaseOrder: null,
+        subjectId: row.eventId,
+        waitingSince: row.eventRecordedAt,
+        requestedBy: row.recorderId ? { id: row.recorderId, displayName: row.recorderName } : null,
+        detail: {
+          designKey: row.designKey,
+          revisionNo: row.revisionNo,
+          organization,
+          evidenceIssuerEntity: row.evidenceIssuerEntity,
+          expectedIssuerEntity,
+          issuerMatchesOrganization: row.evidenceIssuerEntity === expectedIssuerEntity,
+          sharedEvidenceException,
+          confirmable: row.evidenceIssuerEntity === expectedIssuerEntity || sharedEvidenceException !== null
+        },
+        deepLink: link('approval', row, {
+          subjectId: row.eventId,
+          action: { method: 'POST', path: `/api/artwork-approval-events/${row.eventId}/verification` }
+        })
+      });
     }
 
     // 2. 送信の確認: a send evidence waiting for the manual verification.
@@ -7522,8 +7600,11 @@ export function createApp({
       .orderBy(makerPoEvents.recordedAt)
       .limit(limit + 1));
 
-    // 3–5. maker paper: DRAFT (代表承認), sent (最終受入), cancelled after a proven send (取消確認).
-    const papers = await db.select({
+    // 3–5. maker paper: DRAFT (代表承認), sent (最終受入), cancelled after a
+    // proven send and not acknowledged (取消確認). One query per kind, the
+    // condition in SQL and limit+1 rows (P1 review M8: every CANCELLED paper
+    // ever written is no longer read).
+    const paperColumns = {
       ...orderColumns,
       poId: makerPurchaseOrders.id,
       poStatus: sql<string>`${makerPurchaseOrders.status}::text`,
@@ -7532,22 +7613,23 @@ export function createApp({
       poUpdatedAt: makerPurchaseOrders.updatedAt,
       creatorId: users.id,
       creatorName: users.displayName,
-      provisionalAt: sql<Date | null>`(select max(e.recorded_at) from maker_po_events e where e.maker_purchase_order_id = ${makerPurchaseOrders.id} and e.provisional = true)`,
-      provenSend: sql<boolean>`(exists (select 1 from maker_po_events e where e.maker_purchase_order_id = ${makerPurchaseOrders.id} and e.event_type = 'SEND_EVIDENCE_REGISTERED' and e.verification_status = 'VERIFIED') or exists (select 1 from maker_po_send_manual_verifications v where v.maker_purchase_order_id = ${makerPurchaseOrders.id} and v.result = 'confirmed'))`,
-      acknowledged: sql<boolean>`exists (select 1 from maker_po_events e where e.maker_purchase_order_id = ${makerPurchaseOrders.id} and e.event_type = 'MAKER_CANCELLATION_ACKNOWLEDGED')`
-    }).from(makerPurchaseOrders)
+      provisionalAt: sql<Date | null>`(select max(e.recorded_at) from maker_po_events e where e.maker_purchase_order_id = ${makerPurchaseOrders.id} and e.provisional = true)`
+    };
+    const provenSendSql = sql`(exists (select 1 from maker_po_events e where e.maker_purchase_order_id = ${makerPurchaseOrders.id} and e.event_type = 'SEND_EVIDENCE_REGISTERED' and e.verification_status = 'VERIFIED') or exists (select 1 from maker_po_send_manual_verifications v where v.maker_purchase_order_id = ${makerPurchaseOrders.id} and v.result = 'confirmed'))`;
+    const papersWhere = async (condition: ReturnType<typeof and>) => capped(await db.select(paperColumns).from(makerPurchaseOrders)
       .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, makerPurchaseOrders.filmSupplyOrderId))
       .innerJoin(projects, eq(projects.id, filmSupplyOrders.projectId))
       .leftJoin(users, eq(users.id, makerPurchaseOrders.createdByUserId))
-      .where(and(
-        isNull(makerPurchaseOrders.deletedAt),
-        inArray(makerPurchaseOrders.status, ['DRAFT', 'MAKER_PO_SENT_MANUALLY', 'CANCELLED']),
-        liveOrder
-      ))
-      .orderBy(makerPurchaseOrders.createdAt);
-    const draftPapers = capped(papers.filter((row) => row.poStatus === 'DRAFT'));
-    const sentPapers = capped(papers.filter((row) => row.poStatus === 'MAKER_PO_SENT_MANUALLY'));
-    const unacknowledgedCancels = capped(papers.filter((row) => row.poStatus === 'CANCELLED' && row.provenSend && !row.acknowledged));
+      .where(and(isNull(makerPurchaseOrders.deletedAt), liveOrder, condition))
+      .orderBy(asc(makerPurchaseOrders.createdAt), asc(makerPurchaseOrders.id))
+      .limit(limit + 1));
+    const draftPapers = await papersWhere(and(eq(makerPurchaseOrders.status, 'DRAFT')));
+    const sentPapers = await papersWhere(and(eq(makerPurchaseOrders.status, 'MAKER_PO_SENT_MANUALLY')));
+    const unacknowledgedCancels = await papersWhere(and(
+      eq(makerPurchaseOrders.status, 'CANCELLED'),
+      provenSendSql,
+      sql`not exists (select 1 from maker_po_events e where e.maker_purchase_order_id = ${makerPurchaseOrders.id} and e.event_type = 'MAKER_CANCELLATION_ACKNOWLEDGED')`
+    ));
 
     const numbers = await loadMakerPoDisplayNumbers(db, [
       ...pendingSends.map((row) => row.poId),
@@ -7647,22 +7729,21 @@ export function createApp({
       });
     }
 
-    // 6–8. order states that wait for the representative.
-    const waitingOrders = await db.select({
-      ...orderColumns,
-      livePaper: sql<boolean>`exists (select 1 from maker_purchase_orders m where m.film_supply_order_id = ${filmSupplyOrders.id} and m.status <> 'CANCELLED' and m.deleted_at is null)`,
-      pendingAck: sql<boolean>`exists (select 1 from maker_purchase_orders m where m.film_supply_order_id = ${filmSupplyOrders.id} and m.status = 'CANCELLED' and m.deleted_at is null
+    // 6–8. order states that wait for the representative. One bounded query
+    // per kind (P1 review M8), the exception origins read in one batch.
+    const ordersWhere = async (condition: ReturnType<typeof and>) => capped(await db.select(orderColumns).from(filmSupplyOrders)
+      .innerJoin(projects, eq(projects.id, filmSupplyOrders.projectId))
+      .where(and(liveOrder, condition))
+      .orderBy(asc(filmSupplyOrders.updatedAt), asc(filmSupplyOrders.id))
+      .limit(limit + 1));
+    const creationOrders = await ordersWhere(and(
+      sql`${filmSupplyOrders.status}::text = 'MAKER_PO_READY'`,
+      sql`not exists (select 1 from maker_purchase_orders m where m.film_supply_order_id = ${filmSupplyOrders.id} and m.status <> 'CANCELLED' and m.deleted_at is null)`,
+      sql`not exists (select 1 from maker_purchase_orders m where m.film_supply_order_id = ${filmSupplyOrders.id} and m.status = 'CANCELLED' and m.deleted_at is null
         and (exists (select 1 from maker_po_events e where e.maker_purchase_order_id = m.id and e.event_type = 'SEND_EVIDENCE_REGISTERED' and e.verification_status = 'VERIFIED')
           or exists (select 1 from maker_po_send_manual_verifications v where v.maker_purchase_order_id = m.id and v.result = 'confirmed'))
         and not exists (select 1 from maker_po_events e where e.maker_purchase_order_id = m.id and e.event_type = 'MAKER_CANCELLATION_ACKNOWLEDGED'))`
-    }).from(filmSupplyOrders)
-      .innerJoin(projects, eq(projects.id, filmSupplyOrders.projectId))
-      .where(and(
-        sql`${filmSupplyOrders.status}::text in ('MAKER_PO_READY', 'ON_HOLD', 'CANCELLATION_REVIEW', 'DUAL_APPROVED')`,
-        liveOrder
-      ))
-      .orderBy(filmSupplyOrders.updatedAt);
-    const creationOrders = capped(waitingOrders.filter((row) => row.orderStatus === 'MAKER_PO_READY' && !row.livePaper && !row.pendingAck));
+    ));
     for (const row of creationOrders) {
       const paymentGate = evaluatePaymentGate({ paymentTerms: row.paymentTerms });
       items.push({
@@ -7682,12 +7763,31 @@ export function createApp({
         })
       });
     }
+    const exceptionOrigins = async (status: 'ON_HOLD' | 'CANCELLATION_REVIEW', orderIds: string[]) => {
+      const out = new Map<string, NormalFilmSupplyOrderState>();
+      if (orderIds.length === 0) return out;
+      const result = await db.execute(sql`
+        select distinct on (entity_id) entity_id::text as entity_id, before_state ->> 'status' as origin
+        from audit_events
+        where entity_type = 'film_supply_order' and action = 'FILM_SUPPLY_ORDER_TRANSITIONED'
+          and after_state ->> 'status' = ${status}
+          and entity_id in (${sql.join(orderIds.map((id) => sql`${id}`), sql`, `)})
+        order by entity_id, occurred_at desc, id desc
+      `);
+      for (const row of (result as unknown as { rows: Array<{ entity_id: string; origin: string | null }> }).rows) {
+        const origin = filmSupplyOrderStateForValue(row.origin);
+        if (origin) out.set(row.entity_id, origin);
+      }
+      return out;
+    };
     for (const [status, kind, label, step, path] of [
       ['ON_HOLD', 'hold_release', '保留の解除', 'hold', 'hold-release'],
       ['CANCELLATION_REVIEW', 'cancellation_review', '取消レビュー', 'cancellation_review', 'cancellation-review-resolve']
     ] as const) {
-      for (const row of capped(waitingOrders.filter((candidate) => candidate.orderStatus === status))) {
-        const origin = await loadExceptionOrigin(db, row.orderId, status);
+      const rows = await ordersWhere(and(sql`${filmSupplyOrders.status}::text = ${status}`));
+      const origins = await exceptionOrigins(status, rows.map((row) => row.orderId));
+      for (const row of rows) {
+        const origin = origins.get(row.orderId);
         items.push({
           key: `${kind}:${row.orderId}`,
           kind,
@@ -7712,8 +7812,10 @@ export function createApp({
     }
 
     // Blocked: 校了 (or ready) but the payment term is still 未定.
-    const blocked = capped(waitingOrders.filter((row) => (row.orderStatus === 'DUAL_APPROVED' || row.orderStatus === 'MAKER_PO_READY')
-      && normalizePaymentTerms(row.paymentTerms) === 'undetermined'))
+    const blocked = (await ordersWhere(and(
+      sql`${filmSupplyOrders.status}::text in ('DUAL_APPROVED', 'MAKER_PO_READY')`,
+      sql`coalesce(${filmSupplyOrders.paymentTerms}, 'undetermined') = 'undetermined'`
+    )))
       .map((row) => ({
         key: `payment_terms_undetermined:${row.orderId}`,
         kind: 'payment_terms_undetermined',
@@ -8367,7 +8469,9 @@ export function createApp({
       }, 422);
     }
 
-    const selfCheck = await selfVerificationFacts(user, [target.evidenceDocumentVersionId], [target.recordedByUserId]);
+    const selfDecision = await selfVerificationFacts(user, [target.evidenceDocumentVersionId], [target.recordedByUserId]);
+    if ('refusal' in selfDecision) return context.json(selfDecision.refusal, 403);
+    const selfCheck = selfDecision.facts;
     const now = new Date();
     const verification = {
       id: uuidv7(now),

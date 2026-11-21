@@ -289,8 +289,11 @@ describe('P1 core rules (pure)', () => {
   it('labels a self-verification and never widens staff (P-4)', () => {
     expect(evaluateSelfVerification({ role: 'admin', verifierUserId: 'a', originatorUserIds: ['a'] }))
       .toEqual({ allowed: true, selfVerification: true, basis: 'admin_self_verification_p4' });
+    // Decision 2 (2026-11-21): staff never confirm their own evidence.
     expect(evaluateSelfVerification({ role: 'staff', verifierUserId: 's', originatorUserIds: [null, 's'] }))
-      .toEqual({ allowed: true, selfVerification: true, basis: 'existing_staff_rule' });
+      .toMatchObject({ allowed: false, selfVerification: true, code: 'SELF_VERIFICATION_FORBIDDEN' });
+    expect(evaluateSelfVerification({ role: 'staff', verifierUserId: 's', originatorUserIds: ['other'] }))
+      .toEqual({ allowed: true, selfVerification: false, basis: 'independent_verifier' });
     expect(evaluateSelfVerification({ role: 'admin', verifierUserId: 'a', originatorUserIds: ['s', undefined] }))
       .toEqual({ allowed: true, selfVerification: false, basis: 'independent_verifier' });
   });
@@ -401,10 +404,14 @@ describe('R23 automatic steps (policy P-9)', () => {
   it('校了 with a decided term is 製造先発注準備完了; 未定 stops at 校了 with the reason, and choosing the term continues', async () => {
     const decided = await approvedOrder('prepaid');
     expect(decided.lastApproval.body.orderStatus).toBe('MAKER_PO_READY');
-    expect(decided.lastApproval.body.autoAdvanced).toMatchObject([{ from: 'DUAL_APPROVED', to: 'MAKER_PO_READY', rule: 'dual_approved_and_payment_terms_decided' }]);
+    // Review M1: the approval writes no state itself; each step is automatic and audited.
+    expect(decided.lastApproval.body.autoAdvanced).toMatchObject([
+      { from: 'APPROVAL_PENDING', to: 'DUAL_APPROVED', rule: 'dual_approval_reached' },
+      { from: 'DUAL_APPROVED', to: 'MAKER_PO_READY', rule: 'dual_approved_and_payment_terms_decided' }
+    ]);
 
     const undecided = await approvedOrder('undetermined');
-    expect(undecided.lastApproval.body).toMatchObject({ orderStatus: 'DUAL_APPROVED', autoAdvanced: [] });
+    expect(undecided.lastApproval.body).toMatchObject({ orderStatus: 'DUAL_APPROVED', autoAdvanced: [{ from: 'APPROVAL_PENDING', to: 'DUAL_APPROVED' }] });
     const preview = await get('staff', `/api/film-supply-orders/${undecided.orderId}/auto-advance`);
     expect(preview.status).toBe(200);
     expect(preview.body).toMatchObject({
@@ -438,7 +445,7 @@ describe('R23 automatic steps (policy P-9)', () => {
     });
     expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(201);
     expect(confirmed.body.orderStatus).toBe('MAKER_PO_READY');
-    expect(confirmed.body.autoAdvanced).toMatchObject([{ from: 'DUAL_APPROVED', to: 'MAKER_PO_READY' }]);
+    expect(confirmed.body.autoAdvanced).toMatchObject([{ from: 'APPROVAL_PENDING', to: 'DUAL_APPROVED' }, { from: 'DUAL_APPROVED', to: 'MAKER_PO_READY' }]);
   });
 
   it('a frozen order never moves by itself; hold release lands exactly on its origin; auto-advance then catches up', async () => {
@@ -785,13 +792,20 @@ describe('P-4 the representative may confirm their own evidence; who and when ar
     expect(audit!.afterState).toMatchObject({ selfVerification: true, selfVerificationBasis: 'admin_self_verification_p4', verifiedByUserId: adminId });
   });
 
-  it('labels document and send verifications, and keeps staff document verification as before', async () => {
+  it('labels document and send verifications; staff may not confirm their own document (decision 2)', async () => {
     const sevenPoId = await sevenPo();
     const { orderId } = await createOrder(sevenPoId);
     const staffDoc = await upload(sevenPoId, orderId, { documentType: 'acceptance_evidence', designKey: undefined });
     const byStaff = await post('staff', `/api/documents/${staffDoc.document.id}/verify`, { verificationStatus: 'verified' });
-    expect(byStaff.status).toBe(200);
-    expect(byStaff.body).toMatchObject({ selfVerification: true, selfVerificationBasis: 'existing_staff_rule', verifiedByUserId: staffId });
+    expect(byStaff.status).toBe(403);
+    expect(byStaff.body.code).toBe('SELF_VERIFICATION_FORBIDDEN');
+    expect(isSafeUserMessage(byStaff.body.error)).toBe(true);
+    const [untouched] = await db.execute(sql`select verification_status from documents where id = ${staffDoc.document.id}`).then((r) => r.rows as Array<{ verification_status: string }>);
+    expect(untouched!.verification_status).toBe('unverified');
+    // Another staff member's upload is an independent confirmation.
+    const adminDoc = await upload(sevenPoId, orderId, { documentType: 'acceptance_evidence', designKey: undefined }, 'admin');
+    const independentStaff = await post('staff', `/api/documents/${adminDoc.document.id}/verify`, { verificationStatus: 'verified' });
+    expect(independentStaff.body).toMatchObject({ selfVerification: false, selfVerificationBasis: 'independent_verifier', verifiedByUserId: staffId });
     const otherDoc = await upload(sevenPoId, orderId, { documentType: 'acceptance_evidence', designKey: undefined });
     const byAdmin = await post('admin', `/api/documents/${otherDoc.document.id}/verify`, { verificationStatus: 'verified' });
     expect(byAdmin.body).toMatchObject({ selfVerification: false, selfVerificationBasis: 'independent_verifier', verifiedBy: { id: adminId } });
@@ -818,7 +832,11 @@ describe('P-3 / R36 film-only commission readiness and one delivery flow', () =>
   async function confirmDelivery(project: string, sevenPoId: string, orderId: string, deliveryId: string) {
     const doc = await upload(sevenPoId, orderId, { documentType: 'acceptance_evidence', designKey: undefined }, 'staff', project);
     expect((await post('admin', `/api/documents/${doc.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
-    return await post('staff', `/api/film-deliveries/${deliveryId}/confirmation`, { evidenceDocumentVersionId: doc.version.id });
+    // Decision 2: staff may not confirm a delivery on evidence they uploaded.
+    const self = await post('staff', `/api/film-deliveries/${deliveryId}/confirmation`, { evidenceDocumentVersionId: doc.version.id });
+    expect(self.status).toBe(403);
+    expect(self.body.code).toBe('SELF_VERIFICATION_FORBIDDEN');
+    return await post('admin', `/api/film-deliveries/${deliveryId}/confirmation`, { evidenceDocumentVersionId: doc.version.id });
   }
 
   it('a film-only project is READY once the delivered film quantity is confirmed; filling is 対象外', async () => {
@@ -843,13 +861,14 @@ describe('P-3 / R36 film-only commission readiness and one delivery flow', () =>
 
     const confirmed = await confirmDelivery(filmOnlyProjectId, order.sevenPoId, order.orderId, delivery.body.id);
     expect(confirmed.status, JSON.stringify(confirmed.body)).toBe(201);
-    expect(confirmed.body.selfVerification).toBe(true);
+    // The representative confirmed staff's evidence: an independent confirmation.
+    expect(confirmed.body.selfVerification).toBe(false);
     const ready = await evaluate();
     expect(ready.body).toMatchObject({ readinessState: 'READY', isReady: true, blocking: [], commissionCalculationAllowed: true, fillingRequirement: 'not_applicable' });
     expect(ready.body.filmDeliveredQuantities).toMatchObject([{ orderCode: order.code, lineNumber: 1, deliveredQuantity: '1000.000', confirmedQuantity: '1000.000', display: { confirmed: '1,000 枚' } }]);
     const status2 = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
     expect(status2.body.stage).toBe('quantity_confirmed');
-    expect(status2.body.lines[0].deliveries[0].confirmation).toMatchObject({ confirmedBy: { id: staffId }, selfVerification: true });
+    expect(status2.body.lines[0].deliveries[0].confirmation).toMatchObject({ confirmedBy: { id: adminId }, selfVerification: false });
     expect(JSON.stringify(status2.body)).not.toMatch(/totalAmount|amount/i);
   });
 
@@ -1085,9 +1104,9 @@ describe('P1 review additions', () => {
     expect((await post('admin', `/api/documents/${own.document.id}/verify`, { verificationStatus: 'verified' })).body)
       .toMatchObject({ selfVerification: true, selfVerificationBasis: 'admin_self_verification_p4' });
     const staffDoc = await upload(sevenPoId, orderId, { documentType: 'acceptance_evidence', designKey: undefined });
-    await post('staff', `/api/documents/${staffDoc.document.id}/verify`, { verificationStatus: 'mismatch' });
-    const [audit] = await db.select().from(auditEvents).where(and(eq(auditEvents.action, 'DOCUMENT_VERIFICATION_RECORDED'), eq(auditEvents.entityId, staffDoc.document.id)));
-    expect(audit!.afterState).toMatchObject({ selfVerification: true, selfVerificationBasis: 'existing_staff_rule' });
+    // Decision 2: even a 'mismatch' verdict on one's own upload is refused, and nothing is recorded.
+    expect((await post('staff', `/api/documents/${staffDoc.document.id}/verify`, { verificationStatus: 'mismatch' })).body.code).toBe('SELF_VERIFICATION_FORBIDDEN');
+    expect(await db.select().from(auditEvents).where(and(eq(auditEvents.action, 'DOCUMENT_VERIFICATION_RECORDED'), eq(auditEvents.entityId, staffDoc.document.id)))).toHaveLength(0);
 
     await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
     const revision = await registerRevision(sevenPoId, orderId);
@@ -1113,13 +1132,17 @@ describe('P1 review additions', () => {
     await post('admin', `/api/documents/${doc.document.id}/verify`, { verificationStatus: 'verified' });
     expect((await post('admin', `/api/film-deliveries/${first.body.id}/confirmation`, { evidenceDocumentVersionId: doc.version.id })).body.selfVerification).toBe(false);
     const partial = await post('staff', `/api/projects/${filmOnlyProjectId}/commission-readiness`);
-    expect(partial.body).toMatchObject({ readinessState: 'PENDING_VERIFICATION', blocking: ['FILM_DELIVERY_PENDING_CONFIRMATION'] });
+    expect(partial.body.readinessState).toBe('PENDING_VERIFICATION');
+    expect(partial.body.blocking).toContain('FILM_DELIVERY_PENDING_CONFIRMATION');
+    // The full 1,000 is delivered (600 + 400), so the quantity itself is complete.
+    expect(partial.body.blocking).not.toContain('FILM_DELIVERY_QUANTITY_INCOMPLETE');
     const status = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
     expect(status.body.lines[0]).toMatchObject({ deliveredDisplay: '1,000 枚', confirmedDisplay: '600 枚' });
     expect(status.body.nextAction).toMatchObject({ action: 'CONFIRM_DELIVERY', deliveryIds: [second.body.id] });
     const doc2 = await upload(sevenPoId, order.orderId, { documentType: 'acceptance_evidence', designKey: undefined }, 'staff', filmOnlyProjectId);
     await post('admin', `/api/documents/${doc2.document.id}/verify`, { verificationStatus: 'verified' });
-    await post('staff', `/api/film-deliveries/${second.body.id}/confirmation`, { evidenceDocumentVersionId: doc2.version.id });
+    expect((await post('staff', `/api/film-deliveries/${second.body.id}/confirmation`, { evidenceDocumentVersionId: doc2.version.id })).body.code).toBe('SELF_VERIFICATION_FORBIDDEN');
+    expect((await post('admin', `/api/film-deliveries/${second.body.id}/confirmation`, { evidenceDocumentVersionId: doc2.version.id })).status).toBe(201);
     await db.update(filmSupplyOrders).set({ status: 'FILM_SHIPPED' as any }).where(eq(filmSupplyOrders.id, order.orderId));
     expect((await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`)).body.nextAction.action).toBe('RECORD_FILM_DELIVERED');
     await db.update(filmSupplyOrders).set({ status: 'FILM_DELIVERED' as any }).where(eq(filmSupplyOrders.id, order.orderId));
@@ -1132,5 +1155,154 @@ describe('P1 review additions', () => {
     expect(Object.keys(units).sort()).toEqual(['meters', 'pieces', 'pods', 'rolls', 'sheets']);
     expect(units.pods.symbol).toBe('ポッド');
     expect(units.pieces.symbol).toBe('個');
+  });
+});
+
+// ------------------------------------------------ independent review round 2 (REVIEW_REPORT H1, M1-M4)
+describe('P1 review round 2', () => {
+  async function approveOrg(sevenPoId: string, orderId: string, revisionId: string, organization: 'customer' | 'seven') {
+    const identifier = `MSG-P1-R2-${organization}-${nextTag()}`;
+    const doc = await evidence(sevenPoId, orderId, organization === 'seven' ? 'seven' : 'customer_generated', identifier);
+    const recorded = await approve(revisionId, organization, doc.version.id, identifier);
+    expect(recorded.status, JSON.stringify(recorded.body)).toBe(201);
+    return recorded;
+  }
+  async function freshFilmOnlyProject() {
+    const id = uuidv7();
+    const now = new Date();
+    await db.insert(projects).values({
+      id, code: `P1-H1-${nextTag()}`, name: '合成H1案件', businessUnit: 'F1', route: 'F1', leadSource: 'KANEI', status: 'DRAFT',
+      endCustomerAccountId: customerAccountId, sevenAccountId, makerAccountId, createdByUserId: adminId, createdAt: now, updatedAt: now
+    });
+    await db.insert(projectAssignments).values({ id: uuidv7(), userId: staffId, projectId: id });
+    return id;
+  }
+  async function deliverAndConfirm(project: string, sevenPoId: string, order: { orderId: string; lineId: string }, quantity: number) {
+    const delivery = await post('staff', `/api/film-supply-orders/${order.orderId}/deliveries`, { filmSupplyOrderLineId: order.lineId, deliveredQuantity: quantity, unit: 'sheets' });
+    expect(delivery.status).toBe(201);
+    const doc = await upload(sevenPoId, order.orderId, { documentType: 'acceptance_evidence', designKey: undefined }, 'staff', project);
+    expect((await post('admin', `/api/documents/${doc.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+    expect((await post('admin', `/api/film-deliveries/${delivery.body.id}/confirmation`, { evidenceDocumentVersionId: doc.version.id })).status).toBe(201);
+    return delivery.body.id as string;
+  }
+
+  it('H1: a film-only project is not READY while an order is delivered short or not delivered at all', async () => {
+    const project = await freshFilmOnlyProject();
+    const sevenPoId = await sevenPo(project);
+    const first = await createOrder(sevenPoId, 'prepaid', project);
+    const second = await createOrder(sevenPoId, 'prepaid', project);
+    await deliverAndConfirm(project, sevenPoId, first, 300);
+    const evaluate = () => post('staff', `/api/projects/${project}/commission-readiness`);
+    const partial = await evaluate();
+    expect(partial.body).toMatchObject({ readinessState: 'PENDING_VERIFICATION', isReady: false, commissionCalculationAllowed: false });
+    expect(partial.body.blocking).toEqual(['FILM_ORDER_NOT_DELIVERED', 'FILM_DELIVERY_QUANTITY_INCOMPLETE']);
+    expect(partial.body.filmOrders).toEqual({ total: 2, withoutDelivery: 1, quantityIncomplete: 1 });
+    const status = await get('staff', `/api/film-supply-orders/${first.orderId}/delivery-status`);
+    expect(status.body).toMatchObject({ stage: 'partially_delivered', nextAction: { action: 'RECORD_DELIVERY', label: '残りの納品を記録する' } });
+    expect(status.body.lines[0]).toMatchObject({ quantityComplete: false, confirmedDisplay: '300 枚' });
+
+    await deliverAndConfirm(project, sevenPoId, first, 700);
+    const oneLeft = await evaluate();
+    expect(oneLeft.body.blocking).toEqual(['FILM_ORDER_NOT_DELIVERED']);
+    // A short delivery that the order closes as delivered counts as fixed.
+    await deliverAndConfirm(project, sevenPoId, second, 900);
+    expect((await evaluate()).body.blocking).toEqual(['FILM_DELIVERY_QUANTITY_INCOMPLETE']);
+    await db.update(filmSupplyOrders).set({ status: 'FILM_DELIVERED' as any }).where(eq(filmSupplyOrders.id, second.orderId));
+    const ready = await evaluate();
+    expect(ready.body).toMatchObject({ readinessState: 'READY', isReady: true, blocking: [], filmOrders: { total: 2, withoutDelivery: 0, quantityIncomplete: 0 } });
+    // A cancelled order is not part of the project's film to deliver.
+    const third = await createOrder(sevenPoId, 'prepaid', project);
+    expect((await evaluate()).body.blocking).toEqual(['FILM_ORDER_NOT_DELIVERED']);
+    await db.update(filmSupplyOrders).set({ status: 'CANCELLED' as any }).where(eq(filmSupplyOrders.id, third.orderId));
+    expect((await evaluate()).body.readinessState).toBe('READY');
+    // Any filling order row (even one never delivered) makes the project filling-linked: the old rule applies.
+    expect((await post('staff', `/api/projects/${project}/filling-orders`, { code: `FILLO-H1-${nextTag()}`, lines: [{ lineNumber: 1, description: '充填', orderedQuantity: 10, unit: 'pods' }] })).status).toBe(201);
+    const linked = await evaluate();
+    expect(linked.body).toMatchObject({ readinessState: 'PENDING_VERIFICATION', fillingRequirement: 'required' });
+    expect(linked.body.blocking).toContain('FILLING_DELIVERY_NOT_RECORDED');
+  });
+
+  it('M1: an approval recorded before デザインデータ受領 writes no state; the steps come one by one afterwards', async () => {
+    const sevenPoId = await sevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    const revision = await registerRevision(sevenPoId, orderId);
+    await approveOrg(sevenPoId, orderId, revision.body.id, 'customer');
+    const second = await approveOrg(sevenPoId, orderId, revision.body.id, 'seven');
+    expect(second.body).toMatchObject({ dualApproved: true, orderStatus: 'SEVEN_PO_VERIFIED', autoAdvanced: [] });
+    const manual = await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
+    expect(manual.body.status).toBe('MAKER_PO_READY');
+    const statuses = (await transitionRows(orderId)).map((row) => `${(row.beforeState as { status: string }).status}>${(row.afterState as { status: string }).status}`);
+    expect(statuses).toEqual([
+      'DRAFT>SEVEN_PO_VERIFIED', 'SEVEN_PO_VERIFIED>ARTWORK_RECEIVED', 'ARTWORK_RECEIVED>PROOF_READY',
+      'PROOF_READY>APPROVAL_PENDING', 'APPROVAL_PENDING>DUAL_APPROVED', 'DUAL_APPROVED>MAKER_PO_READY'
+    ]);
+  });
+
+  it('M2: a re-approval after a revoke continues to 製造先発注準備完了 instead of stopping at 校了', async () => {
+    const chain = await approvedOrder('undetermined');
+    const memoId = `MEMO-P1-R2-${nextTag()}`;
+    const memo = await evidence(chain.sevenPoId, chain.orderId, 'kanei', memoId);
+    expect((await post('staff', `/api/artwork-revisions/${chain.revisionId}/approvals`, {
+      organization: 'customer', decision: 'REVOKE', evidenceSource: 'email', eventTime: '2026-11-16T10:00:00.000Z', evidenceIdentifier: memoId, evidenceDocumentVersionId: memo.version.id
+    })).status).toBe(201);
+    expect((await patchTerms('staff', chain.orderId, 'prepaid')).body).toMatchObject({ status: 'DUAL_APPROVED', autoAdvanced: [] });
+    const again = await approveOrg(chain.sevenPoId, chain.orderId, chain.revisionId, 'customer');
+    expect(again.body).toMatchObject({ orderStatus: 'MAKER_PO_READY', autoAdvanced: [{ from: 'DUAL_APPROVED', to: 'MAKER_PO_READY' }] });
+  });
+
+  it('M3/M4: a review cycle asks for the change once, never loops, and needs re-approval before the order moves on', async () => {
+    const chain = await approvedOrder('prepaid');
+    expect(await orderStatus(chain.orderId)).toBe('MAKER_PO_READY');
+    // Manual review without a new proof, restarted into デザインデータ受領.
+    expect((await post('staff', `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'CHANGE_REVIEW' })).status).toBe(200);
+    expect((await post('staff', `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'ARTWORK_RECEIVED' })).body.status).toBe('ARTWORK_RECEIVED');
+    const changeEvidence = await evidence(chain.sevenPoId, chain.orderId, 'customer_generated', `CHG-${nextTag()}`);
+    const proof = await upload(chain.sevenPoId, chain.orderId, { designKey: 'label-front', contentBase64: b64(`p1 artwork v2 ${nextTag()}\n`) });
+    const noFacts = await post('staff', `/api/film-supply-orders/${chain.orderId}/artwork-revisions`, { designKey: 'label-front', fileDocumentVersionId: proof.version.id });
+    expect(noFacts.body.code).toBe('CHANGE_REQUEST_ORGANIZATION_REQUIRED');
+    const withFacts = await post('staff', `/api/film-supply-orders/${chain.orderId}/artwork-revisions`, {
+      designKey: 'label-front', fileDocumentVersionId: proof.version.id, lotMarking: 'LOT-B',
+      changeRequest: { requestedOrganization: 'customer', reason: '色の変更', evidenceDocumentVersionId: changeEvidence.version.id, impactSchedule: 'なし', impactQuantity: 0, impactAmount: 0, actualCost: 0 }
+    });
+    expect(withFacts.status, JSON.stringify(withFacts.body)).toBe(201);
+    // The review that already covers this change is not entered again.
+    expect(withFacts.body).toMatchObject({ status: 'APPROVAL_PENDING', invalidatedApprovals: true });
+    const proof3 = await upload(chain.sevenPoId, chain.orderId, { designKey: 'label-front', contentBase64: b64(`p1 artwork v3 ${nextTag()}\n`) });
+    const sameCycle = await post('staff', `/api/film-supply-orders/${chain.orderId}/artwork-revisions`, { designKey: 'label-front', fileDocumentVersionId: proof3.version.id });
+    expect(sameCycle.status, JSON.stringify(sameCycle.body)).toBe(201);
+    expect(sameCycle.body.status).toBe('APPROVAL_PENDING');
+    await approveOrg(chain.sevenPoId, chain.orderId, sameCycle.body.id, 'customer');
+    const done = await approveOrg(chain.sevenPoId, chain.orderId, sameCycle.body.id, 'seven');
+    expect(done.body.orderStatus).toBe('MAKER_PO_READY');
+
+    // Keep-the-proof restart: review → 校了確認待ち keeps the current proof, but the old approvals do not count.
+    const kept = await approvedOrder('prepaid');
+    expect((await post('staff', `/api/film-supply-orders/${kept.orderId}/transitions`, { to: 'CHANGE_REVIEW' })).status).toBe(200);
+    expect((await post('staff', `/api/film-supply-orders/${kept.orderId}/transitions`, { to: 'APPROVAL_PENDING' })).body.status).toBe('APPROVAL_PENDING');
+    const stalled = await post('staff', `/api/film-supply-orders/${kept.orderId}/auto-advance`);
+    expect(stalled.body).toMatchObject({ status: 'APPROVAL_PENDING', steps: [] });
+    expect((await get('staff', `/api/film-supply-orders/${kept.orderId}/auto-advance`)).body.nextAutomatic.blockers[0].code).toBe('DUAL_APPROVAL_REQUIRED');
+    await approveOrg(kept.sevenPoId, kept.orderId, kept.revisionId, 'customer');
+    const reapproved = await approveOrg(kept.sevenPoId, kept.orderId, kept.revisionId, 'seven');
+    expect(reapproved.body.orderStatus).toBe('MAKER_PO_READY');
+    // Keep-the-proof restart into 校正ゲラ準備完了 takes the proof step with the current revision.
+    const proofKept = await approvedOrder('prepaid');
+    await post('staff', `/api/film-supply-orders/${proofKept.orderId}/transitions`, { to: 'CHANGE_REVIEW' });
+    await post('staff', `/api/film-supply-orders/${proofKept.orderId}/transitions`, { to: 'PROOF_READY' });
+    expect((await post('staff', `/api/film-supply-orders/${proofKept.orderId}/auto-advance`)).body.status).toBe('APPROVAL_PENDING');
+  });
+
+  it('decision 2: staff may not confirm a delivery on evidence they uploaded; admin may, recorded as self-verification', async () => {
+    const project = await freshFilmOnlyProject();
+    const sevenPoId = await sevenPo(project);
+    const order = await createOrder(sevenPoId, 'prepaid', project);
+    const delivery = await post('staff', `/api/film-supply-orders/${order.orderId}/deliveries`, { filmSupplyOrderLineId: order.lineId, deliveredQuantity: 1000, unit: 'sheets' });
+    const adminDoc = await upload(sevenPoId, order.orderId, { documentType: 'acceptance_evidence', designKey: undefined }, 'admin', project);
+    expect((await post('admin', `/api/documents/${adminDoc.document.id}/verify`, { verificationStatus: 'verified' })).body.selfVerification).toBe(true);
+    const own = await post('admin', `/api/film-deliveries/${delivery.body.id}/confirmation`, { evidenceDocumentVersionId: adminDoc.version.id });
+    expect(own.status).toBe(201);
+    expect(own.body).toMatchObject({ selfVerification: true, selfVerificationBasis: 'admin_self_verification_p4' });
+    const [audit] = await db.select().from(auditEvents).where(and(eq(auditEvents.action, 'FILM_DELIVERY_CONFIRMED'), eq(auditEvents.id, own.body.auditEventId)));
+    expect(audit!.afterState).toMatchObject({ selfVerification: true, confirmedByUserId: adminId });
   });
 });

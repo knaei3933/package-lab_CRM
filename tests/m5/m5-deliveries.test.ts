@@ -163,7 +163,8 @@ async function uploadAcceptanceEvidence(
 }
 
 async function verifyDocument(documentId: string, note: string) {
-  const verified = await postJson(`/api/documents/${documentId}/verify`, {
+  // P1 P-4: staff may not confirm evidence they uploaded; the representative does.
+  const verified = await postAs(adminToken, `/api/documents/${documentId}/verify`, {
     verificationStatus: 'verified',
     verificationNote: note
   });
@@ -334,8 +335,10 @@ async function evaluateReadiness(projectIdValue: string) {
   return await postJson(`/api/projects/${projectIdValue}/commission-readiness`, {});
 }
 
+// P1 P-4: the evidence is uploaded by staff, so the delivery is confirmed by
+// the representative (staff never confirm on evidence they uploaded).
 async function confirmDelivery(url: string, body: Record<string, unknown>) {
-  return await postJson(url, body);
+  return await postAs(adminToken, url, body);
 }
 
 /** The audit rows that name one entity, in recording order. */
@@ -655,7 +658,8 @@ describe('M5 commission readiness and delivery confirmation (T-36)', () => {
       eq(auditEvents.entityId, confirmedBody.confirmation.id)
     )).limit(1);
     expect(audit?.action).toBe('FILLING_DELIVERY_CONFIRMED');
-    expect(audit?.actorUserId).toBe(staffId);
+    // P1 P-4: the staff-uploaded evidence is confirmed by the representative.
+    expect(audit?.actorUserId).toBe(adminId);
     expect(audit?.id).toBe(confirmedBody.auditEventId);
     expect((audit?.afterState as { evidenceDocumentVersionId: string }).evidenceDocumentVersionId)
       .toBe(unverifiedDoc.version.id);

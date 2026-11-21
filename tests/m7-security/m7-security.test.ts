@@ -180,7 +180,8 @@ async function uploadDocument(
 }
 
 async function verifyDocument(documentId: string, note: string) {
-  const verified = await postJson(`/api/documents/${documentId}/verify`, {
+  // P1 P-4: staff may not confirm evidence they uploaded; the representative does.
+  const verified = await postAs(adminToken, `/api/documents/${documentId}/verify`, {
     verificationStatus: 'verified',
     verificationNote: note
   });
@@ -943,10 +944,15 @@ describe('M7-SEC3 FIX 2: DUAL_APPROVED is gated on the live dual-approval gate',
     expect(release.status).toBe(200);
     const advanced = await transitionOrder(order.orderId, 'DUAL_APPROVED');
     expect(advanced.status).toBe(200);
-    // P1 R23: the recovered 校了 continues automatically (decided term).
-    expect((advanced.body as { autoAdvanced: Array<{ from: string; to: string }> }).autoAdvanced)
-      .toMatchObject([{ from: 'DUAL_APPROVED', to: 'MAKER_PO_READY' }]);
-    expect((advanced.body as { status: string }).status).toBe('MAKER_PO_READY');
+    // P1 review M4: the customer approval predates the review, so the automatic
+    // step to MAKER_PO_READY waits for a re-approval recorded after the review.
+    expect((advanced.body as { autoAdvanced: unknown[] }).autoAdvanced).toEqual([]);
+    expect((advanced.body as { status: string }).status).toBe('DUAL_APPROVED');
+    const customerAgain = await uploadApprovalEvidence(order.poId, order.orderId, 'label-front', 'customer',
+      'composite m7 re-approval after review\nidentifier: MSG-M7-CUSTOMER-0002\n');
+    const reapproved = await recordApproval(order.revisionId, customerAgain.version.id, { evidenceIdentifier: 'MSG-M7-CUSTOMER-0002' });
+    expect(reapproved.status, JSON.stringify(reapproved.body)).toBe(201);
+    expect((reapproved.body as { orderStatus: string }).orderStatus).toBe('MAKER_PO_READY');
     expect(await orderStatus(order.orderId)).toBe('MAKER_PO_READY');
   });
 });

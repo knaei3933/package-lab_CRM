@@ -541,7 +541,8 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect((await orderRow(order.orderId))?.status).toBe('MAKER_PO_SENT_MANUALLY');
 
     const acceptDoc = await uploadOrderEvidence(order, projectId, 'acceptance_evidence', 'T20', po.id);
-    const verified = await postJson(`/api/documents/${acceptDoc.document.id}/verify`, {
+    // P1 P-4: staff may not confirm evidence they uploaded; the representative does.
+    const verified = await postAs(adminToken, `/api/documents/${acceptDoc.document.id}/verify`, {
       verificationStatus: 'verified',
       verificationNote: '合成受領確認'
     });
@@ -651,7 +652,8 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect((await listEvents(po.id)).filter((event) => event.eventType === 'ACCEPT_EVIDENCE_REGISTERED'))
       .toHaveLength(0);
 
-    const verified = await postJson(`/api/documents/${acceptDoc.document.id}/verify`, {
+    // P1 P-4: staff may not confirm evidence they uploaded; the representative does.
+    const verified = await postAs(adminToken, `/api/documents/${acceptDoc.document.id}/verify`, {
       verificationStatus: 'verified',
       verificationNote: '合成受領確認T22'
     });

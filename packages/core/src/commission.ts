@@ -48,6 +48,14 @@ export interface CommissionReadinessInput {
    * delivered film quantity alone. Omitted means the filling-linked rule.
    */
   fillingApplicable?: boolean;
+  /**
+   * P1 review H1 (P-3: the commission is fixed after the delivered quantity is
+   * fixed). Read only for a film-only project: how many live film orders the
+   * project has, how many of them have no delivery at all, and how many are
+   * delivered short (a line confirmed below its ordered quantity while the
+   * order was not closed as delivered). Omitted means none of each.
+   */
+  filmOrders?: { total: number; withoutDelivery: number; quantityIncomplete: number };
 }
 
 export interface CommissionReadinessEvaluation {
@@ -61,6 +69,8 @@ export interface CommissionReadinessEvaluation {
     | 'SEVEN_PO_NOT_OFFICIALLY_REGISTERED'
     | 'FILM_DELIVERY_PENDING_CONFIRMATION'
     | 'FILLING_DELIVERY_PENDING_CONFIRMATION'
+    | 'FILM_ORDER_NOT_DELIVERED'
+    | 'FILM_DELIVERY_QUANTITY_INCOMPLETE'
   >;
 }
 
@@ -90,6 +100,14 @@ export function evaluateCommissionReadiness(input: CommissionReadinessInput): Co
 
   if (!input.filmDeliveryConfirmed) blocking.push('FILM_DELIVERY_PENDING_CONFIRMATION');
   if (fillingApplicable && !input.fillingDeliveryConfirmed) blocking.push('FILLING_DELIVERY_PENDING_CONFIRMATION');
+  // P1 review H1: a film-only project is ready only when every live film order
+  // has its delivered quantity fixed — no order without a delivery, no order
+  // delivered short. The filling-linked rule above is unchanged.
+  if (!fillingApplicable) {
+    const orders = input.filmOrders ?? { total: 0, withoutDelivery: 0, quantityIncomplete: 0 };
+    if (orders.withoutDelivery > 0) blocking.push('FILM_ORDER_NOT_DELIVERED');
+    if (orders.quantityIncomplete > 0) blocking.push('FILM_DELIVERY_QUANTITY_INCOMPLETE');
+  }
 
   if (blocking.length > 0) return { state: 'PENDING_VERIFICATION', isReady: false, blocking };
   return { state: 'READY', isReady: true, blocking: [] };

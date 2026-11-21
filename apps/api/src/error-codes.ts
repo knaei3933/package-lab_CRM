@@ -304,6 +304,9 @@ export const ERROR_MESSAGES_JA: Readonly<Record<string, string>> = {
   EXPECTED_SNAPSHOT_SHA256_INVALID: '承認する発注書の確認値が正しくありません。画面を再読み込みしてください',
   MAKER_PO_AMOUNT_MISSING: 'メーカー発注書に金額が記載されていません。担当者に金額の入力を依頼してください',
   MAKER_PO_SNAPSHOT_DRIFTED: '発注書の作成後に明細または版が変わりました。承認すると最新の内容で確定します',
+
+  // ---- P1 P-4: self-verification
+  SELF_VERIFICATION_FORBIDDEN: '自分で登録した証跡は自分で確認できません。代表者または別の担当者に確認を依頼してください',
 };
 
 /** HTTP status → the code a refusal falls back to when its handler named none. */

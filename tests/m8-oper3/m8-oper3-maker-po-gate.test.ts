@@ -526,7 +526,7 @@ describe('M8-OPER3: a valid dual approval still carries the full maker chain', (
       poId: chain.poId,
       makerPoId: poId
     });
-    expect((await postAs(staffToken, `/api/documents/${acceptanceEvidence.document.id}/verify`, {
+    expect((await postAs(adminToken, `/api/documents/${acceptanceEvidence.document.id}/verify`, {
       verificationStatus: 'verified'
     })).status).toBe(200);
     const accepted = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {
@@ -601,7 +601,7 @@ describe('M8-OPER3: paper whose send is already proven is never retroactively bl
       poId: chain.poId,
       makerPoId: poId
     });
-    expect((await postAs(staffToken, `/api/documents/${acceptanceEvidence.document.id}/verify`, {
+    expect((await postAs(adminToken, `/api/documents/${acceptanceEvidence.document.id}/verify`, {
       verificationStatus: 'verified'
     })).status).toBe(200);
     const accepted = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {

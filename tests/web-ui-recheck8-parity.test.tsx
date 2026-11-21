@@ -372,7 +372,7 @@ describe('Medium-B: decision (a) after the replacement is in production', () => 
       documentType: 'acceptance_evidence', issuerEntity: 'kanei', orderId: chain.orderId, sevenPoId: chain.sevenPoId, makerPoId: second,
       content: 'composite recheck8 acceptance evidence\n'
     });
-    expect((await postAs(staffToken, `/api/documents/${acceptEvidence.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+    expect((await postAs(adminToken, `/api/documents/${acceptEvidence.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
     expect((await postAs(adminToken, `/api/maker-purchase-orders/${second}/accept-evidence`, {
       evidenceDocumentVersionId: acceptEvidence.version.id, acceptedAt: '2026-11-18T12:00:00.000Z'
     })).status).toBe(200);

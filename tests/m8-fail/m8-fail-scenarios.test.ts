@@ -1082,7 +1082,7 @@ describe('M8-HARDEN D: acceptance gates', () => {
       poId: chain.poId,
       makerPoId: poId
     });
-    expect((await postAs(staffToken, `/api/documents/${staleEvidence.document.id}/verify`, {
+    expect((await postAs(adminToken, `/api/documents/${staleEvidence.document.id}/verify`, {
       verificationStatus: 'verified'
     })).status).toBe(200);
     const crossPo = await postAs(adminToken, `/api/maker-purchase-orders/${poId2}/accept-evidence`, {
@@ -1101,7 +1101,7 @@ describe('M8-HARDEN D: acceptance gates', () => {
       poId: chain.poId,
       makerPoId: poId2
     });
-    expect((await postAs(staffToken, `/api/documents/${ownEvidence.document.id}/verify`, {
+    expect((await postAs(adminToken, `/api/documents/${ownEvidence.document.id}/verify`, {
       verificationStatus: 'verified'
     })).status).toBe(200);
     const accepted = await postAs(adminToken, `/api/maker-purchase-orders/${poId2}/accept-evidence`, {

@@ -708,7 +708,7 @@ describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
       content: 'composite m8 acceptance evidence\n',
       makerPoId: poId
     });
-    const verified = await postAs(staffToken, `/api/documents/${acceptEvidence.document.id}/verify`, {
+    const verified = await postAs(adminToken, `/api/documents/${acceptEvidence.document.id}/verify`, {
       verificationStatus: 'verified',
       verificationNote: '合成受領確認M8'
     });
@@ -779,7 +779,7 @@ describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
       content: 'composite m8 acceptance evidence\n',
       makerPoId: poId
     });
-    await postAs(staffToken, `/api/documents/${acceptEvidence.document.id}/verify`, {
+    await postAs(adminToken, `/api/documents/${acceptEvidence.document.id}/verify`, {
       verificationStatus: 'verified'
     });
 

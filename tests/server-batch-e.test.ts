@@ -136,7 +136,7 @@ async function uploadVerifiedAcceptanceEvidence(tag: string, bindings: Record<st
   });
   expect(uploaded.status).toBe(201);
   const body = uploaded.body as { document: { id: string }; version: { id: string } };
-  const verified = await requestAs(staffToken, 'POST', `/api/documents/${body.document.id}/verify`, {
+  const verified = await requestAs(adminToken, 'POST', `/api/documents/${body.document.id}/verify`, {
     verificationStatus: 'verified',
     verificationNote: `合成受領証跡確認 ${tag}`
   });
@@ -221,7 +221,7 @@ describe('persona friction batch E', () => {
       sevenPurchaseOrderId: poId,
       filmSupplyOrderId: orderId
     });
-    const confirmed = await requestAs(staffToken, 'POST', `/api/film-deliveries/${deliveryId}/confirmation`, {
+    const confirmed = await requestAs(adminToken, 'POST', `/api/film-deliveries/${deliveryId}/confirmation`, {
       evidenceDocumentVersionId: evidenceVersionId
     });
     expect(confirmed.status).toBe(201);
@@ -245,7 +245,7 @@ describe('persona friction batch E', () => {
       sevenPurchaseOrderId: poId,
       fillingOrderId: fillingOrder.id
     });
-    const fillingConfirmed = await requestAs(staffToken, 'POST', `/api/filling-deliveries/${fillingDeliveryId}/confirmation`, {
+    const fillingConfirmed = await requestAs(adminToken, 'POST', `/api/filling-deliveries/${fillingDeliveryId}/confirmation`, {
       evidenceDocumentVersionId: fillingEvidenceVersionId
     });
     expect(fillingConfirmed.status).toBe(201);
