@@ -45,8 +45,8 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
   },
   // P1 (p1-server API_CONTRACT §7)
   MAKER_PO_SNAPSHOT_CHANGED: {
-    ja: '承認画面を開いた後に発注書の内容（明細・版）が変わりました。最新の内容を確認してから、もう一度承認してください。',
-    ko: '승인 화면을 연 뒤 발주서 내용(명세·판)이 바뀌었습니다. 최신 내용을 확인한 뒤 다시 승인하세요.'
+    ja: '内容が更新されました。再読込して確認してください。',
+    ko: '내용이 변경되었습니다. 다시 불러와 확인하세요.'
   },
   // P1 (p1-server API_CONTRACT §7)
   MAKER_PO_RETURN_ONLY_DRAFT: {

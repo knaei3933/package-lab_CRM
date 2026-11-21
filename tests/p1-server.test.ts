@@ -1370,3 +1370,61 @@ describe('P1 review round 2', () => {
     expect(audit!.afterState).toMatchObject({ selfVerification: true, confirmedByUserId: adminId });
   });
 });
+
+describe('P1 integration review (H1 / M1 / M2 / X1 / X2)', () => {
+  const OTHER = '01a1e8eb-0000-7000-8000-000000000001';
+  const card = async (poId: string) => (await get('admin', `/api/maker-purchase-orders/${poId}/approval-card`)).body.makerPurchaseOrder.approvalSnapshotSha256 as string;
+
+  it('X1/X2: on the real app a write naming another project is refused 409 before the handler (maker PO join resolved)', async () => {
+    const { orderId } = await approvedOrder();
+    const paper = await createPaper(orderId);
+    const body = { expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: await card(paper.body.id) };
+    const refused = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, body, { 'x-kanei-expected-project': OTHER });
+    expect(refused.status).toBe(409);
+    expect(refused.body.code).toBe('PROJECT_CONTEXT_MISMATCH');
+    expect((await get('admin', `/api/maker-purchase-orders/${paper.body.id}`)).body.purchaseOrder.status).toBe('DRAFT');
+    const approved = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, body, { 'x-kanei-expected-project': projectId });
+    expect(approved.status).toBe(200);
+  });
+
+  it('M1: without a session the answer is 401 whatever the target; an unassigned id and a missing id answer the same', async () => {
+    const { orderId } = await approvedOrder();
+    const anonymous = await app.request(`/api/film-supply-orders/${orderId}/transitions`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-kanei-expected-project': OTHER }, body: JSON.stringify({ to: 'ON_HOLD' })
+    });
+    expect(anonymous.status).toBe(401);
+    const existing = await post('outsider', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ON_HOLD', holdReason: 'x' }, { 'x-kanei-expected-project': OTHER });
+    const missing = await post('outsider', `/api/film-supply-orders/${uuidv7()}/transitions`, { to: 'ON_HOLD', holdReason: 'x' }, { 'x-kanei-expected-project': OTHER });
+    expect(existing.status).not.toBe(409);
+    expect(existing.body.code).not.toBe('PROJECT_CONTEXT_MISMATCH');
+    expect([existing.status, missing.status].every((status) => status === 403 || status === 404)).toBe(true);
+  });
+
+  it('M2: the representative sets the amount pinned to the card; the approval then needs the hash that includes it', async () => {
+    const { orderId } = await approvedOrder();
+    const paper = await createPaper(orderId, false);
+    const shown = await card(paper.body.id);
+    expect((await send('staff', 'PATCH', `/api/maker-purchase-orders/${paper.body.id}/amounts`, { amounts: { currency: 'JPY', totalAmount: '312000' }, expectedSnapshotSha256: shown })).status).toBe(403);
+    const set = await send('admin', 'PATCH', `/api/maker-purchase-orders/${paper.body.id}/amounts`, { amounts: { currency: 'JPY', totalAmount: '312000' }, expectedSnapshotSha256: shown });
+    expect(set.status).toBe(200);
+    const withAmount = set.body.approvalSnapshotSha256 as string;
+    expect(withAmount).not.toBe(shown);
+    expect(await card(paper.body.id)).toBe(withAmount);
+    // The hash the card showed before the amount no longer approves; the new one does.
+    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, { expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: shown })).body.code).toBe('MAKER_PO_SNAPSHOT_CHANGED');
+    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, { expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: withAmount })).status).toBe(200);
+  });
+
+  it('H1 / M2: a line added after the card was drawn refuses both the amount and the approval (nothing unseen is approved)', async () => {
+    const { orderId } = await approvedOrder();
+    const paper = await createPaper(orderId, false);
+    const shown = await card(paper.body.id);
+    expect((await post('staff', `/api/film-supply-orders/${orderId}/lines`, { lineNumber: 2, description: '追加明細（画面描画後）', orderedQuantity: 10, unit: 'rolls' })).status).toBe(201);
+    const amount = await send('admin', 'PATCH', `/api/maker-purchase-orders/${paper.body.id}/amounts`, { amounts: { currency: 'JPY', totalAmount: '1' }, expectedSnapshotSha256: shown });
+    expect(amount.status).toBe(409);
+    expect(amount.body.code).toBe('MAKER_PO_SNAPSHOT_CHANGED');
+    const approval = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, { expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: shown });
+    expect(approval.status).toBe(409);
+    expect(approval.body.code).toBe('MAKER_PO_SNAPSHOT_CHANGED');
+  });
+});

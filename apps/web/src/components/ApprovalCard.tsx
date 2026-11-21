@@ -1,5 +1,5 @@
 import { ActionForm } from './ActionForm';
-import { CheckboxField, TextareaField } from './fields';
+import { CheckboxField, SelectField, TextareaField, TextField } from './fields';
 import { Bilingual } from './Bilingual';
 import { approveFromCardAction, returnMakerPoAction } from '../app/approval-actions';
 import type { ApprovalCardView, CardOrganization, SealState } from '../lib/approval-card';
@@ -156,10 +156,16 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
             <input type="hidden" readOnly name="expectedPaymentTerms" value={card.expectedPaymentTerms} />
             {card.expectedSnapshotSha256 ? <input type="hidden" readOnly name="expectedSnapshotSha256" value={card.expectedSnapshotSha256} /> : null}
             {/* The API only warns about a paper without an amount; approving one is a deliberate, recorded choice. */}
+            {/* Review M2: the representative enters or corrects the amount here (saved into the paper,
+                pinned to the content this card shows); left empty, a missing amount needs the check. */}
+            <div className="p1-row">
+              <SelectField name="currency" label="通貨" choices={[{ value: 'JPY', label: '日本円（JPY）' }, { value: 'USD', label: '米ドル（USD）' }, { value: 'CNY', label: '人民元（CNY）' }, { value: 'KRW', label: '韓国ウォン（KRW）' }]} defaultValue="JPY" width={180} />
+              <TextField name="totalAmount" label={card.amountDisplay ? '金額を直す（数字のみ・任意）' : '金額（数字のみ）'} width={200} autoComplete="off" placeholder="480000" />
+            </div>
             {card.amountDisplay ? null : (
               <>
                 <input type="hidden" readOnly name="amountMissing" value="true" />
-                <CheckboxField name="acknowledgeMissingAmount" label="金額未入力のまま承認する" required />
+                <CheckboxField name="acknowledgeMissingAmount" label="金額未入力のまま承認する" />
               </>
             )}
           </ActionForm>

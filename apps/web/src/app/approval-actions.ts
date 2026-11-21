@@ -1,7 +1,8 @@
 'use server';
 
 import { refuseIfProjectSwitched, writeProjectOf } from '../lib/project-guard';
-import { approvalSnapshotFor, SNAPSHOT_UNREADABLE_MESSAGE } from '../lib/approval-snapshot';
+import { SNAPSHOT_UNREADABLE_MESSAGE } from '../lib/approval-snapshot';
+import { isPlainAmount, normalizeAmountText } from '../lib/amount';
 import { isMissingRoute } from '../lib/approval-card';
 import { callApi } from '../lib/api';
 import { isSettledRefusal, refusalState } from '../lib/action-result';
@@ -38,14 +39,33 @@ export async function approveFromCardAction(_prev: ActionState | null, formData:
   if (!TERMS.includes(expectedPaymentTerms)) {
     return { ok: false, message: '支払条件を読み取れなかったため、承認を止めました。画面を再読み込みしてください。' };
   }
-  // A paper without an amount is approved only with the explicit confirmation on the card.
-  const ack = formData.get('acknowledgeMissingAmount');
-  if (field(formData, 'amountMissing') === 'true' && ack !== 'on' && ack !== 'true') {
-    return { ok: false, message: '金額が入力されていません。このまま承認する場合は「金額未入力のまま承認する」にチェックを入れてください。' };
+  // Review H1: only the hash the card was drawn with — never read again at submit.
+  if (!/^[0-9a-f]{64}$/.test(expectedSnapshotSha256)) return { ok: false, message: SNAPSHOT_UNREADABLE_MESSAGE };
+  let hash = expectedSnapshotSha256;
+  // Review M2: the representative may enter / correct the amount here (a staff draft has none). It is
+  // saved into the paper pinned to the same rendered hash, and the approval then carries the hash the
+  // API answers for that content (the lines the representative saw + the amount they typed).
+  const totalAmount = normalizeAmountText(field(formData, 'totalAmount'));
+  if (totalAmount.length > 0) {
+    if (!isPlainAmount(totalAmount)) return { ok: false, message: '金額は数字で入力してください（例 480000）。' };
+    const currency = /^[A-Z]{3}$/.test(field(formData, 'currency')) ? field(formData, 'currency') : 'JPY';
+    const saved = await callApi<{ approvalSnapshotSha256?: unknown }>(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/amounts`, {
+      method: 'PATCH',
+      body: { amounts: { currency, totalAmount }, expectedSnapshotSha256: hash },
+      idempotencyKey: idempotencyKeyOf(formData) ? `${idempotencyKeyOf(formData)}.amounts` : undefined,
+      expectedProjectId: writeProjectOf(formData)
+    });
+    if (!saved.ok) return refusalState(saved);
+    const next = saved.data?.approvalSnapshotSha256;
+    if (typeof next !== 'string' || !/^[0-9a-f]{64}$/.test(next)) return { ok: false, message: SNAPSHOT_UNREADABLE_MESSAGE };
+    hash = next;
+  } else {
+    // A paper without an amount is approved only with the explicit confirmation on the card.
+    const ack = formData.get('acknowledgeMissingAmount');
+    if (field(formData, 'amountMissing') === 'true' && ack !== 'on' && ack !== 'true') {
+      return { ok: false, message: '金額が入力されていません。金額を入力するか、「金額未入力のまま承認する」にチェックを入れてください。' };
+    }
   }
-  // P1 integration: always with the snapshot hash (the card's, else read again from the API).
-  const hash = /^[0-9a-f]{64}$/.test(expectedSnapshotSha256) ? expectedSnapshotSha256 : await approvalSnapshotFor(poId);
-  if (!hash) return { ok: false, message: SNAPSHOT_UNREADABLE_MESSAGE };
   const body: Record<string, unknown> = { expectedPaymentTerms, expectedSnapshotSha256: hash };
   const result = await callApi(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/ceo-approval`, {
     method: 'POST',

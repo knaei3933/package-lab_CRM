@@ -74,12 +74,12 @@ describe('approveFromCardAction', () => {
   });
 
   it.each(['prepaid', 'on_delivery', 'undetermined'])('accepts the terms %s', async (terms) => {
-    await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: terms }));
+    await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: terms, expectedSnapshotSha256: SHA }));
     expect(approvalCall()[1].body.expectedPaymentTerms).toBe(terms);
   });
 
   it.each(['', ' ', 'Prepaid', 'later', 'prepaid;x'])('refuses terms %j before any API call', async (terms) => {
-    const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: terms }));
+    const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: terms, expectedSnapshotSha256: SHA }));
     expect(result.ok).toBe(false);
     expect(result.message).toContain('支払条件');
     expect(callApi).not.toHaveBeenCalled();
@@ -101,18 +101,19 @@ describe('approveFromCardAction', () => {
     for (const bad of [SHA.toUpperCase(), SHA.slice(1), `${SHA}0`, 'g'.repeat(64), '', ' ', `x${SHA.slice(1)}`]) {
       callApi.mockClear();
       const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: bad }));
-      expect(approvalCall()[1].body, JSON.stringify(bad)).toEqual({ expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: CARD_SHA });
-      expect(result.ok).toBe(true);
+      // Review H1: a missing or malformed hash is never replaced by one read at submit — nothing is sent.
+      expect(result.ok, JSON.stringify(bad)).toBe(false);
+      expect(callApi).not.toHaveBeenCalled();
     }
   });
 
   it('sends no idempotency key when the form has none valid', async () => {
-    await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid' }, RENDERED, null));
+    await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA }, RENDERED, null));
     expect(approvalCall()[1].idempotencyKey).toBeUndefined();
   });
 
   it('encodes the paper id into the path', async () => {
-    await approveFromCardAction(null, form({ poId: 'a b/c', expectedPaymentTerms: 'prepaid' }));
+    await approveFromCardAction(null, form({ poId: 'a b/c', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA }));
     expect(approvalCall()[0]).toBe('/api/maker-purchase-orders/a%20b%2Fc/ceo-approval');
   });
 
@@ -148,6 +149,25 @@ describe('approveFromCardAction: a paper without an amount (P1 integration)', ()
     const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid' }));
     expect(result.ok).toBe(false);
     expect(callApi.mock.calls.every((call) => String(call[0]).endsWith('/approval-card'))).toBe(true);
+  });
+});
+
+describe('approveFromCardAction: review M2 — the representative types the amount on the card', () => {
+  it('saves the amount pinned to the rendered hash, then approves with the hash the API answers for it', async () => {
+    const NEW = '9f'.repeat(32);
+    callApi.mockImplementation(async (path: string) => (String(path).endsWith('/amounts') ? ok({ approvalSnapshotSha256: NEW }) : ok()));
+    const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA, amountMissing: 'true', totalAmount: '312,000', currency: 'JPY' }));
+    expect(result.ok).toBe(true);
+    expect(callApi.mock.calls[0]![0]).toBe('/api/maker-purchase-orders/mpo-1/amounts');
+    expect(callApi.mock.calls[0]![1]).toMatchObject({ method: 'PATCH', body: { amounts: { currency: 'JPY', totalAmount: '312000' }, expectedSnapshotSha256: SHA } });
+    expect(callApi.mock.calls[1]![1].body).toEqual({ expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: NEW });
+  });
+
+  it('a refused amount (content changed after the card was drawn) stops before the approval', async () => {
+    callApi.mockImplementation(async () => fail(409, 'MAKER_PO_SNAPSHOT_CHANGED', '内容が更新されました'));
+    const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA, totalAmount: '1' }));
+    expect(result).toMatchObject({ ok: false, code: 'MAKER_PO_SNAPSHOT_CHANGED' });
+    expect(callApi.mock.calls.some((call) => String(call[0]).endsWith('/ceo-approval'))).toBe(false);
   });
 });
 

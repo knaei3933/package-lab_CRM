@@ -28,12 +28,14 @@ describe('targetOf (M2)', () => {
 });
 
 describe('expectedProjectMiddleware (M2)', () => {
-  function appWith(projectId: string | null) {
+  const allowAll = { signedIn: async () => true, mayOpen: async () => true };
+  function appWith(projectId: string | null, access = allowAll) {
     const calls: string[] = [];
+    const lookups: number[] = [];
     const app = new Hono();
-    app.use('/api/*', expectedProjectMiddleware({ execute: async () => ({ rows: projectId ? [{ project_id: projectId }] : [] }) }));
+    app.use('/api/*', expectedProjectMiddleware({ execute: async () => { lookups.push(1); return { rows: projectId ? [{ project_id: projectId }] : [] }; } }, access));
     app.post('/api/film-supply-orders/:id/transitions', (context) => { calls.push('written'); return context.json({ ok: true }); });
-    return { app, calls };
+    return { app, calls, lookups };
   }
   const post = (app: Hono, header?: string) => app.request(`/api/film-supply-orders/${ORDER}/transitions`, {
     method: 'POST', headers: header ? { [EXPECTED_PROJECT_HEADER]: header } : {}, body: '{}'
@@ -55,9 +57,23 @@ describe('expectedProjectMiddleware (M2)', () => {
     }
   });
 
+  it('review M1: without a session it answers 401 before anything about the target is read', async () => {
+    const { app, calls, lookups } = appWith(A, { signedIn: async () => false, mayOpen: async () => true });
+    const answer = await post(app, B);
+    expect(answer.status).toBe(401);
+    expect(lookups).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it('review M1: a project the caller may not open is never confirmed — the handler answers as for a missing id', async () => {
+    const { app, calls } = appWith(A, { signedIn: async () => true, mayOpen: async () => false });
+    expect((await post(app, B)).status).toBe(200);
+    expect(calls).toEqual(['written']);
+  });
+
   it('never checks a read', async () => {
     const app = new Hono();
-    app.use('/api/*', expectedProjectMiddleware({ execute: async () => ({ rows: [{ project_id: A }] }) }));
+    app.use('/api/*', expectedProjectMiddleware({ execute: async () => ({ rows: [{ project_id: A }] }) }, allowAll));
     app.get('/api/film-supply-orders/:id/auto-advance', (context) => context.json({ ok: true }));
     expect((await app.request(`/api/film-supply-orders/${ORDER}/auto-advance`, { headers: { [EXPECTED_PROJECT_HEADER]: B } })).status).toBe(200);
   });

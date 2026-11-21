@@ -855,7 +855,13 @@ export function createApp({
     }
   }
   // P1 integration (M2): every write is checked against the project its screen was drawn for.
-  app.use('/api/*', expectedProjectMiddleware(db as unknown as Parameters<typeof expectedProjectMiddleware>[0]));
+  app.use('/api/*', expectedProjectMiddleware(db as unknown as Parameters<typeof expectedProjectMiddleware>[0], {
+    signedIn: async (request) => (await getSessionUser(request, db)) !== null,
+    mayOpen: async (request, projectId) => {
+      const user = await getSessionUser(request, db);
+      return user !== null && canPerform(toActor(user), 'project:read', 'F1', projectId).allowed;
+    }
+  }));
   app.get('/api/health', async (context) => {
     if (healthProbe && Date.now() - healthProbe.at < 5_000) {
       return context.json({ status: 'ok', app: 'api', port, db: healthProbe.state });
@@ -6837,6 +6843,80 @@ export function createApp({
       }
       if (error instanceof MakerPoStateConflict) {
         return context.json({ error: '発注状態がすでに変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
+      }
+      throw error;
+    }
+  });
+
+  /**
+   * P1 integration review M2 (conductor decision): a staff draft carries no amount, so the
+   * representative enters or corrects it on the approval card. DRAFT papers only, admin only,
+   * and pinned to the content the card showed (expectedSnapshotSha256): when the lines or the
+   * approved 版 changed after the card was drawn, nothing is written (409
+   * MAKER_PO_SNAPSHOT_CHANGED). The amount becomes part of the stored snapshot, so the hash the
+   * approval must then send (approvalSnapshotSha256 in the answer) covers it.
+   */
+  app.patch('/api/maker-purchase-orders/:poId/amounts', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
+    const poId = context.req.param('poId');
+    if (!isUuid(poId)) {
+      return context.json({ error: '経路パラメータ（poId）はUUIDである必要があります', code: 'INVALID_PATH_PARAMETER' }, 400);
+    }
+    const [existing] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1);
+    if (!existing) return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
+    if (!order) return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
+    if (!canPerform(toActor(user), 'ceo_approve', 'F1', order.projectId).allowed) {
+      return context.json({ error: '代表者のみ承認できます', code: 'CEO_ONLY' }, 403);
+    }
+    const body = await context.req.json().catch(() => null) as { amounts?: unknown; expectedSnapshotSha256?: unknown } | null;
+    const expected = body?.expectedSnapshotSha256;
+    if (typeof expected !== 'string' || !/^[0-9a-f]{64}$/.test(expected)) {
+      return context.json({ error: '承認する発注書の確認値がありません。承認カードを開き直してから承認してください', code: 'EXPECTED_SNAPSHOT_SHA256_REQUIRED' }, 422);
+    }
+    const raw = body?.amounts as { currency?: unknown; totalAmount?: unknown } | null | undefined;
+    if (!raw || typeof raw.currency !== 'string' || !/^[A-Z]{3}$/.test(raw.currency)
+      || typeof raw.totalAmount !== 'string' || !/^\d{1,12}(\.\d{1,2})?$/.test(raw.totalAmount)) {
+      return context.json({ error: '金額は currency と totalAmount の文字列です', code: 'INVALID_MAKER_PO_AMOUNTS' }, 422);
+    }
+    const amounts = { currency: raw.currency, totalAmount: raw.totalAmount };
+    if (existing.status !== 'DRAFT') {
+      return context.json({ error: '代表承認前のメーカー発注書だけ金額を変更できます', code: 'MAKER_PO_TRANSITION_BLOCKED' }, 422);
+    }
+    const now = new Date();
+    try {
+      const outcome = await db.transaction(async (tx) => {
+        const [po] = await tx.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).for('update');
+        if (!po || po.status !== 'DRAFT') throw new MakerPoStateConflict();
+        const parts = await loadMakerPoSnapshotParts(tx, po.filmSupplyOrderId);
+        const shown = computeMakerPoSnapshotSha256(rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot));
+        if (shown !== expected) throw new MakerPoSnapshotChangedUnderLock(expected, shown);
+        const stored = po.snapshot as MakerPoSnapshot;
+        const snapshot = rebuildMakerPoSnapshot(parts, { ...stored, amounts });
+        const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
+        await tx.update(makerPurchaseOrders).set({ snapshot, snapshotSha256, updatedAt: now }).where(eq(makerPurchaseOrders.id, poId));
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_PO_AMOUNTS_SET',
+          entityType: 'maker_purchase_order',
+          entityId: poId,
+          beforeState: { snapshotSha256: po.snapshotSha256 },
+          afterState: { snapshotSha256, amounts },
+          requestMetadata: { operation: 'maker_po:set_amounts' },
+          occurredAt: now
+        });
+        return snapshotSha256;
+      });
+      return context.json({ makerPurchaseOrderId: poId, approvalSnapshotSha256: outcome, amounts });
+    } catch (error) {
+      if (error instanceof MakerPoSnapshotChangedUnderLock) {
+        return context.json({ error: '承認画面を開いた後に発注書の内容（明細・版）が変わりました。最新の内容を確認してから、もう一度承認してください', code: 'MAKER_PO_SNAPSHOT_CHANGED', expectedSnapshotSha256: error.expected, snapshotSha256: error.current }, 409);
+      }
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: '代表承認前のメーカー発注書だけ金額を変更できます', code: 'MAKER_PO_TRANSITION_BLOCKED' }, 422);
       }
       throw error;
     }

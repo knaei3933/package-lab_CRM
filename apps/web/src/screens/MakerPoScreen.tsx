@@ -8,6 +8,7 @@ import { OffsetDateTimeField } from '../components/OffsetDateTimeField';
 import { ProjectProgress } from '../components/ProjectProgress';
 import { ProjectUnavailable } from '../components/ProjectUnavailable';
 import type { ProjectScreenProps } from './screen-props';
+import { ApprovalSnapshotFields } from '../components/ApprovalSnapshotFields';
 import { DataTable } from '../components/DataTable';
 import { RoleGate, ViewerPageNotice } from '../components/RoleGate';
 import { StatusBadge } from '../components/StatusBadge';
@@ -1125,6 +1126,7 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
             >
               <input type="hidden" readOnly name="expectedPaymentTerms" value={gate?.paymentTerms ?? ''} />
               <input type="hidden" readOnly name="poId" value={po.id} />
+              <ApprovalSnapshotFields poId={po.id} />
             </ActionForm>
           ) : (
             <p className="role-notice">

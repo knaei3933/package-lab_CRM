@@ -100,7 +100,9 @@ describe('ApprovalCard: facts', () => {
     expect(html).not.toMatch(/税込|税抜/);
     const approvable = render(card({ amountDisplay: null, canApprove: true, expectedPaymentTerms: 'prepaid' }));
     expect(approvable).toContain('金額未入力のまま承認する');
-    expect(approvable).toMatch(/name="acknowledgeMissingAmount"[^>]*required|required[^>]*name="acknowledgeMissingAmount"/);
+    expect(approvable).toContain('name="acknowledgeMissingAmount"');
+    // Review M2: the representative can type the amount instead (admin-only card).
+    expect(approvable).toContain('name="totalAmount"');
     expect(approvable).toContain('name="amountMissing" value="true"');
   });
 

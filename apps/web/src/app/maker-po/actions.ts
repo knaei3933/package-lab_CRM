@@ -7,7 +7,7 @@ import type { ActionState } from '../../lib/types';
 import { KEY_REUSED_CODE, recordIdOf, refusalState } from '../../lib/action-result';
 import { EXPECTED_TERMS_MISSING_MESSAGE, PAYMENT_TERMS_REQUIRED_MESSAGE, RECIPIENT_EMAIL_INVALID_MESSAGE } from '../../lib/form-messages';
 import { refuseIfProjectSwitched, writeProjectOf } from '../../lib/project-guard';
-import { AMOUNT_MISSING_CONFIRM_MESSAGE, approvalCardFacts, SNAPSHOT_UNREADABLE_MESSAGE } from '../../lib/approval-snapshot';
+import { AMOUNT_MISSING_CONFIRM_MESSAGE, SNAPSHOT_UNREADABLE_MESSAGE } from '../../lib/approval-snapshot';
 import { idempotencyKeyOf } from '../../lib/project-context';
 import { revalidatePath } from 'next/cache';
 
@@ -94,12 +94,11 @@ export async function approveMakerPoAction(_prev: ActionState | null, formData: 
   if (!['prepaid', 'on_delivery', 'undetermined'].includes(expectedPaymentTerms)) {
     return { ok: false, message: EXPECTED_TERMS_MISSING_MESSAGE };
   }
-  // P1 integration: the approval always carries the snapshot hash of the paper (read from its approval card).
-  const facts = await approvalCardFacts(poId);
-  const expectedSnapshotSha256 = facts.hash;
-  if (!expectedSnapshotSha256) return { ok: false, message: SNAPSHOT_UNREADABLE_MESSAGE };
-  // A paper without an amount is approved only with the card's explicit confirmation.
-  if (facts.amountMissing && formData.get('acknowledgeMissingAmount') !== 'on') return { ok: false, message: AMOUNT_MISSING_CONFIRM_MESSAGE };
+  // Review H1: the hash the screen was drawn with (never read again at submit); none → nothing is sent.
+  const expectedSnapshotSha256 = field(formData, 'expectedSnapshotSha256');
+  if (!/^[0-9a-f]{64}$/.test(expectedSnapshotSha256)) return { ok: false, message: SNAPSHOT_UNREADABLE_MESSAGE };
+  // A paper without an amount is approved only with the explicit confirmation drawn into the form.
+  if (field(formData, 'amountMissing') === 'true' && formData.get('acknowledgeMissingAmount') !== 'on') return { ok: false, message: AMOUNT_MISSING_CONFIRM_MESSAGE };
   return post(formData, `/api/maker-purchase-orders/${encodeURIComponent(poId)}/ceo-approval`, { expectedPaymentTerms, expectedSnapshotSha256 });
 }
 

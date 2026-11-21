@@ -62,15 +62,29 @@ export function targetOf(path: string): { index: number; id: string } | null {
   return null;
 }
 
-export function expectedProjectMiddleware(db: { execute: Execute }): MiddlewareHandler {
+/**
+ * Review M1: who is asking, decided before anything about the target is looked up.
+ * - anonymous: no valid session → 401, nothing is read about the target;
+ * - a project the caller may not open: the middleware says nothing (the handler answers
+ *   as it always did), so an existing-but-unassigned id and a missing id look the same.
+ */
+export interface ProjectAccess {
+  signedIn(request: Request): Promise<boolean>;
+  mayOpen(request: Request, projectId: string): Promise<boolean>;
+}
+
+export function expectedProjectMiddleware(db: { execute: Execute }, access: ProjectAccess): MiddlewareHandler {
   return async (context, next) => {
     const expected = context.req.header(EXPECTED_PROJECT_HEADER);
     if (!expected || !WRITE_METHODS.has(context.req.method)) return next();
     const target = targetOf(context.req.path);
     if (!target) return next();
+    if (!(await access.signedIn(context.req.raw))) {
+      return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
+    }
     const result = await db.execute(RESOLVERS[target.index]!.query(target.id));
     const projectId = result.rows[0]?.project_id;
-    if (typeof projectId === 'string' && projectId !== expected) {
+    if (typeof projectId === 'string' && projectId !== expected && (await access.mayOpen(context.req.raw, projectId))) {
       return context.json({
         error: '別のタブで案件が切り替わりました。保存していません。画面を再読み込みしてください',
         code: 'PROJECT_CONTEXT_MISMATCH'
