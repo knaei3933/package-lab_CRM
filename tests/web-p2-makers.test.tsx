@@ -147,7 +147,8 @@ describe('RecipientChooser (DESIGN §4, no JS needed)', () => {
     expect(radios.slice(1).some((radio) => radio.includes('checked'))).toBe(false);
     expect(radios[2]).toContain('value="__typed"');
     expect(html).toContain('<legend class="p1-legend">送信先（メーカーへ送るメールの宛先）</legend>');
-    expect(html).toContain('role="radiogroup"');
+    // P2 verifier L3: the fieldset legend names the group (no second radiogroup label).
+    expect(html).not.toContain('role="radiogroup"');
     expect(html).toContain('<b>営業部</b>');
     expect(html).toContain('<span translate="no" class="p2-recipient-email">sales@maker.example</span>');
     expect(html).toContain('既定');

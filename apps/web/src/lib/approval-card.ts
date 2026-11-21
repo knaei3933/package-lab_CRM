@@ -63,6 +63,14 @@ export interface ApprovalCardView {
    * A date is `YYYY-MM-DD`, null when not recorded, undefined when not answered.
    */
   deliveryTerms?: CardDeliveryTerms | null | undefined;
+  /**
+   * P2 verifier M1 (contract §3-2, security review L1): when the 納期・数量 shown on
+   * this card last changed — `order.updatedAt|orderFacts.updatedAt` of the server card.
+   * They are not in the snapshot hash, so the approval re-reads the card and stops
+   * when this moved (the representative never approves terms they did not see).
+   * Absent when the card has no such data (web fallback card, an older API).
+   */
+  termsStamp?: string | undefined;
   sevenPo: { poNumber: string | null; officialRegisteredAt: string | null; verificationStatus: string | null } | null;
   designs: CardDesign[];
   dualApproved: boolean;
@@ -97,6 +105,25 @@ export function deliveryTermsFromServer(order: Record<string, unknown>, seven: R
     plannedDeliveryDate: date('plannedDeliveryDate'),
     sevenPo: !seven ? 'unlinked' : facts ? { quantityDisplay: facts.quantityDisplay, amountDisplay: orderAmountDisplay(facts.amount) } : 'unknown'
   };
+}
+
+/**
+ * P2 verifier M1, pure: the change stamp of the card's 納期・数量 — the order's
+ * updatedAt and the セブン化学発注書 order-facts' updatedAt (empty when none recorded).
+ * Null when the card does not carry the order's updatedAt (nothing to compare).
+ */
+/** P2 verifier M1: the 納期・数量 changed after the card was drawn. */
+export const TERMS_CHANGED_MESSAGE = '承認カードを開いたあとに納期またはセブン化学発注書の数量・金額が変わりました。承認は止めました。画面を再読み込みして、新しい内容を確かめてから承認してください。';
+/** P2 verifier M1: the card could not be read again, so the terms could not be compared. */
+export const TERMS_UNREADABLE_MESSAGE = '納期・数量を確かめ直せなかったため、承認を止めました。少し待ってから画面を再読み込みしてください。';
+
+export function deliveryTermsStamp(data: unknown): string | null {
+  if (!isRecord(data) || !isRecord(data.order)) return null;
+  const orderUpdatedAt = text(data.order.updatedAt);
+  if (!orderUpdatedAt) return null;
+  const seven = isRecord(data.sevenPurchaseOrder) ? data.sevenPurchaseOrder : null;
+  const facts = seven && isRecord(seven.orderFacts) ? seven.orderFacts : null;
+  return `${orderUpdatedAt}|${facts ? text(facts.updatedAt) ?? '' : ''}`;
 }
 
 const EMAIL = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]+$/;
@@ -172,6 +199,7 @@ export function cardFromServer(poId: string, data: unknown): ApprovalCardView | 
       ...(typeof recipient.inMakerMaster === 'boolean' ? { inMakerMaster: recipient.inMakerMaster } : {})
     },
     deliveryTerms: deliveryTermsFromServer(order, seven),
+    ...(deliveryTermsStamp(data) ? { termsStamp: deliveryTermsStamp(data)! } : {}),
     sevenPo: seven ? { poNumber: text(seven.poNumber), officialRegisteredAt: text(seven.officialRegisteredAt), verificationStatus: text(seven.verificationStatus) } : null,
     designs: list(approvals.designs).map((design) => {
       const organizations = isRecord(design.organizations) ? design.organizations : {};

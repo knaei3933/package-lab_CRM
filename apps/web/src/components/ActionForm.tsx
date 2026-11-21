@@ -23,6 +23,11 @@ interface ActionFormProps {
   tone?: FormTone | undefined;
   /** Appended after 「記録しました。」, e.g. 「次の手順: …」. */
   successHint?: string | undefined;
+  /**
+   * P2: which record the button acts on, read by screen readers only (visually
+   * hidden) — for lists that repeat the same button text on every row.
+   */
+  submitContext?: string | undefined;
 }
 
 /**
@@ -34,7 +39,7 @@ interface ActionFormProps {
  * after a success, so a refused submit keeps its values (review H1); with a
  * confirm dialog the button stays disabled until hydration (review M1).
  */
-export function ActionForm({ action, submitLabel, children, hint, confirm, tone, successHint }: ActionFormProps) {
+export function ActionForm({ action, submitLabel, children, hint, confirm, tone, successHint, submitContext }: ActionFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   const style = tone === 'danger' ? dangerButtonStyle : buttonStyle;
   return (
@@ -60,6 +65,7 @@ export function ActionForm({ action, submitLabel, children, hint, confirm, tone,
               style={{ ...style, opacity: pending || locked ? 0.6 : 1 }}
             >
               {pending ? '送信中…' : submitLabel}
+              {submitContext ? <span className="visually-hidden">（{submitContext}）</span> : null}
             </button>
           )}
         </SubmitLock>

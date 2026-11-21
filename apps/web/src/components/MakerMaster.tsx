@@ -114,6 +114,7 @@ function AddressChange({ address, change, label }: { address: MakerRecipientAddr
     <ActionForm
       action={updateRecipientAddressAction}
       submitLabel={label}
+      submitContext={address.email}
       tone={stopping ? 'danger' : undefined}
       confirm={stopping ? {
         title: 'この宛先の使用を止めますか？',

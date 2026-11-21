@@ -77,7 +77,8 @@ export function RecipientChooser({
   return (
     <fieldset className="p1-fieldset p2-recipient" aria-describedby={feedback.describedBy}>
       <legend className="p1-legend">送信先（メーカーへ送るメールの宛先）</legend>
-      <div className="p2-recipient-options" role="radiogroup" aria-label={`送信先（メーカー「${choices.makerName}」の宛先）`}>
+      {/* The fieldset legend names the group (a second radiogroup label was announced twice). */}
+      <div className="p2-recipient-options">
         {choices.addresses.map((address, index) => (
           <label key={address.id} className="p1-radio p2-recipient-option">
             <input

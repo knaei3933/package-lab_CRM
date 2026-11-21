@@ -3,7 +3,7 @@
 import { refuseIfProjectSwitched, writeProjectOf } from '../lib/project-guard';
 import { SNAPSHOT_UNREADABLE_MESSAGE } from '../lib/approval-snapshot';
 import { isPlainAmount, normalizeAmountText } from '../lib/amount';
-import { isMissingRoute } from '../lib/approval-card';
+import { deliveryTermsStamp, isMissingRoute, TERMS_CHANGED_MESSAGE, TERMS_UNREADABLE_MESSAGE } from '../lib/approval-card';
 import { callApi } from '../lib/api';
 import { isSettledRefusal, refusalState } from '../lib/action-result';
 import { idempotencyKeyOf } from '../lib/project-context';
@@ -41,6 +41,18 @@ export async function approveFromCardAction(_prev: ActionState | null, formData:
   }
   // Review H1: only the hash the card was drawn with — never read again at submit.
   if (!/^[0-9a-f]{64}$/.test(expectedSnapshotSha256)) return { ok: false, message: SNAPSHOT_UNREADABLE_MESSAGE };
+  // P2 verifier M1 (contract §3-2, L1): 納期・数量 are fixed by this approval but are not in
+  // the hash — read the card again and stop when they changed since it was drawn. Only a
+  // comparison: the hash sent below is still the one the card was drawn with (review H1).
+  const expectedTermsStamp = field(formData, 'expectedTermsStamp');
+  if (expectedTermsStamp.length > 0) {
+    const current = await callApi<unknown>(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/approval-card`);
+    if (!current.ok) return { ok: false, message: TERMS_UNREADABLE_MESSAGE };
+    if (deliveryTermsStamp(current.data) !== expectedTermsStamp) {
+      revalidatePath('/', 'layout');
+      return { ok: false, message: TERMS_CHANGED_MESSAGE, settled: true };
+    }
+  }
   let hash = expectedSnapshotSha256;
   // Review M2: the representative may enter / correct the amount here (a staff draft has none). It is
   // saved into the paper pinned to the same rendered hash, and the approval then carries the hash the

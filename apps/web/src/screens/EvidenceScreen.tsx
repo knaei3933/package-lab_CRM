@@ -125,7 +125,7 @@ function EvidenceTable({ documents }: { documents: EvidenceDocumentView[] }) {
                   {latest?.versionNumber != null ? `第${latest.versionNumber}版` : '—'}
                   {doc.versions.length > 1 ? (
                     <>
-                      <span className="p2-audit-sub p1-muted-inline" aria-label={`版 ${doc.versions.length}件`}>版 {doc.versions.length}件</span>
+                      <span className="p2-audit-sub p1-muted-inline">版 {doc.versions.length}件</span>
                       <ol className="p2-evidence-versions">
                         {doc.versions.map((version) => (
                           <li key={version.versionId}>

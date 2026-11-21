@@ -207,6 +207,8 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
             <input type="hidden" readOnly name="poId" value={card.poId} />
             <input type="hidden" readOnly name="expectedPaymentTerms" value={card.expectedPaymentTerms} />
             {card.expectedSnapshotSha256 ? <input type="hidden" readOnly name="expectedSnapshotSha256" value={card.expectedSnapshotSha256} /> : null}
+            {/* P2 verifier M1: the 納期・数量 this card showed (re-checked before the approval). */}
+            {card.termsStamp ? <input type="hidden" readOnly name="expectedTermsStamp" value={card.termsStamp} /> : null}
             {/* The API only warns about a paper without an amount; approving one is a deliberate, recorded choice. */}
             {/* Review M2: the representative enters or corrects the amount here (saved into the paper,
                 pinned to the content this card shows); left empty, a missing amount needs the check. */}
