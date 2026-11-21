@@ -4,9 +4,13 @@
  * - ja-ko: 日本語＋한국어 — the Japanese text with a small Korean gloss.
  * - ko: 한국어 first, the Japanese business term kept next to it.
  * The default for the representative is ja-ko (the Korean gloss P0 already gave
- * the representative's refusals). The choice is kept in a cookie bound to the
- * user id (a per-user profile column needs a DB migration — reported, §4-2):
- * another person signing in on the same browser gets their own default.
+ * the representative's refusals).
+ * P2 R29 (contract §5): the choice is stored on the server per user
+ * (GET /api/me displayLanguage, PUT /api/me/preferences). The P1 cookie bound to
+ * the user id stays as the fallback: it is read only when the server has no
+ * choice for this user (null) or does not answer the field (an older API), and a
+ * cookie written for another user id is never read — another person signing in
+ * on the same browser gets their own choice or default.
  * Client-safe and pure.
  */
 export const LANGUAGE_MODES = ['ja', 'ja-ko', 'ko'] as const;
@@ -33,9 +37,16 @@ export function encodeLanguageCookie(userId: string, mode: LanguageMode): string
   return /^[A-Za-z0-9_-]{1,64}$/.test(userId) ? `${userId}.${mode}` : null;
 }
 
-/** The mode for this user: their own stored choice, else the role default. */
-export function languageFor(cookieValue: string | null | undefined, user: { id: string; role: string } | null): LanguageMode {
+/**
+ * The mode for this user: the server's stored choice, else their own cookie
+ * (bound to their id), else the role default.
+ */
+export function languageFor(
+  cookieValue: string | null | undefined,
+  user: { id: string; role: string; displayLanguage?: string | null | undefined } | null
+): LanguageMode {
   if (!user) return 'ja';
+  if (isLanguageMode(user.displayLanguage)) return user.displayLanguage;
   if (typeof cookieValue === 'string') {
     const dot = cookieValue.lastIndexOf('.');
     const id = cookieValue.slice(0, dot);

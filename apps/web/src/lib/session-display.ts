@@ -15,7 +15,9 @@ const MAX_NAME_LENGTH = 64;
 const ROLE_LABELS: Record<string, string> = {
   admin: '代表者',
   staff: '担当者',
-  viewer: '閲覧者'
+  viewer: '閲覧者',
+  // P2 P-2: the audit-only role (contract §7).
+  auditor: '監査'
 };
 
 export function roleLabel(role: string): string {

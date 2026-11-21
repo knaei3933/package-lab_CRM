@@ -17,7 +17,16 @@ export function chooseLead(count: number): string {
   return `あなたが開ける案件は${count}件です。案件を押すと、その案件の進み具合と、あなたが次にやることが表示されます。あとから画面上部の「案件」でいつでも切り替えられます。`;
 }
 
+/** P2 (contract §8-1): viewer and auditor cannot register a project (the API answers 403 READ_ONLY_ROLE). */
+export const READ_ONLY_PROJECT_NOTE = '閲覧・監査の権限では案件を登録できません。';
+
 export function noneMessage(role: string): { text: string; next: string } {
+  if (role === 'viewer' || role === 'auditor') {
+    return {
+      text: role === 'auditor' ? '監査する案件が、まだ割り当てられていません。' : 'あなたが閲覧する案件が、まだ割り当てられていません。',
+      next: `${READ_ONLY_PROJECT_NOTE}代表者に「${role === 'auditor' ? '監査' : '閲覧'}する案件への割り当て」を依頼してください。割り当てが済んだら、この画面を再読み込みすると案件が表示されます。`
+    };
+  }
   return role === 'admin'
     ? {
         text: 'この環境には、開ける案件がまだ1件もありません（作成前か、すべて削除済みです）。',

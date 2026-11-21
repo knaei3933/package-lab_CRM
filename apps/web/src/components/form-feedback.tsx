@@ -22,8 +22,9 @@ import type { ControlDescriptor, ControlKind } from '../lib/form-validation';
 import type { ActionState } from '../lib/types';
 import { createSubmitInFlight, SAVED_RECORD_EVENT } from '../lib/saved-record';
 import type { SavedRecordDetail } from '../lib/saved-record';
-import { IDEMPOTENCY_FIELD, isKeyReuseLocked, locksForKeyReuse, newIdempotencyKey, PROJECT_CONTEXT_MISMATCH, shouldRenewSubmitKey } from '../lib/project-context';
-import { KEY_REUSED_CODE } from '../lib/action-result';
+import { awaitsOutcomeCheck, IDEMPOTENCY_FIELD, isKeyReuseLocked, locksForKeyReuse, newIdempotencyKey, PROJECT_CONTEXT_MISMATCH, shouldRenewSubmitKey } from '../lib/project-context';
+import { IN_PROGRESS_CODE, KEY_REUSED_CODE, OUTCOME_UNKNOWN_CODE } from '../lib/action-result';
+import { IN_PROGRESS_HINT, OUTCOME_UNKNOWN_CHECKED_LABEL, OUTCOME_UNKNOWN_LINE } from '../lib/idempotency-notice';
 import { loginHrefFor } from '../lib/return-path';
 import { forget as forgetUnsaved, markDirty } from '../lib/unsaved-guard';
 import { installUnsavedGuard } from './unsaved-guard-dom';
@@ -97,6 +98,8 @@ interface FormFeedbackValue {
    * confirms (startNewIntent draws a new key and unlocks).
    */
   keyReuseLocked?: boolean | undefined;
+  /** P2 R05: IDEMPOTENCY_OUTCOME_UNKNOWN came back and the operator has not confirmed the check yet. */
+  outcomeCheckPending?: boolean | undefined;
   startNewIntent?: (() => void) | undefined;
   /** Review M1: the form has a confirm spec and is not hydrated yet — its submit buttons stay disabled. */
   submitLocked?: boolean | undefined;
@@ -358,7 +361,7 @@ export function FormResult({ state, successHint }: { state: ActionState | null; 
   const succeeded = state !== null && state.ok;
   const context = useRenderedContext();
   // Review NM1: the 「処理済みの可能性」 notice is always given in both languages.
-  const korean = failed && state.messageKo && (context?.showKorean || state.code === KEY_REUSED_CODE) ? state.messageKo : null;
+  const korean = failed && state.messageKo && (context?.showKorean || state.code === KEY_REUSED_CODE || state.code === OUTCOME_UNKNOWN_CODE) ? state.messageKo : null;
   return (
     <>
       <span role="alert" className="form-result form-result--error">
@@ -403,6 +406,25 @@ export function FormResult({ state, successHint }: { state: ActionState | null; 
  */
 function ResultRemedy({ state }: { state: ActionState }) {
   const feedback = useContext(FormFeedbackContext);
+  // P2 R05: the result of the earlier submit is unknown — the key stays fixed until the
+  // operator checked the list; 「一覧を確認しました」 then allows a new submit (new key).
+  if (state.code === OUTCOME_UNKNOWN_CODE) {
+    return (
+      <span className="form-result-remedy">
+        <strong className="form-result-line">{OUTCOME_UNKNOWN_LINE}</strong>
+        {feedback?.outcomeCheckPending && feedback.startNewIntent ? (
+          <button type="button" className="form-result-action" onClick={feedback.startNewIntent}>
+            {OUTCOME_UNKNOWN_CHECKED_LABEL}
+            <span className="form-result-ko" lang="ko">목록을 확인했습니다(새 입력으로 보낼 수 있게 하기)</span>
+          </button>
+        ) : null}
+      </span>
+    );
+  }
+  // P2 R05: still processing — the same input is sent again later with the same key.
+  if (state.code === IN_PROGRESS_CODE) {
+    return <span className="form-result-hint">{IN_PROGRESS_HINT}</span>;
+  }
   if (state.code === KEY_REUSED_CODE && feedback?.keyReuseLocked && feedback.startNewIntent) {
     const startNewIntent = feedback.startNewIntent;
     return (
@@ -514,8 +536,10 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
   // The lock is derived from the result in the same render (no effect gap a click could use).
   const [confirmedFor, setConfirmedFor] = useState<ActionState | null>(null);
   const keyReuseLocked = isKeyReuseLocked(state, confirmedFor);
+  const outcomeCheckPending = awaitsOutcomeCheck(state, confirmedFor);
   useEffect(() => {
-    if (locksForKeyReuse(state)) {
+    // P2 R05: OUTCOME_UNKNOWN refreshes the list like KEY_REUSED (the key is kept by shouldRenewSubmitKey).
+    if (locksForKeyReuse(state) || (state !== null && !state.ok && state.code === OUTCOME_UNKNOWN_CODE)) {
       const detail: SavedRecordDetail = { changedId: null };
       window.dispatchEvent(new CustomEvent(SAVED_RECORD_EVENT, { detail }));
       return;
@@ -651,8 +675,8 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
 
   const submitLocked = Boolean(confirm) && !mounted;
   const value = useMemo(
-    () => ({ errors, summaryCount, submitLocked, keyReuseLocked, startNewIntent }),
-    [errors, summaryCount, submitLocked, keyReuseLocked, startNewIntent]
+    () => ({ errors, summaryCount, submitLocked, keyReuseLocked, outcomeCheckPending, startNewIntent }),
+    [errors, summaryCount, submitLocked, keyReuseLocked, outcomeCheckPending, startNewIntent]
   );
 
   return (

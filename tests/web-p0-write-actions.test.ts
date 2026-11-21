@@ -260,7 +260,9 @@ describe('R09: the refusal text is the dictionary text, with its code and Korean
   it('maker-po send() returns the same shape', async () => {
     callApi.mockResolvedValue({ ok: false, status: 401, data: null, error: 'ログイン切れ', errorKo: null, code: 'SESSION_EXPIRED' });
     const result = await makerActions.cancelMakerPoAction(null, form({ poId: 'p', note: '訂正のため' }));
-    expect(result).toEqual({ ok: false, message: 'ログイン切れ', messageKo: null, code: 'SESSION_EXPIRED', settled: true });
+    // P2 R05 (contract v1.2 §1): a lost session keeps the key — after logging in again the
+    // same submit is answered with its first result (settled: false; it was true before P2).
+    expect(result).toEqual({ ok: false, message: 'ログイン切れ', messageKo: null, code: 'SESSION_EXPIRED', settled: false });
   });
 });
 

@@ -133,6 +133,8 @@ export interface SessionUser {
   role: string;
   displayName?: string;
   assignedProjectIds?: string[];
+  /** P2 R29 (contract §5): the display language stored on the server; null = not chosen (role default). */
+  displayLanguage?: string | null;
 }
 
 /**

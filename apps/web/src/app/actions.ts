@@ -5,7 +5,7 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { FILM_UNITS, FILLING_UNITS, OFFICIAL_ARTIFACT_DOCUMENT_TYPES } from '@kanei/core';
 import { callApi, PROJECT_COOKIE } from '../lib/api';
-import { isSettledRefusal, KEY_REUSED_CODE, recordIdOf, refusalState } from '../lib/action-result';
+import { isSettledRefusal, recordIdOf, refreshesListOn, refusalState } from '../lib/action-result';
 import { refuseIfProjectSwitched, writeProjectOf } from '../lib/project-guard';
 import { LAST_PROJECT_COOKIE, LAST_PROJECT_COOKIE_OPTIONS, projectPath } from '../lib/project-route';
 import { idempotencyKeyOf } from '../lib/project-context';
@@ -16,6 +16,7 @@ import { offsetDateTimeField } from '../lib/datetime';
 import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL } from '../lib/maker-po-data';
 import type { ActionState } from '../lib/types';
 import { unitLabel } from '../lib/vocabulary';
+import { deliveryDatesFromForm } from '../lib/delivery-dates';
 import { EVIDENCE_NOTE_FIELD } from '../lib/transition-evidence';
 import { PAYMENT_TERMS_DISPLAY, PAYMENT_TERMS_LOCKED_MESSAGES, PAYMENT_TERMS_REQUIRED_MESSAGE, SHARED_EVIDENCE_REASON_MESSAGE } from '../lib/form-messages';
 
@@ -137,7 +138,8 @@ async function post(
   }
   // Review NM1: the earlier submit with this key may be stored — show the list as it
   // is now, and answer with the dictionary notice (code kept: the form locks on it).
-  if (result.code === KEY_REUSED_CODE) {
+  // P2 R05: the same for IDEMPOTENCY_OUTCOME_UNKNOWN (the key stays fixed).
+  if (refreshesListOn(result.code)) {
     refresh();
     return refusalState(result);
   }
@@ -166,7 +168,7 @@ async function postCreate(
     refresh();
     return { ok: true, message: '記録しました。', changedId: recordIdOf(result.data) };
   }
-  if (result.code === KEY_REUSED_CODE) {
+  if (refreshesListOn(result.code)) {
     refresh();
     return refusalState(result);
   }
@@ -334,6 +336,10 @@ export async function createFilmSupplyOrderAction(_prev: ActionState | null, for
   const paymentTerms = field(formData, 'paymentTerms');
   if (!PAYMENT_TERMS_VALUES.includes(paymentTerms)) return PAYMENT_TERMS_REQUIRED;
   body.paymentTerms = paymentTerms;
+  // P2 R30: the optional 希望納期・納品予定日 (YYYY-MM-DD; an empty field is not sent).
+  const dates = deliveryDatesFromForm(formData);
+  if ('error' in dates) return { ok: false, message: dates.error };
+  Object.assign(body, dates.body);
   return postCreate(formData, `/api/projects/${encodeURIComponent(projectId)}/film-supply-orders`, body, {
     projectId,
     kind: 'film_order',

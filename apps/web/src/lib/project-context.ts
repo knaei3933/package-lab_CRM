@@ -44,8 +44,26 @@ export const IDEMPOTENCY_FIELD = '_kaneiIdempotencyKey';
  * the web: the same intent is retried with the same key.
  */
 export function shouldRenewSubmitKey(state: { ok: boolean; settled?: boolean | undefined; code?: string | null | undefined } | null): boolean {
-  if (state !== null && state.code === 'IDEMPOTENCY_KEY_REUSED') return false;
+  // P2 R05: the codes that keep the key (KEY_REUSED, IN_PROGRESS, OUTCOME_UNKNOWN,
+  // SESSION_EXPIRED — lib/action-result KEY_KEEPING_CODES) never renew it, whatever `settled` says.
+  if (state !== null && !state.ok && typeof state.code === 'string' && KEY_KEEPING_STATE_CODES.includes(state.code)) return false;
   return state === null || state.ok || state.settled === true;
+}
+
+/** Client-safe copy of lib/action-result KEY_KEEPING_CODES (a test keeps the two equal). */
+export const KEY_KEEPING_STATE_CODES: readonly string[] = ['IDEMPOTENCY_KEY_REUSED', 'IDEMPOTENCY_IN_PROGRESS', 'IDEMPOTENCY_OUTCOME_UNKNOWN', 'SESSION_EXPIRED'];
+
+/**
+ * P2 R05: after IDEMPOTENCY_OUTCOME_UNKNOWN the key stays fixed (a resend is
+ * answered the same and never writes) until the operator has checked the list
+ * and pressed 「一覧を確認しました」 (startNewIntent draws a new key). The form is
+ * not locked: resending is harmless, it only repeats the notice.
+ */
+export function awaitsOutcomeCheck<T extends { ok: boolean; code?: string | null | undefined }>(
+  state: T | null,
+  confirmedFor: T | null
+): boolean {
+  return state !== null && !state.ok && state.code === 'IDEMPOTENCY_OUTCOME_UNKNOWN' && state !== confirmedFor;
 }
 
 /**

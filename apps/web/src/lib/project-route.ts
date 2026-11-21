@@ -21,7 +21,7 @@ export const PROJECT_ROUTE_PREFIX = '/p';
 export const LAST_PROJECT_COOKIE = 'kanei_web_last_project';
 
 /** The former screens, now project-scoped lists under /p/{code}/… */
-export const PROJECT_SCREENS = ['orders', 'documents', 'approvals', 'maker-po', 'deliveries'] as const;
+export const PROJECT_SCREENS = ['orders', 'documents', 'approvals', 'maker-po', 'deliveries', 'evidence'] as const;
 export type ProjectScreen = (typeof PROJECT_SCREENS)[number];
 
 /** The legacy (cookie-scoped) address of each screen. */
@@ -97,7 +97,7 @@ export function parseProjectPath(pathname: string | null | undefined): ProjectPa
   return { projectCode, rest, orderCode };
 }
 
-const LEGACY_SCREEN_PATTERN = /^\/(orders|documents|approvals|maker-po|deliveries)(?=$|[?#])/;
+const LEGACY_SCREEN_PATTERN = /^\/(orders|documents|approvals|maker-po|deliveries|evidence)(?=$|[?#])/;
 
 /**
  * A screen link written for the old cookie-scoped addresses (`/orders#order-…`,

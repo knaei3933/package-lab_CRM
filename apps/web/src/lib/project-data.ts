@@ -113,8 +113,54 @@ export interface FilmSupplyOrderView {
   paymentTermsHistory?: PaymentTermsChangeView[] | undefined;
   /** UI batch E3: the API withheld the 支払条件 from this role. */
   paymentTermsHidden?: boolean | undefined;
+  /**
+   * P2 R30 (contract §3-1): 希望納期 / 納品予定日 as `YYYY-MM-DD`, null when not
+   * recorded. Read from GET /api/projects/:id/film-supply-orders (every role);
+   * `deliveryDatesRead` is false when that list could not be read (an older API,
+   * an outage) — the screens then never say 「未記録」.
+   */
+  requestedDeliveryDate?: string | null | undefined;
+  plannedDeliveryDate?: string | null | undefined;
+  deliveryDatesRead?: boolean | undefined;
+  /** P2: when the order row last changed (the list's updatedAt), when read. */
+  rowUpdatedAt?: string | null | undefined;
   createdAt: string;
   updatedAt: string;
+}
+
+/** P2 R30: one row of GET /api/projects/:projectId/film-supply-orders (the fields the web reads). */
+export interface FilmOrderListRow {
+  id: string;
+  code?: string;
+  status?: string;
+  requestedDeliveryDate?: string | null;
+  plannedDeliveryDate?: string | null;
+  updatedAt?: string;
+}
+
+/** P2 R30: the list's dates, by order id; null when the list could not be read. */
+export async function loadFilmOrderList(projectId: string): Promise<Map<string, FilmOrderListRow> | null> {
+  const result = await callApi<{ orders: FilmOrderListRow[] }>(`/api/projects/${encodeURIComponent(projectId)}/film-supply-orders`);
+  if (!result.ok || !result.data || !Array.isArray(result.data.orders)) return null;
+  return new Map(result.data.orders.filter((row) => typeof row?.id === 'string').map((row) => [row.id, row]));
+}
+
+const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** P2 R30, pure: the list's dates merged into the replayed orders (unknown shapes read as not recorded). */
+export function mergeDeliveryDates(orders: FilmSupplyOrderView[], list: ReadonlyMap<string, FilmOrderListRow> | null): void {
+  for (const order of orders) {
+    if (!list) {
+      order.deliveryDatesRead = false;
+      continue;
+    }
+    const row = list.get(order.id);
+    order.deliveryDatesRead = row !== undefined;
+    const date = (value: unknown) => (typeof value === 'string' && CALENDAR_DATE.test(value) ? value : null);
+    order.requestedDeliveryDate = row ? date(row.requestedDeliveryDate) : null;
+    order.plannedDeliveryDate = row ? date(row.plannedDeliveryDate) : null;
+    order.rowUpdatedAt = row && typeof row.updatedAt === 'string' ? row.updatedAt : null;
+  }
 }
 
 export interface FilmOrderHoldView {
@@ -549,6 +595,8 @@ export async function loadWorkspace(
   projectId: string,
   options: { makerPaperCleanup?: boolean } = {}
 ): Promise<Workspace> {
+  // P2 R30: the order list (delivery dates) is read beside the audit replay.
+  const filmOrderListRead = loadFilmOrderList(projectId);
   const [projectResult, labelResult, filmOrderEvents, filmLineEvents, fillingOrderEvents, fillingLineEvents, poEvents, documentEvents, versionEvents, revisionEvents, approvalEvents, filmDeliveryEvents, fillingDeliveryEvents, confirmationEvents, readinessEvents] =
     await Promise.all([
       loadProject(projectId),
@@ -918,13 +966,16 @@ export async function loadWorkspace(
     ? await (await import('./maker-po-data.js')).loadMakerPaperCleanup(projectId, closedOrderIds)
     : {};
 
+  const filmOrderList = [...filmOrders.values()];
+  mergeDeliveryDates(filmOrderList, await filmOrderListRead);
+
   return {
     error: firstError,
     project: projectResult.project,
     projectRefused: projectResult.refused === true,
     labels: labelResult.labels,
     makerPaperCleanup,
-    filmOrders: [...filmOrders.values()],
+    filmOrders: filmOrderList,
     fillingOrders: [...fillingOrders.values()],
     sevenPurchaseOrders: [...sevenPurchaseOrders.values()],
     documents: [...documents.values()],

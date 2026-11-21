@@ -113,10 +113,10 @@ const MIXED = [
 describe('sidebar menu by role (A)', () => {
   it('admin and staff see every screen in the order of the work', () => {
     // P1 R26: the role's home (承認箱 / 自分の作業 / 履歴) comes first.
-    const all = ['/home', '/dashboard', '/orders', '/documents', '/approvals', '/maker-po', '/deliveries', '/guide', '/status'];
-    expect(navHrefsForRole('admin')).toEqual(all);
-    expect(navHrefsForRole('staff')).toEqual(all);
-    expect(navGroupsForRole('admin').map((group) => group.step)).toEqual([null, 1, 2, 3, 4, null]);
+    // P2: the representative's maker master (/makers, R33) and the evidence list (/evidence, P-2).
+    expect(navHrefsForRole('admin')).toEqual(['/home', '/dashboard', '/orders', '/documents', '/approvals', '/maker-po', '/makers', '/deliveries', '/evidence', '/guide', '/status']);
+    expect(navHrefsForRole('staff')).toEqual(['/home', '/dashboard', '/orders', '/documents', '/approvals', '/maker-po', '/deliveries', '/evidence', '/guide', '/status']);
+    expect(navGroupsForRole('admin').map((group) => group.step)).toEqual([null, 1, 2, 3, 4, null, null]);
   });
 
   it('a viewer is not shown 文書 and 承認 (the API refuses it document:read and artwork_approval:read)', () => {

@@ -1,6 +1,6 @@
 import { revalidatePath } from 'next/cache';
 import { callApi } from './api';
-import { isSettledRefusal, KEY_REUSED_CODE, recordIdOf, refusalState } from './action-result';
+import { isSettledRefusal, recordIdOf, refreshesListOn, refusalState } from './action-result';
 import { idempotencyKeyOf } from './project-context';
 import { writeProjectOf } from './project-guard';
 import type { ActionState } from './types';
@@ -112,7 +112,7 @@ export async function runChain(formData: FormData, steps: readonly ChainStep[], 
       });
     }
     if (!result.ok) {
-      if (written > 0 || result.code === KEY_REUSED_CODE) revalidatePath('/', 'layout');
+      if (written > 0 || refreshesListOn(result.code)) revalidatePath('/', 'layout');
       const specific = options.refusal?.(codeOf(result.data), index) ?? null;
       const base = specific ?? refusalState(result);
       const prefix = written > 0

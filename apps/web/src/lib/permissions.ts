@@ -27,6 +27,17 @@ export function canRoleOperate(role: string | null | undefined, operation: Opera
 }
 
 export const VIEWER_REFUSAL = '閲覧権限のため操作できません';
+
+/**
+ * P2 P-2 (contract §7): the audit-only role reads the assigned projects and never
+ * writes. The write forms treat it as a viewer (normalizeRole); its own wording
+ * and menu are told apart with isAuditorRole.
+ */
+export function isAuditorRole(role: string | null | undefined): boolean {
+  return role === 'auditor';
+}
+
+export const AUDITOR_REFUSAL = '監査の権限のため操作できません';
 export const REPRESENTATIVE_ONLY = 'この操作は代表者が行います';
 export const ROLE_UNKNOWN = '役割を確認できませんでした。再読み込みしてください';
 
@@ -43,6 +54,9 @@ export function operationRefusal(
   if (role === null || role === undefined) {
     return `${ROLE_UNKNOWN}。`;
   }
+  if (isAuditorRole(role)) {
+    return label ? `${label}は、${AUDITOR_REFUSAL}。` : `${AUDITOR_REFUSAL}。`;
+  }
   if (normalizeRole(role) === 'viewer') {
     return label ? `${label}は、${VIEWER_REFUSAL}。` : `${VIEWER_REFUSAL}。`;
   }
@@ -51,6 +65,9 @@ export function operationRefusal(
 
 /** The one-line notice at the top of every operator screen for a viewer. */
 export const VIEWER_PAGE_NOTICE = '閲覧者のため、この画面では記録・変更はできません（閲覧のみ）';
+
+/** P2 P-2: the same notice for the audit-only role (amounts and file contents are never shown to it). */
+export const AUDITOR_PAGE_NOTICE = '監査の権限のため、この画面では記録・変更はできません（閲覧のみ）。金額とファイルの中身は表示しません';
 
 /** The page notice when the role could not be read: forms are hidden, nothing is claimed. */
 export const ROLE_UNKNOWN_PAGE_NOTICE = `${ROLE_UNKNOWN}（記録・変更のフォームは表示していません）`;

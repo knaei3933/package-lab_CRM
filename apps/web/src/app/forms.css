@@ -146,6 +146,20 @@
   color: var(--ink);
 }
 
+/* P2 R05: the next step after a durable-key answer (the fixed line, then the one button). */
+.form-result-remedy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-1);
+  margin-top: 2px;
+}
+
+.form-result-line {
+  color: var(--ink);
+  font-weight: 600;
+}
+
 /* ---- date + time text inputs --------------------------------------------- */
 
 .datetime-field {

@@ -11,12 +11,11 @@ import { loadSession } from '../lib/api';
 import { RenderedContextProvider } from '../components/RenderedContext';
 import { SavedRecordRefresher } from '../components/SavedRecordRefresher';
 import { SessionNotice } from '../components/SessionNotice';
-import { normalizeRole } from '../lib/permissions';
 import { REQUEST_PATH_HEADER, sessionGateFor } from '../lib/request-path';
 import { decodeDisplayNameCookie, DISPLAY_NAME_COOKIE, operatorName, roleLabel } from '../lib/session-display';
 import { loadSelectableProjects } from '../lib/project-data';
 import type { ProjectSummary } from '../lib/project-data';
-import { GUIDE_PATH, HOME_PATH, navGroupsForRole, navRoleNote } from '../lib/navigation';
+import { GUIDE_PATH, HOME_PATH, navGroupsForRole, navRole, navRoleNote } from '../lib/navigation';
 import { parseProjectPath } from '../lib/project-route';
 import { displayLanguage } from '../lib/locale-server';
 import { selectProjectAction } from './actions';
@@ -27,6 +26,10 @@ import './p0-notices.css';
 import './p1.css';
 import './ui.css';
 import './screens.css';
+// P2 web: one stylesheet per lane (order terms, maker master / recipients, audit).
+import './p2-terms.css';
+import './p2-makers.css';
+import './p2-audit.css';
 
 // UI batch A: each screen sets its own title (tabs stay distinguishable); the
 // template adds the product name.
@@ -103,7 +106,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             </div>
           </header>
           <div className={user ? 'app-body app-body--signed-in' : 'app-body'}>
-            {user ? <SideNav groups={navGroupsForRole(user.role)} roleNote={navRoleNote(user.role)} korean={display.showKorean} role={normalizeRole(user.role)} /> : null}
+            {user ? <SideNav groups={navGroupsForRole(user.role)} roleNote={navRoleNote(user.role)} korean={display.showKorean} role={navRole(user.role)} /> : null}
             <main id="main" tabIndex={-1} className="app-main">
               {user ? <ScreenGuideLine /> : null}
               {gate === 'screen' ? (

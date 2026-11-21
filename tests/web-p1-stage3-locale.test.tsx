@@ -11,7 +11,10 @@ const revalidatePath = vi.hoisted(() => vi.fn());
 vi.mock('../apps/web/src/lib/api.js', () => ({
   SESSION_COOKIE: 'kanei_mvp_session', PROJECT_COOKIE: 'kanei_web_project', apiBaseUrl: 'http://api.test',
   readSessionToken: async () => 'token', readSelectedProjectId: async () => null, loadSessionUser: async () => state.user,
-  callApi: async () => ({ ok: false, status: 0, data: null, error: 'x' })
+  // P2: an API without PUT /api/me/preferences (a P1 build: 404 without a code) — the
+  // action keeps the P1 cookie-only behaviour these tests pin. The server save is in
+  // tests/web-p2-stage1.test.tsx.
+  callApi: async () => ({ ok: false, status: 404, data: null, error: 'x' })
 }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: cookieSet }) }));
 vi.mock('next/cache', () => ({ revalidatePath }));

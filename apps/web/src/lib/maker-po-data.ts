@@ -35,6 +35,31 @@ export interface MakerPoViewRow {
   createdByUserId?: string;
   createdAt?: string;
   updatedAt?: string;
+  /**
+   * P2 R32 (contract §2): the company-wide paper number (MPO-2026-0001), stored
+   * once and never changed. Merged in from the list's `displayNumbers` map or the
+   * detail's `displayNumber`; null/absent when the API did not answer one.
+   */
+  displayNumber?: string | null;
+}
+
+const MPO_NUMBER = /^MPO-\d{4}-\d{4,}$/;
+
+/** P2 R32, pure: a number the API answered (only the MPO-YYYY-NNNN shape is shown). */
+export function makerPoNumberOf(value: unknown): string | null {
+  return typeof value === 'string' && MPO_NUMBER.test(value) ? value : null;
+}
+
+/** P2 R32, pure: the list's `displayNumbers` ({ poId: number }) merged into its rows. */
+export function withDisplayNumbers(rows: MakerPoViewRow[], numbers: unknown): MakerPoViewRow[] {
+  const map = typeof numbers === 'object' && numbers !== null ? (numbers as Record<string, unknown>) : {};
+  return rows.map((row) => ({ ...row, displayNumber: makerPoNumberOf(map[row.id]) ?? makerPoNumberOf(row.displayNumber) }));
+}
+
+/** P2 R32: 「MPO-2026-0001」, or the order-code name when the number is not known. */
+export function makerPoName(row: { displayNumber?: string | null | undefined }, orderCode: string): string {
+  const number = makerPoNumberOf(row.displayNumber);
+  return number ? `メーカー発注書 ${number}` : `${orderCode} のメーカー発注書`;
 }
 
 export interface MakerPoEventRow {
@@ -270,7 +295,7 @@ export async function loadMakerPoBoard(projectId: string): Promise<MakerPoBoard>
   });
   const boards = await Promise.all(targets.map(async (order) => {
     const [listResult, gateResult] = await Promise.all([
-      callApi<{ makerPurchaseOrders: MakerPoViewRow[] }>(
+      callApi<{ makerPurchaseOrders: MakerPoViewRow[]; displayNumbers?: unknown }>(
         `/api/film-supply-orders/${encodeURIComponent(order.id)}/maker-purchase-orders`
       ),
       callApi<PaymentGateView>(`/api/film-supply-orders/${encodeURIComponent(order.id)}/payment-gate`)
@@ -278,8 +303,8 @@ export async function loadMakerPoBoard(projectId: string): Promise<MakerPoBoard>
     return {
       order,
       closure: makerPoOrderClosure(knownStatus(order)),
-      makerPurchaseOrders: listResult.ok && listResult.data
-        ? listResult.data.makerPurchaseOrders
+      makerPurchaseOrders: listResult.ok && listResult.data && Array.isArray(listResult.data.makerPurchaseOrders)
+        ? withDisplayNumbers(listResult.data.makerPurchaseOrders, listResult.data.displayNumbers)
         : [],
       makerPoError: listResult.ok ? null : listResult.error,
       paymentGate: gateResult.ok && gateResult.data ? gateResult.data : null,
@@ -293,13 +318,16 @@ export async function loadMakerPoBoard(projectId: string): Promise<MakerPoBoard>
 export async function loadMakerPoDetail(
   poId: string
 ): Promise<{ purchaseOrder: MakerPoViewRow | null; events: MakerPoEventRow[]; error: string | null }> {
-  const result = await callApi<{ purchaseOrder: MakerPoViewRow; events: MakerPoEventRow[] }>(
+  const result = await callApi<{ purchaseOrder: MakerPoViewRow; events: MakerPoEventRow[]; displayNumber?: unknown }>(
     `/api/maker-purchase-orders/${encodeURIComponent(poId)}`
   );
   if (!result.ok || !result.data) {
     return { purchaseOrder: null, events: [], error: result.error ?? 'メーカー発注書が取得できませんでした。' };
   }
-  return { purchaseOrder: result.data.purchaseOrder, events: result.data.events, error: null };
+  const purchaseOrder = result.data.purchaseOrder
+    ? { ...result.data.purchaseOrder, displayNumber: makerPoNumberOf(result.data.displayNumber) ?? makerPoNumberOf(result.data.purchaseOrder.displayNumber) }
+    : result.data.purchaseOrder;
+  return { purchaseOrder, events: result.data.events, error: null };
 }
 
 /**

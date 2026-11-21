@@ -14,15 +14,16 @@
  * the viewer menu, never more.
  */
 
-export type NavRole = 'admin' | 'staff' | 'viewer';
+export type NavRole = 'admin' | 'staff' | 'viewer' | 'auditor';
 
 /**
  * Same rule as permissions.normalizeRole (an unknown role reads as viewer),
  * kept here because the sidebar and the guide line are client components and
  * permissions.ts pulls in @kanei/core, which needs Node built-ins.
  */
-function navRole(role: string | null | undefined): NavRole {
-  return role === 'admin' || role === 'staff' ? role : 'viewer';
+export function navRole(role: string | null | undefined): NavRole {
+  // P2 P-2: the audit-only role has its own menu (contract §7); the write forms still read it as viewer.
+  return role === 'admin' || role === 'staff' || role === 'auditor' ? role : 'viewer';
 }
 
 export interface NavLinkItem {
@@ -42,6 +43,13 @@ export interface NavGroup {
 
 const ALL: readonly NavRole[] = ['admin', 'staff', 'viewer'];
 const OPERATORS: readonly NavRole[] = ['admin', 'staff'];
+/** P2 P-2: the screens the auditor reads (their APIs answer the auditor; nothing to write there). */
+const READERS: readonly NavRole[] = ['admin', 'staff', 'viewer', 'auditor'];
+
+/** P2 R33: the representative's maker master (製造先と送信先メール). */
+export const MAKERS_PATH = '/makers';
+/** P2 P-2: the evidence metadata list of a project (GET …/evidence-metadata). */
+export const EVIDENCE_PATH = '/evidence';
 
 export const DASHBOARD_PATH = '/dashboard';
 export const GUIDE_PATH = '/guide';
@@ -57,6 +65,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       { href: HOME_PATH, label: '承認箱', roles: ['admin'] },
       { href: HOME_PATH, label: '自分の作業', roles: ['staff'] },
       { href: HOME_PATH, label: '履歴', roles: ['viewer'] },
+      { href: HOME_PATH, label: '監査履歴', roles: ['auditor'] },
       { href: DASHBOARD_PATH, label: 'ダッシュボード', roles: ALL }
     ]
   },
@@ -64,7 +73,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     key: 'intake',
     step: 1,
     title: '受付・発注',
-    items: [{ href: '/orders', label: '発注の一覧', roles: ALL }]
+    items: [{ href: '/orders', label: '発注の一覧', roles: READERS }]
   },
   {
     key: 'artwork',
@@ -79,7 +88,10 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     key: 'maker',
     step: 3,
     title: 'メーカー発注',
-    items: [{ href: '/maker-po', label: 'メーカー発注', roles: ALL }]
+    items: [
+      { href: '/maker-po', label: 'メーカー発注', roles: READERS },
+      { href: MAKERS_PATH, label: '製造先の宛先', roles: ['admin'] }
+    ]
   },
   {
     key: 'delivery',
@@ -88,12 +100,18 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     items: [{ href: '/deliveries', label: '納品確認・手数料準備', roles: ALL }]
   },
   {
+    key: 'evidence',
+    step: null,
+    title: '証跡',
+    items: [{ href: EVIDENCE_PATH, label: '証跡の一覧', roles: ['admin', 'staff', 'auditor'] }]
+  },
+  {
     key: 'help',
     step: null,
     title: '参照',
     items: [
-      { href: GUIDE_PATH, label: '使い方ガイド', roles: ALL },
-      { href: '/status', label: '状態表示', roles: ALL }
+      { href: GUIDE_PATH, label: '使い方ガイド', roles: READERS },
+      { href: '/status', label: '状態表示', roles: READERS }
     ]
   }
 ];
@@ -120,6 +138,7 @@ export function isCurrentPath(pathname: string | null, href: string): boolean {
 /** A line under the menu for a role that only reads, or whose role could not be read. */
 export function navRoleNote(role: string | null | undefined): string | null {
   if (role === null || role === undefined) return '役割を確認できませんでした。再読み込みしてください。';
+  if (navRole(role) === 'auditor') return '監査のため、閲覧のみです。金額・単価とファイルの中身は表示しません。';
   return navRole(role) === 'viewer' ? '閲覧者のため、どの画面でも記録・変更はできません（閲覧のみ）。' : null;
 }
 
@@ -167,6 +186,18 @@ export const SCREEN_GUIDES: Readonly<Record<string, ScreenGuide>> = {
     phase: 'メーカー発注',
     doHere: 'メーカー発注書の作成と代表承認（代表者）→ 送信済みメールの原本（EML）で手動送信を記録 → 受入（仮）と最終受入、の順に進めます。',
     next: { href: '/orders', label: '案件（発注）', text: '最終受入が済んだら、発注画面で「製造中」「出荷済み」へ進めます。' }
+  },
+  [MAKERS_PATH]: {
+    step: 3,
+    phase: 'メーカー発注',
+    doHere: '製造先（メーカー）と、メーカー発注書の送信先メールアドレスを登録します。既定の宛先は発注書の作成時に最初から選ばれます（代表者のみ）。',
+    next: { href: '/maker-po', label: 'メーカー発注', text: '宛先を登録したら、メーカー発注書の作成で宛先を選べます。' }
+  },
+  [EVIDENCE_PATH]: {
+    step: null,
+    phase: '証跡',
+    doHere: 'この案件の証跡ファイルの記録（種類・ファイル名・SHA-256・登録者と日時・確認の状態）を新しい順に見ます。ファイルの中身はこの画面では開きません。',
+    next: null
   },
   '/deliveries': {
     step: 4,

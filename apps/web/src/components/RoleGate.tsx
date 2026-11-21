@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react';
 import type { Operation } from '@kanei/core';
-import { normalizeRole, operationRefusal, ROLE_UNKNOWN_PAGE_NOTICE, VIEWER_PAGE_NOTICE } from '../lib/permissions';
+import { AUDITOR_PAGE_NOTICE, isAuditorRole, normalizeRole, operationRefusal, ROLE_UNKNOWN_PAGE_NOTICE, VIEWER_PAGE_NOTICE } from '../lib/permissions';
 
 /**
  * UI batch B (④): a write form only for the roles that may run it. Otherwise
@@ -30,6 +30,7 @@ export function RoleGate({
  */
 export function ViewerPageNotice({ role }: { role: string | null | undefined }) {
   if (role === null || role === undefined) return <p className="role-notice">{ROLE_UNKNOWN_PAGE_NOTICE}</p>;
+  if (isAuditorRole(role)) return <p className="role-notice">{AUDITOR_PAGE_NOTICE}</p>;
   if (normalizeRole(role) !== 'viewer') return null;
   return <p className="role-notice">{VIEWER_PAGE_NOTICE}</p>;
 }

@@ -15,12 +15,53 @@ import type { ActionState } from './types';
 export function isSettledRefusal(result: Pick<ApiResult, 'status' | 'failure'> & { code?: string | null | undefined }): boolean {
   // Review NM1: IDEMPOTENCY_KEY_REUSED means the earlier submit with this key may be
   // stored — the submit is not over, so the key is kept (the form locks instead).
-  if (result.code === KEY_REUSED_CODE) return false;
+  // P2 (contract v1.2 §1): the other answers that keep the key are listed in KEY_KEEPING_CODES.
+  if (keepsSubmitKey(result.code)) return false;
   return !result.failure && result.status >= 400 && result.status < 500;
 }
 
 /** Review NM1: the API saw this key with another body — the earlier submit may already be stored. */
 export const KEY_REUSED_CODE = 'IDEMPOTENCY_KEY_REUSED';
+
+/**
+ * P2 R05 (contract v1.2 §1, review M-2): the first submit with this key is still
+ * being processed. Nothing was written twice; the form keeps the key and the
+ * operator sends the same input again a little later (answered with the first result).
+ */
+export const IN_PROGRESS_CODE = 'IDEMPOTENCY_IN_PROGRESS';
+
+/**
+ * P2 R05 (contract v1.2 §1, review M-1): the API cannot tell whether the first
+ * submit with this key was stored, and answers the same for that key until it
+ * expires. The key stays fixed (a resend never writes), the list is refreshed and
+ * the operator checks it; only an explicit 「確認しました」 starts a new submit.
+ */
+export const OUTCOME_UNKNOWN_CODE = 'IDEMPOTENCY_OUTCOME_UNKNOWN';
+
+/** The web's own code for a lost session (lib/api: every 401). */
+export const SESSION_EXPIRED_CODE = 'SESSION_EXPIRED';
+
+/**
+ * The answers after which the form keeps its Idempotency-Key (the submit is not
+ * over). SESSION_EXPIRED: contract §1 「재로그인 뒤에는 같은 키로 재제출」 — a
+ * submit that timed out and then met an expired session may already be stored;
+ * after logging in again the same key is answered with that first result
+ * (P2 keys are per user, not per session) instead of writing twice.
+ */
+export const KEY_KEEPING_CODES: readonly string[] = [KEY_REUSED_CODE, IN_PROGRESS_CODE, OUTCOME_UNKNOWN_CODE, SESSION_EXPIRED_CODE];
+
+export function keepsSubmitKey(code: string | null | undefined): boolean {
+  return typeof code === 'string' && KEY_KEEPING_CODES.includes(code);
+}
+
+/**
+ * The answers after which the screen's lists are read again at once: the earlier
+ * submit may be stored (KEY_REUSED — P0 NM1; OUTCOME_UNKNOWN — P2), so the operator
+ * checks the list as it is now.
+ */
+export function refreshesListOn(code: string | null | undefined): boolean {
+  return code === KEY_REUSED_CODE || code === OUTCOME_UNKNOWN_CODE;
+}
 
 export function refusalState(result: Pick<ApiResult, 'error' | 'errorKo' | 'code' | 'status' | 'failure'>): ActionState {
   return {

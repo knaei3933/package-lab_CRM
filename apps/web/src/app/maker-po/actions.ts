@@ -4,7 +4,7 @@ import { isPlainAmount, normalizeAmountText } from '../../lib/amount';
 import { callApi } from '../../lib/api';
 import { offsetDateTimeField } from '../../lib/datetime';
 import type { ActionState } from '../../lib/types';
-import { KEY_REUSED_CODE, recordIdOf, refusalState } from '../../lib/action-result';
+import { recordIdOf, refreshesListOn, refusalState } from '../../lib/action-result';
 import { EXPECTED_TERMS_MISSING_MESSAGE, PAYMENT_TERMS_REQUIRED_MESSAGE, RECIPIENT_EMAIL_INVALID_MESSAGE } from '../../lib/form-messages';
 import { refuseIfProjectSwitched, writeProjectOf } from '../../lib/project-guard';
 import { AMOUNT_MISSING_CONFIRM_MESSAGE, SNAPSHOT_UNREADABLE_MESSAGE } from '../../lib/approval-snapshot';
@@ -37,8 +37,8 @@ async function send(formData: FormData, method: 'POST' | 'PATCH', path: string, 
     refresh();
     return { ok: true, message: '記録しました。', changedId: recordIdOf(result.data) };
   }
-  // Review NM1: the earlier submit with this key may be stored — show the list as it is now.
-  if (result.code === KEY_REUSED_CODE) refresh();
+  // Review NM1 / P2 R05: the earlier submit with this key may be stored — show the list as it is now.
+  if (refreshesListOn(result.code)) refresh();
   // P0 R09: the dictionary's operator text, never the API's English or enum text.
   return refusalState(result);
 }
@@ -239,7 +239,7 @@ export async function acknowledgeMakerPoCancellationAction(
   );
   if (!result.ok) {
     // Review NM1: the earlier submit with this key may be stored — show the list as it is now.
-    if (result.code === KEY_REUSED_CODE) refresh();
+    if (refreshesListOn(result.code)) refresh();
     return refusalState(result);
   }
   refresh();

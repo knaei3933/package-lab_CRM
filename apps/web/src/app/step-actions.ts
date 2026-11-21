@@ -9,6 +9,7 @@ import type { ChainStep } from '../lib/step-chain';
 import { RECIPIENT_EMAIL_INVALID_MESSAGE } from '../lib/form-messages';
 import { isPlainAmount, normalizeAmountText } from '../lib/amount';
 import { STEP_REFUSALS } from '../lib/step-messages';
+import { deliveryDatesFromForm } from '../lib/delivery-dates';
 import type { ActionState } from '../lib/types';
 
 /**
@@ -132,6 +133,9 @@ export async function startFilmOrderAction(_prev: ActionState | null, formData: 
   if (!['prepaid', 'on_delivery', 'undetermined'].includes(paymentTerms)) return missing('支払条件を選んでください（前払い・納品後払い・未定）。');
   const lines = parseLines(field(formData, 'lines'));
   if (!Array.isArray(lines)) return lines;
+  // P2 R30: the optional 希望納期・納品予定日 go with the order (an empty field is not sent).
+  const dates = deliveryDatesFromForm(formData);
+  if ('error' in dates) return missing(dates.error);
   const file = field(formData, 'contentBase64') ? uploadedFile(formData) : null;
   if (file && !isFile(file)) return file;
 
@@ -185,7 +189,7 @@ export async function startFilmOrderAction(_prev: ActionState | null, formData: 
       label: 'フィルム発注の作成',
       request: (answers) => withAnswer(poIdOf(answers), (poId) => ({
         path: `/api/projects/${id(projectId)}/film-supply-orders`,
-        body: { code, lines, sevenPurchaseOrderId: poId, paymentTerms }
+        body: { code, lines, sevenPurchaseOrderId: poId, paymentTerms, ...dates.body }
       }))
     },
     {

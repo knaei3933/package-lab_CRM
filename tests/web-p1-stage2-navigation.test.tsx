@@ -27,7 +27,8 @@ describe('the /home menu item', () => {
     expect(items[0]!.label).toBe(label);
   });
 
-  it.each([[null, '履歴'], [undefined, '履歴'], ['auditor', '履歴']])('an unknown role (%s) sees the viewer item', (role, label) => {
+  // P2 P-2: 'auditor' is now a known role with its own home (監査履歴, tests/web-p2-stage1.test.tsx).
+  it.each([[null, '履歴'], [undefined, '履歴'], ['superuser', '履歴'], ['auditor', '監査履歴']])('an unknown role (%s) sees the viewer item; the auditor its own', (role, label) => {
     expect(homeItems(role as never).map((item) => item.label)).toEqual([label]);
   });
 
