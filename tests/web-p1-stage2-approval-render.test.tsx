@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
+import { ERROR_DICTIONARY } from '../apps/web/src/lib/error-dictionary-data.js';
 
 /** P1 R24/R29: the approval card and the Bilingual gloss, static render. */
 vi.mock('../apps/web/src/lib/api.js', () => ({
@@ -186,8 +187,10 @@ describe('ApprovalCard: blockers and warnings', () => {
   it('lists each blocker message and no approve form', () => {
     const html = render(card({ canApprove: false, blockers: [{ code: 'PAYMENT_GATE_UNSATISFIED', message: '支払条件が未定です' }, { code: 'DUAL_APPROVAL_REQUIRED', message: '承認がそろっていません' }] }));
     expect(html).toContain('承認できません');
-    expect(html).toContain('支払条件が未定です');
-    expect(html).toContain('承認がそろっていません');
+    // Verifier M1: a known code is said in the dictionary's words, not the API's raw text.
+    expect(html).toContain(ERROR_DICTIONARY.PAYMENT_GATE_UNSATISFIED!.ja);
+    expect(html).not.toContain('支払条件が未定です');
+    expect(html).toContain(ERROR_DICTIONARY.DUAL_APPROVAL_REQUIRED?.ja ?? '承認がそろっていません');
   });
 
   it('falls back to the dictionary text for a blocker without a message', () => {
@@ -200,7 +203,10 @@ describe('ApprovalCard: blockers and warnings', () => {
   });
 
   it('shows warnings', () => {
-    expect(render(card({ warnings: [{ code: 'MAKER_PO_SNAPSHOT_DRIFTED', message: '作成後に変更があります' }] }))).toContain('作成後に変更があります');
+    const drifted = render(card({ warnings: [{ code: 'MAKER_PO_SNAPSHOT_DRIFTED', message: '作成後に変更があります' }] }));
+    expect(drifted).toContain(ERROR_DICTIONARY.MAKER_PO_SNAPSHOT_DRIFTED!.ja);
+    // An unknown code keeps the API's own sentence (never an empty line).
+    expect(render(card({ warnings: [{ code: 'P1_UNKNOWN_WARNING', message: '未知の注意です' }] }))).toContain('未知の注意です');
   });
 });
 

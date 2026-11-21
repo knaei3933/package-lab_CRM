@@ -6,6 +6,12 @@ import type { ApprovalCardView, CardOrganization, SealState } from '../lib/appro
 import { PAYMENT_TERMS_LABELS } from '../lib/maker-po-data';
 import { ISSUER_ENTITY_LABELS, EVIDENCE_SOURCE_LABELS, formatTimestamp } from '../lib/vocabulary';
 import { webErrorText } from '../lib/error-dictionary';
+import { ERROR_DICTIONARY } from '../lib/error-dictionary-data';
+
+/** P0 R09: a known code is said in the dictionary's words; the API's own text only for an unknown one. */
+function noteText(code: string, message: string): string {
+  return ERROR_DICTIONARY[code] ? webErrorText(code).message : message || webErrorText(code).message;
+}
 
 /**
  * P1 R24 (REDESIGN §5-4): the representative's approval card. Every fact the
@@ -125,7 +131,7 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
               const text = webErrorText(blocker.code);
               return (
                 <li key={blocker.code}>
-                  {blocker.message || text.message}
+                  {noteText(blocker.code, blocker.message)}
                   {korean && text.messageKo ? <span className="form-result-ko" lang="ko">{text.messageKo}</span> : null}
                 </li>
               );
@@ -134,7 +140,7 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
         </div>
       ) : null}
       {card.warnings.map((warning) => (
-        <p key={warning.code} className="field-warning"><span aria-hidden="true">⚠</span> {warning.message || webErrorText(warning.code).message}</p>
+        <p key={warning.code} className="field-warning"><span aria-hidden="true">⚠</span> {noteText(warning.code, warning.message)}</p>
       ))}
 
       <p className="p1-note">
