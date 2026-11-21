@@ -152,6 +152,16 @@ export const AMOUNT_INVALID_MESSAGE = '金額は数字で、小数は2桁まで�
 export const CURRENCY_INVALID_MESSAGE = '通貨を選んでください（JPY・USD・CNY・KRW）。';
 
 /** The hidden field that carries the value the form was drawn with. */
+/**
+ * P2 live check: a stored decimal as the input shows it (1000.000 → 1000, 12.500 → 12.5,
+ * 312000.00 → 312000). Anything that is not a plain decimal is returned as it is.
+ */
+export function plainNumberText(value: string | null | undefined): string | undefined {
+  if (typeof value !== 'string' || value.length === 0) return undefined;
+  if (!/^\d+(\.\d+)?$/.test(value)) return value;
+  return value.includes('.') ? value.replace(/0+$/, '').replace(/\.$/, '') : value;
+}
+
 export function beforeFieldOf(field: DeliveryDateField): string {
   return `${field}Before`;
 }

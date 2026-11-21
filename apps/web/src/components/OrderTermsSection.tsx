@@ -10,8 +10,10 @@ import {
   editsOrderTerms,
   ORDER_FACT_CURRENCY_CHOICES,
   orderAmountDisplay,
-  orderFactUnitChoices
+  orderFactUnitChoices,
+  plainNumberText
 } from '../lib/order-terms';
+import { deliveryDateText } from '../lib/delivery-dates';
 import type { DeliveryTermsLock, OrderFactsRead } from '../lib/order-terms';
 import type { FilmSupplyOrderView } from '../lib/project-data';
 import { projectPath } from '../lib/project-route';
@@ -202,13 +204,13 @@ export function OrderTermsSection({
                   <DateTextField
                     name="requestedDeliveryDate"
                     label="希望納期"
-                    defaultValue={requested ?? undefined}
+                    defaultValue={deliveryDateText(requested) ?? undefined}
                     hint="お客様が希望する納品日。空のまま保存すると記録を消します。例 2026/12/01"
                   />
                   <DateTextField
                     name="plannedDeliveryDate"
                     label="納品予定日"
-                    defaultValue={planned ?? undefined}
+                    defaultValue={deliveryDateText(planned) ?? undefined}
                     hint="メーカーが約束した納品日。空のまま保存すると記録を消します。"
                   />
                 </div>
@@ -229,7 +231,7 @@ export function OrderTermsSection({
                     label="数量（数字のみ）"
                     width={160}
                     autoComplete="off"
-                    defaultValue={readFacts.orderedQuantity ?? undefined}
+                    defaultValue={plainNumberText(readFacts.orderedQuantity)}
                     hint="小数は3桁まで。例 1000 / 12.5。数量と単位を空にして保存すると記録を消します。"
                   />
                   <SelectField
@@ -268,7 +270,7 @@ export function OrderTermsSection({
                 label="セブン化学発注書の金額（数字のみ）"
                 width={220}
                 autoComplete="off"
-                defaultValue={readFacts.amount?.totalAmount ?? undefined}
+                defaultValue={plainNumberText(readFacts.amount?.totalAmount)}
                 hint="例 312000 / 312000.50。空のまま保存すると記録を消します。"
               />
             </div>

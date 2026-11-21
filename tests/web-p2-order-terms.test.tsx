@@ -576,3 +576,20 @@ describe('OrderDetailScreen: 「発注の条件」 in place, the MPO number in t
     expect(html).not.toContain('name="requestedDeliveryDate"');
   });
 });
+
+// Live check (demo-eml/p2-web s1): the edit boxes showed 2026-12-15 and 1000.000.
+describe('P2 live fix: the edit boxes show the values as they are typed', () => {
+  it('plainNumberText trims the stored decimals; dates are shown as 2026/12/15', async () => {
+    const { plainNumberText } = await import('../apps/web/src/lib/order-terms.js');
+    expect(plainNumberText('1000.000')).toBe('1000');
+    expect(plainNumberText('12.500')).toBe('12.5');
+    expect(plainNumberText('312000.00')).toBe('312000');
+    expect(plainNumberText('312000.50')).toBe('312000.5');
+    expect(plainNumberText('100')).toBe('100');
+    expect(plainNumberText(null)).toBeUndefined();
+    expect(plainNumberText('abc')).toBe('abc');
+    const source = (await import('node:fs')).readFileSync(new URL('../apps/web/src/components/OrderTermsSection.tsx', import.meta.url), 'utf8');
+    expect(source).toContain('defaultValue={deliveryDateText(requested)');
+    expect(source).toContain('defaultValue={plainNumberText(readFacts.orderedQuantity)}');
+  });
+});
