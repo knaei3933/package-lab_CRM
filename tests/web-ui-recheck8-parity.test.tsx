@@ -173,7 +173,8 @@ async function reachMakerPoReady() {
   });
   expect(order.status).toBe(201);
   const orderId = order.body.id as string;
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     expect((await postAs(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to })).status).toBe(200);
   }
   const artworkBytes = `composite recheck8 artwork bytes ${tag}\n`;
@@ -197,7 +198,7 @@ async function reachMakerPoReady() {
       evidenceIdentifier: identifier, evidenceDocumentVersionId: evidence.version.id
     })).status).toBe(201);
   }
-  expect((await postAs(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'MAKER_PO_READY' })).status).toBe(200);
+  expect((await postAs(staffToken, `/api/film-supply-orders/${orderId}/auto-advance`, {})).body.status).toBe('MAKER_PO_READY');
   return { orderId, orderCode, artworkBytes, sevenPoId };
 }
 
@@ -372,7 +373,7 @@ describe('Medium-B: decision (a) after the replacement is in production', () => 
       documentType: 'acceptance_evidence', issuerEntity: 'kanei', orderId: chain.orderId, sevenPoId: chain.sevenPoId, makerPoId: second,
       content: 'composite recheck8 acceptance evidence\n'
     });
-    expect((await postAs(staffToken, `/api/documents/${acceptEvidence.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+    expect((await postAs(adminToken, `/api/documents/${acceptEvidence.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
     expect((await postAs(adminToken, `/api/maker-purchase-orders/${second}/accept-evidence`, {
       evidenceDocumentVersionId: acceptEvidence.version.id, acceptedAt: '2026-11-18T12:00:00.000Z'
     })).status).toBe(200);

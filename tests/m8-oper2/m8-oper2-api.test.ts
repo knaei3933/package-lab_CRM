@@ -177,9 +177,11 @@ async function reachApprovalPending(tag: string) {
   });
   expect(createdOrder.status).toBe(201);
   const order = createdOrder.body as { id: string; paymentTerms: string; status: string };
-  expect(order.status).toBe('DRAFT');
+  // P1 R23: created against a verified PO, the order is SEVEN_PO_VERIFIED at once.
+  expect(order.status).toBe('SEVEN_PO_VERIFIED');
 
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     const transition = await postAs(staffToken, `/api/film-supply-orders/${order.id}/transitions`, { to });
     expect(transition.status).toBe(200);
   }
@@ -269,7 +271,7 @@ async function reachProduction(tag: string) {
   const chain = await reachApprovalPending(tag);
   expect((await recordTextApproval({ chain, organization: 'customer' })).countsTowardDualApproval).toBe(true);
   expect((await recordTextApproval({ chain, organization: 'seven' })).dualApproved).toBe(true);
-  expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'MAKER_PO_READY' })).status).toBe(200);
+  expect(((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/auto-advance`, {})).body as { status: string }).status).toBe('MAKER_PO_READY');
 
   const created = await postAs(adminToken, `/api/film-supply-orders/${chain.orderId}/maker-purchase-orders`, {
     recipientAddress: 'maker-po@example.com'
@@ -296,7 +298,7 @@ async function reachProduction(tag: string) {
     // M8-HARDEN FIX B2 (d): acceptance evidence names the paper it closes.
     makerPoId: poId
   });
-  expect((await postAs(staffToken, `/api/documents/${acceptEvidence.document.id}/verify`, {
+  expect((await postAs(adminToken, `/api/documents/${acceptEvidence.document.id}/verify`, {
     verificationStatus: 'verified'
   })).status).toBe(200);
   expect((await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {
@@ -446,7 +448,10 @@ describe('M8-OPER2 FIX 1: the G6 terms are enterable end to end', () => {
     // P0 R01 (policy P-5): leaving DRAFT no longer locks the term; it stays
     // editable until the CEO approves a maker PO (lock covered in
     // tests/p0-server.test.ts).
-    expect((await postAs(staffToken, `/api/film-supply-orders/${order.id}/transitions`, { to: 'SEVEN_PO_VERIFIED' })).status).toBe(200);
+    // P1 R23: SEVEN_PO_VERIFIED came automatically with the verified PO.
+    const [movedRow] = await db.select({ status: filmSupplyOrders.status }).from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, order.id)).limit(1);
+    expect(movedRow?.status).toBe('SEVEN_PO_VERIFIED');
     const stillOpen = await patchAs(adminToken, `/api/film-supply-orders/${order.id}/payment-terms`, {
       paymentTerms: 'prepaid'
     });
@@ -545,11 +550,18 @@ describe('M8-OPER2 FIX 2: the evidence manual verification workflow', () => {
     };
     expect(confirmedBody.countsTowardDualApproval).toBe(true);
     expect(confirmedBody.dualApproved).toBe(true);
-    // The order advances to DUAL_APPROVED exactly like an approval-driven close.
-    expect(confirmedBody.orderStatus).toBe('DUAL_APPROVED');
+    // The order advances to DUAL_APPROVED exactly like an approval-driven close
+    // (P1 R23: and, with its decided term, on to MAKER_PO_READY).
+    expect(confirmedBody.orderStatus).toBe('MAKER_PO_READY');
     const [orderRow] = await db.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, chain.orderId)).limit(1);
-    expect(orderRow?.status).toBe('DUAL_APPROVED');
+    expect(orderRow?.status).toBe('MAKER_PO_READY');
+    const dualRows = await db.select().from(auditEvents).where(and(
+      eq(auditEvents.entityId, chain.orderId),
+      eq(auditEvents.action, 'FILM_SUPPLY_ORDER_TRANSITIONED'),
+      sql`${auditEvents.afterState} ->> 'status' = 'DUAL_APPROVED'`
+    ));
+    expect(dualRows).toHaveLength(1);
 
     // Two append-only rows exist; the latest (confirmed) is the one that counts.
     const verificationRows = await db.select().from(evidenceManualVerifications)

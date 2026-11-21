@@ -168,9 +168,11 @@ async function reachApprovalPending(tag: string) {
   });
   expect(createdOrder.status).toBe(201);
   const order = createdOrder.body as { id: string; status: string };
-  expect(order.status).toBe('DRAFT');
+  // P1 R23: created against a verified PO, the order is SEVEN_PO_VERIFIED at once.
+  expect(order.status).toBe('SEVEN_PO_VERIFIED');
 
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     const transition = await postAs(staffToken, `/api/film-supply-orders/${order.id}/transitions`, { to });
     expect(transition.status).toBe(200);
   }
@@ -269,8 +271,9 @@ async function reachMakerPoReady(tag: string) {
   const chain = await reachApprovalPending(tag);
   expect((await recordTextApproval({ chain, organization: 'customer' })).countsTowardDualApproval).toBe(true);
   expect((await recordTextApproval({ chain, organization: 'seven' })).dualApproved).toBe(true);
-  const ready = await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'MAKER_PO_READY' });
+  const ready = await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/auto-advance`, {});
   expect(ready.status).toBe(200);
+  expect((ready.body as { status: string }).status).toBe('MAKER_PO_READY');
   return chain;
 }
 
@@ -523,7 +526,7 @@ describe('M8-OPER3: a valid dual approval still carries the full maker chain', (
       poId: chain.poId,
       makerPoId: poId
     });
-    expect((await postAs(staffToken, `/api/documents/${acceptanceEvidence.document.id}/verify`, {
+    expect((await postAs(adminToken, `/api/documents/${acceptanceEvidence.document.id}/verify`, {
       verificationStatus: 'verified'
     })).status).toBe(200);
     const accepted = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {
@@ -598,7 +601,7 @@ describe('M8-OPER3: paper whose send is already proven is never retroactively bl
       poId: chain.poId,
       makerPoId: poId
     });
-    expect((await postAs(staffToken, `/api/documents/${acceptanceEvidence.document.id}/verify`, {
+    expect((await postAs(adminToken, `/api/documents/${acceptanceEvidence.document.id}/verify`, {
       verificationStatus: 'verified'
     })).status).toBe(200);
     const accepted = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/accept-evidence`, {

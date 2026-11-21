@@ -267,7 +267,8 @@ async function createMakerPoReadyOrder(projectId: string, tag: string): Promise<
   });
   expect(created.status).toBe(201);
   const order = created.body as { id: string };
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     const transition = await postJson(`/api/film-supply-orders/${order.id}/transitions`, { to });
     expect(transition.status).toBe(200);
   }
@@ -286,8 +287,9 @@ async function createMakerPoReadyOrder(projectId: string, tag: string): Promise<
   expect(sevenApproval.status).toBe(201);
   expect(sevenApproval.body.dualApproved).toBe(true);
 
-  const ready = await postJson(`/api/film-supply-orders/${order.id}/transitions`, { to: 'MAKER_PO_READY' });
+  const ready = await postJson(`/api/film-supply-orders/${order.id}/auto-advance`, {});
   expect(ready.status).toBe(200);
+  expect((ready.body as { status: string }).status).toBe('MAKER_PO_READY');
   return supplyOrder;
 }
 
@@ -539,7 +541,8 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect((await orderRow(order.orderId))?.status).toBe('MAKER_PO_SENT_MANUALLY');
 
     const acceptDoc = await uploadOrderEvidence(order, projectId, 'acceptance_evidence', 'T20', po.id);
-    const verified = await postJson(`/api/documents/${acceptDoc.document.id}/verify`, {
+    // P1 P-4: staff may not confirm evidence they uploaded; the representative does.
+    const verified = await postAs(adminToken, `/api/documents/${acceptDoc.document.id}/verify`, {
       verificationStatus: 'verified',
       verificationNote: '合成受領確認'
     });
@@ -649,7 +652,8 @@ describe('M4 maker purchase orders with manual-send evidence', () => {
     expect((await listEvents(po.id)).filter((event) => event.eventType === 'ACCEPT_EVIDENCE_REGISTERED'))
       .toHaveLength(0);
 
-    const verified = await postJson(`/api/documents/${acceptDoc.document.id}/verify`, {
+    // P1 P-4: staff may not confirm evidence they uploaded; the representative does.
+    const verified = await postAs(adminToken, `/api/documents/${acceptDoc.document.id}/verify`, {
       verificationStatus: 'verified',
       verificationNote: '合成受領確認T22'
     });

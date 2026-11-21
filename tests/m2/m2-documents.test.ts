@@ -34,6 +34,7 @@ const makerAccountId = uuidv7();
 const projectIdA = uuidv7();
 const projectIdB = uuidv7();
 let staffToken = '';
+let adminToken = '';
 let storageRoot = '';
 
 function cookieHeader(token: string) {
@@ -239,6 +240,11 @@ beforeAll(async () => {
   staffToken = await (async () => {
     const { token, tokenHash } = issueToken();
     await db.insert(sessions).values({ id: uuidv7(), userId: staffId, tokenHash, expiresAt: new Date(Date.now() + 60 * 60 * 1000) });
+    return token;
+  })();
+  adminToken = await (async () => {
+    const { token, tokenHash } = issueToken();
+    await db.insert(sessions).values({ id: uuidv7(), userId: adminId, tokenHash, expiresAt: new Date(Date.now() + 60 * 60 * 1000) });
     return token;
   })();
 });
@@ -669,7 +675,9 @@ describe('M2 document intake and PO precedence', () => {
     expect(supplyOrder.status).toBe(201);
     const supplyJson = (await supplyOrder.json()) as SupplyOrderBody;
     expect(supplyJson.sevenPurchaseOrderId).toBe(po.id);
-    expect(supplyJson.status).toBe('DRAFT');
+    // P1 R23: a fully verified PO opens the gate, so the new order is
+    // セブン化学発注書確認済 at once (one automatic, audited step).
+    expect(supplyJson.status).toBe('SEVEN_PO_VERIFIED');
     expect(supplyJson.lines).toHaveLength(1);
     expect(supplyJson.lines[0]!.unit).toBe('rolls');
 
@@ -762,14 +770,21 @@ describe('M2 document intake and PO precedence', () => {
     expect(rejected.status).toBe(422);
     expect(await rejected.json()).toMatchObject({ code: 'INVALID_VERIFICATION_STATUS' });
 
-    const verified = await app.request(
+    // P1 P-4: the uploader (staff) cannot confirm their own document.
+    const selfVerified = await app.request(
       `/api/documents/${documentId}/verify`,
       jsonPost(staffToken, { verificationStatus: 'verified', verificationNote: '原本と照合済み' })
+    );
+    expect(selfVerified.status).toBe(403);
+    expect(await selfVerified.json()).toMatchObject({ code: 'SELF_VERIFICATION_FORBIDDEN' });
+    const verified = await app.request(
+      `/api/documents/${documentId}/verify`,
+      jsonPost(adminToken, { verificationStatus: 'verified', verificationNote: '原本と照合済み' })
     );
     expect(verified.status).toBe(200);
     const verifiedBody = (await verified.json()) as DocumentBody;
     expect(verifiedBody.verificationStatus).toBe('verified');
-    expect(verifiedBody.verifiedByUserId).toBe(staffId);
+    expect(verifiedBody.verifiedByUserId).toBe(adminId);
     expect(verifiedBody.verifiedAt).not.toBeNull();
     expect(verifiedBody.verificationNote).toBe('原本と照合済み');
 

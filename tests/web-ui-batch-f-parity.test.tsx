@@ -163,7 +163,8 @@ async function dualApprovedOrder(
     lines: [{ lineNumber: 1, description: '合成フィルム本体', orderedQuantity: 1000, unit: 'sheets' }]
   });
   const orderId = order.body.id as string;
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     expect((await postAs('staff', `/api/film-supply-orders/${orderId}/transitions`, { to })).status).toBe(200);
   }
   const proof = await uploadDocument({ documentType: 'proof', issuerEntity: 'kanei', designKey: 'label-front', orderId, sevenPoId });

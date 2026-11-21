@@ -172,7 +172,8 @@ async function linkedOrder(sevenPoId: string) {
 async function reachMakerPoReady() {
   const sevenPoId = await verifiedSevenPo();
   const { orderId, orderCode } = await linkedOrder(sevenPoId);
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     expect((await call(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to })).status).toBe(200);
   }
   const artworkBytes = `composite batch-e artwork ${nextTag()}\n`;
@@ -192,7 +193,7 @@ async function reachMakerPoReady() {
       evidenceIdentifier: identifier, evidenceDocumentVersionId: evidence.version.id
     })).status).toBe(201);
   }
-  expect((await call(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'MAKER_PO_READY' })).status).toBe(200);
+  expect((await call(staffToken, `/api/film-supply-orders/${orderId}/auto-advance`, {})).body.status).toBe('MAKER_PO_READY');
   return { orderId, orderCode, artworkBytes, sevenPoId };
 }
 
@@ -288,7 +289,7 @@ describe('F-06: the evidence warning before a transition', () => {
   it('an order at 発注書の照合済み with no document offers the warning and the reason field for デザイン受領', async () => {
     const sevenPoId = await verifiedSevenPo();
     const { orderId, orderCode } = await linkedOrder(sevenPoId);
-    expect((await call(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'SEVEN_PO_VERIFIED' })).status).toBe(200);
+    // P1 R23: the linked verified PO makes the new order SEVEN_PO_VERIFIED at once.
     signIn('staff');
     const row = orderRow(await render(OrdersPage), orderCode);
     expect(row).toContain('証跡がないまま進める場合（「デザイン受領」）');
@@ -429,8 +430,8 @@ describe('F-00 (server batch E 9972e99) on the screen: the delivery line choice 
     });
     expect(delivery.status, JSON.stringify(delivery.body)).toBe(201);
     const filmEvidence = await uploadDocument({ documentType: 'acceptance_evidence', issuerEntity: 'kanei', orderId, sevenPoId });
-    expect((await call(staffToken, `/api/documents/${filmEvidence.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
-    expect((await call(staffToken, `/api/film-deliveries/${delivery.body.id as string}/confirmation`, {
+    expect((await call(adminToken, `/api/documents/${filmEvidence.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+    expect((await call(adminToken, `/api/film-deliveries/${delivery.body.id as string}/confirmation`, {
       evidenceDocumentVersionId: filmEvidence.version.id
     })).status).toBe(201);
 
@@ -450,8 +451,8 @@ describe('F-00 (server batch E 9972e99) on the screen: the delivery line choice 
     });
     expect(fillingEvidence.status, JSON.stringify(fillingEvidence.body)).toBe(201);
     const fe = fillingEvidence.body as unknown as { document: { id: string }; version: { id: string } };
-    expect((await call(staffToken, `/api/documents/${fe.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
-    expect((await call(staffToken, `/api/filling-deliveries/${fillingDelivery.body.id as string}/confirmation`, {
+    expect((await call(adminToken, `/api/documents/${fe.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+    expect((await call(adminToken, `/api/filling-deliveries/${fillingDelivery.body.id as string}/confirmation`, {
       evidenceDocumentVersionId: fe.version.id
     })).status).toBe(201);
 

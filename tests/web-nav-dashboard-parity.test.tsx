@@ -207,7 +207,8 @@ beforeAll(async () => {
   // ① An order through the real chain to MAKER_PO_READY, its maker PO drafted with an amount.
   const sevenPoId = await verifiedSevenPo();
   const ready = await linkedOrder(sevenPoId);
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) await transition(ready.orderId, to);
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) await transition(ready.orderId, to);
   const proof = await uploadDocument({ documentType: 'proof', issuerEntity: 'kanei', designKey: 'label-front', orderId: ready.orderId, sevenPoId, content: `nd artwork ${nextTag()}\n` });
   const revision = await call('staff', `/api/film-supply-orders/${ready.orderId}/artwork-revisions`, { designKey: 'label-front', fileDocumentVersionId: proof.version.id });
   expect(revision.status).toBe(201);
@@ -222,7 +223,7 @@ beforeAll(async () => {
       evidenceIdentifier: identifier, evidenceDocumentVersionId: evidence.version.id
     })).status).toBe(201);
   }
-  await transition(ready.orderId, 'MAKER_PO_READY');
+  // P1 R23: dual approval with a decided term is MAKER_PO_READY by itself.
   const paper = await call('admin', `/api/film-supply-orders/${ready.orderId}/maker-purchase-orders`, {
     recipientAddress: 'order@osaka-maker.example.jp', amounts: { currency: 'JPY', totalAmount: '480000' }
   });
@@ -236,13 +237,11 @@ beforeAll(async () => {
   chain.heldCode = held.orderCode;
 
   // ③ An order at セブン確認済み without its design data (evidence missing for デザイン受領).
-  const artwork = await linkedOrder(await verifiedSevenPo());
-  await transition(artwork.orderId, 'SEVEN_PO_VERIFIED');
+  const artwork = await linkedOrder(await verifiedSevenPo()); // P1 R23: SEVEN_PO_VERIFIED on creation
   chain.artworkCode = artwork.orderCode;
 
   // ④ An order in 変更確認 (entered by staff through the general transition).
-  const review = await linkedOrder(await verifiedSevenPo());
-  await transition(review.orderId, 'SEVEN_PO_VERIFIED');
+  const review = await linkedOrder(await verifiedSevenPo()); // P1 R23: SEVEN_PO_VERIFIED on creation
   await transition(review.orderId, 'CHANGE_REVIEW');
   chain.reviewId = review.orderId;
   chain.reviewCode = review.orderCode;

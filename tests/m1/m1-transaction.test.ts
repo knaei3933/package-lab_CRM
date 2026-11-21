@@ -178,6 +178,8 @@ async function createFillingOrder(
  * inserted directly so this M1 readiness test stays focused on the readiness
  * contract; the M5 suite exercises the real upload + verify + confirm flow.
  */
+// P1 P-4: the evidence is uploaded and verified by the representative, so the
+// staff member confirming the delivery is an independent verifier.
 async function insertVerifiedDeliveryEvidence(
   projectIdValue: string,
   poId: string,
@@ -196,10 +198,10 @@ async function insertVerifiedDeliveryEvidence(
     sevenPurchaseOrderId: poId,
     filmSupplyOrderId,
     verificationStatus: 'verified',
-    verifiedByUserId: staffId,
+    verifiedByUserId: adminId,
     verifiedAt: now,
     verificationNote: '合成納品確認（M1準備テスト用）',
-    createdByUserId: staffId,
+    createdByUserId: adminId,
     createdAt: now,
     updatedAt: now
   });
@@ -214,7 +216,7 @@ async function insertVerifiedDeliveryEvidence(
     declaredMimeType: 'text/plain',
     sizeCheckPassed: true,
     typeCheckPassed: true,
-    createdByUserId: staffId,
+    createdByUserId: adminId,
     createdAt: now
   });
   return versionId;
