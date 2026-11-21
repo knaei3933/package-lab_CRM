@@ -1292,6 +1292,19 @@ describe('P1 review round 2', () => {
     expect((await post('staff', `/api/film-supply-orders/${proofKept.orderId}/auto-advance`)).body.status).toBe('APPROVAL_PENDING');
   });
 
+  it('M8: the queue lists only the latest pending approval of an organization (a superseded one leaves)', async () => {
+    const sevenPoId = await sevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
+    const revision = await registerRevision(sevenPoId, orderId);
+    const pdfId = `SIG-P1-SUP-${nextTag()}`;
+    const pending = await approve(revision.body.id, 'customer', (await evidence(sevenPoId, orderId, 'customer_generated', pdfId, 'application/pdf')).version.id, pdfId);
+    const key = `approval_evidence_verification:${pending.body.approvalEvent.id}`;
+    expect((await get('admin', '/api/representative-queue')).body.items.some((item: { key: string }) => item.key === key)).toBe(true);
+    await approveOrg(sevenPoId, orderId, revision.body.id, 'customer');
+    expect((await get('admin', '/api/representative-queue')).body.items.some((item: { key: string }) => item.key === key)).toBe(false);
+  });
+
   it('decision 2: staff may not confirm a delivery on evidence they uploaded; admin may, recorded as self-verification', async () => {
     const project = await freshFilmOnlyProject();
     const sevenPoId = await sevenPo(project);
