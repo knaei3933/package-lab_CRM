@@ -938,16 +938,17 @@ describe('M7-SEC3 FIX 2: DUAL_APPROVED is gated on the live dual-approval gate',
     expect(sevenApproval.status).toBe(201);
     expect((sevenApproval.body as { orderStatus: string }).orderStatus).toBe('CHANGE_REVIEW');
 
-    // Back into the normal chain: naming DUAL_APPROVED is now legitimate,
-    // because the gate is genuinely open.
+    // Back into the normal chain. Re-review N1: the customer approval predates
+    // the review, so the manual recovery is refused like the automatic step.
     const release = await transitionOrder(order.orderId, 'APPROVAL_PENDING');
     expect(release.status).toBe(200);
-    const advanced = await transitionOrder(order.orderId, 'DUAL_APPROVED');
-    expect(advanced.status).toBe(200);
-    // P1 review M4: the customer approval predates the review, so the automatic
-    // step to MAKER_PO_READY waits for a re-approval recorded after the review.
-    expect((advanced.body as { autoAdvanced: unknown[] }).autoAdvanced).toEqual([]);
-    expect((advanced.body as { status: string }).status).toBe('DUAL_APPROVED');
+    const early = await transitionOrder(order.orderId, 'DUAL_APPROVED');
+    expect(early.status).toBe(422);
+    expect(early.body).toMatchObject({ code: 'DUAL_APPROVAL_REQUIRED', missingApprovals: [{ designKey: 'label-front', organization: 'customer' }] });
+    expect((early.body as { reapprovalRequiredSince?: string }).reapprovalRequiredSince).toBeTruthy();
+    expect(await orderStatus(order.orderId)).toBe('APPROVAL_PENDING');
+    // The customer re-approves after the review: the gate is open again and the
+    // approval's automatic steps take the order on (no manual press needed).
     const customerAgain = await uploadApprovalEvidence(order.poId, order.orderId, 'label-front', 'customer',
       'composite m7 re-approval after review\nidentifier: MSG-M7-CUSTOMER-0002\n');
     const reapproved = await recordApproval(order.revisionId, customerAgain.version.id, { evidenceIdentifier: 'MSG-M7-CUSTOMER-0002' });

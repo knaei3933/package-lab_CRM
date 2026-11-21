@@ -1305,6 +1305,51 @@ describe('P1 review round 2', () => {
     expect((await get('admin', '/api/representative-queue')).body.items.some((item: { key: string }) => item.key === key)).toBe(false);
   });
 
+  it('N1: after a change review the manual DUAL_APPROVED recovery also needs re-approval', async () => {
+    const chain = await approvedOrder('prepaid');
+    await post('staff', `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'CHANGE_REVIEW' });
+    expect((await post('staff', `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'APPROVAL_PENDING' })).body.status).toBe('APPROVAL_PENDING');
+    const manual = await post('staff', `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'DUAL_APPROVED' });
+    expect(manual.status).toBe(422);
+    expect(manual.body.code).toBe('DUAL_APPROVAL_REQUIRED');
+    expect(manual.body.missingApprovals).toHaveLength(2);
+    expect(manual.body.reapprovalRequiredSince).toBeTruthy();
+    expect(await orderStatus(chain.orderId)).toBe('APPROVAL_PENDING');
+    await approveOrg(chain.sevenPoId, chain.orderId, chain.revisionId, 'customer');
+    expect((await approveOrg(chain.sevenPoId, chain.orderId, chain.revisionId, 'seven')).body.orderStatus).toBe('MAKER_PO_READY');
+    // Without any review, the manual recovery keeps its plain live gate.
+    const plain = await createOrder(await sevenPo());
+    await post('staff', `/api/film-supply-orders/${plain.orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
+    expect((await post('staff', `/api/film-supply-orders/${plain.orderId}/transitions`, { to: 'DUAL_APPROVED' })).body.code).toBe('INVALID_TRANSITION');
+  });
+
+  it('N2: a printed order with a covered review cycle still enters CHANGE_REVIEW on a new proof (admin, with facts)', async () => {
+    const chain = await approvedOrder('prepaid');
+    await post('staff', `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'CHANGE_REVIEW' });
+    await post('staff', `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'APPROVAL_PENDING' });
+    // Legacy shape (before P1 the manual steps could reach production from here).
+    await db.update(filmSupplyOrders).set({ status: 'FILM_IN_PRODUCTION' as any }).where(eq(filmSupplyOrders.id, chain.orderId));
+    const changeEvidence = await evidence(chain.sevenPoId, chain.orderId, 'customer_generated', `CHG-N2-${nextTag()}`);
+    const proof = await upload(chain.sevenPoId, chain.orderId, { designKey: 'label-front', contentBase64: b64(`p1 printed v2 ${nextTag()}\n`) });
+    const body = {
+      designKey: 'label-front', fileDocumentVersionId: proof.version.id, lotMarking: 'LOT-N2',
+      changeRequest: { requestedOrganization: 'customer', reason: '印刷後の修正', evidenceDocumentVersionId: changeEvidence.version.id, impactSchedule: '3日遅れ', impactQuantity: 0, impactAmount: 0, actualCost: 12000 }
+    };
+    expect((await post('staff', `/api/film-supply-orders/${chain.orderId}/artwork-revisions`, body)).body.code).toBe('PRINTED_CHANGE_ADMIN_APPROVAL_REQUIRED');
+    const printed = await post('admin', `/api/film-supply-orders/${chain.orderId}/artwork-revisions`, body);
+    expect(printed.status, JSON.stringify(printed.body)).toBe(201);
+    expect(printed.body).toMatchObject({ status: 'CHANGE_REVIEW', invalidatedApprovals: true });
+    expect(await orderStatus(chain.orderId)).toBe('CHANGE_REVIEW');
+  });
+
+  it('Y7: the queue limit is 100 by default, follows a valid value and is capped at 500', async () => {
+    expect((await get('admin', '/api/representative-queue')).body.limit).toBe(100);
+    expect((await get('admin', '/api/representative-queue?limit=7')).body.limit).toBe(7);
+    expect((await get('admin', '/api/representative-queue?limit=500')).body.limit).toBe(500);
+    expect((await get('admin', '/api/representative-queue?limit=10000')).body.limit).toBe(500);
+    for (const value of ['0', '-1', 'abc', '2.5']) expect((await get('admin', `/api/representative-queue?limit=${value}`)).body.limit).toBe(100);
+  });
+
   it('decision 2: staff may not confirm a delivery on evidence they uploaded; admin may, recorded as self-verification', async () => {
     const project = await freshFilmOnlyProject();
     const sevenPoId = await sevenPo(project);
