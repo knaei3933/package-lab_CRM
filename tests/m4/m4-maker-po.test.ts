@@ -267,7 +267,8 @@ async function createMakerPoReadyOrder(projectId: string, tag: string): Promise<
   });
   expect(created.status).toBe(201);
   const order = created.body as { id: string };
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     const transition = await postJson(`/api/film-supply-orders/${order.id}/transitions`, { to });
     expect(transition.status).toBe(200);
   }
@@ -286,7 +287,7 @@ async function createMakerPoReadyOrder(projectId: string, tag: string): Promise<
   expect(sevenApproval.status).toBe(201);
   expect(sevenApproval.body.dualApproved).toBe(true);
 
-  const ready = await postJson(`/api/film-supply-orders/${order.id}/transitions`, { to: 'MAKER_PO_READY' });
+  const ready = await postJson(`/api/film-supply-orders/${order.id}/auto-advance`, {});
   expect(ready.status).toBe(200);
   return supplyOrder;
 }

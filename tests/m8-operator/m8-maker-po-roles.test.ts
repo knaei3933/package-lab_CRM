@@ -291,7 +291,8 @@ async function reachApprovalPending(input: {
   expect(createdOrder.status).toBe(201);
   const order = createdOrder.body as { id: string; paymentTerms: string };
 
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     const transition = await postAs(staffToken, `/api/film-supply-orders/${order.id}/transitions`, { to });
     expect(transition.status).toBe(200);
   }
@@ -376,7 +377,7 @@ async function reachMakerPoReady(input: {
   });
   expect((seven.approval.body as { dualApproved: boolean }).dualApproved).toBe(true);
 
-  const ready = await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'MAKER_PO_READY' });
+  const ready = await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/auto-advance`, {});
   expect(ready.status).toBe(200);
   return { ...chain, customerEvidence: customer.evidence, sevenEvidence: seven.evidence };
 }
@@ -968,7 +969,8 @@ describe('M8 FIX 4: evidence identifiers over text and binary evidence', () => {
     });
     expect(counted.status).toBe(201);
     expect((counted.body as { dualApproved: boolean }).dualApproved).toBe(true);
-    expect((counted.body as { orderStatus: string }).orderStatus).toBe('DUAL_APPROVED');
+    // P1 R23: with a decided term the order continues to MAKER_PO_READY.
+    expect((counted.body as { orderStatus: string }).orderStatus).toBe('MAKER_PO_READY');
   });
 
   it('still refuses a text identifier that is not in the cited evidence', async () => {

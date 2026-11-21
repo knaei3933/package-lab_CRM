@@ -290,7 +290,20 @@ export const ERROR_MESSAGES_JA: Readonly<Record<string, string>> = {
   RECEIPT_ASSUMPTION_ONLY_FROM_FILM_DELIVERED: '受領確認は「フィルム納品済み」の発注でだけ記録できます',
   RECEIPT_ASSUMPTION_STATE_CHANGED: 'フィルム発注の状態が別の操作で変わりました。画面を再読み込みしてください',
   INVALID_RECEIPT_ASSUMED_AT: '受領確認の日付が正しくありません',
-  INVALID_DATE: '日付が正しくありません。日付の形式を確認してください'
+  INVALID_DATE: '日付が正しくありません。日付の形式を確認してください',
+  // ---- P1 R23: automatic steps
+  AUTO_TRANSITION_ONLY: 'この段階は条件がそろうと自動で進みます。手で進める必要はありません',
+  ARTWORK_REVISION_REQUIRED: '校正ゲラ（版）がまだ登録されていません。版を登録すると自動で進みます',
+  PROJECT_CONTEXT_MISMATCH: '別のタブで案件が切り替わりました。保存していません。画面を再読み込みしてください',
+
+  // ---- P1 R24: approval card / return
+  MAKER_PO_RETURN_REASON_REQUIRED: '差し戻しの理由を入力してください',
+  MAKER_PO_RETURN_REASON_TOO_LONG: '差し戻しの理由は1000文字以下にしてください',
+  MAKER_PO_RETURN_ONLY_DRAFT: '差し戻しできるのは代表承認前のメーカー発注書だけです。承認済みの発注書は取消の手順を使ってください',
+  MAKER_PO_SNAPSHOT_CHANGED: '承認画面を開いた後に発注書の内容（明細・版）が変わりました。最新の内容を確認してから、もう一度承認してください',
+  EXPECTED_SNAPSHOT_SHA256_INVALID: '承認する発注書の確認値が正しくありません。画面を再読み込みしてください',
+  MAKER_PO_AMOUNT_MISSING: 'メーカー発注書に金額が記載されていません。担当者に金額の入力を依頼してください',
+  MAKER_PO_SNAPSHOT_DRIFTED: '発注書の作成後に明細または版が変わりました。承認すると最新の内容で確定します',
 };
 
 /** HTTP status → the code a refusal falls back to when its handler named none. */

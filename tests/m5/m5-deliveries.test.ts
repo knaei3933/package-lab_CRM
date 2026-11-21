@@ -202,7 +202,8 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
   expect(created.status).toBe(201);
   const order = created.body as { id: string; lines: Array<{ id: string }> };
 
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     const transition = await postJson(`/api/film-supply-orders/${order.id}/transitions`, { to });
     expect(transition.status).toBe(200);
     if (to === targetStatus) {
@@ -261,10 +262,10 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
     expect(approval.status).toBe(201);
   }
 
-  for (const to of ['MAKER_PO_READY']) {
-    const transition = await postJson(`/api/film-supply-orders/${order.id}/transitions`, { to });
-    expect(transition.status).toBe(200);
-    if (to === targetStatus) break;
+  // P1 R23: dual approval with a decided term is MAKER_PO_READY by itself.
+  {
+    const [row] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.id)).limit(1);
+    expect(row?.status).toBe('MAKER_PO_READY');
   }
 
   // M7 security fix S1: the maker chain (APPROVED_FOR_MANUAL_SEND,

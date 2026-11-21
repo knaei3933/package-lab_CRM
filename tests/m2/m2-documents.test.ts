@@ -669,7 +669,9 @@ describe('M2 document intake and PO precedence', () => {
     expect(supplyOrder.status).toBe(201);
     const supplyJson = (await supplyOrder.json()) as SupplyOrderBody;
     expect(supplyJson.sevenPurchaseOrderId).toBe(po.id);
-    expect(supplyJson.status).toBe('DRAFT');
+    // P1 R23: a fully verified PO opens the gate, so the new order is
+    // セブン化学発注書確認済 at once (one automatic, audited step).
+    expect(supplyJson.status).toBe('SEVEN_PO_VERIFIED');
     expect(supplyJson.lines).toHaveLength(1);
     expect(supplyJson.lines[0]!.unit).toBe('rolls');
 

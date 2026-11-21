@@ -1010,6 +1010,8 @@ describe('official-date write paths', () => {
 
     const probes = [
       () => postAs(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'MAKER_PO_READY' }),
+      // P1 R23: the automatic-step endpoint is one more side path that must stay shut.
+      () => postAs(staffToken, `/api/film-supply-orders/${orderId}/auto-advance`, {}),
       () => postAs(adminToken, `/api/film-supply-orders/${orderId}/hold-release`, { reason: 'closed must not reopen' }),
       () => postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, { outcome: 'resume', reason: 'closed must not reopen' }),
       () => postAs(adminToken, `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, { outcome: 'cancel', reason: 'already closed' }),

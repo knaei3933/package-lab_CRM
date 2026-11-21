@@ -249,7 +249,8 @@ async function recordApproval(
 async function reachMakerPoReady(tag: string, paymentTerms: 'prepaid' | 'on_delivery' | 'undetermined' = 'prepaid') {
   const po = await setupVerifiedPo(tag);
   const order = await createFilmOrder(po.id, tag, paymentTerms);
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     const transition = await transitionOrder(order.id, to);
     expect(transition.status).toBe(200);
   }
@@ -265,8 +266,20 @@ async function reachMakerPoReady(tag: string, paymentTerms: 'prepaid' | 'on_deli
   expect(sevenApproval.status).toBe(201);
   expect((sevenApproval.body as { dualApproved: boolean }).dualApproved).toBe(true);
 
-  const ready = await transitionOrder(order.id, 'MAKER_PO_READY');
-  expect(ready.status).toBe(200);
+  // P1 R23: dual approval with a decided term is MAKER_PO_READY by itself. An
+  // undetermined term stops at DUAL_APPROVED; the fixture chooses a term (the
+  // automatic step follows) and then puts it back to undetermined, which stays
+  // possible until the CEO approval.
+  if (paymentTerms === 'undetermined') {
+    const patchTerms = (terms: string) => app.request(
+      `/api/film-supply-orders/${order.id}/payment-terms`,
+      { method: 'PATCH', headers: jsonPost(staffToken, { paymentTerms: terms }).headers, body: JSON.stringify({ paymentTerms: terms }) }
+    );
+    expect(await orderStatus(order.id)).toBe('DUAL_APPROVED');
+    expect((await patchTerms('prepaid')).status).toBe(200);
+    expect((await patchTerms('undetermined')).status).toBe(200);
+  }
+  expect(await orderStatus(order.id)).toBe('MAKER_PO_READY');
   // M8-HARDEN2 FIX 1: the bytes the approved artwork freezes, so a send .eml
   // can attach exactly them.
   return { poId: po.id, orderId: order.id, artworkBytes: revision.artworkBytes };
@@ -460,7 +473,8 @@ describe('S2: approval evidence is identified per organization', () => {
   it('rejects a second approval of the same evidence version for the same organization', async () => {
     const po = await setupVerifiedPo('S2-DUP');
     const order = await createFilmOrder(po.id, 'S2-DUP');
-    for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+    // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+    for (const to of ['ARTWORK_RECEIVED']) {
       const transition = await transitionOrder(order.id, to);
       expect(transition.status).toBe(200);
     }
@@ -502,7 +516,8 @@ describe('S2: approval evidence is identified per organization', () => {
   it('requires a per-organization evidenceIdentifier of at least eight characters', async () => {
     const po = await setupVerifiedPo('S2-ID');
     const order = await createFilmOrder(po.id, 'S2-ID');
-    for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+    // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+    for (const to of ['ARTWORK_RECEIVED']) {
       const transition = await transitionOrder(order.id, to);
       expect(transition.status).toBe(200);
     }
@@ -531,7 +546,8 @@ describe('S2: approval evidence is identified per organization', () => {
   it('blocks one evidenceIdentifier shared by both organizations on the same revision', async () => {
     const po = await setupVerifiedPo('S2-CROSS');
     const order = await createFilmOrder(po.id, 'S2-CROSS');
-    for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+    // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+    for (const to of ['ARTWORK_RECEIVED']) {
       const transition = await transitionOrder(order.id, to);
       expect(transition.status).toBe(200);
     }
@@ -567,7 +583,8 @@ describe('S2: approval evidence is identified per organization', () => {
     });
     expect(seven.status).toBe(201);
     expect((seven.body as { dualApproved: boolean }).dualApproved).toBe(true);
-    expect(await orderStatus(order.id)).toBe('DUAL_APPROVED');
+    // P1 R23: with a decided term the order continues to MAKER_PO_READY.
+    expect(await orderStatus(order.id)).toBe('MAKER_PO_READY');
 
     const identifiers = await db.select({ id: auditEvents.id, afterState: auditEvents.afterState })
       .from(auditEvents).where(and(
@@ -794,7 +811,8 @@ async function makerPoRow(poId: string) {
 async function approvalPendingOrder(tag: string) {
   const po = await setupVerifiedPo(`${tag}-PO`);
   const order = await createFilmOrder(po.id, tag);
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     const transition = await transitionOrder(order.id, to);
     expect(transition.status).toBe(200);
   }
@@ -925,8 +943,11 @@ describe('M7-SEC3 FIX 2: DUAL_APPROVED is gated on the live dual-approval gate',
     expect(release.status).toBe(200);
     const advanced = await transitionOrder(order.orderId, 'DUAL_APPROVED');
     expect(advanced.status).toBe(200);
-    expect((advanced.body as { status: string }).status).toBe('DUAL_APPROVED');
-    expect(await orderStatus(order.orderId)).toBe('DUAL_APPROVED');
+    // P1 R23: the recovered 校了 continues automatically (decided term).
+    expect((advanced.body as { autoAdvanced: Array<{ from: string; to: string }> }).autoAdvanced)
+      .toMatchObject([{ from: 'DUAL_APPROVED', to: 'MAKER_PO_READY' }]);
+    expect((advanced.body as { status: string }).status).toBe('MAKER_PO_READY');
+    expect(await orderStatus(order.orderId)).toBe('MAKER_PO_READY');
   });
 });
 
@@ -994,8 +1015,8 @@ describe('M7-SEC3 FIX 3: the G6 payment gate', () => {
     // P0 R01 (policy P-5): outside DRAFT the terms stay editable until the CEO
     // approves a maker PO; the lock after that approval is covered in
     // tests/p0-server.test.ts.
-    const advanced = await transitionOrder(order.id, 'SEVEN_PO_VERIFIED');
-    expect(advanced.status).toBe(200);
+    // P1 R23: created against a verified PO, the order is SEVEN_PO_VERIFIED already.
+    expect(await orderStatus(order.id)).toBe('SEVEN_PO_VERIFIED');
     const stillOpen = await patch('on_delivery');
     expect(stillOpen.status).toBe(200);
     const [after] = await db.select({ paymentTerms: filmSupplyOrders.paymentTerms })

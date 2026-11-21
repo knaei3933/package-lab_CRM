@@ -171,7 +171,8 @@ async function linkedOrder(sevenPoId: string) {
 async function reachMakerPoReady() {
   const sevenPoId = await verifiedSevenPo();
   const { orderId, orderCode } = await linkedOrder(sevenPoId);
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     expect((await call(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to })).status).toBe(200);
   }
   const artworkBytes = `composite batch-e artwork ${nextTag()}\n`;
@@ -191,7 +192,7 @@ async function reachMakerPoReady() {
       evidenceIdentifier: identifier, evidenceDocumentVersionId: evidence.version.id
     })).status).toBe(201);
   }
-  expect((await call(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'MAKER_PO_READY' })).status).toBe(200);
+  expect((await call(staffToken, `/api/film-supply-orders/${orderId}/auto-advance`, {})).status).toBe(200);
   return { orderId, orderCode, artworkBytes, sevenPoId };
 }
 
@@ -287,7 +288,7 @@ describe('F-06: the evidence warning before a transition', () => {
   it('an order at セブン化学発注書確認済 with no document offers the warning and the reason field for デザイン受領', async () => {
     const sevenPoId = await verifiedSevenPo();
     const { orderId, orderCode } = await linkedOrder(sevenPoId);
-    expect((await call(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'SEVEN_PO_VERIFIED' })).status).toBe(200);
+    // P1 R23: the linked verified PO makes the new order SEVEN_PO_VERIFIED at once.
     signIn('staff');
     const row = orderRow(await render(OrdersPage), orderCode);
     expect(row).toContain('証跡がないまま進める場合（「デザインデータ受領」）');

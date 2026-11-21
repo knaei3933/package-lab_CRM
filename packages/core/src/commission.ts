@@ -42,6 +42,12 @@ export interface CommissionReadinessInput {
   filmDeliveryConfirmed: boolean;
   /** Every recorded filling delivery is backed by verified delivery evidence. */
   fillingDeliveryConfirmed: boolean;
+  /**
+   * P1 policy P-3: false for a film-only project (no filling order exists). The
+   * filling requirement is then 対象外 and readiness is judged on the confirmed
+   * delivered film quantity alone. Omitted means the filling-linked rule.
+   */
+  fillingApplicable?: boolean;
 }
 
 export interface CommissionReadinessEvaluation {
@@ -67,18 +73,23 @@ export interface CommissionReadinessEvaluation {
  * by any caller that merely recorded a delivery.
  */
 export function evaluateCommissionReadiness(input: CommissionReadinessInput): CommissionReadinessEvaluation {
+  const fillingApplicable = input.fillingApplicable !== false;
   const blocking: CommissionReadinessEvaluation['blocking'] = [];
   if (!input.filmDeliveryRecorded) blocking.push('FILM_DELIVERY_NOT_RECORDED');
-  if (!input.fillingDeliveryRecorded) blocking.push('FILLING_DELIVERY_NOT_RECORDED');
+  if (fillingApplicable && !input.fillingDeliveryRecorded) blocking.push('FILLING_DELIVERY_NOT_RECORDED');
   if (!input.sevenPoOfficiallyRegistered) blocking.push('SEVEN_PO_NOT_OFFICIALLY_REGISTERED');
 
-  const noDeliveryRecorded = !input.filmDeliveryRecorded && !input.fillingDeliveryRecorded;
+  // P1 P-3: a film-only project has nothing but film to deliver, so "no
+  // delivery recorded" means no film delivery.
+  const noDeliveryRecorded = fillingApplicable
+    ? !input.filmDeliveryRecorded && !input.fillingDeliveryRecorded
+    : !input.filmDeliveryRecorded;
   if (noDeliveryRecorded || !input.sevenPoOfficiallyRegistered) {
     return { state: 'MISSING_DATA', isReady: false, blocking };
   }
 
   if (!input.filmDeliveryConfirmed) blocking.push('FILM_DELIVERY_PENDING_CONFIRMATION');
-  if (!input.fillingDeliveryConfirmed) blocking.push('FILLING_DELIVERY_PENDING_CONFIRMATION');
+  if (fillingApplicable && !input.fillingDeliveryConfirmed) blocking.push('FILLING_DELIVERY_PENDING_CONFIRMATION');
 
   if (blocking.length > 0) return { state: 'PENDING_VERIFICATION', isReady: false, blocking };
   return { state: 'READY', isReady: true, blocking: [] };

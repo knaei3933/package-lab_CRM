@@ -106,6 +106,26 @@ async function createOrder(sevenPoId: string, paymentTerms: string = 'prepaid') 
   return { orderId: created.body.id as string, code };
 }
 
+/**
+ * P1 R23: an order created against a verified PO is SEVEN_PO_VERIFIED at once.
+ * This one is created while its PO is registered but not yet checked, so it
+ * stays DRAFT; the checklist then completes and the manual step is due.
+ */
+async function draftOrderAwaitingPoCheck(paymentTerms: string = 'prepaid') {
+  const po = await post('staff', `/api/projects/${projectId}/seven-purchase-orders`, {
+    poNumber: `SEVEN-P0-LATE-${nextTag()}`, officialRegisteredAt: '2026-11-01T09:00:00.000Z'
+  });
+  expect(po.status, JSON.stringify(po.body)).toBe(201);
+  const created = await post('staff', `/api/projects/${projectId}/film-supply-orders`, {
+    code: `FSO-P0-LATE-${nextTag()}`, sevenPurchaseOrderId: po.body.id, paymentTerms,
+    lines: [{ lineNumber: 1, description: '合成フィルムP0', orderedQuantity: 1000, unit: 'sheets' }]
+  });
+  expect(created.status, JSON.stringify(created.body)).toBe(201);
+  expect(created.body.status).toBe('DRAFT');
+  expect((await post('staff', `/api/seven-purchase-orders/${po.body.id}/verification-checklist`, fullChecklist())).status).toBe(200);
+  return { orderId: created.body.id as string, sevenPoId: po.body.id as string };
+}
+
 async function upload(sevenPoId: string, orderId: string, overrides: Record<string, unknown>) {
   const tag = nextTag();
   const body = {
@@ -119,7 +139,8 @@ async function upload(sevenPoId: string, orderId: string, overrides: Record<stri
 }
 
 async function toApprovalPending(orderId: string) {
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     const moved = await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to });
     expect(moved.status, JSON.stringify(moved.body)).toBe(200);
   }
@@ -161,7 +182,7 @@ async function readyOrder(paymentTerms = 'prepaid') {
     const recorded = await approval(revisionId, organization, evidence.version.id, identifier);
     expect(recorded.status, JSON.stringify(recorded.body)).toBe(201);
   }
-  const ready = await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'MAKER_PO_READY' });
+  const ready = await post('staff', `/api/film-supply-orders/${orderId}/auto-advance`, {});
   expect(ready.status, JSON.stringify(ready.body)).toBe(200);
   return { sevenPoId, orderId, code, artworkBytes };
 }
@@ -250,7 +271,8 @@ describe('R01 payment terms: required choice, editable until the CEO approval, s
 
   it('lets staff and admin change the term after DRAFT, with an audit row; viewer and outsiders cannot', async () => {
     const { orderId } = await createOrder(await verifiedSevenPo(), 'undetermined');
-    expect((await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'SEVEN_PO_VERIFIED' })).status).toBe(200);
+    // P1 R23: created against a verified PO, the order is already past DRAFT.
+    expect((await orderRow(orderId)).status).toBe('SEVEN_PO_VERIFIED');
     const patch = (role: Role, body: unknown) => send(role, 'PATCH', `/api/film-supply-orders/${orderId}/payment-terms`, body);
 
     expect((await patch('viewer', { paymentTerms: 'prepaid' })).status).toBe(403);
@@ -280,20 +302,41 @@ describe('R01 payment terms: required choice, editable until the CEO approval, s
   });
 
   it('warns on the way to SEVEN_PO_VERIFIED while undetermined, and only then', async () => {
+    // P1 R23: the automatic step on creation carries the same warning.
     const sevenPoId = await verifiedSevenPo();
-    const undecided = await createOrder(sevenPoId, 'undetermined');
+    const created = await post('staff', `/api/seven-purchase-orders/${sevenPoId}/supply-orders`, {
+      code: `FSO-P0-WARN-${nextTag()}`, paymentTerms: 'undetermined'
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.status).toBe('SEVEN_PO_VERIFIED');
+    expect(created.body.warnings.map((warning: { code: string }) => warning.code)).toEqual(['PAYMENT_TERMS_UNDETERMINED']);
+    const settledCreated = await post('staff', `/api/seven-purchase-orders/${sevenPoId}/supply-orders`, {
+      code: `FSO-P0-WARN-${nextTag()}`, paymentTerms: 'prepaid'
+    });
+    expect(settledCreated.body.warnings).toEqual([]);
+    // The manual step (PO checked after the order was created) still warns.
+    const undecided = await draftOrderAwaitingPoCheck('undetermined');
     const warned = await post('staff', `/api/film-supply-orders/${undecided.orderId}/transitions`, { to: 'SEVEN_PO_VERIFIED' });
     expect(warned.status).toBe(200);
     expect(warned.body.warnings.map((warning: { code: string }) => warning.code)).toEqual(['PAYMENT_TERMS_UNDETERMINED']);
-    const settled = await createOrder(sevenPoId, 'prepaid');
+    const settled = await draftOrderAwaitingPoCheck('prepaid');
     const quiet = await post('staff', `/api/film-supply-orders/${settled.orderId}/transitions`, { to: 'SEVEN_PO_VERIFIED' });
     expect(quiet.body.warnings).toEqual([]);
   });
 
   it('unblocks the B1 dead end: undetermined at MAKER_PO_READY is fixed in place, approved, then locked; cancel reopens', async () => {
+    // P1 R23: an undetermined term stops the order at 校了 (DUAL_APPROVED);
+    // choosing the term makes it MAKER_PO_READY by itself.
     const chain = await readyOrder('undetermined');
+    expect((await orderRow(chain.orderId)).status).toBe('DUAL_APPROVED');
+    expect((await createPaper(chain.orderId)).body.code).toBe('MAKER_PO_NOT_READY');
+    const chosen = await send('staff', 'PATCH', `/api/film-supply-orders/${chain.orderId}/payment-terms`, { paymentTerms: 'prepaid' });
+    expect(chosen.status).toBe(200);
+    expect(chosen.body.status).toBe('MAKER_PO_READY');
     const paper = await createPaper(chain.orderId);
     expect(paper.status).toBe(201);
+    // The CEO approval gate still re-reads the term: back to undetermined before approval.
+    expect((await send('staff', 'PATCH', `/api/film-supply-orders/${chain.orderId}/payment-terms`, { paymentTerms: 'undetermined' })).status).toBe(200);
     const refused = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`);
     expect(refused.status).toBe(422);
     expect(refused.body.code).toBe('PAYMENT_GATE_UNSATISFIED');
@@ -553,7 +596,7 @@ describe('R10 maker recipient is a mail address, checked when the paper is writt
 // --------------------------------------------------------------------- R12
 describe('R12 the evidence-gap reason is kept; a cancelled paper\'s send mail is not offered or accepted', () => {
   it('stores the reason for moving on without evidence in the transition audit row', async () => {
-    const { orderId } = await createOrder(await verifiedSevenPo());
+    const { orderId } = await draftOrderAwaitingPoCheck();
     const tooLong = await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'SEVEN_PO_VERIFIED', evidenceNote: 'あ'.repeat(1001) });
     expect(tooLong.body.code).toBe('EVIDENCE_NOTE_TOO_LONG');
     expect((await orderRow(orderId)).status).toBe('DRAFT');
@@ -795,7 +838,7 @@ describe('R09 every refusal carries a stable code and safe Japanese text', () =>
 describe('P0 follow-up coverage (test-engineer review)', () => {
   it('R01 PATCH: missing/unknown term refused, undetermined allowed, CANCELLED 409, change review frozen', async () => {
     const sevenPoId = await verifiedSevenPo();
-    const { orderId } = await createOrder(sevenPoId, 'prepaid');
+    const { orderId } = await draftOrderAwaitingPoCheck('prepaid');
     const patch = (body: unknown) => send('staff', 'PATCH', `/api/film-supply-orders/${orderId}/payment-terms`, body);
     expect((await patch({})).body.code).toBe('PAYMENT_TERMS_REQUIRED');
     expect((await patch({ paymentTerms: 'later' })).body.code).toBe('UNKNOWN_PAYMENT_TERMS');
@@ -957,7 +1000,8 @@ describe('P0 review fixes (REVIEW_REPORT H1, M1-M9)', () => {
     // A genuinely different Seven mail still records normally.
     const own = await uploadText(sevenPoId, orderId, 'seven', `seven approval\nid: ${identifier}-S\n`);
     expect((await approval(revisionId, 'seven', own.body.version.id, `${identifier}-S`)).status).toBe(201);
-    expect((await orderRow(orderId)).status).toBe('DUAL_APPROVED');
+    // P1 R23: dual approval with a decided term continues to MAKER_PO_READY.
+    expect((await orderRow(orderId)).status).toBe('MAKER_PO_READY');
   });
 
   it('H1: identical PDF bytes under both issuers are refused by bytes', async () => {

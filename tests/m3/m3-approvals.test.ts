@@ -168,7 +168,8 @@ async function createApprovalReadyOrder(projectId: string, tag: string): Promise
   const created = await postJson(`/api/seven-purchase-orders/${po.id}/supply-orders`, { paymentTerms: 'undetermined', code: `FSO-M3-${tag}` });
   expect(created.status).toBe(201);
   const order = created.body as { id: string };
-  for (const to of ['SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING']) {
+  // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
+  for (const to of ['ARTWORK_RECEIVED']) {
     const transition = await postJson(`/api/film-supply-orders/${order.id}/transitions`, { to });
     expect(transition.status).toBe(200);
   }
@@ -626,10 +627,22 @@ describe('M3 proof revisions and dual approval', () => {
     expect(events.some((row) => row.id === flow.firstApproval.approvalEvent.id && row.decision === 'APPROVE')).toBe(true);
     expect(events.some((row) => row.decision === 'REVOKE' && row.organization === 'customer')).toBe(true);
 
-    // The closed gate blocks the downstream maker ordering step.
+    // The closed gate blocks the downstream maker ordering step. P1 R23: the
+    // step is automatic, so the gate shows up as the blocker of the automatic
+    // step and nothing moves; pressing it by hand is not possible at all.
+    const preview = await getJson<{ nextAutomatic: { target: string; blockers: Array<{ code: string }> } }>(
+      `/api/film-supply-orders/${order.orderId}/auto-advance`
+    );
+    expect(preview.status).toBe(200);
+    expect(preview.body.nextAutomatic.target).toBe('MAKER_PO_READY');
+    expect(preview.body.nextAutomatic.blockers.map((blocker) => blocker.code)).toContain('DUAL_APPROVAL_REQUIRED');
+    const applied = await postJson<{ steps: unknown[]; status: string }>(`/api/film-supply-orders/${order.orderId}/auto-advance`, {});
+    expect(applied.status).toBe(200);
+    expect(applied.body.steps).toEqual([]);
+    expect(applied.body.status).toBe('DUAL_APPROVED');
     const transition = await postJson<ErrorBody>(`/api/film-supply-orders/${order.orderId}/transitions`, { to: 'MAKER_PO_READY' });
     expect(transition.status).toBe(422);
-    expect(transition.body.code).toBe('DUAL_APPROVAL_REQUIRED');
+    expect(transition.body.code).toBe('AUTO_TRANSITION_ONLY');
 
     // M7-SEC3 FIX 1: the seven revocation cites its own evidence file, because
     // an identifier is only valid when the cited evidence content carries it —
@@ -769,6 +782,10 @@ describe('M3 proof revisions and dual approval', () => {
     const created = await postJson(`/api/seven-purchase-orders/${po.id}/supply-orders`, { paymentTerms: 'undetermined', code: 'FSO-M3-GATE' });
     expect(created.status).toBe(201);
     const draftOrder = created.body as { id: string };
+    // P1 R23: a verified PO makes the new order SEVEN_PO_VERIFIED at once; the
+    // gate under test is about an order still at DRAFT (e.g. a row from before
+    // P1), so the row is put back to DRAFT directly.
+    await db.update(filmSupplyOrders).set({ status: 'DRAFT' }).where(eq(filmSupplyOrders.id, draftOrder.id));
 
     const proof = await uploadBoundDocument(projectIdA, {
       documentType: 'proof',
@@ -922,9 +939,14 @@ describe('seventh recheck approval order-state races', () => {
     const base = await createApprovalReadyOrder(projectIdA, 'M5BLOCK');
     const flow = await reachDualApproval(base, projectIdA, 'label-front', 'customer', 'seven');
     expect(flow.secondApproval.dualApproved).toBe(true);
-    expect((await postJson(`/api/film-supply-orders/${base.orderId}/transitions`, {
-      to: 'MAKER_PO_READY'
-    })).status).toBe(200);
+    // P1 R23: choosing the payment term makes the 校了 order MAKER_PO_READY.
+    const chosen = await app.request(`/api/film-supply-orders/${base.orderId}/payment-terms`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: `${SESSION_COOKIE}=${staffToken}` },
+      body: JSON.stringify({ paymentTerms: 'prepaid' })
+    });
+    expect(chosen.status).toBe(200);
+    expect(((await chosen.json()) as { status: string }).status).toBe('MAKER_PO_READY');
     const created = await postAdmin(`/api/film-supply-orders/${base.orderId}/maker-purchase-orders`, {
       recipientAddress: 'maker@example.test'
     });

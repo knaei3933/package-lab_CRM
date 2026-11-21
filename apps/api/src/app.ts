@@ -82,7 +82,21 @@ import {
   type NormalFilmSupplyOrderState,
   type PaymentTerms,
   type UnitDomain,
-  type EvidenceIdentifierStatus
+  type EvidenceIdentifierStatus,
+  planAutoAdvance,
+  isAutoOnlyManualTarget,
+  MANUAL_NEXT_STEP,
+  FILM_SUPPLY_ORDER_STATUS_LABELS,
+  formatQuantityDisplay,
+  formatAmountDisplay,
+  makerPoDisplayNumber,
+  jstYear,
+  unitDisplayVocabulary,
+  UNIT_SYMBOLS_JA,
+  evaluateSelfVerification,
+  type AutoAdvanceFacts,
+  type AutoAdvanceStep,
+  type UserRole
 } from '@kanei/core';
 import {
   accounts,
@@ -207,6 +221,21 @@ class CancellationReviewResolutionInvalid extends Error {
 }
 
 class OfficialRegistrationForbidden extends Error {}
+
+/** P1 R23: an automatic step lost its conditional update (the order moved). */
+class AutoAdvanceConflict extends Error {}
+
+/** P1 R23: one applied automatic step, with the audit row that records it. */
+interface AppliedAutoStep extends AutoAdvanceStep {
+  auditEventId: string;
+}
+
+/** P1 R24: the snapshot the representative saw is not the one approval would freeze. */
+class MakerPoSnapshotChangedUnderLock extends Error {
+  constructor(readonly expected: string, readonly current: string) {
+    super('maker PO snapshot changed under lock');
+  }
+}
 class OfficialRegistrationRace extends Error {}
 class OfficialRegistrationReviewPending extends Error {}
 class OfficialRegistrationNotVerified extends Error {}
@@ -1512,6 +1541,7 @@ export function createApp({
       updatedAt: now,
       deletedAt: null
     };
+    let autoAdvanced: AppliedAutoStep[] = [];
     await db.transaction(async (tx) => {
       await tx.insert(filmSupplyOrders).values(order);
       if (lines.length > 0) {
@@ -1550,11 +1580,22 @@ export function createApp({
         occurredAt: now,
         requestMetadata: { operation: 'film_order:create' }
       });
+      // P1 R23: an order created against a registered and verified seven PO
+      // is セブン化学発注書確認済 at once (same gate as the manual step).
+      autoAdvanced = await applyAutoAdvance(tx, { orderId, actorUserId: user.id, trigger: 'film_order:create', now });
     });
 
     const createdLines = await db.select().from(filmSupplyOrderLines)
       .where(eq(filmSupplyOrderLines.filmSupplyOrderId, orderId));
-    return context.json({ ...order, lines: createdLines }, 201);
+    const createdStatus = autoAdvanced.length > 0 ? autoAdvanced[autoAdvanced.length - 1]!.to : order.status;
+    return context.json({
+      ...order,
+      status: createdStatus,
+      lines: createdLines,
+      autoAdvanced,
+      // P0 R01 warning, now on the automatic step to SEVEN_PO_VERIFIED.
+      warnings: undeterminedPaymentTermsWarnings(autoAdvanced, order.paymentTerms)
+    }, 201);
   });
 
   // M7-SEC3 FIX 3: the G6 payment terms are the only mutable field on a film
@@ -1649,7 +1690,13 @@ export function createApp({
           reason: changeReason
         }
       });
-      return { kind: 'updated' as const, order: { ...locked, ...updated } };
+      // P1 R23: choosing the term on a 校了 order makes it 製造先発注準備完了.
+      // The term is a fact of that one rule only, so no other step is taken here.
+      const autoAdvanced = await applyAutoAdvance(tx, {
+        orderId, actorUserId: user.id, trigger: 'film_order:update_payment_terms', now, onlyFrom: ['DUAL_APPROVED']
+      });
+      const status = autoAdvanced.length > 0 ? autoAdvanced[autoAdvanced.length - 1]!.to : locked.status;
+      return { kind: 'updated' as const, order: { ...locked, ...updated, status }, autoAdvanced };
     });
 
     if (outcome.kind === 'gone') {
@@ -1667,7 +1714,8 @@ export function createApp({
     return context.json({
       ...outcome.order,
       paymentTermsLabel: PAYMENT_TERMS_LABELS_JA[normalizePaymentTerms(outcome.order.paymentTerms)],
-      changed: outcome.kind === 'updated'
+      changed: outcome.kind === 'updated',
+      autoAdvanced: outcome.kind === 'updated' ? outcome.autoAdvanced : []
     });
   });
 
@@ -1932,6 +1980,21 @@ export function createApp({
       return context.json({ error: '許可されていない状態遷移です', code: 'INVALID_TRANSITION', from: order.status, to: target }, 422);
     }
 
+    // P1 R23 (P-9): 校正ゲラ準備完了 / 校了確認待ち / 製造先発注準備完了 are
+    // reached automatically once their facts exist; nobody presses them. The
+    // states and every rule behind them stay — the automatic step is still one
+    // normal step under the same gates. Change-review resolution is an exception
+    // exit, not a step, and stays manual.
+    if (isAutoOnlyManualTarget(order.status, target)) {
+      return context.json({
+        error: 'この段階は条件がそろうと自動で進みます。手で進める必要はありません',
+        code: 'AUTO_TRANSITION_ONLY',
+        from: order.status,
+        to: target,
+        autoAdvanceEndpoint: 'POST /api/film-supply-orders/:orderId/auto-advance'
+      }, 422);
+    }
+
     // M5: assuming a receipt without issue is never a generic transition. It is
     // a manual recording action with a required note and an evidence-free
     // acknowledgment, recorded by its own endpoint so nothing here can move an
@@ -2041,6 +2104,7 @@ export function createApp({
     const now = new Date();
     const holdReason = holdReasonCheck.ok ? holdReasonCheck.text : null;
     const updated = { status: target, holdReason, updatedAt: now };
+    let autoAdvanced: AppliedAutoStep[] = [];
     try {
       await db.transaction(async (tx) => {
         const [current] = await tx.select().from(filmSupplyOrders)
@@ -2070,8 +2134,22 @@ export function createApp({
           occurredAt: now,
           requestMetadata: { operation: 'film_order:transition', holdReason, ...(evidenceNote ? { evidenceNote } : {}) }
         });
+        // P1 R23: a manual step out of a normal state may make the next
+        // automatic steps due (e.g. デザインデータ受領 with a proof already
+        // registered). Exception exits land exactly where they were sent.
+        if (!isExceptionFilmSupplyOrderState(current.status)) {
+          autoAdvanced = await applyAutoAdvance(tx, { orderId, actorUserId: user.id, trigger: 'film_order:transition', now });
+        }
       });
     } catch (error) {
+      if (error instanceof AutoAdvanceConflict) {
+        return context.json({
+          error: '発注状態がすでに変わっています',
+          code: 'FILM_ORDER_STATE_CHANGED',
+          from: order.status,
+          to: target
+        }, 409);
+      }
       if (error instanceof FilmOrderTransitionConflict) {
         return context.json({
           error: '発注状態がすでに変わっています',
@@ -2091,7 +2169,87 @@ export function createApp({
           message: '支払条件が「未定」のままです。代表承認の前に「前払い」または「納品後払い」を選んでください'
         }]
       : [];
-    return context.json({ ...order, ...updated, ...(evidenceNote ? { evidenceNote } : {}), warnings });
+    const finalStatus = autoAdvanced.length > 0 ? autoAdvanced[autoAdvanced.length - 1]!.to : target;
+    return context.json({
+      ...order,
+      ...updated,
+      status: finalStatus,
+      ...(evidenceNote ? { evidenceNote } : {}),
+      warnings,
+      autoAdvanced
+    });
+  });
+
+  // P1 R23: the automatic steps, read (why is this order not moving?) and
+  // applied (re-evaluate now — e.g. after a hold was released to an origin
+  // whose facts already allow the next step, or for orders created before P1).
+  async function loadAutoAdvanceTarget(context: any) {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return { response: context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401) };
+    const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return {
+        response: context.json({
+          error: '経路パラメータ（orderId）はUUIDである必要があります',
+          code: 'INVALID_PATH_PARAMETER'
+        }, 400)
+      };
+    }
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
+    if (!order || order.deletedAt) {
+      return { response: context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404) };
+    }
+    const decision = canPerform(toActor(user), 'film_order:transition', 'F1', order.projectId);
+    if (!decision.allowed) return { response: context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403) };
+    return { user, order };
+  }
+
+  app.get('/api/film-supply-orders/:orderId/auto-advance', async (context) => {
+    const target = await loadAutoAdvanceTarget(context);
+    if ('response' in target) return target.response;
+    const { order } = target;
+    const facts = await loadAutoAdvanceFacts(db, order);
+    const plan = planAutoAdvance(order.status, facts);
+    const manualTarget = MANUAL_NEXT_STEP[plan.finalStatus as FilmOrderStatus] ?? null;
+    return context.json({
+      orderId: order.id,
+      status: order.status,
+      statusLabel: FILM_SUPPLY_ORDER_STATUS_LABELS[order.status as FilmOrderStatus] ?? null,
+      plannedSteps: plan.steps,
+      nextAutomatic: plan.nextAutomatic,
+      manualNext: manualTarget
+        ? { target: manualTarget, label: FILM_SUPPLY_ORDER_STATUS_LABELS[manualTarget] }
+        : null
+    });
+  });
+
+  app.post('/api/film-supply-orders/:orderId/auto-advance', async (context) => {
+    const target = await loadAutoAdvanceTarget(context);
+    if ('response' in target) return target.response;
+    const { user, order } = target;
+    const body = await context.req.json().catch(() => null) as unknown;
+    const contextRefusal = projectContextRefusal(body, order.projectId);
+    if (contextRefusal) return context.json(contextRefusal, 409);
+    if (String(order.status) === 'CANCELLED') {
+      return context.json({ error: '取消終了した発注は遷移できません', code: 'FILM_ORDER_CANCELLED' }, 409);
+    }
+    const now = new Date();
+    try {
+      const steps = await db.transaction(async (tx) => (
+        applyAutoAdvance(tx, { orderId: order.id, actorUserId: user.id, trigger: 'film_order:auto_advance', now })
+      ));
+      return context.json({
+        orderId: order.id,
+        from: order.status,
+        status: steps.length > 0 ? steps[steps.length - 1]!.to : order.status,
+        steps
+      });
+    } catch (error) {
+      if (error instanceof AutoAdvanceConflict) {
+        return context.json({ error: '発注状態がすでに変わっています', code: 'FILM_ORDER_STATE_CHANGED' }, 409);
+      }
+      throw error;
+    }
   });
 
   // Holds are a recovery side-channel, not a shortcut around the maker chain.
@@ -2717,6 +2875,7 @@ export function createApp({
       return context.json({ error: evaluation.message, code: evaluation.code }, 422);
     }
 
+    const selfCheck = await selfVerificationFacts(user, [evidence!.versionId]);
     const now = new Date();
     const confirmationId = uuidv7(now);
     const auditId = uuidv7(now);
@@ -2739,7 +2898,7 @@ export function createApp({
         action: kind === 'film' ? 'FILM_DELIVERY_CONFIRMED' : 'FILLING_DELIVERY_CONFIRMED',
         entityType: 'delivery_confirmation',
         entityId: confirmationId,
-        afterState: { ...confirmation, projectId: target.projectId, deliveryId },
+        afterState: { ...confirmation, projectId: target.projectId, deliveryId, ...selfCheck },
         occurredAt: now,
         requestMetadata: { operation: 'delivery_confirmation:record', deliveryKind: kind, deliveryId }
       });
@@ -2752,9 +2911,138 @@ export function createApp({
         kind,
         confirmationState: fillingDeliveryConfirmationState(true)
       },
-      auditEventId: auditId
+      auditEventId: auditId,
+      ...selfCheck
     }, 201);
   }
+
+  // P1 R36: one delivery flow per film order. 納品 (recorded rows), 納品確認
+  // (the delivered quantity confirmed by verified receipt evidence) and 受領確認
+  // (closing the order from FILM_DELIVERED) are read together, so a screen can
+  // show one sequence instead of two unrelated confirmations. The rules behind
+  // each step are unchanged. No amounts are part of this answer.
+  app.get('/api/film-supply-orders/:orderId/delivery-status', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
+    const orderId = context.req.param('orderId');
+    if (!isUuid(orderId)) {
+      return context.json({
+        error: '経路パラメータ（orderId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).limit(1);
+    if (!order || order.deletedAt) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
+    const decision = canPerform(toActor(user), 'project:read', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
+
+    const lines = await db.select().from(filmSupplyOrderLines)
+      .where(eq(filmSupplyOrderLines.filmSupplyOrderId, orderId)).orderBy(filmSupplyOrderLines.lineNumber);
+    const deliveries = await db.select({
+      id: filmDeliveries.id,
+      lineId: filmDeliveries.filmSupplyOrderLineId,
+      sequence: filmDeliveries.deliverySequence,
+      deliveredAt: filmDeliveries.deliveredAt,
+      quantity: filmDeliveries.deliveredQuantity,
+      unit: filmDeliveries.unit,
+      confirmationId: deliveryConfirmations.id,
+      confirmedAt: deliveryConfirmations.confirmedAt,
+      confirmedByUserId: deliveryConfirmations.confirmedByUserId,
+      confirmedByName: users.displayName,
+      evidenceDocumentVersionId: deliveryConfirmations.evidenceDocumentVersionId,
+      evidenceUploaderId: documentVersions.createdByUserId
+    }).from(filmDeliveries)
+      .leftJoin(deliveryConfirmations, eq(deliveryConfirmations.filmDeliveryId, filmDeliveries.id))
+      .leftJoin(users, eq(users.id, deliveryConfirmations.confirmedByUserId))
+      .leftJoin(documentVersions, eq(documentVersions.id, deliveryConfirmations.evidenceDocumentVersionId))
+      .where(eq(filmDeliveries.filmSupplyOrderId, orderId))
+      .orderBy(filmDeliveries.deliverySequence, filmDeliveries.id);
+    const [anyFillingOrder] = await db.select({ id: fillingOrders.id }).from(fillingOrders)
+      .where(eq(fillingOrders.projectId, order.projectId)).limit(1);
+
+    // Quantities are summed as decimal text in thousandths, never as floats.
+    const toMilli = (value: string) => {
+      const [whole, fraction = ''] = value.split('.');
+      return BigInt(whole!) * 1000n + BigInt((fraction + '000').slice(0, 3));
+    };
+    const fromMilli = (value: bigint) => `${value / 1000n}.${String(value % 1000n).padStart(3, '0')}`;
+    const lineViews = lines.map((line) => {
+      const own = deliveries.filter((delivery) => delivery.lineId === line.id);
+      const delivered = own.reduce((sum, delivery) => sum + toMilli(String(delivery.quantity)), 0n);
+      const confirmed = own.filter((delivery) => delivery.confirmationId)
+        .reduce((sum, delivery) => sum + toMilli(String(delivery.quantity)), 0n);
+      return {
+        lineId: line.id,
+        lineNumber: line.lineNumber,
+        description: line.description,
+        unit: line.unit,
+        unitLabel: UNIT_SYMBOLS_JA[line.unit as MeasureUnit] ?? null,
+        orderedQuantity: String(line.orderedQuantity),
+        orderedDisplay: formatQuantityDisplay(line.orderedQuantity, line.unit),
+        deliveredQuantity: fromMilli(delivered),
+        deliveredDisplay: formatQuantityDisplay(fromMilli(delivered), line.unit),
+        confirmedQuantity: fromMilli(confirmed),
+        confirmedDisplay: formatQuantityDisplay(fromMilli(confirmed), line.unit),
+        deliveries: own.map((delivery) => ({
+          id: delivery.id,
+          sequence: delivery.sequence,
+          deliveredAt: delivery.deliveredAt,
+          quantity: String(delivery.quantity),
+          display: formatQuantityDisplay(delivery.quantity, delivery.unit),
+          confirmation: delivery.confirmationId
+            ? {
+                id: delivery.confirmationId,
+                confirmedAt: delivery.confirmedAt,
+                confirmedBy: { id: delivery.confirmedByUserId, displayName: delivery.confirmedByName ?? null },
+                evidenceDocumentVersionId: delivery.evidenceDocumentVersionId,
+                selfVerification: delivery.evidenceUploaderId !== null && delivery.evidenceUploaderId === delivery.confirmedByUserId
+              }
+            : null
+        }))
+      };
+    });
+    const unconfirmed = deliveries.filter((delivery) => !delivery.confirmationId).map((delivery) => delivery.id);
+    const status = String(order.status);
+    const stage = status === 'FILM_RECEIPT_ASSUMED_NO_ISSUE'
+      ? 'completed'
+      : deliveries.length === 0
+        ? 'not_delivered'
+        : unconfirmed.length > 0
+          ? 'quantity_pending_confirmation'
+          : 'quantity_confirmed';
+    const nextAction = status === 'CANCELLED' || isExceptionFilmSupplyOrderState(order.status)
+      ? null
+      : stage === 'not_delivered'
+        ? { action: 'RECORD_DELIVERY', label: '納品を記録する' }
+        : stage === 'quantity_pending_confirmation'
+          ? { action: 'CONFIRM_DELIVERY', label: '納品数量を確認する', deliveryIds: unconfirmed }
+          : stage === 'quantity_confirmed' && status === 'FILM_SHIPPED'
+            ? { action: 'RECORD_FILM_DELIVERED', label: '納品済みにする' }
+            : stage === 'quantity_confirmed' && status === 'FILM_DELIVERED'
+              ? { action: 'CLOSE_ORDER', label: '受領確認（問題なし）を記録する' }
+              : null;
+    let receiptAssumption: { assumedAt: Date; assumedBy: { id: string; displayName: string | null }; note: string | null } | null = null;
+    if (order.receiptAssumedAt && order.receiptAssumedByUserId) {
+      const [assumer] = await db.select({ displayName: users.displayName }).from(users)
+        .where(eq(users.id, order.receiptAssumedByUserId)).limit(1);
+      receiptAssumption = {
+        assumedAt: order.receiptAssumedAt,
+        assumedBy: { id: order.receiptAssumedByUserId, displayName: assumer?.displayName ?? null },
+        note: order.receiptAssumedNote
+      };
+    }
+    return context.json({
+      orderId,
+      orderCode: order.code,
+      status: order.status,
+      statusLabel: FILM_SUPPLY_ORDER_STATUS_LABELS[order.status as FilmOrderStatus] ?? null,
+      filmOnly: anyFillingOrder === undefined,
+      stage,
+      lines: lineViews,
+      receiptAssumption,
+      nextAction
+    });
+  });
 
   app.post('/api/film-deliveries/:deliveryId/confirmation', (context) => handleDeliveryConfirmationRequest(context, 'film'));
   app.post('/api/filling-deliveries/:deliveryId/confirmation', (context) => handleDeliveryConfirmationRequest(context, 'filling'));
@@ -2766,7 +3054,8 @@ export function createApp({
   app.get('/api/status-labels', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
-    return context.json(japaneseStatusSurface());
+    // P1 R31: the unit symbols and names a screen shows next to a quantity.
+    return context.json({ ...japaneseStatusSurface(), units: unitDisplayVocabulary() });
   });
 
   // --------------------------- M5: audit history (design section 8 item 6).
@@ -3149,12 +3438,19 @@ export function createApp({
     const fillingDeliveryConfirmed = allFillingDeliveries.length > 0
       && fillingConfirmationRows.length === allFillingDeliveries.length;
 
+    // P1 policy P-3: a project with no filling order is film-only. Its filling
+    // requirement is 対象外, and readiness is judged on the confirmed delivered
+    // film quantity (納品数量の確定) alone.
+    const [anyFillingOrder] = await db.select({ id: fillingOrders.id }).from(fillingOrders)
+      .where(eq(fillingOrders.projectId, projectId)).limit(1);
+    const fillingApplicable = anyFillingOrder !== undefined;
     const evaluation = evaluateCommissionReadiness({
       filmDeliveryRecorded,
       fillingDeliveryRecorded,
       sevenPoOfficiallyRegistered,
       filmDeliveryConfirmed,
-      fillingDeliveryConfirmed
+      fillingDeliveryConfirmed,
+      fillingApplicable
     });
     const isReady = evaluation.isReady;
     const readinessId = uuidv7(now);
@@ -3182,18 +3478,47 @@ export function createApp({
         action: 'COMMISSION_READINESS_EVALUATED',
         entityType: 'commission_readiness',
         entityId: projectId,
-        afterState: { projectId, ...readiness, blocking: evaluation.blocking },
+        afterState: {
+          projectId,
+          ...readiness,
+          blocking: evaluation.blocking,
+          fillingRequirement: fillingApplicable ? 'required' : 'not_applicable'
+        },
         occurredAt: now,
         requestMetadata: { operation: 'commission_readiness:evaluate' }
       });
     });
+
+    // The delivered film quantity per line, as the readiness basis shows it.
+    const quantityRows = await db.select({
+      filmSupplyOrderId: filmSupplyOrders.id,
+      orderCode: filmSupplyOrders.code,
+      lineNumber: filmSupplyOrderLines.lineNumber,
+      unit: filmSupplyOrderLines.unit,
+      orderedQuantity: filmSupplyOrderLines.orderedQuantity,
+      deliveredQuantity: sql<string>`coalesce((select sum(d.delivered_quantity) from film_deliveries d where d.film_supply_order_line_id = ${filmSupplyOrderLines.id}), 0)::numeric(14,3)::text`,
+      confirmedQuantity: sql<string>`coalesce((select sum(d.delivered_quantity) from film_deliveries d where d.film_supply_order_line_id = ${filmSupplyOrderLines.id} and exists (select 1 from delivery_confirmations c where c.film_delivery_id = d.id)), 0)::numeric(14,3)::text`
+    }).from(filmSupplyOrderLines)
+      .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, filmSupplyOrderLines.filmSupplyOrderId))
+      .where(and(eq(filmSupplyOrders.projectId, projectId), isNull(filmSupplyOrders.deletedAt)))
+      .orderBy(filmSupplyOrders.code, filmSupplyOrderLines.lineNumber);
 
     const [row] = await db.select().from(commissionReadiness).where(eq(commissionReadiness.projectId, projectId)).limit(1);
     return context.json({
       ...(row ?? { id: readinessId, projectId, ...readiness }),
       readinessState: evaluation.state,
       blocking: evaluation.blocking,
-      commissionCalculationAllowed: isCommissionCalculationAllowed(evaluation.state)
+      commissionCalculationAllowed: isCommissionCalculationAllowed(evaluation.state),
+      fillingRequirement: fillingApplicable ? 'required' : 'not_applicable',
+      basis: fillingApplicable ? 'film_and_filling_deliveries_confirmed' : 'film_delivered_quantity_confirmed',
+      filmDeliveredQuantities: quantityRows.map((row) => ({
+        ...row,
+        display: {
+          ordered: formatQuantityDisplay(row.orderedQuantity, row.unit),
+          delivered: formatQuantityDisplay(row.deliveredQuantity, row.unit),
+          confirmed: formatQuantityDisplay(row.confirmedQuantity, row.unit)
+        }
+      }))
     }, 201);
   });
 
@@ -3586,6 +3911,9 @@ export function createApp({
       }, 422);
     }
 
+    const versionRows = await db.select({ id: documentVersions.id }).from(documentVersions)
+      .where(eq(documentVersions.documentId, documentId));
+    const selfCheck = await selfVerificationFacts(user, versionRows.map((row) => row.id), [current.createdByUserId]);
     const now = new Date();
     const updated = {
       verificationStatus: status,
@@ -3608,12 +3936,18 @@ export function createApp({
           verifiedAt: current.verifiedAt,
           verifiedByUserId: current.verifiedByUserId
         },
-        afterState: { ...current, ...updated },
+        afterState: { ...current, ...updated, ...selfCheck },
         occurredAt: now,
         requestMetadata: { operation: 'document:verify' }
       });
     });
-    return context.json({ ...current, ...updated });
+    const [verifierRow] = await db.select({ displayName: users.displayName }).from(users).where(eq(users.id, user.id)).limit(1);
+    return context.json({
+      ...current,
+      ...updated,
+      verifiedBy: { id: user.id, displayName: verifierRow?.displayName ?? null },
+      ...selfCheck
+    });
   });
 
   // --------------------------- M2: seven PO authenticity checklist (design
@@ -3851,6 +4185,7 @@ export function createApp({
       updatedAt: now,
       deletedAt: null
     };
+    let autoAdvanced: AppliedAutoStep[] = [];
     await db.transaction(async (tx) => {
       await tx.insert(filmSupplyOrders).values(order);
       if (lines.length > 0) {
@@ -3889,11 +4224,22 @@ export function createApp({
         occurredAt: now,
         requestMetadata: { operation: 'supply_order:create', sevenPurchaseOrderId: po.id }
       });
+      // P1 R23: an order created against a registered and verified seven PO
+      // is セブン化学発注書確認済 at once (same gate as the manual step).
+      autoAdvanced = await applyAutoAdvance(tx, { orderId, actorUserId: user.id, trigger: 'supply_order:create', now });
     });
 
     const createdLines = await db.select().from(filmSupplyOrderLines)
       .where(eq(filmSupplyOrderLines.filmSupplyOrderId, orderId));
-    return context.json({ ...order, lines: createdLines }, 201);
+    const createdStatus = autoAdvanced.length > 0 ? autoAdvanced[autoAdvanced.length - 1]!.to : order.status;
+    return context.json({
+      ...order,
+      status: createdStatus,
+      lines: createdLines,
+      autoAdvanced,
+      // P0 R01 warning, now on the automatic step to SEVEN_PO_VERIFIED.
+      warnings: undeterminedPaymentTermsWarnings(autoAdvanced, order.paymentTerms)
+    }, 201);
   });
 
   // --------------------------- M3: proof revisions and dual approval (design
@@ -4243,6 +4589,164 @@ export function createApp({
     return null;
   }
 
+  /**
+   * P1 R23: the facts the automatic steps are decided from. The caller that
+   * applies a plan reads them inside its transaction while holding the order
+   * row lock, so nothing can change under the decision.
+   */
+  async function loadAutoAdvanceFacts(
+    executor: MakerPoReadWriteExecutor,
+    order: { id: string; status: string; sevenPurchaseOrderId: string | null; paymentTerms: string | null }
+  ): Promise<AutoAdvanceFacts> {
+    let sevenPoGateRefusal: { code: string; message: string } | null = null;
+    let sevenPoGateOpen = false;
+    if (String(order.status) === 'DRAFT') {
+      sevenPoGateRefusal = await sevenPoPrecedenceRefusal(order, executor);
+      sevenPoGateOpen = sevenPoGateRefusal === null;
+    }
+    const [revision] = await executor.select({ id: artworkRevisions.id }).from(artworkRevisions)
+      .where(eq(artworkRevisions.filmSupplyOrderId, order.id)).limit(1);
+    const hasArtworkRevision = revision !== undefined;
+    let dualApproved = false;
+    if (hasArtworkRevision) {
+      const approvalContext = await loadApprovalContext(order.id, executor);
+      dualApproved = deriveOrderApprovalGate(
+        approvalContext.revisions,
+        approvalContext.events,
+        approvalContext.verifications
+      ).dualApproved;
+    }
+    return { sevenPoGateOpen, sevenPoGateRefusal, hasArtworkRevision, dualApproved, paymentTerms: order.paymentTerms };
+  }
+
+  /**
+   * P1 R23: applies the automatic steps inside the caller's transaction. The
+   * order row is (re)locked first; each step is one conditional update plus one
+   * FILM_SUPPLY_ORDER_TRANSITIONED audit row, stamped 1 ms apart after `now` so
+   * the audit order equals the step order. A lost conditional update rolls the
+   * whole transaction back (AutoAdvanceConflict).
+   */
+  async function applyAutoAdvance(
+    tx: MakerPoTxExecutor,
+    input: {
+      orderId: string;
+      actorUserId: string;
+      trigger: string;
+      now: Date;
+      /** Apply only when the locked order is in one of these states (a narrow trigger). */
+      onlyFrom?: readonly FilmOrderStatus[];
+    }
+  ): Promise<AppliedAutoStep[]> {
+    const [locked] = await tx.select().from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, input.orderId)).limit(1).for('update');
+    if (!locked || locked.deletedAt) return [];
+    if (input.onlyFrom && !input.onlyFrom.includes(locked.status)) return [];
+    const facts = await loadAutoAdvanceFacts(tx, locked);
+    const plan = planAutoAdvance(locked.status, facts);
+    const applied: AppliedAutoStep[] = [];
+    let offset = 0;
+    for (const step of plan.steps) {
+      offset += 1;
+      const occurredAt = new Date(input.now.getTime() + offset);
+      const moved = await tx.update(filmSupplyOrders)
+        .set({ status: step.to, updatedAt: occurredAt })
+        .where(and(
+          eq(filmSupplyOrders.id, locked.id),
+          sql`${filmSupplyOrders.status}::text = ${step.from}::text`
+        ))
+        .returning({ id: filmSupplyOrders.id });
+      if (moved.length === 0) throw new AutoAdvanceConflict();
+      const auditEventId = uuidv7(occurredAt);
+      await recordAuditEvent(tx, {
+        projectId: locked.projectId,
+        id: auditEventId,
+        actorUserId: input.actorUserId,
+        action: 'FILM_SUPPLY_ORDER_TRANSITIONED',
+        entityType: 'film_supply_order',
+        entityId: locked.id,
+        beforeState: { status: step.from },
+        afterState: { status: step.to },
+        occurredAt,
+        requestMetadata: { operation: 'film_order:auto_advance', automatic: true, rule: step.rule, trigger: input.trigger }
+      });
+      applied.push({ ...step, auditEventId });
+    }
+    return applied;
+  }
+
+  /**
+   * P1 P-4: whether the verifier is the person who uploaded the evidence (or
+   * recorded the fact) being confirmed, and the rule that allows it. The
+   * verifier and the time are always the session user and the server clock.
+   */
+  async function selfVerificationFacts(
+    verifier: { id: string; role: UserRole },
+    evidenceVersionIds: ReadonlyArray<string | null | undefined>,
+    recorderUserIds: ReadonlyArray<string | null | undefined> = []
+  ) {
+    const ids = evidenceVersionIds.filter((id): id is string => typeof id === 'string' && isUuid(id));
+    const uploaders = ids.length === 0 ? [] : await db.select({ createdByUserId: documentVersions.createdByUserId })
+      .from(documentVersions).where(inArray(documentVersions.id, ids));
+    const decision = evaluateSelfVerification({
+      role: verifier.role,
+      verifierUserId: verifier.id,
+      originatorUserIds: [...recorderUserIds, ...uploaders.map((row) => row.createdByUserId)]
+    });
+    return { selfVerification: decision.selfVerification, selfVerificationBasis: decision.basis };
+  }
+
+  /** P0 R01: reaching SEVEN_PO_VERIFIED with an undetermined term answers a warning (not a refusal). */
+  function undeterminedPaymentTermsWarnings(steps: readonly AutoAdvanceStep[], paymentTerms: string | null) {
+    return steps.some((step) => step.to === 'SEVEN_PO_VERIFIED') && normalizePaymentTerms(paymentTerms) === 'undetermined'
+      ? [{
+          code: 'PAYMENT_TERMS_UNDETERMINED',
+          message: '支払条件が「未定」のままです。代表承認の前に「前払い」または「納品後払い」を選んでください'
+        }]
+      : [];
+  }
+
+  /** P1 R03 (server side): an optional expectedProjectId must name the target's project. */
+  function projectContextRefusal(body: unknown, projectId: string): { error: string; code: string } | null {
+    const expected = (body as { expectedProjectId?: unknown } | null)?.expectedProjectId;
+    if (expected === undefined || expected === null || expected === '') return null;
+    if (expected === projectId) return null;
+    return {
+      error: '別のタブで案件が切り替わりました。保存していません。画面を再読み込みしてください',
+      code: 'PROJECT_CONTEXT_MISMATCH'
+    };
+  }
+
+  /**
+   * P1 R32: MPO-{JST year}-{sequence}. The sequence is the row's rank among the
+   * maker POs created in the same JST year, ordered by (created_at, id). Rows
+   * are never deleted, and creation is serialized (see the create endpoint), so
+   * a number never changes once shown.
+   */
+  async function loadMakerPoDisplayNumbers(
+    executor: MakerPoQueryExecutor,
+    ids: readonly string[]
+  ): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const wanted = [...new Set(ids.filter(isUuid))];
+    if (wanted.length === 0) return out;
+    const result = await (executor as unknown as AppDatabase).execute(sql`
+      select id::text as id, year::int as year, seq::int as seq from (
+        select id,
+               extract(year from (created_at at time zone 'Asia/Tokyo'))::int as year,
+               row_number() over (
+                 partition by extract(year from (created_at at time zone 'Asia/Tokyo'))
+                 order by created_at, id
+               ) as seq
+        from maker_purchase_orders
+      ) ranked
+      where id in (${sql.join(wanted.map((id) => sql`${id}::uuid`), sql`, `)})
+    `);
+    const rows = (result as unknown as { rows?: Array<{ id: string; year: number; seq: number }> }).rows
+      ?? (result as unknown as Array<{ id: string; year: number; seq: number }>);
+    for (const row of rows) out.set(row.id, makerPoDisplayNumber(Number(row.year), Number(row.seq)));
+    return out;
+  }
+
   app.post('/api/film-supply-orders/:orderId/artwork-revisions', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
@@ -4503,6 +5007,7 @@ export function createApp({
 
     const now = new Date();
     const revisionId = uuidv7(now);
+    let autoAdvanced: AppliedAutoStep[] = [];
     const revision = {
       id: revisionId,
       filmSupplyOrderId: orderId,
@@ -4564,20 +5069,25 @@ export function createApp({
           occurredAt: now,
           requestMetadata: { operation: 'artwork_revision:create', reason: 'new_revision_invalidates_approvals', designKey }
         });
+      } else {
+        // P1 R23 (P-9): registering the proof is what 校正ゲラ準備完了 and
+        // 校了確認待ち mean, so the order takes both steps by itself.
+        autoAdvanced = await applyAutoAdvance(tx, { orderId, actorUserId: user.id, trigger: 'artwork_revision:create', now });
       }
       });
     } catch (error) {
       if (isPostgresDeadlockError(error)) {
         return context.json({ error: '発注状態の処理でロック競合が発生しました', code: 'MAKER_PO_LOCK_CONFLICT' }, 409);
       }
-      if (error instanceof MakerPoStateConflict) {
+      if (error instanceof MakerPoStateConflict || error instanceof AutoAdvanceConflict) {
 
         return context.json({ error: '発注状態がすでに変わっています', code: 'FILM_ORDER_STATE_CHANGED' }, 409);
       }
       throw error;
     }
 
-    return context.json({ ...revision, status: statusAfter, invalidatedApprovals }, 201);
+    const revisionStatus = autoAdvanced.length > 0 ? autoAdvanced[autoAdvanced.length - 1]!.to : statusAfter;
+    return context.json({ ...revision, status: revisionStatus, invalidatedApprovals, autoAdvanced }, 201);
   });
 
   app.post('/api/artwork-revisions/:revisionId/approvals', async (context) => {
@@ -4858,6 +5368,7 @@ export function createApp({
       recordedAt: now,
       supersedesEventId
     };
+    let autoAdvanced: AppliedAutoStep[] = [];
     try {
     let recordedOrderStatus: FilmOrderStatus = order.status;
     let gateAfter = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events, approvalContext.verifications);
@@ -4924,6 +5435,9 @@ export function createApp({
           requestMetadata: { operation: 'artwork_approval:record', reason: 'dual_approval_reached' }
         });
         recordedOrderStatus = 'DUAL_APPROVED';
+        // P1 R23: 校了 with a decided payment term is 製造先発注準備完了.
+        autoAdvanced = await applyAutoAdvance(tx, { orderId: order.id, actorUserId: user.id, trigger: 'artwork_approval:record', now });
+        if (autoAdvanced.length > 0) recordedOrderStatus = autoAdvanced[autoAdvanced.length - 1]!.to;
       } else {
         recordedOrderStatus = lockedStatus;
       }
@@ -4941,13 +5455,14 @@ export function createApp({
       sharedEvidenceException,
       orderStatus: recordedOrderStatus,
       dualApproved: gateAfter.dualApproved,
-      missingApprovals: gateAfter.missingApprovals
+      missingApprovals: gateAfter.missingApprovals,
+      autoAdvanced
     }, 201);
     } catch (error) {
       if (isPostgresDeadlockError(error)) {
         return context.json({ error: '発注状態の処理でロック競合が発生しました', code: 'FILM_ORDER_LOCK_CONFLICT' }, 409);
       }
-      if (error instanceof MakerPoStateConflict) {
+      if (error instanceof MakerPoStateConflict || error instanceof AutoAdvanceConflict) {
         return context.json({ error: '発注状態がすでに変わっています', code: 'FILM_ORDER_STATE_CHANGED' }, 409);
       }
       throw error;
@@ -5252,6 +5767,7 @@ export function createApp({
     }
 
     const approvalContext = await loadApprovalContext(order.id);
+    const selfCheck = await selfVerificationFacts(user, [target.evidenceDocumentVersionId], [target.recordedByUserId]);
     const now = new Date();
     const verificationId = uuidv7(now);
     const verification = {
@@ -5270,6 +5786,7 @@ export function createApp({
 
     try {
     let recordedOrderStatus: FilmOrderStatus = order.status;
+    let autoAdvanced: AppliedAutoStep[] = [];
     let gateAfter = deriveOrderApprovalGate(
       approvalContext.revisions,
       approvalContext.events,
@@ -5322,7 +5839,9 @@ export function createApp({
           revisionNo: revision.revisionNo,
           organization: target.organization,
           evidenceIdentifier: target.evidenceIdentifier,
-          verificationType: 'evidence_manual_verification'
+          verificationType: 'evidence_manual_verification',
+          verifiedByUserId: user.id,
+          ...selfCheck
         },
         occurredAt: now,
         requestMetadata: {
@@ -5355,6 +5874,8 @@ export function createApp({
           }
         });
         recordedOrderStatus = 'DUAL_APPROVED';
+        autoAdvanced = await applyAutoAdvance(tx, { orderId: order.id, actorUserId: user.id, trigger: 'artwork_approval:verify_evidence', now });
+        if (autoAdvanced.length > 0) recordedOrderStatus = autoAdvanced[autoAdvanced.length - 1]!.to;
       } else {
         recordedOrderStatus = lockedStatus;
       }
@@ -5380,13 +5901,17 @@ export function createApp({
       countsTowardDualApproval: resultCheck.value === 'confirmed' && (targetState?.valid ?? false),
       dualApproved: gateAfter.dualApproved,
       missingApprovals: gateAfter.missingApprovals,
-      orderStatus: recordedOrderStatus
+      orderStatus: recordedOrderStatus,
+      autoAdvanced,
+      verifiedBy: { id: user.id, displayName: verifier.name },
+      verifiedAt: now,
+      ...selfCheck
     }, 201);
     } catch (error) {
       if (isPostgresDeadlockError(error)) {
         return context.json({ error: '発注状態の処理でロック競合が発生しました', code: 'FILM_ORDER_LOCK_CONFLICT' }, 409);
       }
-      if (error instanceof MakerPoStateConflict) {
+      if (error instanceof MakerPoStateConflict || error instanceof AutoAdvanceConflict) {
         return context.json({ error: '発注状態がすでに変わっています', code: 'FILM_ORDER_STATE_CHANGED' }, 409);
       }
       throw error;
@@ -6110,7 +6635,17 @@ export function createApp({
           recipientAddress: recipientCheck.address
         });
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
-        const poId = uuidv7(now);
+        // P1 R32: the display number MPO-{year}-{n} is the rank by (created_at,
+        // id). Creation is serialized by one advisory lock (always taken last,
+        // after the order row lock, so no lock cycle) and created_at is made
+        // strictly later than every committed row, so a number never moves.
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended('kanei:maker_po_display_number', 215470))`);
+        const [latestPaper] = await tx.select({ createdAt: makerPurchaseOrders.createdAt })
+          .from(makerPurchaseOrders).orderBy(desc(makerPurchaseOrders.createdAt)).limit(1);
+        const createdAt = latestPaper && latestPaper.createdAt.getTime() >= now.getTime()
+          ? new Date(latestPaper.createdAt.getTime() + 1)
+          : now;
+        const poId = uuidv7(createdAt);
         const purchaseOrder = {
           id: poId,
           filmSupplyOrderId: orderId,
@@ -6120,8 +6655,8 @@ export function createApp({
           ceoApprovedByUserId: null,
           ceoApprovedAt: null,
           createdByUserId: user.id,
-          createdAt: now,
-          updatedAt: now
+          createdAt,
+          updatedAt: createdAt
         };
         await tx.insert(makerPurchaseOrders).values(purchaseOrder);
         await recordAuditEvent(tx, {
@@ -6160,7 +6695,11 @@ export function createApp({
           existingStatus: outcome.existingStatus
         }, 422);
       }
-      return context.json(buildMakerPoViewForRole(user.role, outcome.purchaseOrder), 201);
+      const createdNumbers = await loadMakerPoDisplayNumbers(db, [outcome.purchaseOrder.id]);
+      return context.json({
+        ...buildMakerPoViewForRole(user.role, outcome.purchaseOrder),
+        displayNumber: createdNumbers.get(outcome.purchaseOrder.id) ?? null
+      }, 201);
     } catch (error) {
       if (makerPoActiveUniqueViolation(error)) {
         return context.json({
@@ -6257,12 +6796,29 @@ export function createApp({
     // decided on. `expectedPaymentTerms` (the term the approval screen showed)
     // is compared with the order's term under the order lock below; a term that
     // changed in between is refused instead of approved over.
-    const approvalBody = await context.req.json().catch(() => null) as { expectedPaymentTerms?: unknown } | null;
+    const approvalBody = await context.req.json().catch(() => null) as {
+      expectedPaymentTerms?: unknown;
+      expectedSnapshotSha256?: unknown;
+    } | null;
     let expectedPaymentTerms: string | null = null;
     if (approvalBody?.expectedPaymentTerms !== undefined && approvalBody?.expectedPaymentTerms !== null) {
       const expectedCheck = validatePaymentTermsInput(approvalBody.expectedPaymentTerms);
       if (!expectedCheck.ok) return context.json({ error: expectedCheck.message, code: expectedCheck.code }, 422);
       expectedPaymentTerms = expectedCheck.value;
+    }
+    // P1 R24: the approval card shows the snapshot this approval would freeze
+    // (approvalSnapshotSha256). Sending it back pins the approval to exactly
+    // that content; a line or artwork change in between is refused, never
+    // approved over. Omitting it keeps the earlier behaviour.
+    let expectedSnapshotSha256: string | null = null;
+    if (approvalBody?.expectedSnapshotSha256 !== undefined && approvalBody?.expectedSnapshotSha256 !== null) {
+      if (typeof approvalBody.expectedSnapshotSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(approvalBody.expectedSnapshotSha256)) {
+        return context.json({
+          error: '承認する発注書の確認値が正しくありません。画面を再読み込みしてください',
+          code: 'EXPECTED_SNAPSHOT_SHA256_INVALID'
+        }, 422);
+      }
+      expectedSnapshotSha256 = approvalBody.expectedSnapshotSha256;
     }
 
     // P0 R10: the paper is sent to its recipient mail address and the send
@@ -6301,6 +6857,9 @@ export function createApp({
         const parts = await loadMakerPoSnapshotParts(tx, po.filmSupplyOrderId);
         const snapshot = rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot);
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
+        if (expectedSnapshotSha256 !== null && expectedSnapshotSha256 !== snapshotSha256) {
+          throw new MakerPoSnapshotChangedUnderLock(expectedSnapshotSha256, snapshotSha256);
+        }
 
         const updated = await tx.update(makerPurchaseOrders).set({
           snapshot,
@@ -6397,6 +6956,14 @@ export function createApp({
       if (isPostgresDeadlockError(error)) {
         return context.json({ error: '発注状態の処理でロック競合が発生しました', code: 'MAKER_PO_LOCK_CONFLICT' }, 409);
       }
+      if (error instanceof MakerPoSnapshotChangedUnderLock) {
+        return context.json({
+          error: '承認画面を開いた後に発注書の内容（明細・版）が変わりました。最新の内容を確認してから、もう一度承認してください',
+          code: 'MAKER_PO_SNAPSHOT_CHANGED',
+          expectedSnapshotSha256: error.expected,
+          snapshotSha256: error.current
+        }, 409);
+      }
       if (error instanceof PaymentTermsChangedUnderLock) {
         return context.json({
           error: '承認画面を開いた後に支払条件が変更されました。最新の支払条件を確認してから、もう一度承認してください',
@@ -6419,6 +6986,734 @@ export function createApp({
       }
       throw error;
     }
+  });
+
+  // ------------------------------------------------ P1 R24: the representative's
+  // approval card. One answer carries every fact the approval certifies: the
+  // snapshot this approval would freeze (re-computed from current order data,
+  // exactly as the approval endpoint does under its lock) and its digest, the
+  // approved artwork per design, each organization's approval with the issuer
+  // of its evidence, the seven PO, the recipient and the amount. `blockers`
+  // are decided by the same functions the approval endpoint runs; the card
+  // never guesses on its own. Admin only: the amount is in it.
+  app.get('/api/maker-purchase-orders/:poId/approval-card', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
+    const poId = context.req.param('poId');
+    if (!isUuid(poId)) {
+      return context.json({
+        error: '経路パラメータ（poId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
+    const [po] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1);
+    if (!po || po.deletedAt) return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, po.filmSupplyOrderId)).limit(1);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
+    const decision = canPerform(toActor(user), 'ceo_approve', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '代表者のみ承認できます', code: 'CEO_ONLY' }, 403);
+
+    const [project] = await db.select({ id: projects.id, code: projects.code, name: projects.name })
+      .from(projects).where(eq(projects.id, order.projectId)).limit(1);
+    const stored = po.snapshot as MakerPoSnapshot;
+    const parts = await loadMakerPoSnapshotParts(db, order.id);
+    const preview = rebuildMakerPoSnapshot(parts, stored);
+    const approvalSnapshotSha256 = computeMakerPoSnapshotSha256(preview);
+    const numbers = await loadMakerPoDisplayNumbers(db, [po.id]);
+
+    const approvalContext = await loadApprovalContext(order.id);
+    const gate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events, approvalContext.verifications);
+    const integrity = await approvalEvidenceIntegrity(approvalContext.events);
+
+    // Evidence and artwork file facts, in two reads.
+    const eventIds = gate.designs.flatMap((design) => [design.customer.latestEventId, design.seven.latestEventId])
+      .filter((id): id is string => typeof id === 'string');
+    const events = approvalContext.events.filter((event) => eventIds.includes(event.id));
+    const evidenceVersionIds = events.map((event) => event.evidenceDocumentVersionId).filter((id): id is string => typeof id === 'string');
+    const evidenceRows = evidenceVersionIds.length === 0 ? [] : await db.select({
+      versionId: documentVersions.id,
+      sha256: documentVersions.sha256,
+      filename: documents.originalFilename,
+      issuerEntity: documents.issuerEntity
+    }).from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(inArray(documentVersions.id, evidenceVersionIds));
+    const evidenceByVersion = new Map(evidenceRows.map((row) => [row.versionId, row]));
+    const eventRows = eventIds.length === 0 ? [] : await db.select({
+      id: artworkApprovalEvents.id,
+      recordedByUserId: artworkApprovalEvents.recordedByUserId,
+      evidenceSource: artworkApprovalEvents.evidenceSource,
+      recorderName: users.displayName
+    }).from(artworkApprovalEvents)
+      .leftJoin(users, eq(users.id, artworkApprovalEvents.recordedByUserId))
+      .where(inArray(artworkApprovalEvents.id, eventIds));
+    const eventRowById = new Map(eventRows.map((row) => [row.id, row]));
+    const revisionIds = gate.designs.map((design) => design.currentRevisionId);
+    const revisionFiles = revisionIds.length === 0 ? [] : await db.select({
+      revisionId: artworkRevisions.id,
+      versionId: artworkRevisions.fileDocumentVersionId,
+      filename: documents.originalFilename
+    }).from(artworkRevisions)
+      .innerJoin(documentVersions, eq(documentVersions.id, artworkRevisions.fileDocumentVersionId))
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .where(inArray(artworkRevisions.id, revisionIds));
+    const revisionFileById = new Map(revisionFiles.map((row) => [row.revisionId, row]));
+
+    const organizationCard = async (state: typeof gate.designs[number]['customer']) => {
+      const event = state.latestEventId ? approvalContext.events.find((candidate) => candidate.id === state.latestEventId) : undefined;
+      const cardState = state.valid
+        ? 'approved'
+        : state.revoked
+          ? 'revoked'
+          : state.pendingEvidenceIdentifier
+            ? (state.manualVerification?.result === 'rejected' ? 'rejected' : 'pending_manual_verification')
+            : 'missing';
+      if (!event) return { state: cardState, approvalEventId: null, evidence: null };
+      const evidence = event.evidenceDocumentVersionId ? evidenceByVersion.get(event.evidenceDocumentVersionId) : undefined;
+      const facts = event.evidenceDocumentVersionId
+        ? await loadApprovalEvidenceIssuerFacts(event.id, event.evidenceDocumentVersionId)
+        : { issuerEntity: null, sharedEvidenceException: null };
+      const expectedIssuerEntity = APPROVAL_ORGANIZATION_ISSUER[state.organization];
+      const eventIntegrity = integrity.get(event.id);
+      const sameContentEventId = eventIntegrity?.sameContentEventId
+        ?? [...integrity.entries()].find(([, other]) => other.sameContentEventId === event.id)?.[0]
+        ?? null;
+      const row = eventRowById.get(event.id);
+      return {
+        state: cardState,
+        approvalEventId: event.id,
+        decision: event.decision,
+        eventTime: event.eventTime,
+        recordedAt: event.recordedAt,
+        recordedBy: row ? { id: row.recordedByUserId, displayName: row.recorderName ?? null } : null,
+        evidence: {
+          documentVersionId: event.evidenceDocumentVersionId ?? null,
+          filename: evidence?.filename ?? null,
+          sha256: evidence?.sha256 ?? null,
+          issuerEntity: facts.issuerEntity ?? evidence?.issuerEntity ?? null,
+          expectedIssuerEntity,
+          issuerMatchesOrganization: (facts.issuerEntity ?? evidence?.issuerEntity ?? null) === expectedIssuerEntity,
+          evidenceSource: row?.evidenceSource ?? null,
+          identifierStatus: event.evidenceIdentifierStatus ?? null,
+          manualVerification: state.manualVerification,
+          sharedEvidenceException: facts.sharedEvidenceException,
+          sameContentUsedByOtherOrganization: sameContentEventId !== null
+        }
+      };
+    };
+    const designs = [];
+    for (const design of gate.designs) {
+      designs.push({
+        designKey: design.designKey,
+        currentRevisionNo: design.currentRevisionNo,
+        currentRevisionId: design.currentRevisionId,
+        fileSha256: design.fileSha256,
+        dualApproved: design.dualApproved,
+        organizations: {
+          customer: await organizationCard(design.customer),
+          seven: await organizationCard(design.seven)
+        }
+      });
+    }
+
+    const [sevenPo] = order.sevenPurchaseOrderId
+      ? await db.select({
+        id: sevenPurchaseOrders.id,
+        poNumber: sevenPurchaseOrders.poNumber,
+        officialRegisteredAt: sevenPurchaseOrders.officialRegisteredAt,
+        verificationStatus: sevenPurchaseOrders.verificationStatus
+      }).from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).limit(1)
+      : [];
+    const [creator] = await db.select({ id: users.id, displayName: users.displayName })
+      .from(users).where(eq(users.id, po.createdByUserId)).limit(1);
+
+    // The same decisions the approval endpoint makes, in its order.
+    const blockers: Array<{ code: string; message: string }> = [];
+    const poStatus = validateMakerPoStatus(po.status);
+    const approvalCheck = poStatus.ok ? evaluateMakerPoApproval(poStatus.value) : null;
+    if (String(order.status) === 'CANCELLED') {
+      blockers.push({ code: 'FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED', message: '取消終了した発注のメーカー発注書は操作できません' });
+    } else if (isFrozenFilmOrderStatus(order.status)) {
+      blockers.push({ code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED', message: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください' });
+    }
+    if (!approvalCheck || !approvalCheck.ok) {
+      blockers.push({ code: 'MAKER_PO_TRANSITION_BLOCKED', message: 'このメーカー発注書は代表承認できる状態ではありません' });
+    }
+    const paymentGate = evaluatePaymentGate({ paymentTerms: order.paymentTerms });
+    if (!paymentGate.ok) blockers.push({ code: paymentGate.code, message: paymentGate.message });
+    if (!gate.dualApproved) blockers.push({ code: 'DUAL_APPROVAL_REQUIRED', message: '全デザインの両組織承認が必要です' });
+    const recipientCheck = validateMakerPoRecipientAddress(stored?.recipient?.address);
+    if (!recipientCheck.ok) {
+      blockers.push({
+        code: 'RECIPIENT_ADDRESS_INVALID',
+        message: 'このメーカー発注書の送信先がメールアドレスではないため承認できません。発注書を取り消し、送信先メールアドレスを入力して作り直してください'
+      });
+    }
+    const warnings: Array<{ code: string; message: string }> = [];
+    if (!preview.amounts) {
+      warnings.push({ code: 'MAKER_PO_AMOUNT_MISSING', message: 'メーカー発注書に金額が記載されていません。担当者に金額の入力を依頼してください' });
+    }
+    const snapshotDrifted = approvalSnapshotSha256 !== po.snapshotSha256;
+    if (snapshotDrifted) {
+      warnings.push({ code: 'MAKER_PO_SNAPSHOT_DRIFTED', message: '発注書の作成後に明細または版が変わりました。承認すると最新の内容で確定します' });
+    }
+    const paymentTerms = normalizePaymentTerms(order.paymentTerms);
+
+    return context.json({
+      makerPurchaseOrder: {
+        id: po.id,
+        displayNumber: numbers.get(po.id) ?? null,
+        status: po.status,
+        createdAt: po.createdAt,
+        createdBy: creator ? { id: creator.id, displayName: creator.displayName } : null,
+        storedSnapshotSha256: po.snapshotSha256,
+        approvalSnapshotSha256,
+        snapshotDrifted
+      },
+      project: project ?? null,
+      order: {
+        id: order.id,
+        code: order.code,
+        status: order.status,
+        statusLabel: FILM_SUPPLY_ORDER_STATUS_LABELS[order.status as FilmOrderStatus] ?? null,
+        paymentTerms,
+        paymentTermsLabel: PAYMENT_TERMS_LABELS_JA[paymentTerms]
+      },
+      snapshot: {
+        items: preview.items.map((item) => ({ ...item, quantityDisplay: formatQuantityDisplay(item.orderedQuantity, item.unit) })),
+        artworkFiles: preview.specs.artworkFiles.map((file) => {
+          const design = gate.designs.find((candidate) => candidate.designKey === file.designKey);
+          const revisionFile = design ? revisionFileById.get(design.currentRevisionId) : undefined;
+          return {
+            ...file,
+            fileDocumentVersionId: revisionFile?.versionId ?? null,
+            filename: revisionFile?.filename ?? null,
+            matchesApprovedRevision: design !== undefined
+              && design.currentRevisionNo === file.revisionNo
+              && design.fileSha256 === file.fileSha256
+          };
+        }),
+        amounts: preview.amounts
+          ? { ...preview.amounts, display: formatAmountDisplay(preview.amounts.currency, preview.amounts.totalAmount) }
+          : null,
+        recipient: { address: preview.recipient.address, isEmail: recipientCheck.ok },
+        sevenPoNumber: preview.order.sevenPoNumber
+      },
+      sevenPurchaseOrder: sevenPo ?? null,
+      approvals: {
+        dualApproved: gate.dualApproved,
+        missingApprovals: gate.missingApprovals,
+        designs
+      },
+      blockers,
+      warnings,
+      canApprove: blockers.length === 0,
+      canReturn: po.status === 'DRAFT',
+      approveRequest: {
+        method: 'POST',
+        path: `/api/maker-purchase-orders/${po.id}/ceo-approval`,
+        body: { expectedPaymentTerms: paymentTerms, expectedSnapshotSha256: approvalSnapshotSha256 }
+      }
+    });
+  });
+
+  // P1 R24: 差し戻す. The representative sends an unapproved paper back to
+  // the staff with a reason. The draft is retired with the same records as a
+  // cancellation of unapproved paper (status CANCELLED, MAKER_PO_CANCELLED
+  // event), plus one MAKER_PO_RETURNED audit row carrying the reason; the order
+  // stays at its ordering step so the staff can correct it and freeze new paper.
+  // Only a DRAFT can be returned: approved paper has its own cancellation flow.
+  app.post('/api/maker-purchase-orders/:poId/return', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
+    const poId = context.req.param('poId');
+    if (!isUuid(poId)) {
+      return context.json({
+        error: '経路パラメータ（poId）はUUIDである必要があります',
+        code: 'INVALID_PATH_PARAMETER'
+      }, 400);
+    }
+    const [existing] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).limit(1);
+    if (!existing || existing.deletedAt) return context.json({ error: 'メーカー発注書が見つかりません', code: 'MAKER_PO_NOT_FOUND' }, 404);
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1);
+    if (!order) return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
+    // The same never-delegated decision as the approval it replaces.
+    const decision = canPerform(toActor(user), 'ceo_approve', 'F1', order.projectId);
+    if (!decision.allowed) return context.json({ error: '代表者のみ差し戻しできます', code: 'CEO_ONLY' }, 403);
+
+    const body = await context.req.json().catch(() => null) as { reason?: unknown } | null;
+    const contextRefusal = projectContextRefusal(body, order.projectId);
+    if (contextRefusal) return context.json(contextRefusal, 409);
+    const reasonCheck = normalizeRequiredReason(body?.reason);
+    if (!reasonCheck.ok) {
+      return context.json({
+        error: reasonCheck.tooLong
+          ? `差し戻しの理由は${REASON_MAX_LENGTH}文字以下にしてください`
+          : '差し戻しの理由を入力してください',
+        code: reasonCheck.tooLong ? 'MAKER_PO_RETURN_REASON_TOO_LONG' : 'MAKER_PO_RETURN_REASON_REQUIRED'
+      }, 422);
+    }
+    if (existing.status !== 'DRAFT') {
+      return context.json({
+        error: '差し戻しできるのは代表承認前のメーカー発注書だけです。承認済みの発注書は取消の手順を使ってください',
+        code: 'MAKER_PO_RETURN_ONLY_DRAFT',
+        from: existing.status
+      }, 422);
+    }
+
+    const now = new Date();
+    try {
+      const outcome = await db.transaction(async (tx) => {
+        // Order lock first, paper lock second (the maker-PO lock order).
+        const [lockedOrder] = await tx.select().from(filmSupplyOrders)
+          .where(eq(filmSupplyOrders.id, existing.filmSupplyOrderId)).limit(1).for('update');
+        if (!lockedOrder || lockedOrder.deletedAt) throw new MakerPoStateConflict();
+        const [lockedPaper] = await tx.select().from(makerPurchaseOrders)
+          .where(eq(makerPurchaseOrders.id, poId)).limit(1).for('update');
+        if (!lockedPaper || lockedPaper.status !== 'DRAFT' || lockedPaper.ceoApprovedAt !== null) {
+          throw new MakerPoStateConflict();
+        }
+        const updated = await tx.update(makerPurchaseOrders)
+          .set({ status: 'CANCELLED' as const, updatedAt: now })
+          .where(and(eq(makerPurchaseOrders.id, poId), eq(makerPurchaseOrders.status, 'DRAFT')))
+          .returning({ id: makerPurchaseOrders.id });
+        if (updated.length === 0) throw new MakerPoStateConflict();
+        const cancelEvent = {
+          id: uuidv7(now),
+          makerPurchaseOrderId: poId,
+          eventType: 'MAKER_PO_CANCELLED' as const,
+          verificationStatus: 'UNVERIFIED' as const,
+          recordedByUserId: user.id,
+          recordedAt: now
+        };
+        await tx.insert(makerPoEvents).values(cancelEvent);
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_PO_CANCELLED',
+          entityType: 'maker_po_event',
+          entityId: cancelEvent.id,
+          beforeState: { status: 'DRAFT' },
+          afterState: {
+            status: 'CANCELLED',
+            note: reasonCheck.text,
+            cancellationKind: 'returned_before_ceo_approval',
+            verifiedSend: false,
+            newMakerPoRequiresCancellationAcknowledgement: false,
+            rowsDeleted: false,
+            replacementStep: 'correct_then_create_new_maker_po'
+          },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:return', makerPurchaseOrderId: poId }
+        });
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
+          id: uuidv7(now),
+          actorUserId: user.id,
+          action: 'MAKER_PO_STATUS_CHANGED',
+          entityType: 'maker_purchase_order',
+          entityId: poId,
+          beforeState: { status: 'DRAFT' },
+          afterState: { status: 'CANCELLED' },
+          occurredAt: now,
+          requestMetadata: { operation: 'maker_po:return' }
+        });
+        const returnAuditId = uuidv7(new Date(now.getTime() + 1));
+        await recordAuditEvent(tx, {
+          projectId: order.projectId,
+          id: returnAuditId,
+          actorUserId: user.id,
+          action: 'MAKER_PO_RETURNED',
+          entityType: 'maker_purchase_order',
+          entityId: poId,
+          beforeState: { status: 'DRAFT', snapshotSha256: lockedPaper.snapshotSha256 },
+          afterState: {
+            status: 'CANCELLED',
+            reason: reasonCheck.text,
+            returnedToUserId: lockedPaper.createdByUserId,
+            filmSupplyOrderId: lockedOrder.id,
+            orderStatus: lockedOrder.status
+          },
+          occurredAt: new Date(now.getTime() + 1),
+          requestMetadata: { operation: 'maker_po:return', makerPurchaseOrderId: poId }
+        });
+        return { returnAuditId };
+      });
+      const numbers = await loadMakerPoDisplayNumbers(db, [poId]);
+      return context.json({
+        status: 'CANCELLED',
+        returned: true,
+        makerPurchaseOrderId: poId,
+        displayNumber: numbers.get(poId) ?? null,
+        reason: reasonCheck.text,
+        auditEventId: outcome.returnAuditId
+      }, 200);
+    } catch (error) {
+      if (isPostgresDeadlockError(error)) {
+        return context.json({ error: '発注状態の処理でロック競合が発生しました', code: 'MAKER_PO_LOCK_CONFLICT' }, 409);
+      }
+      if (error instanceof MakerPoStateConflict) {
+        return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
+      }
+      throw error;
+    }
+  });
+
+  // ------------------------------------------- P1 R25: the representative's
+  // queue. Every task only the representative can do, across all projects, in
+  // one answer with the facts and a deep link — read with dedicated queries
+  // (no replay of 30×500 audit events). Admin only: amounts are in it.
+  app.get('/api/representative-queue', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
+    if (!canPerform(toActor(user), 'ceo_approve', 'F1').allowed) {
+      return context.json({ error: 'この操作は代表者だけが行えます', code: 'CEO_ONLY' }, 403);
+    }
+    const requestedLimit = Number(context.req.query('limit') ?? '100');
+    const limit = Number.isInteger(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 500) : 100;
+    let truncated = false;
+    const capped = <T,>(rows: T[]): T[] => {
+      if (rows.length > limit) {
+        truncated = true;
+        return rows.slice(0, limit);
+      }
+      return rows;
+    };
+
+    type QueueProject = { id: string; code: string; name: string };
+    type QueueOrder = { id: string; code: string; status: string; paymentTerms: string };
+    const projectOf = (row: { projectId: string; projectCode: string; projectName: string }): QueueProject => (
+      { id: row.projectId, code: row.projectCode, name: row.projectName }
+    );
+    const orderOf = (row: { orderId: string; orderCode: string; orderStatus: string; paymentTerms: string | null }): QueueOrder => (
+      { id: row.orderId, code: row.orderCode, status: row.orderStatus, paymentTerms: normalizePaymentTerms(row.paymentTerms) }
+    );
+    const orderColumns = {
+      orderId: filmSupplyOrders.id,
+      orderCode: filmSupplyOrders.code,
+      orderStatus: sql<string>`${filmSupplyOrders.status}::text`,
+      paymentTerms: filmSupplyOrders.paymentTerms,
+      orderUpdatedAt: filmSupplyOrders.updatedAt,
+      holdReason: filmSupplyOrders.holdReason,
+      projectId: projects.id,
+      projectCode: projects.code,
+      projectName: projects.name
+    };
+    const liveOrder = and(isNull(filmSupplyOrders.deletedAt), sql`${filmSupplyOrders.status}::text <> 'CANCELLED'`, isNull(projects.deletedAt));
+    const link = (step: string, row: { projectCode: string; orderCode: string; projectId: string; orderId: string },
+      extra: Record<string, unknown>) => ({ step, projectCode: row.projectCode, orderCode: row.orderCode, projectId: row.projectId, orderId: row.orderId, ...extra });
+    const amountsOf = (snapshot: unknown) => {
+      const amounts = (snapshot as MakerPoSnapshot | null)?.amounts ?? null;
+      return amounts ? { ...amounts, display: formatAmountDisplay(amounts.currency, amounts.totalAmount) } : null;
+    };
+    const items: Array<Record<string, unknown> & { waitingSince: Date | string | null; key: string; kind: string }> = [];
+
+    // 1. 承認証跡の確認: a pending approval evidence nobody has verified yet.
+    const pendingApprovalOrders = capped(await db.selectDistinct({ ...orderColumns })
+      .from(artworkApprovalEvents)
+      .innerJoin(artworkRevisions, eq(artworkRevisions.id, artworkApprovalEvents.artworkRevisionId))
+      .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, artworkRevisions.filmSupplyOrderId))
+      .innerJoin(projects, eq(projects.id, filmSupplyOrders.projectId))
+      .where(and(
+        eq(artworkApprovalEvents.evidenceIdentifierStatus, 'pending_manual_verification'),
+        sql`not exists (select 1 from evidence_manual_verifications v where v.approval_event_id = ${artworkApprovalEvents.id})`,
+        liveOrder
+      ))
+      .limit(limit + 1));
+    for (const row of pendingApprovalOrders) {
+      const approvalContext = await loadApprovalContext(row.orderId);
+      const gate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events, approvalContext.verifications);
+      for (const design of gate.designs) {
+        for (const organization of ['customer', 'seven'] as const) {
+          const state = design[organization];
+          if (!state.pendingEvidenceIdentifier || !state.latestEventId || state.manualVerification) continue;
+          const event = approvalContext.events.find((candidate) => candidate.id === state.latestEventId);
+          if (!event || event.evidenceIdentifierStatus !== 'pending_manual_verification') continue;
+          const facts = event.evidenceDocumentVersionId
+            ? await loadApprovalEvidenceIssuerFacts(event.id, event.evidenceDocumentVersionId)
+            : { issuerEntity: null, sharedEvidenceException: null };
+          const expectedIssuerEntity = APPROVAL_ORGANIZATION_ISSUER[organization];
+          const [recorder] = await db.select({ id: users.id, displayName: users.displayName })
+            .from(artworkApprovalEvents).innerJoin(users, eq(users.id, artworkApprovalEvents.recordedByUserId))
+            .where(eq(artworkApprovalEvents.id, event.id)).limit(1);
+          items.push({
+            key: `approval_evidence_verification:${event.id}`,
+            kind: 'approval_evidence_verification',
+            label: '承認証跡の確認',
+            project: projectOf(row),
+            order: orderOf(row),
+            makerPurchaseOrder: null,
+            subjectId: event.id,
+            waitingSince: event.recordedAt,
+            requestedBy: recorder ?? null,
+            detail: {
+              designKey: design.designKey,
+              revisionNo: design.currentRevisionNo,
+              organization,
+              evidenceIssuerEntity: facts.issuerEntity,
+              expectedIssuerEntity,
+              issuerMatchesOrganization: facts.issuerEntity === expectedIssuerEntity,
+              sharedEvidenceException: facts.sharedEvidenceException,
+              confirmable: facts.issuerEntity === expectedIssuerEntity || facts.sharedEvidenceException !== null
+            },
+            deepLink: link('approval', row, {
+              subjectId: event.id,
+              action: { method: 'POST', path: `/api/artwork-approval-events/${event.id}/verification` }
+            })
+          });
+        }
+      }
+    }
+
+    // 2. 送信の確認: a send evidence waiting for the manual verification.
+    const pendingSends = capped(await db.select({
+      ...orderColumns,
+      eventId: makerPoEvents.id,
+      recordedAt: makerPoEvents.recordedAt,
+      sentAt: makerPoEvents.sentAt,
+      verificationNote: makerPoEvents.verificationNote,
+      recorderId: users.id,
+      recorderName: users.displayName,
+      poId: makerPurchaseOrders.id,
+      poStatus: sql<string>`${makerPurchaseOrders.status}::text`,
+      poSnapshot: makerPurchaseOrders.snapshot
+    }).from(makerPoEvents)
+      .innerJoin(makerPurchaseOrders, eq(makerPurchaseOrders.id, makerPoEvents.makerPurchaseOrderId))
+      .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, makerPurchaseOrders.filmSupplyOrderId))
+      .innerJoin(projects, eq(projects.id, filmSupplyOrders.projectId))
+      .leftJoin(users, eq(users.id, makerPoEvents.recordedByUserId))
+      .where(and(
+        eq(makerPoEvents.eventType, 'SEND_EVIDENCE_REGISTERED'),
+        eq(makerPoEvents.verificationStatus, 'PENDING_MANUAL_VERIFICATION'),
+        ne(makerPurchaseOrders.status, 'CANCELLED'),
+        isNull(makerPurchaseOrders.deletedAt),
+        sql`not exists (select 1 from maker_po_send_manual_verifications v where v.maker_po_event_id = ${makerPoEvents.id})`,
+        liveOrder
+      ))
+      .orderBy(makerPoEvents.recordedAt)
+      .limit(limit + 1));
+
+    // 3–5. maker paper: DRAFT (代表承認), sent (最終受入), cancelled after a proven send (取消確認).
+    const papers = await db.select({
+      ...orderColumns,
+      poId: makerPurchaseOrders.id,
+      poStatus: sql<string>`${makerPurchaseOrders.status}::text`,
+      poSnapshot: makerPurchaseOrders.snapshot,
+      poCreatedAt: makerPurchaseOrders.createdAt,
+      poUpdatedAt: makerPurchaseOrders.updatedAt,
+      creatorId: users.id,
+      creatorName: users.displayName,
+      provisionalAt: sql<Date | null>`(select max(e.recorded_at) from maker_po_events e where e.maker_purchase_order_id = ${makerPurchaseOrders.id} and e.provisional = true)`,
+      provenSend: sql<boolean>`(exists (select 1 from maker_po_events e where e.maker_purchase_order_id = ${makerPurchaseOrders.id} and e.event_type = 'SEND_EVIDENCE_REGISTERED' and e.verification_status = 'VERIFIED') or exists (select 1 from maker_po_send_manual_verifications v where v.maker_purchase_order_id = ${makerPurchaseOrders.id} and v.result = 'confirmed'))`,
+      acknowledged: sql<boolean>`exists (select 1 from maker_po_events e where e.maker_purchase_order_id = ${makerPurchaseOrders.id} and e.event_type = 'MAKER_CANCELLATION_ACKNOWLEDGED')`
+    }).from(makerPurchaseOrders)
+      .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, makerPurchaseOrders.filmSupplyOrderId))
+      .innerJoin(projects, eq(projects.id, filmSupplyOrders.projectId))
+      .leftJoin(users, eq(users.id, makerPurchaseOrders.createdByUserId))
+      .where(and(
+        isNull(makerPurchaseOrders.deletedAt),
+        inArray(makerPurchaseOrders.status, ['DRAFT', 'MAKER_PO_SENT_MANUALLY', 'CANCELLED']),
+        liveOrder
+      ))
+      .orderBy(makerPurchaseOrders.createdAt);
+    const draftPapers = capped(papers.filter((row) => row.poStatus === 'DRAFT'));
+    const sentPapers = capped(papers.filter((row) => row.poStatus === 'MAKER_PO_SENT_MANUALLY'));
+    const unacknowledgedCancels = capped(papers.filter((row) => row.poStatus === 'CANCELLED' && row.provenSend && !row.acknowledged));
+
+    const numbers = await loadMakerPoDisplayNumbers(db, [
+      ...pendingSends.map((row) => row.poId),
+      ...draftPapers.map((row) => row.poId),
+      ...sentPapers.map((row) => row.poId),
+      ...unacknowledgedCancels.map((row) => row.poId)
+    ]);
+    const paperOf = (row: { poId: string; poStatus: string; poSnapshot: unknown }) => ({
+      id: row.poId,
+      displayNumber: numbers.get(row.poId) ?? null,
+      status: row.poStatus,
+      amounts: amountsOf(row.poSnapshot)
+    });
+
+    for (const row of pendingSends) {
+      items.push({
+        key: `send_verification:${row.eventId}`,
+        kind: 'send_verification',
+        label: '送信の確認',
+        project: projectOf(row),
+        order: orderOf(row),
+        makerPurchaseOrder: paperOf(row),
+        subjectId: row.eventId,
+        waitingSince: row.recordedAt,
+        requestedBy: row.recorderId ? { id: row.recorderId, displayName: row.recorderName } : null,
+        detail: { sentAt: row.sentAt, verificationNote: row.verificationNote },
+        deepLink: link('send', row, {
+          makerPurchaseOrderId: row.poId,
+          subjectId: row.eventId,
+          action: { method: 'POST', path: `/api/maker-po-events/${row.eventId}/send-manual-verification` }
+        })
+      });
+    }
+    for (const row of draftPapers) {
+      const paymentGate = evaluatePaymentGate({ paymentTerms: row.paymentTerms });
+      const blockers = [
+        ...(isFrozenFilmOrderStatus(row.orderStatus as FilmOrderStatus)
+          ? [{ code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED', message: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください' }]
+          : []),
+        ...(paymentGate.ok ? [] : [{ code: paymentGate.code, message: paymentGate.message }])
+      ];
+      items.push({
+        key: `maker_po_ceo_approval:${row.poId}`,
+        kind: 'maker_po_ceo_approval',
+        label: '代表承認',
+        project: projectOf(row),
+        order: orderOf(row),
+        makerPurchaseOrder: paperOf(row),
+        subjectId: row.poId,
+        waitingSince: row.poCreatedAt,
+        requestedBy: row.creatorId ? { id: row.creatorId, displayName: row.creatorName } : null,
+        detail: { blockers },
+        deepLink: link('approval_card', row, {
+          makerPurchaseOrderId: row.poId,
+          subjectId: row.poId,
+          card: { method: 'GET', path: `/api/maker-purchase-orders/${row.poId}/approval-card` },
+          action: { method: 'POST', path: `/api/maker-purchase-orders/${row.poId}/ceo-approval` }
+        })
+      });
+    }
+    for (const row of sentPapers) {
+      items.push({
+        key: `maker_po_final_acceptance:${row.poId}`,
+        kind: 'maker_po_final_acceptance',
+        label: '最終受入',
+        project: projectOf(row),
+        order: orderOf(row),
+        makerPurchaseOrder: paperOf(row),
+        subjectId: row.poId,
+        waitingSince: row.provisionalAt ?? row.poUpdatedAt,
+        requestedBy: null,
+        detail: { provisionalAcceptanceRecorded: row.provisionalAt !== null, provisionalRecordedAt: row.provisionalAt },
+        deepLink: link('acceptance', row, {
+          makerPurchaseOrderId: row.poId,
+          subjectId: row.poId,
+          action: { method: 'POST', path: `/api/maker-purchase-orders/${row.poId}/accept-evidence` }
+        })
+      });
+    }
+    for (const row of unacknowledgedCancels) {
+      items.push({
+        key: `cancellation_acknowledgement:${row.poId}`,
+        kind: 'cancellation_acknowledgement',
+        label: '取消確認',
+        project: projectOf(row),
+        order: orderOf(row),
+        makerPurchaseOrder: paperOf(row),
+        subjectId: row.poId,
+        waitingSince: row.poUpdatedAt,
+        requestedBy: null,
+        detail: {},
+        deepLink: link('cancellation_ack', row, {
+          makerPurchaseOrderId: row.poId,
+          subjectId: row.poId,
+          action: { method: 'POST', path: `/api/maker-purchase-orders/${row.poId}/cancellation-acknowledgement` }
+        })
+      });
+    }
+
+    // 6–8. order states that wait for the representative.
+    const waitingOrders = await db.select({
+      ...orderColumns,
+      livePaper: sql<boolean>`exists (select 1 from maker_purchase_orders m where m.film_supply_order_id = ${filmSupplyOrders.id} and m.status <> 'CANCELLED' and m.deleted_at is null)`,
+      pendingAck: sql<boolean>`exists (select 1 from maker_purchase_orders m where m.film_supply_order_id = ${filmSupplyOrders.id} and m.status = 'CANCELLED' and m.deleted_at is null
+        and (exists (select 1 from maker_po_events e where e.maker_purchase_order_id = m.id and e.event_type = 'SEND_EVIDENCE_REGISTERED' and e.verification_status = 'VERIFIED')
+          or exists (select 1 from maker_po_send_manual_verifications v where v.maker_purchase_order_id = m.id and v.result = 'confirmed'))
+        and not exists (select 1 from maker_po_events e where e.maker_purchase_order_id = m.id and e.event_type = 'MAKER_CANCELLATION_ACKNOWLEDGED'))`
+    }).from(filmSupplyOrders)
+      .innerJoin(projects, eq(projects.id, filmSupplyOrders.projectId))
+      .where(and(
+        sql`${filmSupplyOrders.status}::text in ('MAKER_PO_READY', 'ON_HOLD', 'CANCELLATION_REVIEW', 'DUAL_APPROVED')`,
+        liveOrder
+      ))
+      .orderBy(filmSupplyOrders.updatedAt);
+    const creationOrders = capped(waitingOrders.filter((row) => row.orderStatus === 'MAKER_PO_READY' && !row.livePaper && !row.pendingAck));
+    for (const row of creationOrders) {
+      const paymentGate = evaluatePaymentGate({ paymentTerms: row.paymentTerms });
+      items.push({
+        key: `maker_po_creation:${row.orderId}`,
+        kind: 'maker_po_creation',
+        label: '発注書の作成',
+        project: projectOf(row),
+        order: orderOf(row),
+        makerPurchaseOrder: null,
+        subjectId: row.orderId,
+        waitingSince: row.orderUpdatedAt,
+        requestedBy: null,
+        detail: { blockers: paymentGate.ok ? [] : [{ code: paymentGate.code, message: paymentGate.message }] },
+        deepLink: link('maker_po', row, {
+          subjectId: row.orderId,
+          action: { method: 'POST', path: `/api/film-supply-orders/${row.orderId}/maker-purchase-orders` }
+        })
+      });
+    }
+    for (const [status, kind, label, step, path] of [
+      ['ON_HOLD', 'hold_release', '保留の解除', 'hold', 'hold-release'],
+      ['CANCELLATION_REVIEW', 'cancellation_review', '取消レビュー', 'cancellation_review', 'cancellation-review-resolve']
+    ] as const) {
+      for (const row of capped(waitingOrders.filter((candidate) => candidate.orderStatus === status))) {
+        const origin = await loadExceptionOrigin(db, row.orderId, status);
+        items.push({
+          key: `${kind}:${row.orderId}`,
+          kind,
+          label,
+          project: projectOf(row),
+          order: orderOf(row),
+          makerPurchaseOrder: null,
+          subjectId: row.orderId,
+          waitingSince: row.orderUpdatedAt,
+          requestedBy: null,
+          detail: {
+            origin: origin ?? null,
+            originLabel: origin ? FILM_SUPPLY_ORDER_STATUS_LABELS[origin] : null,
+            ...(status === 'ON_HOLD' ? { holdReason: row.holdReason } : {})
+          },
+          deepLink: link(step, row, {
+            subjectId: row.orderId,
+            action: { method: 'POST', path: `/api/film-supply-orders/${row.orderId}/${path}` }
+          })
+        });
+      }
+    }
+
+    // Blocked: 校了 (or ready) but the payment term is still 未定.
+    const blocked = capped(waitingOrders.filter((row) => (row.orderStatus === 'DUAL_APPROVED' || row.orderStatus === 'MAKER_PO_READY')
+      && normalizePaymentTerms(row.paymentTerms) === 'undetermined'))
+      .map((row) => ({
+        key: `payment_terms_undetermined:${row.orderId}`,
+        kind: 'payment_terms_undetermined',
+        project: projectOf(row),
+        order: orderOf(row),
+        reason: {
+          code: 'PAYMENT_TERMS_UNDETERMINED',
+          message: '支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください'
+        },
+        fixableBy: ['admin', 'staff'],
+        waitingSince: row.orderUpdatedAt,
+        deepLink: link('payment_terms', row, {
+          subjectId: row.orderId,
+          action: { method: 'PATCH', path: `/api/film-supply-orders/${row.orderId}/payment-terms` }
+        })
+      }));
+
+    const time = (value: Date | string | null) => (value ? new Date(value).getTime() : Number.MAX_SAFE_INTEGER);
+    items.sort((a, b) => time(a.waitingSince) - time(b.waitingSince) || a.key.localeCompare(b.key));
+    const byKind: Record<string, number> = {};
+    for (const item of items) byKind[item.kind] = (byKind[item.kind] ?? 0) + 1;
+    return context.json({
+      generatedAt: new Date(),
+      items,
+      blocked,
+      counts: { items: items.length, blocked: blocked.length, byKind },
+      truncated
+    });
   });
 
   // P0 R12: the send-evidence picker reads its choices here. Only this order's
@@ -7044,6 +8339,7 @@ export function createApp({
       }, 422);
     }
 
+    const selfCheck = await selfVerificationFacts(user, [target.evidenceDocumentVersionId], [target.recordedByUserId]);
     const now = new Date();
     const verification = {
       id: uuidv7(now),
@@ -7099,7 +8395,9 @@ export function createApp({
           ...verification,
           verificationType: 'maker_po_send_manual_verification',
           // The delivery assertion lives here and only here.
-          deliveryAsserted: resultCheck.value === 'confirmed'
+          deliveryAsserted: resultCheck.value === 'confirmed',
+          verifiedByUserId: user.id,
+          ...selfCheck
         },
         occurredAt: now,
         requestMetadata: {
@@ -7190,7 +8488,10 @@ export function createApp({
       // MAKER_PO_SENT_MANUALLY and the acceptance gate is open. Null when the
       // paper had already moved (or the verification rejected the send).
       purchaseOrderStatusChanged: outcome.statusChanged,
-      purchaseOrder: buildMakerPoViewForRole(user.role, outcome.purchaseOrder as MakerPoRecord)
+      purchaseOrder: buildMakerPoViewForRole(user.role, outcome.purchaseOrder as MakerPoRecord),
+      verifiedBy: { id: user.id, displayName: verifier.name },
+      verifiedAt: now,
+      ...selfCheck
     }, 201);
     } catch (error) {
       if (isPostgresDeadlockError(error)) {
@@ -8040,9 +9341,11 @@ export function createApp({
     const events = await db.select().from(makerPoEvents)
       .where(eq(makerPoEvents.makerPurchaseOrderId, poId))
       .orderBy(makerPoEvents.recordedAt, makerPoEvents.id);
+    const numbers = await loadMakerPoDisplayNumbers(db, [po.id]);
     return context.json({
       purchaseOrder: buildMakerPoViewForRole(user.role, po as MakerPoRecord),
-      events: events.map((event) => buildMakerPoEventViewForRole(user.role, event as MakerPoEventRecord))
+      events: events.map((event) => buildMakerPoEventViewForRole(user.role, event as MakerPoEventRecord)),
+      displayNumber: numbers.get(po.id) ?? null
     });
   });
 
@@ -8066,8 +9369,10 @@ export function createApp({
     const rows = await db.select().from(makerPurchaseOrders)
       .where(eq(makerPurchaseOrders.filmSupplyOrderId, orderId))
       .orderBy(desc(makerPurchaseOrders.createdAt));
+    const numbers = await loadMakerPoDisplayNumbers(db, rows.map((row) => row.id));
     return context.json({
-      makerPurchaseOrders: rows.map((row) => buildMakerPoViewForRole(user.role, row as MakerPoRecord))
+      makerPurchaseOrders: rows.map((row) => buildMakerPoViewForRole(user.role, row as MakerPoRecord)),
+      displayNumbers: Object.fromEntries(numbers)
     });
   });
 

@@ -1,6 +1,6 @@
-# API エラーコード一覧（P0 サーバー, p0/server）
+# API エラーコード一覧（P0 サーバー p0/server + P1 サーバー p1/server）
 
-コード数: 251
+コード数: 261
 
 API の拒否応答（HTTP 400 以上）は必ず JSON `{ "error": "<日本語の文>", "code": "<CODE>", ...追加項目 }` です（R09）。
 `error` には英語の core メッセージ・enum 値・項目名・内部 URL/ポートを入れません。安全でない文はサーバーがこの表の文に置き換えます。
@@ -10,7 +10,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 - HTTP 列は API ソースで見つかった応答ステータス（複数あり得る）。
 - 拒否以外: 遷移応答 `warnings[]`、一覧 `attention[]` にも同じ形式の `{ code, message }` が入ります。
 - 新しい要求ヘッダー: `Idempotency-Key`（8〜128 文字 `[A-Za-z0-9_.:-]`、ログイン中の書き込みだけ有効、24 時間・同一 API プロセス内）。再生応答にはヘッダー `Idempotent-Replayed: true`。
-- Web 側だけで作るコード（API は返さない）: `PROJECT_CONTEXT_MISMATCH`（R03 別タブ案件）, `API_UNREACHABLE`（Web→API 接続不可）, `SESSION_EXPIRED`（Web の表示用。API は `AUTH_REQUIRED`）。
+- Web 側だけで作るコード（API は返さない）: `API_UNREACHABLE`（Web→API 接続不可）, `SESSION_EXPIRED`（Web の表示用。API は `AUTH_REQUIRED`）。`PROJECT_CONTEXT_MISMATCH` は Web の R03 に加えて P1 から API も返す（`expectedProjectId` 不一致）。
 
 ## authentication / authorization / generic
 
@@ -58,7 +58,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `FILM_SUPPLY_ORDER_NOT_FOUND` | 404 | フィルム発注が見つかりません |  |
 | `MAKER_PO_NOT_FOUND` | 404 | メーカー発注書が見つかりません |  |
 | `MAKER_PO_EVENT_NOT_FOUND` | 404 | メーカー発注書の記録が見つかりません |  |
-| `SEVEN_PO_NOT_FOUND` | 401, 404, 422 | セブン化学発注書が見つかりません |  |
+| `SEVEN_PO_NOT_FOUND` | 404, 422 | セブン化学発注書が見つかりません |  |
 | `ARTWORK_REVISION_NOT_FOUND` | 404 | 版が見つかりません |  |
 | `DOCUMENT_NOT_FOUND` | 404 | 書類が見つかりません |  |
 | `DOCUMENT_VERSION_NOT_FOUND` | 404 | 書類のバージョンが見つかりません |  |
@@ -102,7 +102,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `REFERENCE_CODE_REQUIRED` | 422 | 参照コードを入力してください |  |
 | `OFFICIAL_REGISTRATION_REQUIRED` | 422 | セブン化学発注書の公式登録日が必要です。原本受領日は参考情報のため代わりになりません |  |
 | `OFFICIAL_DATE_ALREADY_REGISTERED` | 409 | 公式登録日が別の操作で先に登録されました。画面を再読み込みしてください |  |
-| `SEVEN_PO_REQUIRED` | 401, 422 | 発注にセブン化学発注書（確認済み）を紐付けてください |  |
+| `SEVEN_PO_REQUIRED` | 422 | 発注にセブン化学発注書（確認済み）を紐付けてください |  |
 | `SEVEN_PO_NOT_LINKED` | 422 | この参照に紐付くセブン化学発注書がありません |  |
 | `SEVEN_PO_NOT_VERIFIED` | 422 | セブン化学発注書の真正性確認（チェックリスト）が完了していません |  |
 | `SEVEN_PO_PROJECT_MISMATCH` | 422 | セブン化学発注書がこの案件に見つかりません |  |
@@ -342,4 +342,24 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `RECEIPT_ASSUMPTION_STATE_CHANGED` | 422 | フィルム発注の状態が別の操作で変わりました。画面を再読み込みしてください |  |
 | `INVALID_RECEIPT_ASSUMED_AT` | 422 | 受領確認の日付が正しくありません |  |
 | `INVALID_DATE` | 422 | 日付が正しくありません。日付の形式を確認してください |  |
+
+## P1 R23: automatic steps
+
+| code | HTTP | 意味（サーバー既定の日本語文） | 追加項目・画面での扱い |
+|---|---|---|---|
+| `AUTO_TRANSITION_ONLY` | 422 | この段階は条件がそろうと自動で進みます。手で進める必要はありません | `from`, `to`, `autoAdvanceEndpoint`。P1 R23: 校正ゲラ準備完了・校了確認待ち・製造先発注準備完了は手で押さない（ボタンを出さない） |
+| `ARTWORK_REVISION_REQUIRED` | 200 (blockers) | 校正ゲラ（版）がまだ登録されていません。版を登録すると自動で進みます | 拒否ではない。GET /api/film-supply-orders/:orderId/auto-advance の `nextAutomatic.blockers[]` に入る |
+| `PROJECT_CONTEXT_MISMATCH` | 409 | 別のタブで案件が切り替わりました。保存していません。画面を再読み込みしてください | P1 の新しい書き込み（auto-advance, return）で本文 `expectedProjectId` が対象の案件と違うとき。Web 側 R03 と同じ文言 |
+
+## P1 R24: approval card / return
+
+| code | HTTP | 意味（サーバー既定の日本語文） | 追加項目・画面での扱い |
+|---|---|---|---|
+| `MAKER_PO_RETURN_REASON_REQUIRED` | 422 | 差し戻しの理由を入力してください |  |
+| `MAKER_PO_RETURN_REASON_TOO_LONG` | 422 | 差し戻しの理由は1000文字以下にしてください |  |
+| `MAKER_PO_RETURN_ONLY_DRAFT` | 422 | 差し戻しできるのは代表承認前のメーカー発注書だけです。承認済みの発注書は取消の手順を使ってください | `from`（発注書の状態） |
+| `MAKER_PO_SNAPSHOT_CHANGED` | 409 | 承認画面を開いた後に発注書の内容（明細・版）が変わりました。最新の内容を確認してから、もう一度承認してください | `expectedSnapshotSha256`, `snapshotSha256`。承認カード（GET …/approval-card）を読み直す |
+| `EXPECTED_SNAPSHOT_SHA256_INVALID` | 422 | 承認する発注書の確認値が正しくありません。画面を再読み込みしてください | `expectedSnapshotSha256` は 64 文字の小文字 16 進 |
+| `MAKER_PO_AMOUNT_MISSING` | 200 (warnings) | メーカー発注書に金額が記載されていません。担当者に金額の入力を依頼してください | 拒否ではない。承認カードの `warnings[]`（現時点でサーバーは金額なしの承認を拒否しない） |
+| `MAKER_PO_SNAPSHOT_DRIFTED` | 200 (warnings) | 発注書の作成後に明細または版が変わりました。承認すると最新の内容で確定します | 拒否ではない。承認カードの `warnings[]` |
 
