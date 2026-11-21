@@ -62,3 +62,8 @@ export function draftValues(controls: ReadonlyArray<{ name: string; type: string
 export function draftKey(pathname: string, formName: string): string {
   return `kanei-draft:${pathname}:${formName}`;
 }
+
+/** Every draft key of one screen path (ClearDrafts). */
+export function draftKeyPrefix(pathname: string): string {
+  return `kanei-draft:${pathname}:`;
+}

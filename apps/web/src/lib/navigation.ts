@@ -45,13 +45,20 @@ const OPERATORS: readonly NavRole[] = ['admin', 'staff'];
 
 export const DASHBOARD_PATH = '/dashboard';
 export const GUIDE_PATH = '/guide';
+/** P1 R26: the role's home — 承認箱 (representative), 自分の作業 (staff), 履歴 (viewer). */
+export const HOME_PATH = '/home';
 
 export const NAV_GROUPS: readonly NavGroup[] = [
   {
     key: 'home',
     step: null,
     title: 'ホーム',
-    items: [{ href: DASHBOARD_PATH, label: 'ダッシュボード', roles: ALL }]
+    items: [
+      { href: HOME_PATH, label: '承認箱', roles: ['admin'] },
+      { href: HOME_PATH, label: '自分の作業', roles: ['staff'] },
+      { href: HOME_PATH, label: '履歴', roles: ['viewer'] },
+      { href: DASHBOARD_PATH, label: 'ダッシュボード', roles: ALL }
+    ]
   },
   {
     key: 'intake',
@@ -130,6 +137,7 @@ export interface ScreenGuide {
 }
 
 export const SCREEN_GUIDES: Readonly<Record<string, ScreenGuide>> = {
+  // P1 R26: the role homes explain themselves (no guide line, REDESIGN §6-2).
   [DASHBOARD_PATH]: {
     step: null,
     phase: 'ホーム',

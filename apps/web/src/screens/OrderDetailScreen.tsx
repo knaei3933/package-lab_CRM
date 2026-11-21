@@ -2,14 +2,17 @@ import Link from 'next/link';
 import { OrderTimeline } from '../components/OrderTimeline';
 import { StepPanelView } from '../components/StepPanel';
 import { StepAnnouncer } from '../components/StepAnnouncer';
+import { ClearDrafts } from '../components/ClearDrafts';
 import { StatusBadge } from '../components/StatusBadge';
 import { callApi, loadSessionUser } from '../lib/api';
 import { loadMakerPoBoard, loadMakerPoDetail, sendManualVerificationsFromAuditEvents, undisclosedSendDecisionEventIds, MAKER_PO_AUDIT_WINDOW } from '../lib/maker-po-data';
 import type { MakerPoEventRow } from '../lib/maker-po-data';
-import { buildOrderFlow, liveMakerPo, nextStepText, ORDER_STEPS, STEP_COUNT } from '../lib/order-flow';
+import { buildOrderFlow, currentPaymentTerms, liveMakerPo, nextStepText, ORDER_STEPS, STEP_COUNT } from '../lib/order-flow';
+import { loadApprovalCard } from '../lib/approval-card';
+import { normalizeRole } from '../lib/permissions';
 import { knownStatus, labelLookup, loadApprovalGate } from '../lib/project-data';
 import type { ApprovalGateView, AuditEventView } from '../lib/project-data';
-import { orderPath, projectPath } from '../lib/project-route';
+import { newOrderPath, orderPath, projectPath } from '../lib/project-route';
 import { paymentTermsText } from '../lib/decision-facts';
 import { formatTimestamp } from '../lib/vocabulary';
 import { formatQuantityWithUnit } from '../lib/number-format';
@@ -97,6 +100,16 @@ export async function OrderDetailScreen({
     deliveries: workspace.deliveries
   });
   const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
+  // R24: the representative's approval card (the server card when the API has it).
+  const approvalCard = flow.panel.action.kind === 'ceo_approve' && maker && normalizeRole(user.role) === 'admin'
+    ? await loadApprovalCard({
+        paper: maker,
+        orderId: order.id,
+        orderCode: order.code,
+        paymentTerms: currentPaymentTerms({ order, paymentGate: entry?.paymentGate ?? null }),
+        sevenPo: po
+      })
+    : null;
   const currentStep = flow.current ? ORDER_STEPS[flow.current - 1] : null;
   const records = (activity.ok && activity.data && Array.isArray(activity.data.events) ? activity.data.events : [])
     .filter((event) => event.entityId === order.id || event.afterState?.filmSupplyOrderId === order.id
@@ -132,7 +145,11 @@ export async function OrderDetailScreen({
       </header>
 
       {started ? (
-        <p className="p1-banner p1-banner--ok" role="status">✓ 発注を作成しました。続けて、下の「現在の手順」を進めます。</p>
+        <>
+          <p className="p1-banner p1-banner--ok" role="status">✓ 発注を作成しました。続けて、下の「現在の手順」を進めます。</p>
+          {/* R34: the wizard moved here on success, so its draft is dropped here. */}
+          <ClearDrafts pathname={newOrderPath(projectCode)} />
+        </>
       ) : null}
       {flow.phase === 'exception' && status ? (
         <p className="p1-banner p1-banner--exception">
@@ -171,6 +188,7 @@ export async function OrderDetailScreen({
             makerEvents={makerDetail.events}
             documents={workspace.documents}
             stateLabel={stateLabel}
+            approvalCard={approvalCard}
           />
           </StepAnnouncer>
           {nextStepText(flow) ? <p className="p1-next">{nextStepText(flow)}</p> : null}

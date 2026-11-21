@@ -16,7 +16,7 @@ import { REQUEST_PATH_HEADER, sessionGateFor } from '../lib/request-path';
 import { decodeDisplayNameCookie, DISPLAY_NAME_COOKIE, operatorName, roleLabel } from '../lib/session-display';
 import { loadSelectableProjects } from '../lib/project-data';
 import type { ProjectSummary } from '../lib/project-data';
-import { DASHBOARD_PATH, GUIDE_PATH, navGroupsForRole, navRoleNote } from '../lib/navigation';
+import { GUIDE_PATH, HOME_PATH, navGroupsForRole, navRoleNote } from '../lib/navigation';
 import { parseProjectPath } from '../lib/project-route';
 import { selectProjectAction } from './actions';
 // Astryx trial: the layer order first, then the stylesheets (layer-order.css).
@@ -74,7 +74,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
           <header className="app-header">
             <div className="app-header-inner">
               {user ? <NavDrawerToggle /> : null}
-              <Link href={user ? DASHBOARD_PATH : '/'} className="app-brand">
+              <Link href={user ? HOME_PATH : '/'} className="app-brand">
                 KANEI CRM<span className="app-brand-sub"> オペレーター画面（F1）</span>
               </Link>
               {user ? (

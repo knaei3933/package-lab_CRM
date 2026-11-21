@@ -14,9 +14,17 @@ export async function NewOrderScreen({ projectId, projectCode }: ProjectScreenPr
   const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
   if (!user) return null;
   const canCreate = canRoleOperate(user.role, 'film_order:create');
-  const verified = workspace.sevenPurchaseOrders
-    .filter((po) => po.verificationStatus === 'verified')
-    .map((po) => ({ value: po.id, label: sevenPurchaseOrderChoiceLabel(po) }));
+  // A registered PO can take a new order; one not yet checked is checked here first
+  // (also the way back after a submit stopped at 照合 — the PO is not created twice).
+  const existing = workspace.sevenPurchaseOrders
+    .filter((po) => po.officiallyRegistered)
+    .map((po) => ({
+      value: po.id,
+      label: `${sevenPurchaseOrderChoiceLabel(po)}${po.verificationStatus === 'verified' ? '' : '（照合がまだ）'}`
+    }));
+  const unverifiedIds = workspace.sevenPurchaseOrders
+    .filter((po) => po.officiallyRegistered && po.verificationStatus !== 'verified')
+    .map((po) => po.id);
   return (
     <section className="p1-new" aria-labelledby="new-order-title">
       <nav className="p1-crumbs" aria-label="現在の位置">
@@ -38,7 +46,8 @@ export async function NewOrderScreen({ projectId, projectCode }: ProjectScreenPr
             { value: 'on_delivery', label: PAYMENT_TERMS_LABELS.on_delivery! },
             { value: 'undetermined', label: PAYMENT_TERMS_LABELS.undetermined! }
           ]}
-          verifiedPoChoices={verified}
+          existingPoChoices={existing}
+          unverifiedPoIds={unverifiedIds}
         />
       ) : (
         <p className="p1-waiting">この役割では発注を作成できません（閲覧のみ）。</p>

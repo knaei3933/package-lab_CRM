@@ -651,6 +651,7 @@ export const ACTION_LABELS: Readonly<Record<string, string>> = {
   MAKER_PO_DUAL_APPROVAL_RECHECK: '校了を再確認（メーカー発注書）',
   ARTWORK_APPROVAL_RECORDED: '承認（校了）を記録',
   PRE_ORDER_REFERENCE_CREATED: '先行発注を記録',
+  MAKER_PO_RETURNED: '代表が差し戻し',
   MAKER_PO_ACCEPT_RECORDED_PROVISIONAL: '受入（仮）を記録',
   MAKER_PO_ACCEPT_EVIDENCE_REGISTERED: '最終受入を記録',
   MAKER_PO_CANCELLED: 'メーカー発注書を取り消し',

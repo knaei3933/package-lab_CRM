@@ -8,7 +8,9 @@ import {
   transitionFilmSupplyOrderAction,
   updateFilmPaymentTermsAction
 } from '../app/actions';
-import { approveMakerPoAction, recordMakerPoSendEvidenceAction, verifyMakerPoSendAction } from '../app/maker-po/actions';
+import { recordMakerPoSendEvidenceAction, verifyMakerPoSendAction } from '../app/maker-po/actions';
+import { ApprovalCard } from './ApprovalCard';
+import type { ApprovalCardView } from '../lib/approval-card';
 import {
   createMakerPoStepAction,
   recordAcceptanceStepAction,
@@ -19,12 +21,12 @@ import {
 import { EVIDENCE_NOTE_FIELD } from '../lib/transition-evidence';
 import { PAYMENT_TERMS_LABELS } from '../lib/maker-po-data';
 import type { MakerPoEventRow, MakerPoViewRow } from '../lib/maker-po-data';
-import { currentPaymentTerms, waitingText } from '../lib/order-flow';
+import { waitingText } from '../lib/order-flow';
 import type { ApprovalSlotDesign, ApprovalSlotState, OrderFlowView } from '../lib/order-flow';
 import type { ApprovalGateView, DocumentView, FilmSupplyOrderView, SevenPurchaseOrderView } from '../lib/project-data';
 import { projectPath } from '../lib/project-route';
 import { unitLabel } from '../lib/vocabulary';
-import { formatAmount, formatQuantity, formatQuantityWithUnit } from '../lib/number-format';
+import { formatQuantity } from '../lib/number-format';
 
 /**
  * P1 R21: the 「現在の手順」 panel — ONE primary action for the step, the
@@ -44,6 +46,8 @@ interface StepPanelProps {
   makerEvents: readonly MakerPoEventRow[];
   documents: readonly DocumentView[];
   stateLabel: (key: string) => string;
+  /** R24: the approval card of the paper waiting for the 代表承認 (admin only). */
+  approvalCard?: ApprovalCardView | null | undefined;
 }
 
 const TERMS_CHOICES = [
@@ -153,12 +157,14 @@ export function StepPanelView(props: StepPanelProps) {
           <TextField name="recipientAddress" label="メーカーの送信先メールアドレス" type="email" required width={360} autoComplete="off" spellCheck={false} placeholder="order@maker.example" />
           <div className="p1-row">
             <SelectField name="currency" label="通貨" choices={CURRENCY_CHOICES} defaultValue="JPY" width={200} />
-            <TextField name="totalAmount" label="金額（税抜）" required width={200} placeholder="480000" autoComplete="off" />
+            <TextField name="totalAmount" label="金額（税込）" required width={200} placeholder="480000" autoComplete="off" />
           </div>
         </ActionForm>
       );
     case 'ceo_approve':
-      return <CeoApproveStep {...props} poId={action.poId} />;
+      return props.approvalCard
+        ? <ApprovalCard card={props.approvalCard} korean={props.role === 'admin'} />
+        : <p>メーカー発注書を読み込めませんでした。画面を再読み込みしてください。</p>;
     case 'send':
       return (
         <MakerPoSendEvidenceForm
@@ -350,57 +356,6 @@ function ApprovalSlots({ order, projectCode, po, designs, role }: StepPanelProps
           </div>
         </div>
       ))}
-    </div>
-  );
-}
-
-/** 8 代表承認 (stage 1): the facts of the frozen paper and the one approval button. */
-function CeoApproveStep({ order, maker, poId, ...rest }: StepPanelProps & { poId: string }) {
-  const snapshot = maker?.snapshot;
-  const terms = currentPaymentTerms({ order, paymentGate: null });
-  const amount = snapshot?.amounts ? formatAmount(snapshot.amounts.currency, snapshot.amounts.totalAmount) : null;
-  return (
-    <div className="p1-approve">
-      <dl className="p1-facts">
-        <dt>金額</dt><dd>{amount ?? '未記録'}</dd>
-        <dt>支払条件</dt><dd>{terms ? PAYMENT_TERMS_LABELS[terms] ?? terms : '未記録'}（入金確認は別の手順です）</dd>
-        <dt>送信先</dt><dd translate="no">{snapshot?.recipient?.address ?? maker?.recipientAddress ?? '未記録'}</dd>
-        <dt>明細</dt>
-        <dd>
-          {(snapshot?.items ?? []).length === 0 ? '—' : (
-            <ul className="p1-plain-list">
-              {snapshot!.items!.map((item) => (
-                <li key={item.lineNumber}>{item.lineNumber}. {item.description} {formatQuantityWithUnit(item.orderedQuantity, item.unit)}</li>
-              ))}
-            </ul>
-          )}
-        </dd>
-        <dt>校了した版</dt>
-        <dd>
-          {(snapshot?.specs?.artworkFiles ?? []).length === 0 ? '—' : (
-            <ul className="p1-plain-list">
-              {snapshot!.specs!.artworkFiles.map((file) => (
-                <li key={`${file.designKey}-${file.revisionNo}`}><span translate="no">{file.designKey}</span> 第{file.revisionNo}版 <span className="p1-hash" translate="no">SHA-256 {file.fileSha256.slice(0, 4)}…{file.fileSha256.slice(-4)}</span></li>
-              ))}
-            </ul>
-          )}
-        </dd>
-      </dl>
-      {amount === null ? (
-        <p className="p1-blocked-inline">金額が記録されていないため承認できません。メーカー発注書を作り直してください。</p>
-      ) : terms === null || terms === 'undetermined' ? (
-        <p className="p1-blocked-inline">支払条件が「未定」のため承認できません。</p>
-      ) : (
-        <ActionForm
-          action={approveMakerPoAction}
-          submitLabel={`${order.code} のメーカー発注書を代表承認する`}
-          hint="承認すると取り消せません。内容を直すときは、メーカー発注の一覧で発注書を取り消して作り直します。"
-        >
-          <input type="hidden" readOnly name="poId" value={poId} />
-          <input type="hidden" readOnly name="expectedPaymentTerms" value={terms} />
-        </ActionForm>
-      )}
-      {rest.role ? null : null}
     </div>
   );
 }

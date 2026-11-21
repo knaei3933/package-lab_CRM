@@ -118,6 +118,8 @@ export async function startFilmOrderAction(_prev: ActionState | null, formData: 
   if (switched) return switched;
   const projectId = writeProjectOf(formData)!;
   const existingPoId = optional(formData, 'existingPoId');
+  // An existing PO whose 照合 is not recorded yet gets it in this submit (the form asks for it).
+  const checkExisting = Boolean(existingPoId) && field(formData, 'runChecklist') === 'true';
   const poNumber = field(formData, 'poNumber');
   const registeredAt = field(formData, 'officialRegisteredAt');
   const code = field(formData, 'code');
@@ -174,7 +176,7 @@ export async function startFilmOrderAction(_prev: ActionState | null, formData: 
     },
     {
       label: '発注書の照合',
-      request: (answers) => existingPoId ? null : withAnswer(poIdOf(answers), (poId) => ({
+      request: (answers) => existingPoId && !checkExisting ? null : withAnswer(poIdOf(answers), (poId) => ({
         path: `/api/seven-purchase-orders/${id(poId)}/verification-checklist`,
         body: checklist
       }))

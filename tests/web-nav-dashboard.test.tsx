@@ -112,14 +112,15 @@ const MIXED = [
 
 describe('sidebar menu by role (A)', () => {
   it('admin and staff see every screen in the order of the work', () => {
-    const all = ['/dashboard', '/orders', '/documents', '/approvals', '/maker-po', '/deliveries', '/guide', '/status'];
+    // P1 R26: the role's home (承認箱 / 自分の作業 / 履歴) comes first.
+    const all = ['/home', '/dashboard', '/orders', '/documents', '/approvals', '/maker-po', '/deliveries', '/guide', '/status'];
     expect(navHrefsForRole('admin')).toEqual(all);
     expect(navHrefsForRole('staff')).toEqual(all);
     expect(navGroupsForRole('admin').map((group) => group.step)).toEqual([null, 1, 2, 3, 4, null]);
   });
 
   it('a viewer is not shown 文書 and 承認 (the API refuses it document:read and artwork_approval:read)', () => {
-    expect(navHrefsForRole('viewer')).toEqual(['/dashboard', '/orders', '/maker-po', '/deliveries', '/guide', '/status']);
+    expect(navHrefsForRole('viewer')).toEqual(['/home', '/dashboard', '/orders', '/maker-po', '/deliveries', '/guide', '/status']);
     // The デザイン・校正 group has no item left for a viewer and is dropped, not shown empty.
     expect(navGroupsForRole('viewer').map((group) => group.key)).not.toContain('artwork');
   });
@@ -214,7 +215,8 @@ describe('sidebar menu by role (A)', () => {
 describe('screen guide lines (C)', () => {
   it('every menu screen has a 「この画面でやること」 line', () => {
     for (const group of NAV_GROUPS) {
-      for (const item of group.items) expect(SCREEN_GUIDES[item.href], item.href).toBeDefined();
+      // P1 R26: the role homes explain themselves (REDESIGN §6-2: no guide box).
+      for (const item of group.items) if (item.href !== '/home') expect(SCREEN_GUIDES[item.href], item.href).toBeDefined();
     }
     expect(screenGuideFor('/maker-po/123')?.phase).toBe('メーカー発注');
     expect(screenGuideFor('/')).toBeNull();

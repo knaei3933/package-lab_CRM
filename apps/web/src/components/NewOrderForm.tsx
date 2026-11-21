@@ -38,20 +38,26 @@ export function NewOrderForm({
   projectCode,
   unitChoices,
   paymentTermsChoices,
-  verifiedPoChoices
+  existingPoChoices,
+  unverifiedPoIds
 }: {
   action: FormAction;
   projectCode: string;
   unitChoices: Choice[];
   paymentTermsChoices: Choice[];
-  verifiedPoChoices: Choice[];
+  /** Registered セブン化学発注書 a new order can be added to. */
+  existingPoChoices: Choice[];
+  /** Those of them whose 照合 is not recorded yet (the checklist is asked for them). */
+  unverifiedPoIds: string[];
 }) {
   const [state, formAction, pending] = useActionState(action, null);
   const firstUnit = unitChoices[0]?.value ?? '';
   const [lines, setLines] = useState<LineRow[]>([{ description: '', quantity: '', unit: firstUnit }]);
   const [mode, setMode] = useState<'new' | 'existing'>('new');
   const [paymentTerms, setPaymentTerms] = useState('');
+  const [existingPoId, setExistingPoId] = useState('');
   const warningId = useId();
+  const needsChecklist = mode === 'new' || unverifiedPoIds.includes(existingPoId);
 
   // R34: the lines are React state, so their draft is kept here (the rest by DraftAutosave).
   useEffect(() => {
@@ -97,7 +103,7 @@ export function NewOrderForm({
 
       <fieldset className="p1-fieldset">
         <legend className="p1-legend"><span className="p1-legend-no">1</span>発注書の受付</legend>
-        {verifiedPoChoices.length > 0 ? (
+        {existingPoChoices.length > 0 ? (
           <div className="p1-choice-row" role="radiogroup" aria-label="セブン化学発注書">
             <label className="p1-radio">
               <input type="radio" name="poMode" value="new" checked={mode === 'new'} onChange={() => setMode('new')} />
@@ -105,12 +111,21 @@ export function NewOrderForm({
             </label>
             <label className="p1-radio">
               <input type="radio" name="poMode" value="existing" checked={mode === 'existing'} onChange={() => setMode('existing')} />
-              照合済みの発注書に追加する
+              登録済みの発注書に追加する
             </label>
           </div>
         ) : null}
         {mode === 'existing' ? (
-          <SelectField name="existingPoId" label="照合済みのセブン化学発注書" required includeBlank blankLabel="（選ぶ）" choices={verifiedPoChoices} width={360} />
+          <SelectField
+            name="existingPoId"
+            label="登録済みのセブン化学発注書"
+            required
+            includeBlank
+            blankLabel="（選ぶ）"
+            choices={existingPoChoices}
+            width={360}
+            onChange={(event) => setExistingPoId(event.target.value)}
+          />
         ) : (
           <>
             <div className="p1-row">
@@ -122,8 +137,9 @@ export function NewOrderForm({
         )}
       </fieldset>
 
-      {mode === 'new' ? (
+      {needsChecklist ? (
         <fieldset className="p1-fieldset">
+          {mode === 'existing' ? <input type="hidden" readOnly name="runChecklist" value="true" /> : null}
           <legend className="p1-legend"><span className="p1-legend-no">2</span>発注書の照合</legend>
           <p className="p1-field-hint">発注書の原本を見ながら、確かめた項目にチェックします（番号・数量・価格・納期・見積の版）。</p>
           <div className="p1-check-grid">

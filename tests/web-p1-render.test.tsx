@@ -33,7 +33,7 @@ function order(status: string, extra: Record<string, unknown> = {}) {
   };
 }
 
-function panelFor(status: string, role: string, over: { orderExtra?: Record<string, unknown>; gate?: unknown; makerPos?: unknown[]; makerEvents?: unknown[]; maker?: unknown } = {}) {
+function panelFor(status: string, role: string, over: { orderExtra?: Record<string, unknown>; gate?: unknown; makerPos?: unknown[]; makerEvents?: unknown[]; maker?: unknown; approvalCard?: unknown } = {}) {
   const o = order(status, over.orderExtra ?? {});
   const makerPos = over.makerPos ?? [];
   const flow = buildOrderFlow({
@@ -45,6 +45,7 @@ function panelFor(status: string, role: string, over: { orderExtra?: Record<stri
       <StepPanelView
         flow={flow} order={o as never} projectCode="PRJ-1" role={role} po={PO as never} gate={(over.gate ?? null) as never}
         maker={(over.maker ?? makerPos[0] ?? null) as never} makerEvents={(over.makerEvents ?? []) as never} documents={[]} stateLabel={(key) => key}
+        approvalCard={(over.approvalCard ?? null) as never}
       />
     </RenderedContextProvider>
   );
@@ -200,9 +201,11 @@ describe('StepPanelView', () => {
     expect(panelFor('CANCELLED', 'admin')).toContain('取消で終了しました');
   });
 
-  it('shows the representative the ceo approval facts and the approve form', () => {
+  it('shows the representative the ceo approval facts and the approve form (P1 R24 card)', async () => {
+    const { cardFromWeb } = await import('../apps/web/src/lib/approval-card.js');
     const maker = { id: 'mpo-1', status: 'DRAFT', snapshot: { amounts: { currency: 'JPY', totalAmount: '480000' }, recipient: { address: 'order@maker.example' }, items: [{ lineNumber: 1, description: 'film', orderedQuantity: '300.000', unit: 'meters' }], specs: { artworkFiles: [] } } };
-    const html = panelFor('MAKER_PO_READY', 'admin', { makerPos: [maker] });
+    const approvalCard = cardFromWeb({ paper: maker as never, orderCode: 'FSO-1', paymentTerms: 'prepaid', gate: null, sevenPo: null });
+    const html = panelFor('MAKER_PO_READY', 'admin', { makerPos: [maker], approvalCard });
     expect(html).toMatch(/[¥￥]480,000/);
     expect(html).toContain('300 m');
     expect(html).toContain('name="expectedPaymentTerms" value="prepaid"');

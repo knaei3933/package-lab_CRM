@@ -281,7 +281,7 @@ describe('F-23: the representative queue across projects', () => {
     ]);
     expect(orders).toEqual([{ id: 'a', code: 'FSO-A', status: 'ON_HOLD' }, { id: 'b', code: 'FSO-B', status: 'SEVEN_PO_VERIFIED' }]);
     const tasks = representativeTasks({ id: 'p1', code: 'P-1', name: '合成案件' }, orders);
-    expect(tasks).toEqual([{ projectId: 'p1', projectCode: 'P-1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: REPRESENTATIVE_WORK.ON_HOLD }]);
+    expect(tasks).toEqual([{ projectId: 'p1', projectCode: 'P-1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: REPRESENTATIVE_WORK.ON_HOLD, step: null }]);
   });
   it('the panel: a row per task that links to the order (P1 R25 deep link), and a plain line when nothing waits', () => {
     const queue = { tasks: [{ projectId: 'p1', projectCode: 'P-1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: '保留の解除（理由の確認）' }], unreadProjects: ['P-9'], skippedProjects: 0 };
