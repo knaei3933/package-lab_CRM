@@ -1,6 +1,6 @@
-# API エラーコード一覧（P0 サーバー p0/server + P1 サーバー p1/server）
+# API エラーコード一覧（P0 サーバー p0/server + P1 サーバー p1/server + P2 サーバー p2/server）
 
-コード数: 262
+コード数: 274（`ERROR_MESSAGES_JA` の件数。P2 で 10 件追加）
 
 API の拒否応答（HTTP 400 以上）は必ず JSON `{ "error": "<日本語の文>", "code": "<CODE>", ...追加項目 }` です（R09）。
 `error` には英語の core メッセージ・enum 値・項目名・内部 URL/ポートを入れません。安全でない文はサーバーがこの表の文に置き換えます。
@@ -9,7 +9,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 - 生成元: `apps/api/src/error-codes.ts` の `ERROR_MESSAGES_JA`（`tests/p0-server.test.ts` が API/core の全 `code` リテラルと本表の一致を検査）
 - HTTP 列は API ソースで見つかった応答ステータス（複数あり得る）。
 - 拒否以外: 遷移応答 `warnings[]`、一覧 `attention[]` にも同じ形式の `{ code, message }` が入ります。
-- 新しい要求ヘッダー: `Idempotency-Key`（8〜128 文字 `[A-Za-z0-9_.:-]`、ログイン中の書き込みだけ有効、24 時間・同一 API プロセス内）。再生応答にはヘッダー `Idempotent-Replayed: true`。
+- 新しい要求ヘッダー: `Idempotency-Key`（8〜128 文字 `[A-Za-z0-9_.:-]`、ログイン中の書き込みだけ有効、**ユーザーごと 24 時間・データベース保存**（P2: API の再起動・別プロセス・再ログイン後も同じ応答を再生）。再生応答にはヘッダー `Idempotent-Replayed: true`。同じキーの最初の送信がまだ処理中なら待ち、待っても終わらないときは 409 `CONFLICT`（書き込みはしない）。
 - Web 側だけで作るコード（API は返さない）: `API_UNREACHABLE`（Web→API 接続不可）, `SESSION_EXPIRED`（Web の表示用。API は `AUTH_REQUIRED`）。`PROJECT_CONTEXT_MISMATCH` は Web の R03 に加えて P1 から API も返す（`expectedProjectId` 不一致）。
 
 ## authentication / authorization / generic
@@ -372,3 +372,17 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 |---|---|---|---|
 | `SELF_VERIFICATION_FORBIDDEN` | 403 | 自分で登録した証跡は自分で確認できません。代表者または別の担当者に確認を依頼してください | P-4: 担当者が自分で登録した証跡の確認（文書の確認・納品確認）。代表者は自分の証跡も確認できる（応答・監査に `selfVerification: true`）。担当者画面では自分の証跡の確認ボタンを出さない |
 
+## P2: delivery dates / seven PO facts / maker master / language / design data
+
+| code | HTTP | 意味（サーバー既定の日本語文） | 追加項目・画面での扱い |
+|---|---|---|---|
+| `DELIVERY_DATE_INVALID` | 422 | 日付は「年-月-日」（例: 2026-12-01）の実在する日付で入力してください。変更する日付を 1 つ以上送ってください | P2 R30: PATCH /api/film-supply-orders/:orderId/delivery-dates と発注作成の `requestedDeliveryDate`・`plannedDeliveryDate`（`YYYY-MM-DD` / null で消去） |
+| `SEVEN_PO_ORDER_FACTS_INVALID` | 422 | セブン化学発注書の数量（単位と一緒に）または金額（通貨と一緒に）を正しく入力してください | P2 R30: PUT /api/seven-purchase-orders/:poId/order-facts。数量は `orderedQuantity`+`orderedUnit`、金額は `totalAmount`+`currency` を組で（null の組で消去） |
+| `SEVEN_PO_AMOUNT_ADMIN_ONLY` | 403 | セブン化学発注書の金額は代表者だけが入力できます | P2 R30: 担当者・閲覧・監査は金額を読まないので書かない。数量だけ送る |
+| `MAKER_ACCOUNT_INVALID` | 422 | 製造先の名前（200 文字まで）を入力してください。取引先コードは 64 文字までです | P2 R33: POST /api/maker-accounts（代表者のみ） |
+| `MAKER_ACCOUNT_NOT_FOUND` | 404 | 製造先が見つかりません | P2 R33: 製造先（取引先 役割 maker）が無い・無効 |
+| `MAKER_RECIPIENT_ADDRESS_INVALID` | 422 | 宛先の表示名は 100 文字まで、既定・使用中は「はい」か「いいえ」で指定してください | P2 R33: 宛先の登録・変更（代表者のみ）。メール形式の誤りは既存 `RECIPIENT_ADDRESS_REQUIRED` / `RECIPIENT_ADDRESS_INVALID`、重複は 409 `DUPLICATE`（`field: email`） |
+| `MAKER_RECIPIENT_ADDRESS_NOT_FOUND` | 404 | 宛先が見つかりません | P2 R33 |
+| `MAKER_RECIPIENT_ADDRESS_UNAVAILABLE` | 422 | 選んだ送信先は使用できません（この案件の製造先の使用中の宛先ではありません）。送信先を選び直してください | P2 R33: メーカー発注書作成の `recipientAddressId` が、この案件の製造先の使用中の宛先ではない（または手入力の `recipientAddress` と違う）。候補は GET /api/projects/:projectId/maker-recipient-addresses |
+| `DISPLAY_LANGUAGE_INVALID` | 422 | 表示言語は「日本語」「日本語＋한국어」「한국어」から選んでください | P2 R29: PUT /api/me/preferences の `displayLanguage` は `ja` / `ja-ko` / `ko` / null |
+| `ARTWORK_SUBMISSION_ORDER_REQUIRED` | 422 | デザイン入稿データは、セブン化学発注書が紐付いた発注を指定して登録してください | P2 R22: 書類種類 `artwork_submission` は `filmSupplyOrderId` 必須。セブン化学発注書はその発注のものを自動で使う（違う `sevenPurchaseOrderId` は拒否） |

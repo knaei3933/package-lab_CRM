@@ -114,6 +114,73 @@ const VIEWER_STATE_KEYS: readonly string[] = [
   'paymentTerms'
 ];
 
+/**
+ * P2 policy P-2: the auditor sees who did what and when, on what, and on what
+ * evidence — codes, statuses, the approval facts and the evidence metadata
+ * (file name, hash, issuer, who verified it and when). Amounts, unit prices,
+ * costs, snapshot bodies and their digests (a digest of a body that holds an
+ * amount can be guessed back), mail sender/recipient lists, evidence
+ * identifiers and storage paths are absent because they are not on this list.
+ */
+const AUDITOR_STATE_KEYS: readonly string[] = [
+  'id',
+  'status',
+  'state',
+  'code',
+  'name',
+  'poNumber',
+  'orderCode',
+  'displayNumber',
+  'paymentTerms',
+  'officialRegisteredAt',
+  'sevenPurchaseOrderId',
+  'filmSupplyOrderId',
+  'makerPurchaseOrderId',
+  'artworkRevisionId',
+  'approvalEventId',
+  'organization',
+  'decision',
+  'revisionNo',
+  'designKey',
+  'eventTime',
+  'evidenceSource',
+  'evidenceDocumentVersionId',
+  'evidenceIdentifierStatus',
+  'documentType',
+  'documentId',
+  'originalFilename',
+  'issuerEntity',
+  'sha256',
+  'fileSha256',
+  'approvedFileSha256',
+  'byteSize',
+  'detectedMimeType',
+  'versionNumber',
+  'verificationStatus',
+  'verifiedAt',
+  'verifiedByUserId',
+  'result',
+  'ceoApprovedAt',
+  'ceoApprovedByUserId',
+  'selfVerification',
+  'readinessState',
+  'isReady',
+  'requestedDeliveryDate',
+  'plannedDeliveryDate'
+];
+
+/** The auditor sees which operation produced the event and whether it was automatic. */
+const AUDITOR_REQUEST_METADATA_KEYS: readonly string[] = ['operation', 'automatic', 'rule', 'trigger'];
+
+/** Quote file names may carry their price; the auditor does not read them (security review L3). */
+const AUDITOR_HIDDEN_FILENAME_TYPES: readonly string[] = ['film_quote_kanei', 'filling_quote_seven'];
+
+function withoutQuoteFilename(state: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!state || !AUDITOR_HIDDEN_FILENAME_TYPES.includes(String(state.documentType))) return state;
+  const { originalFilename: _hidden, ...rest } = state;
+  return rest;
+}
+
 function allowlistObject(value: unknown, keys: readonly string[]): Record<string, unknown> | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== 'object' || Array.isArray(value)) return null;
@@ -143,11 +210,12 @@ export function buildAuditViewForRole(role: UserRole, rows: readonly AuditHistor
       actor: row.actor
     };
 
-    if (role === 'viewer') {
+    if (role === 'admin') {
       return {
         ...summary,
-        beforeState: allowlistState(row.beforeState, VIEWER_STATE_KEYS),
-        afterState: allowlistState(row.afterState, VIEWER_STATE_KEYS)
+        beforeState: (row.beforeState ?? null) as Record<string, unknown> | null,
+        afterState: (row.afterState ?? null) as Record<string, unknown> | null,
+        requestMetadata: (row.requestMetadata ?? null) as Record<string, unknown> | null
       };
     }
 
@@ -160,11 +228,21 @@ export function buildAuditViewForRole(role: UserRole, rows: readonly AuditHistor
       };
     }
 
+    if (role === 'auditor') {
+      return {
+        ...summary,
+        beforeState: withoutQuoteFilename(allowlistObject(row.beforeState, AUDITOR_STATE_KEYS)),
+        afterState: withoutQuoteFilename(allowlistObject(row.afterState, AUDITOR_STATE_KEYS)),
+        requestMetadata: allowlistObject(row.requestMetadata, AUDITOR_REQUEST_METADATA_KEYS)
+      };
+    }
+
+    // viewer — and, fail closed, any role this function does not know (P2: the
+    // full answer is admin's only, never a fall-through default).
     return {
       ...summary,
-      beforeState: (row.beforeState ?? null) as Record<string, unknown> | null,
-      afterState: (row.afterState ?? null) as Record<string, unknown> | null,
-      requestMetadata: (row.requestMetadata ?? null) as Record<string, unknown> | null
+      beforeState: allowlistState(row.beforeState, VIEWER_STATE_KEYS),
+      afterState: allowlistState(row.afterState, VIEWER_STATE_KEYS)
     };
   });
 }

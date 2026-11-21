@@ -1,0 +1,21 @@
+-- P2 R22 (representative approval 2026-11-21): a document type for the
+-- design data the customer hands in (「デザイン入稿データ」), so step 4 can
+-- keep the file itself instead of only a memo in the audit history.
+--
+-- It is not an official artifact (no seven-PO precedence gate) and it never
+-- satisfies an approval, proof, send or acceptance check: every existing check
+-- names its own types explicitly (0007/0008 triggers, the API), so the new
+-- value is invisible to them. The documents CHECK of 0004 still applies: the
+-- row carries the seven purchase order of the order it is bound to.
+--
+-- Only an enum value is added; nothing in this migration (or any later one in
+-- the same run) uses it, so it is safe inside Drizzle's single transaction.
+-- Rerunnable: ADD VALUE IF NOT EXISTS.
+--
+-- Rollback (REPORT.md §3): PostgreSQL cannot drop one enum value. Stop using
+-- it in the API (the value then stays unused), or, only when no documents row
+-- uses it: create document_type_v2 without it, ALTER the column
+-- USING document_type::text::document_type_v2 (dropping and re-adding the
+-- 0004 CHECK and the 0007/0008 functions' variable types), drop the old type,
+-- rename. Back up first; this is a separate approved change.
+ALTER TYPE "public"."document_type" ADD VALUE IF NOT EXISTS 'artwork_submission';

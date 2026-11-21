@@ -15,6 +15,47 @@ export interface ErrorDictionaryEntry {
 }
 
 export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = {
+  // P2 (p2-server API_CONTRACT §8)
+  DELIVERY_DATE_INVALID: {
+    ja: '日付は「年-月-日」（例: 2026-12-01）の実在する日付で入力してください。',
+    ko: '날짜는 「연-월-일」(예: 2026-12-01) 형식의 실제 날짜로 입력하세요.'
+  },
+  SEVEN_PO_ORDER_FACTS_INVALID: {
+    ja: 'セブン化学発注書の数量（単位と一緒に）または金額（通貨と一緒に）を正しく入力してください。',
+    ko: '세븐화학 발주서의 수량(단위와 함께) 또는 금액(통화와 함께)을 올바르게 입력하세요.'
+  },
+  SEVEN_PO_AMOUNT_ADMIN_ONLY: {
+    ja: 'セブン化学発注書の金額は代表者だけが入力できます。',
+    ko: '세븐화학 발주서의 금액은 대표만 입력할 수 있습니다.'
+  },
+  MAKER_ACCOUNT_INVALID: {
+    ja: '製造先の名前（200 文字まで）を入力してください。取引先コードは 64 文字までです。',
+    ko: '제조처 이름(200자 이내)을 입력하세요. 거래처 코드는 64자 이내입니다.'
+  },
+  MAKER_ACCOUNT_NOT_FOUND: {
+    ja: '製造先が見つかりません。画面を再読み込みしてください。',
+    ko: '제조처를 찾을 수 없습니다. 화면을 새로 고치세요.'
+  },
+  MAKER_RECIPIENT_ADDRESS_INVALID: {
+    ja: '宛先の表示名は 100 文字まで、既定・使用中は「はい」か「いいえ」で指定してください。',
+    ko: '수신처 표시 이름은 100자 이내, 기본·사용 여부는 「예」 또는 「아니요」로 지정하세요.'
+  },
+  MAKER_RECIPIENT_ADDRESS_NOT_FOUND: {
+    ja: '宛先が見つかりません。画面を再読み込みしてください。',
+    ko: '수신처를 찾을 수 없습니다. 화면을 새로 고치세요.'
+  },
+  MAKER_RECIPIENT_ADDRESS_UNAVAILABLE: {
+    ja: '選んだ送信先は使用できません。この案件の製造先の宛先から選び直してください。',
+    ko: '선택한 송신처는 사용할 수 없습니다. 이 안건 제조처의 수신처에서 다시 선택하세요.'
+  },
+  DISPLAY_LANGUAGE_INVALID: {
+    ja: '表示言語は「日本語」「日本語＋한국어」「한국어」から選んでください。',
+    ko: '표시 언어는 「日本語」「日本語＋한국어」「한국어」 중에서 선택하세요.'
+  },
+  ARTWORK_SUBMISSION_ORDER_REQUIRED: {
+    ja: 'デザイン入稿データは、セブン化学発注書が紐付いた発注を指定して登録してください。',
+    ko: '디자인 입고 데이터는 세븐화학 발주서가 연결된 발주를 지정해 등록하세요.'
+  },
   // P1 (p1-server API_CONTRACT §7, v3)
   MAKER_PO_AMOUNTS_ADMIN_ONLY: {
     ja: '金額は代表者だけが入力できます。金額なしで下書きを作成してください。',

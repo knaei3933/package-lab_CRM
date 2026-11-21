@@ -1,7 +1,12 @@
-import { boolean, check, foreignKey, index, integer, jsonb, numeric, pgEnum, pgTable, text, timestamp, unique, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
+import { boolean, check, date, foreignKey, index, integer, jsonb, numeric, pgEnum, pgTable, primaryKey, smallint, text, timestamp, unique, uniqueIndex, uuid, type AnyPgColumn } from 'drizzle-orm/pg-core';
 import { relations, sql } from 'drizzle-orm';
 
-export const userRole = pgEnum('user_role', ['admin', 'staff', 'viewer']);
+/**
+ * P2 policy P-2 adds 'auditor' (0031): read-only, separate from viewer. It sees
+ * order codes, statuses, who approved what and when, and evidence metadata;
+ * amounts and unit prices stay hidden (packages/core/src/authorization.ts).
+ */
+export const userRole = pgEnum('user_role', ['admin', 'staff', 'viewer', 'auditor']);
 export const accountRole = pgEnum('account_role', ['end_customer', 'seven', 'maker']);
 export const businessUnit = pgEnum('business_unit', ['F1']);
 export const projectRoute = pgEnum('project_route', ['F1']);
@@ -27,7 +32,10 @@ export const documentType = pgEnum('document_type', [
   'proof',
   'approval_evidence',
   'send_evidence',
-  'acceptance_evidence'
+  'acceptance_evidence',
+  // P2 R22 (0030): 「デザイン入稿データ」 — the design data handed in at step 4.
+  // Not an official artifact; no gate reads it.
+  'artwork_submission'
 ]);
 
 /** Who the document claims to come from. Recorded, never inferred. */
@@ -151,8 +159,17 @@ export const users = pgTable('users', {
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  deletedAt: timestamp('deleted_at', { withTimezone: true })
-}, (table) => [check('users_role_valid', sql`${table.role} in ('admin', 'staff', 'viewer')`)]);
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  /**
+   * P2 R29 (0029): the user's display language ('ja' | 'ja-ko' | 'ko'). Null =
+   * not chosen; the screen keeps the role default.
+   */
+  displayLanguage: text('display_language')
+}, (table) => [
+  // 0031 compares as text so the enum value added in the same run is not used.
+  check('users_role_valid', sql`(${table.role})::text in ('admin', 'staff', 'viewer', 'auditor')`),
+  check('users_display_language_vocabulary', sql`${table.displayLanguage} is null or ${table.displayLanguage} in ('ja', 'ja-ko', 'ko')`)
+]);
 
 export const sessions = pgTable('sessions', {
   id: uuid('id').primaryKey(),
@@ -339,12 +356,18 @@ export const filmSupplyOrders = pgTable('film_supply_orders', {
   receiptAssumedAt: timestamp('receipt_assumed_at', { withTimezone: true }),
   receiptAssumedByUserId: uuid('receipt_assumed_by_user_id').references(() => users.id),
   receiptAssumedNote: text('receipt_assumed_note'),
+  /** P2 R30 (0025): 希望納期 — the date the customer asked for. Calendar date, null = not recorded. */
+  requestedDeliveryDate: date('requested_delivery_date', { mode: 'string' }),
+  /** P2 R30 (0025): 納品予定日 — the date the maker committed to. Null = not recorded. */
+  plannedDeliveryDate: date('planned_delivery_date', { mode: 'string' }),
   createdByUserId: uuid('created_by_user_id').notNull().references(() => users.id),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   deletedAt: timestamp('deleted_at', { withTimezone: true })
 }, (table) => [
   index('film_supply_orders_project_idx').on(table.projectId),
+  index('film_supply_orders_requested_delivery_date_idx').on(table.requestedDeliveryDate)
+    .where(sql`${table.requestedDeliveryDate} is not null and ${table.deletedAt} is null`),
   index('film_supply_orders_status_idx').on(table.status),
   // The assumption stamp is a pair: who recorded it and when are written together.
   check('film_supply_orders_receipt_assumption_pair', sql`(${table.receiptAssumedAt} is null) = (${table.receiptAssumedByUserId} is null)`),
@@ -981,3 +1004,94 @@ export const deliveryConfirmationsRelations = relations(deliveryConfirmations, (
   evidenceDocumentVersion: one(documentVersions, { fields: [deliveryConfirmations.evidenceDocumentVersionId], references: [documentVersions.id] }),
   confirmedBy: one(users, { fields: [deliveryConfirmations.confirmedByUserId], references: [users.id] })
 }));
+
+/**
+ * P2 R30 (0025): the セブン化学発注書 quantity and amount, one row per seven PO.
+ * A separate table on purpose: every existing read of seven_purchase_orders
+ * (some return the row to staff) stays free of amounts by construction. The
+ * API writes and returns total_amount/currency to admin only.
+ */
+export const sevenPoOrderFacts = pgTable('seven_po_order_facts', {
+  sevenPurchaseOrderId: uuid('seven_purchase_order_id').primaryKey()
+    .references(() => sevenPurchaseOrders.id, { onDelete: 'cascade' }),
+  orderedQuantity: numeric('ordered_quantity', { precision: 14, scale: 3 }),
+  orderedUnit: measureUnit('ordered_unit'),
+  totalAmount: numeric('total_amount', { precision: 14, scale: 2 }),
+  currency: text('currency'),
+  createdByUserId: uuid('created_by_user_id').notNull().references(() => users.id),
+  updatedByUserId: uuid('updated_by_user_id').notNull().references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  check('seven_po_order_facts_quantity_pair', sql`(${table.orderedQuantity} is null) = (${table.orderedUnit} is null)`),
+  check('seven_po_order_facts_quantity_positive', sql`${table.orderedQuantity} is null or ${table.orderedQuantity} > 0`),
+  check('seven_po_order_facts_amount_pair', sql`(${table.totalAmount} is null) = (${table.currency} is null)`),
+  check('seven_po_order_facts_amount_nonnegative', sql`${table.totalAmount} is null or ${table.totalAmount} >= 0`),
+  check('seven_po_order_facts_currency_format', sql`${table.currency} is null or ${table.currency} ~ '^[A-Z]{3}$'`)
+]);
+
+/**
+ * P2 R33 minimum (0026): the maker master's recipient mail addresses. The maker
+ * is the accounts row with role 'maker'. Rows are deactivated, never deleted.
+ */
+export const makerRecipientAddresses = pgTable('maker_recipient_addresses', {
+  id: uuid('id').primaryKey(),
+  accountId: uuid('account_id').notNull().references(() => accounts.id, { onDelete: 'cascade' }),
+  email: text('email').notNull(),
+  label: text('label'),
+  isDefault: boolean('is_default').notNull().default(false),
+  isActive: boolean('is_active').notNull().default(true),
+  createdByUserId: uuid('created_by_user_id').notNull().references(() => users.id),
+  updatedByUserId: uuid('updated_by_user_id').notNull().references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  check('maker_recipient_addresses_email_format', sql`${table.email} ~ '^[^@[:space:]]+@[^@[:space:]]+\\.[^@[:space:]]+$' and length(${table.email}) <= 254`),
+  check('maker_recipient_addresses_email_lowercase', sql`${table.email} = lower(${table.email})`),
+  check('maker_recipient_addresses_label_length', sql`${table.label} is null or (length(btrim(${table.label})) > 0 and length(${table.label}) <= 100)`),
+  check('maker_recipient_addresses_default_is_active', sql`${table.isDefault} = false or ${table.isActive} = true`),
+  uniqueIndex('maker_recipient_addresses_account_email_unique').on(table.accountId, table.email),
+  uniqueIndex('maker_recipient_addresses_one_default').on(table.accountId).where(sql`${table.isDefault} = true`)
+]);
+
+/**
+ * P2 R05 (0027): durable Idempotency-Key answers, per (user, key), 24 hours.
+ * Only the API reads it; see apps/api/src/idempotency.ts.
+ */
+export const idempotencyKeys = pgTable('idempotency_keys', {
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  idempotencyKey: text('idempotency_key').notNull(),
+  fingerprint: text('fingerprint').notNull(),
+  state: text('state').notNull(),
+  responseStatus: smallint('response_status'),
+  responseBody: text('response_body'),
+  responseContentType: text('response_content_type'),
+  leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull()
+}, (table) => [
+  primaryKey({ name: 'idempotency_keys_pk', columns: [table.userId, table.idempotencyKey] }),
+  check('idempotency_keys_key_format', sql`${table.idempotencyKey} ~ '^[A-Za-z0-9_.:-]{8,128}$'`),
+  check('idempotency_keys_state_vocabulary', sql`${table.state} in ('pending', 'completed')`),
+  index('idempotency_keys_expires_at_idx').on(table.expiresAt)
+]);
+
+/**
+ * P2 R32 (0028): the stored maker PO number MPO-{JST year}-{seq}, company-wide
+ * per year. Assigned by the AFTER INSERT trigger on maker_purchase_orders under
+ * the kanei:maker_po_display_number advisory lock; backfilled with P1's rank.
+ */
+export const makerPoDisplayNumbers = pgTable('maker_po_display_numbers', {
+  makerPurchaseOrderId: uuid('maker_purchase_order_id').primaryKey()
+    .references(() => makerPurchaseOrders.id, { onDelete: 'cascade' }),
+  year: integer('year').notNull(),
+  seq: integer('seq').notNull(),
+  displayNumber: text('display_number').notNull(),
+  assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull().defaultNow()
+}, (table) => [
+  check('maker_po_display_numbers_year_range', sql`${table.year} between 2000 and 2999`),
+  check('maker_po_display_numbers_seq_positive', sql`${table.seq} > 0`),
+  uniqueIndex('maker_po_display_numbers_year_seq_unique').on(table.year, table.seq),
+  uniqueIndex('maker_po_display_numbers_display_number_unique').on(table.displayNumber)
+]);

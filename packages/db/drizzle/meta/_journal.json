@@ -176,6 +176,55 @@
       "when": 1796077560000,
       "tag": "0024_lot_change_check_fix",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1796163960000,
+      "tag": "0025_p2_delivery_dates_and_seven_po_facts",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1796250360000,
+      "tag": "0026_p2_maker_recipient_addresses",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1796336760000,
+      "tag": "0027_p2_idempotency_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1796423160000,
+      "tag": "0028_p2_maker_po_display_numbers",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1796509560000,
+      "tag": "0029_p2_user_display_language",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1796595960000,
+      "tag": "0030_p2_artwork_submission_document_type",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1796682360000,
+      "tag": "0031_p2_auditor_role",
+      "breakpoints": true
     }
   ]
 }

@@ -11,7 +11,9 @@ import type { Operation, UserRole } from '@kanei/core';
  */
 const SELECTED_PROJECT = 'ui-selected-project';
 
-export function normalizeRole(role: string | null | undefined): UserRole {
+// P2: the server's UserRole now includes 'auditor'; this screen layer still knows
+// three roles and reads every other role (auditor included) as viewer, as before.
+export function normalizeRole(role: string | null | undefined): Exclude<UserRole, 'auditor'> {
   return role === 'admin' || role === 'staff' ? role : 'viewer';
 }
 
