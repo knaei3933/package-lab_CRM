@@ -4,12 +4,21 @@ import { createDatabase } from '@kanei/db';
 import { createApp } from './app.js';
 import { loadApiEnv } from './env.js';
 import { validateDocumentStorageRoot } from './document-storage.js';
+import { checkSchemaPreflight } from './schema-preflight.js';
 
 const env = loadApiEnv();
 // Fail before opening a database connection or listener if the private
 // document root was not explicitly provisioned and validated.
 await validateDocumentStorageRoot();
 const { db, pool } = createDatabase(env.databaseUrl);
+// P2 review M-4: refuse to listen on a database that has not been migrated for
+// this build (deployment order: migrations first, then the API).
+const schema = await checkSchemaPreflight(db);
+if (!schema.ok) {
+  console.error(`[api] refusing to start: ${schema.message} (latest applied migration: ${schema.latestApplied ?? 'none'})`);
+  await pool.end();
+  process.exit(1);
+}
 const app = createApp({
   db,
   secureCookies: env.isProduction,

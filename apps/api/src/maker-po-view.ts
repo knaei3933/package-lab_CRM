@@ -102,7 +102,23 @@ export interface MakerPoViewerView {
   updatedAt: Date;
 }
 
-export type MakerPoView = MakerPoAdminView | MakerPoStaffView | MakerPoViewerView;
+/**
+ * P2 policy P-2 auditor: identity, status and who approved it when. No amounts,
+ * no snapshot body or digest, no recipient address.
+ */
+export interface MakerPoAuditorView {
+  id: string;
+  filmSupplyOrderId: string;
+  orderCode: string | null;
+  status: string;
+  ceoApprovedByUserId: string | null;
+  ceoApprovedAt: Date | null;
+  createdByUserId: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export type MakerPoView = MakerPoAdminView | MakerPoStaffView | MakerPoViewerView | MakerPoAuditorView;
 
 /** admin: the event as it is stored. */
 export interface MakerPoEventAdminView extends MakerPoEventRecord {}
@@ -127,16 +143,36 @@ export interface MakerPoEventViewerView {
   recordedAt: Date;
 }
 
+/** P2 auditor: which event, its verification state, who recorded it and when, the cited evidence version. */
+export interface MakerPoEventAuditorView {
+  id: string;
+  eventType: string;
+  verificationStatus: string;
+  provisional: boolean;
+  evidenceDocumentVersionId: string | null;
+  sentAt: Date | null;
+  recordedByUserId: string;
+  recordedAt: Date;
+}
+
 export type MakerPoEventView =
   | MakerPoEventAdminView
   | MakerPoEventStaffView
-  | MakerPoEventViewerView;
+  | MakerPoEventViewerView
+  | MakerPoEventAuditorView;
 
 export function buildMakerPoViewForRole(role: UserRole, po: MakerPoRecord): MakerPoView {
-  if (role === 'viewer') {
+  if (role === 'admin') return { ...po };
+
+  if (role === 'auditor') {
     return {
       id: po.id,
+      filmSupplyOrderId: po.filmSupplyOrderId,
+      orderCode: snapshotWorkFacts(po.snapshot).orderCode,
       status: po.status,
+      ceoApprovedByUserId: po.ceoApprovedByUserId,
+      ceoApprovedAt: po.ceoApprovedAt,
+      createdByUserId: po.createdByUserId,
       createdAt: po.createdAt,
       updatedAt: po.updatedAt
     };
@@ -157,15 +193,32 @@ export function buildMakerPoViewForRole(role: UserRole, po: MakerPoRecord): Make
     };
   }
 
-  return { ...po };
+  // viewer — and, fail closed, any role this function does not know.
+  return {
+    id: po.id,
+    status: po.status,
+    createdAt: po.createdAt,
+    updatedAt: po.updatedAt
+  };
 }
 
 export function buildMakerPoEventViewForRole(
   role: UserRole,
   event: MakerPoEventRecord
 ): MakerPoEventView {
-  if (role === 'viewer') {
-    return { id: event.id, eventType: event.eventType, recordedAt: event.recordedAt };
+  if (role === 'admin') return { ...event };
+
+  if (role === 'auditor') {
+    return {
+      id: event.id,
+      eventType: event.eventType,
+      verificationStatus: event.verificationStatus,
+      provisional: event.provisional,
+      evidenceDocumentVersionId: event.evidenceDocumentVersionId,
+      sentAt: event.sentAt,
+      recordedByUserId: event.recordedByUserId,
+      recordedAt: event.recordedAt
+    };
   }
 
   if (role === 'staff') {
@@ -180,5 +233,6 @@ export function buildMakerPoEventViewForRole(
     };
   }
 
-  return { ...event };
+  // viewer — and, fail closed, any role this function does not know.
+  return { id: event.id, eventType: event.eventType, recordedAt: event.recordedAt };
 }

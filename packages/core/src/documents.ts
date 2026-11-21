@@ -19,8 +19,18 @@ export const DOCUMENT_TYPES = [
   'proof',
   'approval_evidence',
   'send_evidence',
-  'acceptance_evidence'
+  'acceptance_evidence',
+  // P2 R22: 「デザイン入稿データ」 (0030). Bound to one film order; not an official
+  // artifact and not an input document, so no gate reads it.
+  'artwork_submission'
 ] as const;
+
+/** P2 R22: the design data the customer handed in (step 4). Must name its film order. */
+export const ORDER_BOUND_SUBMISSION_DOCUMENT_TYPES = ['artwork_submission'] as const;
+
+export function isOrderBoundSubmissionDocumentType(documentType: DocumentType): boolean {
+  return (ORDER_BOUND_SUBMISSION_DOCUMENT_TYPES as readonly string[]).includes(documentType);
+}
 
 export type DocumentType = (typeof DOCUMENT_TYPES)[number];
 

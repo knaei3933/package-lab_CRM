@@ -29,7 +29,9 @@ export const DOCUMENT_TYPE_LABELS: Readonly<Record<DocumentType, string>> = {
   proof: '校正ゲラ',
   approval_evidence: '承認証跡',
   send_evidence: '送信証跡',
-  acceptance_evidence: '受領証跡（検収）'
+  acceptance_evidence: '受領証跡（検収）',
+  // P2 R22 (server document type 0030).
+  artwork_submission: 'デザイン入稿データ'
 };
 
 export const ISSUER_ENTITY_LABELS: Readonly<Record<IssuerEntity, string>> = {

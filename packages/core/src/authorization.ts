@@ -1,4 +1,9 @@
-export type UserRole = 'admin' | 'staff' | 'viewer';
+/**
+ * P2 policy P-2: 'auditor' is the audit-only role, separate from 'viewer'
+ * (see AUDITOR_READ_OPERATIONS below).
+ */
+export type UserRole = 'admin' | 'staff' | 'viewer' | 'auditor';
+export const USER_ROLES: readonly UserRole[] = ['admin', 'staff', 'viewer', 'auditor'];
 export type BusinessUnit = 'F1';
 export type Operation =
   | 'project:create'
@@ -39,7 +44,17 @@ export type Operation =
   | 'filling_order_line:create'
   | 'filling_delivery:create'
   | 'commission_readiness:evaluate'
-  | 'audit_history:read';
+  | 'audit_history:read'
+  // P2 R30: 希望納期・納品予定日 on a film order (staff work on an assigned project).
+  | 'film_order:update_delivery_dates'
+  // P2 R30: セブン化学発注書 quantity (staff) and amount (representative only).
+  | 'seven_po:update_order_facts'
+  | 'seven_po:update_amount'
+  // P2 R33: read the maker's recipient addresses for an assigned project; manage the master.
+  | 'maker_recipient:read'
+  | 'maker_master:manage'
+  // P2 P-2: evidence metadata (file name, hash, issuer, who uploaded/verified, when) — never bytes.
+  | 'evidence_metadata:read';
 
 export interface AuthenticatedActor {
   id: string;
@@ -77,6 +92,31 @@ const MAKER_PO_STAFF_OPERATIONS: readonly Operation[] = [
   'maker_po:create',
   'maker_po:send_evidence',
   'maker_po:accept_provisional'
+];
+
+/**
+ * P2: operations only the representative runs. The amount of a seven PO is the
+ * representative's information (staff never read amounts, so they never write
+ * them), and the maker master decides where a maker PO may be sent.
+ */
+const P2_ADMIN_ONLY_OPERATIONS: readonly Operation[] = [
+  'seven_po:update_amount',
+  'maker_master:manage'
+];
+
+/**
+ * P2 policy P-2: what the auditor may read, on an assigned project only. The
+ * answers these operations produce are shaped for the auditor role (codes,
+ * statuses, who approved what and when, evidence metadata) and never carry
+ * amounts or unit prices. Every other operation — every write, every download
+ * of evidence bytes, every representative-only read — is refused.
+ */
+const AUDITOR_READ_OPERATIONS: readonly Operation[] = [
+  'project:read',
+  'audit_history:read',
+  'maker_po:read',
+  'artwork_approval:read',
+  'evidence_metadata:read'
 ];
 
 /**
@@ -134,7 +174,25 @@ export function canPerform(
 
   if (actor.role === 'admin') return { allowed: true };
 
+  // P2 P-2: the auditor reads, and only the AUDITOR_READ_OPERATIONS, and only on
+  // an assigned project. Checked before every staff/viewer rule so no later
+  // default (project:create, the staff fall-through) can ever allow a write.
+  if (actor.role === 'auditor') {
+    if (!AUDITOR_READ_OPERATIONS.includes(operation)) return { allowed: false, reason: 'ROLE_FORBIDDEN' };
+    if (!projectId) return { allowed: false, reason: 'PROJECT_NOT_ASSIGNED' };
+    return actor.assignedProjectIds.includes(projectId)
+      ? { allowed: true }
+      : { allowed: false, reason: 'PROJECT_NOT_ASSIGNED' };
+  }
+  // Fail closed for any role this function does not know.
+  if (actor.role !== 'staff' && actor.role !== 'viewer') return { allowed: false, reason: 'ROLE_FORBIDDEN' };
+
+  if (P2_ADMIN_ONLY_OPERATIONS.includes(operation)) return { allowed: false, reason: 'ROLE_FORBIDDEN' };
+
   if (operation === 'project:create') {
+    // P2 conductor decision (2026-11-21): the viewer writes nothing — creating
+    // a project included (until P2 any signed-in role could).
+    if (actor.role === 'viewer') return { allowed: false, reason: 'ROLE_FORBIDDEN' };
     return businessUnit === 'F1' ? { allowed: true } : { allowed: false, reason: 'ROLE_FORBIDDEN' };
   }
 

@@ -309,6 +309,24 @@ export const ERROR_MESSAGES_JA: Readonly<Record<string, string>> = {
 
   // ---- P1 P-4: self-verification
   SELF_VERIFICATION_FORBIDDEN: '自分で登録した証跡は自分で確認できません。代表者または別の担当者に確認を依頼してください',
+
+  // ---- P2: delivery dates / seven PO facts / maker master / language / design data
+  DELIVERY_DATE_INVALID: '日付は「年-月-日」（例: 2026-12-01）の実在する日付で入力してください。変更する日付を 1 つ以上送ってください',
+  SEVEN_PO_ORDER_FACTS_INVALID: 'セブン化学発注書の数量（単位と一緒に）または金額（通貨と一緒に）を正しく入力してください',
+  SEVEN_PO_AMOUNT_ADMIN_ONLY: 'セブン化学発注書の金額は代表者だけが入力できます',
+  MAKER_ACCOUNT_INVALID: '製造先の名前（200 文字まで）を入力してください。取引先コードは 64 文字までです',
+  MAKER_ACCOUNT_NOT_FOUND: '製造先が見つかりません',
+  MAKER_RECIPIENT_ADDRESS_INVALID: '宛先の表示名は 100 文字まで、既定・使用中は「はい」か「いいえ」で指定してください',
+  MAKER_RECIPIENT_ADDRESS_NOT_FOUND: '宛先が見つかりません',
+  MAKER_RECIPIENT_ADDRESS_UNAVAILABLE: '選んだ送信先は使用できません（この案件の製造先の使用中の宛先ではありません）。送信先を選び直してください',
+  DISPLAY_LANGUAGE_INVALID: '表示言語は「日本語」「日本語＋한국어」「한국어」から選んでください',
+  ARTWORK_SUBMISSION_ORDER_REQUIRED: 'デザイン入稿データは、セブン化学発注書が紐付いた発注を指定して登録してください',
+
+  // ---- P2 review: idempotency outcomes, delivery-terms lock, read-only roles
+  IDEMPOTENCY_IN_PROGRESS: '同じ送信をまだ処理しています。少し待ってから、同じ画面のままもう一度送信してください',
+  IDEMPOTENCY_OUTCOME_UNKNOWN: '前回の送信の結果を確認できませんでした。画面を再読み込みして、記録されたかどうかを確認してください',
+  DELIVERY_TERMS_LOCKED: '代表承認済みのメーカー発注書があるため、納期・セブン化学発注書の数量は変更できません。変更する場合はメーカー発注書を取り消して作り直してください',
+  READ_ONLY_ROLE: '閲覧・監査の権限では案件を登録できません',
 };
 
 /** HTTP status → the code a refusal falls back to when its handler named none. */

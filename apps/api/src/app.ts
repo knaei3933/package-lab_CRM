@@ -5,6 +5,7 @@ import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray, sql } from 'drizzle-orm';
 import { expectedProjectMiddleware } from './project-context.js';
+import { orderFactsViewForRole, parseCalendarDate, registerP2Routes } from './p2-routes.js';
 import {
   buildMakerPoSnapshot,
   canPerform,
@@ -50,6 +51,7 @@ import {
   isExceptionFilmSupplyOrderState,
   isLegacyHoldReleaseTarget,
   isOfficialArtifactDocumentType,
+  isOrderBoundSubmissionDocumentType,
   isFrozenFilmOrderStatus,
   isTerminalFilmSupplyOrderState,
   japaneseStatusSurface,
@@ -78,6 +80,7 @@ import {
   type MakerPoEvidenceDocument,
   type MakerPoSnapshot,
   type MakerPoSnapshotArtworkFile,
+  type MakerPoSnapshotDeliveryTerms,
   type MeasureUnit,
   type NormalFilmSupplyOrderState,
   type PaymentTerms,
@@ -117,6 +120,9 @@ import {
   makerPoEvents,
   makerPoSendManualVerifications,
   makerPurchaseOrders,
+  makerPoDisplayNumbers,
+  makerRecipientAddresses,
+  sevenPoOrderFacts,
   preOrderReferences,
   projectAssignments,
   projects,
@@ -125,7 +131,7 @@ import {
   users
 } from '@kanei/db/schema';
 import { uuidv7 } from '@kanei/db';
-import { getSessionUser, issueToken, readSessionToken, toActor, type AppDatabase } from './auth.js';
+import { getSessionUser, issueToken, readSessionToken, sessionTokenHashForRole, toActor, type AppDatabase } from './auth.js';
 import {
   computeSha256,
   documentMaxBytes,
@@ -153,10 +159,11 @@ import {
   normalizeRefusalBody
 } from './error-codes.js';
 import {
+  DbIdempotencyStore,
   IDEMPOTENCY_HEADER,
-  IdempotencyStore,
   isValidIdempotencyKey,
   sha256Hex,
+  type IdempotencyBackend,
   type StoredResponse
 } from './idempotency.js';
 import {
@@ -179,8 +186,8 @@ export interface AppOptions {
   loginTimeoutMs?: number;
   /** P0 R04: the longest the /api/health database probe waits. */
   healthDbTimeoutMs?: number;
-  /** P0 R05: the in-process idempotency store (one per app by default). */
-  idempotencyStore?: IdempotencyStore;
+  /** P2 R05: the idempotency store (the idempotency_keys table by default). */
+  idempotencyStore?: IdempotencyBackend;
 }
 
 interface AuthContext {
@@ -378,7 +385,7 @@ function auditEventRow(input: AuditEventInput) {
 }
 
 /** Appends one audit_events row, always stamped with the project it belongs to. */
-async function recordAuditEvent(writer: AuditEventWriter, input: AuditEventInput): Promise<void> {
+export async function recordAuditEvent(writer: AuditEventWriter, input: AuditEventInput): Promise<void> {
   await writer.insert(auditEvents).values(auditEventRow(input));
 }
 
@@ -678,7 +685,7 @@ export function createApp({
   port = 3081,
   loginTimeoutMs = 15_000,
   healthDbTimeoutMs = 2_000,
-  idempotencyStore = new IdempotencyStore()
+  idempotencyStore = new DbIdempotencyStore(db)
 }: AppOptions) {
   const app = new Hono<AuthContext>();
 
@@ -728,9 +735,11 @@ export function createApp({
   });
 
   // P0 R05: a write may carry an Idempotency-Key. The first completed answer
-  // for (session, key) is replayed to a repeat of the same request, and a
+  // for (user, key) is replayed to a repeat of the same request, and a
   // repeat that arrives while the first is still running waits for it — so a
-  // same-tick double submit writes once. See idempotency.ts for the limits.
+  // same-tick double submit writes once. P2 R05: kept in idempotency_keys, so
+  // a restart, another API process or a new login still replays it. See
+  // idempotency.ts for the limits.
   app.use('*', async (context, next) => {
     if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(context.req.method)) return next();
     const key = context.req.header(IDEMPOTENCY_HEADER);
@@ -771,11 +780,12 @@ export function createApp({
         'idempotent-replayed': 'true'
       }
     });
-    let lookup = idempotencyStore.begin(`${sessionUser.id}:${sha256Hex(token)}`, key, fingerprint);
-    if (lookup.kind === 'wait') {
+    // A database failure here is thrown: app.onError answers 503 DB_UNAVAILABLE.
+    let lookup = await idempotencyStore.begin(sessionUser.id, key, fingerprint);
+    for (let waits = 0; lookup.kind === 'wait' && waits < 3; waits += 1) {
       const first = await lookup.pending;
       if (first) return replay(first);
-      lookup = idempotencyStore.begin(`${sessionUser.id}:${sha256Hex(token)}`, key, fingerprint);
+      lookup = await idempotencyStore.begin(sessionUser.id, key, fingerprint);
     }
     if (lookup.kind === 'mismatch') {
       return context.json({
@@ -784,23 +794,44 @@ export function createApp({
       }, 422);
     }
     if (lookup.kind === 'replay') return replay(lookup.response);
-    if (lookup.kind !== 'execute') return next();
+    // Review M1 / P2 review M-1: whether the first request was recorded is
+    // unknown (its process stopped, or its answer could not be stored) — never
+    // run it a second time. P2 review M-2: its own code, because the client
+    // must reload and check (a new key), unlike IDEMPOTENCY_IN_PROGRESS.
+    if (lookup.kind === 'unknown') {
+      return context.json({
+        error: '前回の送信の結果を確認できませんでした。画面を再読み込みして、記録されたかどうかを確認してください',
+        code: 'IDEMPOTENCY_OUTCOME_UNKNOWN'
+      }, 409);
+    }
+    // Still running elsewhere after the waits: never run the write a second
+    // time without the key (fail closed). P2 review M-2: the client keeps the
+    // SAME key and retries later — the retry replays once the first completes.
+    if (lookup.kind !== 'execute') {
+      return context.json({
+        error: '同じ送信をまだ処理しています。少し待ってから、同じ画面のままもう一度送信してください',
+        code: 'IDEMPOTENCY_IN_PROGRESS'
+      }, 409);
+    }
     try {
       await next();
     } catch (error) {
-      lookup.complete(null);
+      await lookup.complete(null);
       throw error;
     }
     const response = context.res;
+    let answer: StoredResponse | null = null;
     try {
-      lookup.complete({
+      answer = {
         status: response.status,
         body: await response.clone().text(),
         contentType: response.headers.get('content-type')
-      });
+      };
     } catch {
-      lookup.complete(null);
+      answer = null;
     }
+    // Stored before the answer leaves, so a retry after it always replays.
+    await lookup.complete(answer);
   });
 
   // Any row-lock deadlock is a retryable concurrency conflict, not a server
@@ -1019,7 +1050,12 @@ export function createApp({
     if (deadline.passed) return context.json({ error: ERROR_MESSAGES_JA.LOGIN_TIMEOUT!, code: 'LOGIN_TIMEOUT' }, 503);
     const { token, tokenHash } = issueToken();
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-    await db.insert(sessions).values({ id: uuidv7(), userId: outcome.userId, tokenHash, expiresAt });
+    await db.insert(sessions).values({
+      id: uuidv7(),
+      userId: outcome.userId,
+      tokenHash: sessionTokenHashForRole(tokenHash, outcome.role),
+      expiresAt
+    });
     setCookie(context, 'kanei_mvp_session', token, {
       httpOnly: true,
       sameSite: 'Lax',
@@ -1046,7 +1082,15 @@ export function createApp({
   app.get('/api/me', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
-    return context.json({ id: user.id, role: user.role, assignedProjectIds: user.assignedProjectIds });
+    // P2 R29: the stored display language (null = not chosen; the screen keeps the role default).
+    const [preference] = await db.select({ displayLanguage: users.displayLanguage }).from(users)
+      .where(eq(users.id, user.id)).limit(1);
+    return context.json({
+      id: user.id,
+      role: user.role,
+      assignedProjectIds: user.assignedProjectIds,
+      displayLanguage: preference?.displayLanguage ?? null
+    });
   });
 
   app.post('/api/projects', async (context) => {
@@ -1054,7 +1098,12 @@ export function createApp({
     if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
 
     const decision = canPerform(toActor(user), 'project:create', 'F1');
-    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
+    if (!decision.allowed) {
+      // P2 decision: read-only roles (viewer, auditor) never create a project.
+      return user.role === 'viewer' || user.role === 'auditor'
+        ? context.json({ error: '閲覧・監査の権限では案件を登録できません', code: 'READ_ONLY_ROLE' }, 403)
+        : context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     const routeCheck = validateProjectRoute(body?.route);
@@ -1524,6 +1573,23 @@ export function createApp({
       return context.json({ error: paymentTermsCheck.message, code: paymentTermsCheck.code }, 422);
     }
 
+    // P2 R30: 希望納期・納品予定日 may be stated at creation (optional, calendar dates).
+    const deliveryDates: { requestedDeliveryDate: string | null; plannedDeliveryDate: string | null } = {
+      requestedDeliveryDate: null,
+      plannedDeliveryDate: null
+    };
+    for (const key of ['requestedDeliveryDate', 'plannedDeliveryDate'] as const) {
+      if (body?.[key] === undefined) continue;
+      const parsed = parseCalendarDate(body[key]);
+      if (!parsed.ok) {
+        return context.json({
+          error: '日付は「年-月-日」（例: 2026-12-01）の実在する日付で入力してください。変更する日付を 1 つ以上送ってください',
+          code: 'DELIVERY_DATE_INVALID'
+        }, 422);
+      }
+      deliveryDates[key] = parsed.value;
+    }
+
     let sevenPurchaseOrderId: string | null = null;
     if (typeof body?.sevenPurchaseOrderId === 'string') {
       const [po] = await db.select().from(sevenPurchaseOrders)
@@ -1544,6 +1610,7 @@ export function createApp({
       paymentTerms: paymentTermsCheck.value,
       holdReason: null,
       exceptionNote: null,
+      ...deliveryDates,
       createdByUserId: user.id,
       createdAt: now,
       updatedAt: now,
@@ -1755,6 +1822,9 @@ export function createApp({
       code: filmSupplyOrders.code,
       status: filmSupplyOrders.status,
       paymentTerms: filmSupplyOrders.paymentTerms,
+      // P2 R30: delivery dates are work facts (not amounts) — every reader of the list sees them.
+      requestedDeliveryDate: filmSupplyOrders.requestedDeliveryDate,
+      plannedDeliveryDate: filmSupplyOrders.plannedDeliveryDate,
       createdAt: filmSupplyOrders.createdAt,
       updatedAt: filmSupplyOrders.updatedAt
     }).from(filmSupplyOrders)
@@ -3756,6 +3826,26 @@ export function createApp({
       }
       linkedPo = po;
     }
+    // P2 R22: デザイン入稿データ is about one film order. It must name that order,
+    // and it carries the order's own seven PO (the 0004 documents CHECK), never
+    // another one. It is not an official artifact, so no precedence gate runs.
+    if (isOrderBoundSubmissionDocumentType(input.documentType)) {
+      const [boundOrder] = artworkBindingOrderId
+        ? await db.select({ sevenPurchaseOrderId: filmSupplyOrders.sevenPurchaseOrderId })
+          .from(filmSupplyOrders).where(eq(filmSupplyOrders.id, artworkBindingOrderId)).limit(1)
+        : [];
+      const orderPoId = boundOrder?.sevenPurchaseOrderId ?? null;
+      if (!orderPoId || (linkedPo && linkedPo.id !== orderPoId)) {
+        return context.json({
+          error: 'デザイン入稿データは、セブン化学発注書が紐付いた発注を指定して登録してください',
+          code: 'ARTWORK_SUBMISSION_ORDER_REQUIRED'
+        }, 422);
+      }
+      if (!linkedPo) {
+        const [orderPo] = await db.select().from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, orderPoId)).limit(1);
+        linkedPo = orderPo ?? null;
+      }
+    }
     if (isOfficialArtifactDocumentType(input.documentType)) {
       if (!linkedPo) {
         return context.json({ error: '検証済みのセブン発注書の紐付けが必要です', code: 'SEVEN_PO_REQUIRED' }, 422);
@@ -4843,10 +4933,11 @@ export function createApp({
   }
 
   /**
-   * P1 R32: MPO-{JST year}-{sequence}. The sequence is the row's rank among the
-   * maker POs created in the same JST year, ordered by (created_at, id). Rows
-   * are never deleted, and creation is serialized (see the create endpoint), so
-   * a number never changes once shown.
+   * P2 R32: MPO-{JST year}-{sequence} is stored once per maker PO
+   * (maker_po_display_numbers, migration 0028): assigned by the insert trigger
+   * under the kanei:maker_po_display_number advisory lock, company-wide per JST
+   * year, and backfilled with exactly the P1 rank (created_at, id), so the
+   * numbers on screen do not change. A number never moves once assigned.
    */
   async function loadMakerPoDisplayNumbers(
     executor: MakerPoQueryExecutor,
@@ -4855,22 +4946,39 @@ export function createApp({
     const out = new Map<string, string>();
     const wanted = [...new Set(ids.filter(isUuid))];
     if (wanted.length === 0) return out;
-    const result = await (executor as unknown as AppDatabase).execute(sql`
-      select id::text as id, year::int as year, seq::int as seq from (
-        select id,
-               extract(year from (created_at at time zone 'Asia/Tokyo'))::int as year,
-               row_number() over (
-                 partition by extract(year from (created_at at time zone 'Asia/Tokyo'))
-                 order by created_at, id
-               ) as seq
-        from maker_purchase_orders
-      ) ranked
-      where id in (${sql.join(wanted.map((id) => sql`${id}::uuid`), sql`, `)})
-    `);
-    const rows = (result as unknown as { rows?: Array<{ id: string; year: number; seq: number }> }).rows
-      ?? (result as unknown as Array<{ id: string; year: number; seq: number }>);
-    for (const row of rows) out.set(row.id, makerPoDisplayNumber(Number(row.year), Number(row.seq)));
+    const rows = await executor.select({
+      id: makerPoDisplayNumbers.makerPurchaseOrderId,
+      displayNumber: makerPoDisplayNumbers.displayNumber
+    }).from(makerPoDisplayNumbers).where(inArray(makerPoDisplayNumbers.makerPurchaseOrderId, wanted));
+    for (const row of rows) out.set(row.id, row.displayNumber);
     return out;
+  }
+
+  /**
+   * P2 R33: an address of the maker master that a maker PO of this project may
+   * use — active, of an active maker, and that maker is the project's maker.
+   */
+  async function loadUsableMakerRecipientAddress(
+    executor: MakerPoQueryExecutor,
+    projectId: string,
+    addressId: string,
+    shareLock = false
+  ): Promise<{ id: string; email: string } | null> {
+    const query = executor.select({ id: makerRecipientAddresses.id, email: makerRecipientAddresses.email })
+      .from(makerRecipientAddresses)
+      .innerJoin(projects, eq(projects.makerAccountId, makerRecipientAddresses.accountId))
+      .innerJoin(accounts, eq(accounts.id, makerRecipientAddresses.accountId))
+      .where(and(
+        eq(makerRecipientAddresses.id, addressId),
+        eq(makerRecipientAddresses.isActive, true),
+        eq(projects.id, projectId),
+        eq(accounts.role, 'maker'),
+        eq(accounts.isActive, true),
+        isNull(accounts.deletedAt)
+      ))
+      .limit(1);
+    const [row] = shareLock ? await query.for('share', { of: makerRecipientAddresses }) : await query;
+    return row ?? null;
   }
 
   app.post('/api/film-supply-orders/:orderId/artwork-revisions', async (context) => {
@@ -6161,6 +6269,7 @@ export function createApp({
     lines: Array<{ lineNumber: number; description: string; orderedQuantity: string; unit: string }>;
     artworkFiles: MakerPoSnapshotArtworkFile[];
     sevenPoNumber: string | null;
+    deliveryTerms: MakerPoSnapshotDeliveryTerms;
   }> {
     const [order] = await executor.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, orderId)).limit(1);
@@ -6198,12 +6307,24 @@ export function createApp({
     }
 
     let sevenPoNumber: string | null = null;
+    let sevenPoFacts: { orderedQuantity: string | null; orderedUnit: string | null } | undefined;
     if (order.sevenPurchaseOrderId) {
       const [po] = await executor.select({ poNumber: sevenPurchaseOrders.poNumber })
         .from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).limit(1);
       sevenPoNumber = po?.poNumber ?? null;
+      [sevenPoFacts] = await executor.select({
+        orderedQuantity: sevenPoOrderFacts.orderedQuantity,
+        orderedUnit: sevenPoOrderFacts.orderedUnit
+      }).from(sevenPoOrderFacts).where(eq(sevenPoOrderFacts.sevenPurchaseOrderId, order.sevenPurchaseOrderId)).limit(1);
     }
-    return { order, lines, artworkFiles, sevenPoNumber };
+    // P2 decision: what an approval freezes about the schedule and quantity.
+    const deliveryTerms: MakerPoSnapshotDeliveryTerms = {
+      requestedDeliveryDate: order.requestedDeliveryDate ?? null,
+      plannedDeliveryDate: order.plannedDeliveryDate ?? null,
+      sevenPoOrderedQuantity: sevenPoFacts?.orderedQuantity ?? null,
+      sevenPoOrderedUnit: sevenPoFacts?.orderedUnit ?? null
+    };
+    return { order, lines, artworkFiles, sevenPoNumber, deliveryTerms };
   }
 
   /**
@@ -6214,14 +6335,22 @@ export function createApp({
    */
   function rebuildMakerPoSnapshot(
     parts: Awaited<ReturnType<typeof loadMakerPoSnapshotParts>>,
-    storedSnapshot: MakerPoSnapshot
+    storedSnapshot: MakerPoSnapshot,
+    mode: 'stored_shape' | 'freeze' = 'stored_shape'
   ): MakerPoSnapshot {
+    // P2 decision: an approval ('freeze': the approval itself, the card that
+    // previews it, the representative's amount entry) always freezes the
+    // delivery terms. The identity check of an approved paper ('stored_shape')
+    // compares like with like: a paper frozen before P2 has no delivery terms
+    // and keeps the digest it was approved with.
+    const withTerms = mode === 'freeze' || storedSnapshot.deliveryTerms !== undefined;
     return buildMakerPoSnapshot({
       order: { id: parts.order.id, code: parts.order.code, sevenPoNumber: parts.sevenPoNumber },
       items: parts.lines,
       artworkFiles: parts.artworkFiles,
       amounts: storedSnapshot.amounts ?? null,
-      recipientAddress: storedSnapshot.recipient.address
+      recipientAddress: storedSnapshot.recipient.address,
+      ...(withTerms ? { deliveryTerms: parts.deliveryTerms } : {})
     });
   }
 
@@ -6658,9 +6787,27 @@ export function createApp({
     if (user.role !== 'admin' && body && typeof body === 'object' && body.amounts !== undefined && body.amounts !== null) {
       return context.json({ error: '金額は代表者だけが入力できます。金額なしで下書きを作成してください', code: 'MAKER_PO_AMOUNTS_ADMIN_ONLY' }, 403);
     }
+    // P2 R33: the recipient may be chosen from the maker master
+    // (recipientAddressId): an active address of this project's maker. A typed
+    // recipientAddress sent with it must be the same address. The snapshot keeps
+    // the address text exactly as before, so its hash rules do not change.
+    let recipientInput: unknown = body?.recipientAddress;
+    let recipientAddressId: string | null = null;
+    const recipientUnavailable = {
+      error: '選んだ送信先は使用できません（この案件の製造先の使用中の宛先ではありません）。送信先を選び直してください',
+      code: 'MAKER_RECIPIENT_ADDRESS_UNAVAILABLE'
+    };
+    if (body?.recipientAddressId !== undefined && body?.recipientAddressId !== null) {
+      if (!isUuid(body.recipientAddressId)) return context.json(recipientUnavailable, 422);
+      const chosen = await loadUsableMakerRecipientAddress(db, order.projectId, body.recipientAddressId);
+      const typed = typeof body.recipientAddress === 'string' ? body.recipientAddress.trim().toLowerCase() : '';
+      if (!chosen || (typed !== '' && typed !== chosen.email)) return context.json(recipientUnavailable, 422);
+      recipientInput = chosen.email;
+      recipientAddressId = chosen.id;
+    }
     // P0 R10: the recipient is the maker's mail address and is checked as one
     // here, when the paper is written — not first at the send.
-    const recipientCheck = validateMakerPoRecipientAddress(body?.recipientAddress);
+    const recipientCheck = validateMakerPoRecipientAddress(recipientInput);
     if (!recipientCheck.ok) {
       return context.json({ error: recipientCheck.message, code: recipientCheck.code }, 422);
     }
@@ -6724,6 +6871,12 @@ export function createApp({
           return { kind: 'invalid' as const, error: creationGate.message, code: creationGate.code };
         }
 
+        // P2 R33: the chosen master address is re-read under a share lock, so a
+        // concurrent deactivation either waits for this paper or wins before it.
+        if (recipientAddressId && !(await loadUsableMakerRecipientAddress(tx, order.projectId, recipientAddressId, true))) {
+          return { kind: 'invalid' as const, ...recipientUnavailable };
+        }
+
         const precedenceRefusal = await sevenPoPrecedenceRefusal(order, tx);
         if (precedenceRefusal) {
           return { kind: 'invalid' as const, error: precedenceRefusal.message, code: precedenceRefusal.code };
@@ -6763,7 +6916,8 @@ export function createApp({
           items: parts.lines,
           artworkFiles: parts.artworkFiles,
           amounts,
-          recipientAddress: recipientCheck.address
+          recipientAddress: recipientCheck.address,
+          deliveryTerms: parts.deliveryTerms
         });
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         // P1 R32: the display number MPO-{year}-{n} is the rank by (created_at,
@@ -6797,7 +6951,12 @@ export function createApp({
           action: 'MAKER_PO_CREATED',
           entityType: 'maker_purchase_order',
           entityId: poId,
-          afterState: { ...purchaseOrder, orderCode: parts.order.code },
+          afterState: {
+            ...purchaseOrder,
+            orderCode: parts.order.code,
+            recipientAddressId,
+            recipientSource: recipientAddressId ? 'master' : 'typed'
+          },
           occurredAt: now,
           requestMetadata: { operation: 'maker_po:create', filmSupplyOrderId: orderId }
         });
@@ -6890,10 +7049,10 @@ export function createApp({
         const [po] = await tx.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).for('update');
         if (!po || po.status !== 'DRAFT') throw new MakerPoStateConflict();
         const parts = await loadMakerPoSnapshotParts(tx, po.filmSupplyOrderId);
-        const shown = computeMakerPoSnapshotSha256(rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot));
+        const shown = computeMakerPoSnapshotSha256(rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot, 'freeze'));
         if (shown !== expected) throw new MakerPoSnapshotChangedUnderLock(expected, shown);
         const stored = po.snapshot as MakerPoSnapshot;
-        const snapshot = rebuildMakerPoSnapshot(parts, { ...stored, amounts });
+        const snapshot = rebuildMakerPoSnapshot(parts, { ...stored, amounts }, 'freeze');
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         await tx.update(makerPurchaseOrders).set({ snapshot, snapshotSha256, updatedAt: now }).where(eq(makerPurchaseOrders.id, poId));
         await recordAuditEvent(tx, {
@@ -7067,8 +7226,15 @@ export function createApp({
 
         // The approval re-freezes current order data and stamps the digest it
         // approved: a voided snapshot can only come back through this door.
+        // P2 decision: the seven PO row is share-locked before its quantity is
+        // frozen, so an order-facts write (which takes it FOR UPDATE and then
+        // checks for an approved paper) cannot slip in between.
+        if (order.sevenPurchaseOrderId) {
+          await tx.select({ id: sevenPurchaseOrders.id }).from(sevenPurchaseOrders)
+            .where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).for('share');
+        }
         const parts = await loadMakerPoSnapshotParts(tx, po.filmSupplyOrderId);
-        const snapshot = rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot);
+        const snapshot = rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot, 'freeze');
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         if (expectedSnapshotSha256 !== null && expectedSnapshotSha256 !== snapshotSha256) {
           throw new MakerPoSnapshotChangedUnderLock(expectedSnapshotSha256, snapshotSha256);
@@ -7230,7 +7396,7 @@ export function createApp({
       .from(projects).where(eq(projects.id, order.projectId)).limit(1);
     const stored = po.snapshot as MakerPoSnapshot;
     const parts = await loadMakerPoSnapshotParts(db, order.id);
-    const preview = rebuildMakerPoSnapshot(parts, stored);
+    const preview = rebuildMakerPoSnapshot(parts, stored, 'freeze');
     const approvalSnapshotSha256 = computeMakerPoSnapshotSha256(preview);
     const numbers = await loadMakerPoDisplayNumbers(db, [po.id]);
 
@@ -7337,6 +7503,24 @@ export function createApp({
         verificationStatus: sevenPurchaseOrders.verificationStatus
       }).from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).limit(1)
       : [];
+    const [masterRecipient] = typeof preview.recipient.address === 'string'
+      ? await db.select({ id: makerRecipientAddresses.id }).from(makerRecipientAddresses)
+        .innerJoin(projects, eq(projects.makerAccountId, makerRecipientAddresses.accountId))
+        .innerJoin(accounts, eq(accounts.id, makerRecipientAddresses.accountId))
+        .where(and(
+          // Review L-7: the same conditions as the create path (loadUsableMakerRecipientAddress).
+          eq(projects.id, order.projectId),
+          eq(makerRecipientAddresses.isActive, true),
+          eq(accounts.role, 'maker'),
+          eq(accounts.isActive, true),
+          isNull(accounts.deletedAt),
+          eq(makerRecipientAddresses.email, preview.recipient.address.trim().toLowerCase())
+        )).limit(1)
+      : [];
+    const recipientInMaster = masterRecipient !== undefined;
+    const [sevenPoFacts] = sevenPo
+      ? await db.select().from(sevenPoOrderFacts).where(eq(sevenPoOrderFacts.sevenPurchaseOrderId, sevenPo.id)).limit(1)
+      : [];
     const [creator] = await db.select({ id: users.id, displayName: users.displayName })
       .from(users).where(eq(users.id, po.createdByUserId)).limit(1);
 
@@ -7390,7 +7574,14 @@ export function createApp({
         status: order.status,
         statusLabel: FILM_SUPPLY_ORDER_STATUS_LABELS[order.status as FilmOrderStatus] ?? null,
         paymentTerms,
-        paymentTermsLabel: PAYMENT_TERMS_LABELS_JA[paymentTerms]
+        paymentTermsLabel: PAYMENT_TERMS_LABELS_JA[paymentTerms],
+        // P2 R30: 希望納期・納品予定日 (null = not recorded). Read from the order, not
+        // frozen into the snapshot, so the approval hash rules stay as they are.
+        requestedDeliveryDate: order.requestedDeliveryDate ?? null,
+        plannedDeliveryDate: order.plannedDeliveryDate ?? null,
+        // Security review L1: when the order (dates) last changed, so the card can
+        // say the facts moved after it was drawn (they are not in the frozen hash).
+        updatedAt: order.updatedAt
       },
       snapshot: {
         items: preview.items.map((item) => ({ ...item, quantityDisplay: formatQuantityDisplay(item.orderedQuantity, item.unit) })),
@@ -7409,10 +7600,19 @@ export function createApp({
         amounts: preview.amounts
           ? { ...preview.amounts, display: formatAmountDisplay(preview.amounts.currency, preview.amounts.totalAmount) }
           : null,
-        recipient: { address: preview.recipient.address, isEmail: recipientCheck.ok },
+        recipient: {
+          address: preview.recipient.address,
+          isEmail: recipientCheck.ok,
+          // Security review L2: whether the address is an active master address of
+          // this project's maker (a typed address is still allowed, but visible).
+          inMakerMaster: recipientInMaster
+        },
         sevenPoNumber: preview.order.sevenPoNumber
       },
-      sevenPurchaseOrder: sevenPo ?? null,
+      // P2 R30: the セブン化学発注書 quantity and amount (this card is admin-only).
+      sevenPurchaseOrder: sevenPo
+        ? { ...sevenPo, orderFacts: orderFactsViewForRole('admin', sevenPo.id, sevenPoFacts) }
+        : null,
       approvals: {
         dualApproved: gate.dualApproved,
         missingApprovals: gate.missingApprovals,
@@ -9802,6 +10002,10 @@ export function createApp({
       paymentConfirmedAt: order.paymentConfirmedAt ?? null
     });
   });
+
+  // P2 (representative approval 2026-11-21): delivery dates, seven PO facts,
+  // maker master, display language, evidence metadata. See p2-routes.ts.
+  registerP2Routes(app, { db, recordAuditEvent });
 
   return app;
 }
