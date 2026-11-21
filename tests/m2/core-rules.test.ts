@@ -51,8 +51,12 @@ function completeChecklist(overrides: Record<string, unknown> = {}) {
 }
 
 describe('M2 document vocabulary', () => {
-  it('accepts exactly the seven document types and five issuer entities', () => {
-    expect(DOCUMENT_TYPES).toHaveLength(7);
+  // P2 R22 adds the eighth type, artwork_submission (migration 0030). It is
+  // neither an input document nor an official artifact (asserted below).
+  it('accepts exactly the eight document types and five issuer entities', () => {
+    expect(DOCUMENT_TYPES).toHaveLength(8);
+    expect(DOCUMENT_TYPES).toContain('artwork_submission');
+    expect(isOfficialArtifactDocumentType('artwork_submission')).toBe(false);
     expect(ISSUER_ENTITIES).toHaveLength(5);
     for (const documentType of DOCUMENT_TYPES) {
       expect(validateDocumentType(documentType)).toEqual({ ok: true, documentType });

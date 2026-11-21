@@ -531,7 +531,7 @@ describe('R24 representative approval card and 差し戻し', () => {
     expect(card.body.order).toMatchObject({ id: chain.orderId, code: chain.code, status: 'MAKER_PO_READY', paymentTerms: 'prepaid', paymentTermsLabel: '前払い' });
     expect(card.body.snapshot.items).toMatchObject([{ lineNumber: 1, orderedQuantity: '1000.000', unit: 'sheets', quantityDisplay: '1,000 枚' }]);
     expect(card.body.snapshot.amounts).toEqual({ currency: 'JPY', totalAmount: '480000', display: '¥480,000' });
-    expect(card.body.snapshot.recipient).toEqual({ address: 'maker-po@example.com', isEmail: true });
+    expect(card.body.snapshot.recipient).toEqual({ address: 'maker-po@example.com', isEmail: true, inMakerMaster: false });  // P2 L2: a typed address that is not in the maker master
     expect(card.body.snapshot.artworkFiles).toMatchObject([{ designKey: 'label-front', revisionNo: 1, matchesApprovedRevision: true }]);
     expect(card.body.snapshot.artworkFiles[0].fileDocumentVersionId).toBeTruthy();
     expect(card.body.sevenPurchaseOrder).toMatchObject({ id: chain.sevenPoId, verificationStatus: 'verified' });

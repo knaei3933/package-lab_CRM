@@ -153,14 +153,14 @@ describe('drizzle migration ordering and 0021', () => {
     const journal = JSON.parse(
       await readFile(path.resolve(process.cwd(), 'packages/db/drizzle/meta/_journal.json'), 'utf8')
     ) as { entries: Array<{ idx: number; when: number; tag: string }> };
-    expect(journal.entries).toHaveLength(25);
+    expect(journal.entries).toHaveLength(32);
     for (let index = 1; index < journal.entries.length; index += 1) {
       expect(journal.entries[index]!.when, journal.entries[index]!.tag)
         .toBeGreaterThan(journal.entries[index - 1]!.when);
     }
     expect(journal.entries.at(-1)).toMatchObject({
-      idx: 24,
-      tag: '0024_lot_change_check_fix',
+      idx: 31,
+      tag: '0031_p2_auditor_role',
       when: expect.any(Number)
     });
     expect(journal.entries.at(-1)!.when).toBeGreaterThan(1795731560000);
@@ -190,8 +190,8 @@ describe('drizzle migration ordering and 0021', () => {
       expect(await enumValues(url)).toContain('CANCELLED');
       expect(await enumValues(url)).toEqual(expect.arrayContaining(['CANCELLATION_REVIEW', 'CANCELLED']));
       const rows = await migrationRows(url);
-      expect(rows).toHaveLength(25);
-      expect(rows.at(-1)).toMatchObject({ created_at: '1796077560000' });
+      expect(rows).toHaveLength(32);
+      expect(rows.at(-1)).toMatchObject({ created_at: '1796682360000' });
     } finally {
       await pool.end();
     }
@@ -209,7 +209,7 @@ describe('drizzle migration ordering and 0021', () => {
       encoding: 'utf8'
     });
     expect(result.stdout).toContain('migrations applied successfully');
-    expect(await migrationRows(url)).toHaveLength(25);
+    expect(await migrationRows(url)).toHaveLength(32);
     const functionClient = new pg.Client({ connectionString: url });
     await functionClient.connect();
     const functionConfig = await functionClient.query(`
@@ -239,8 +239,8 @@ describe('drizzle migration ordering and 0021', () => {
 
       await migrate(drizzle(pool), { migrationsFolder: path.join(tempRoot, 'drizzle') });
       const rows = await migrationRows(url);
-      expect(rows).toHaveLength(25);
-      expect(rows.at(-1)).toMatchObject({ created_at: '1796077560000' });
+      expect(rows).toHaveLength(32);
+      expect(rows.at(-1)).toMatchObject({ created_at: '1796682360000' });
       const values = await enumValues(url);
       expect(values).toContain('CANCELLED');
       expect(values.indexOf('CANCELLED')).toBe(values.length - 1);
@@ -289,11 +289,20 @@ describe('drizzle migration ordering and 0021', () => {
 
       await migrate(drizzle(pool), { migrationsFolder: path.join(tempRoot, 'drizzle') });
 
-      expect(await migrationRows(url)).toHaveLength(25);
+      expect(await migrationRows(url)).toHaveLength(32);
       const afterColumns = await tableSchema();
+      // P2 (0025-0031) adds columns and tables of its own; they are checked in
+      // tests/db/p2-migration-integrity.test.ts. Everything else must be unchanged.
+      const p2Tables = ['seven_po_order_facts', 'maker_recipient_addresses', 'idempotency_keys', 'maker_po_display_numbers'];
+      const p2Columns: Record<string, string[]> = {
+        film_supply_orders: ['requested_delivery_date', 'planned_delivery_date'],
+        users: ['display_language']
+      };
       const unchangedColumns = (rows: unknown) => (rows as Array<{ table_name:string; column_name:string }>).filter(
-        (column) => column.table_name !== 'artwork_revisions'
-          || !['change_requested_organization','change_reason','change_evidence_document_version_id','impact_schedule','impact_quantity','impact_amount','actual_cost','printed_change_approved_by_user_id','printed_change_approved_at'].includes(column.column_name)
+        (column) => (column.table_name !== 'artwork_revisions'
+          || !['change_requested_organization','change_reason','change_evidence_document_version_id','impact_schedule','impact_quantity','impact_amount','actual_cost','printed_change_approved_by_user_id','printed_change_approved_at'].includes(column.column_name))
+          && !p2Tables.includes(column.table_name)
+          && !(p2Columns[column.table_name] ?? []).includes(column.column_name)
       );
       expect(unchangedColumns(afterColumns)).toEqual(unchangedColumns(beforeColumns));
       expect(afterColumns.filter((column: any) => column.table_name === 'artwork_revisions').map((column: any) => column.column_name))
@@ -360,7 +369,7 @@ describe('drizzle migration ordering and 0021', () => {
       // and guarded constraint let the same pending migration replay safely.
       await writeFile(failingFile, original);
       await migrate(drizzle(pool), { migrationsFolder: staged });
-      expect(await migrationRows(url)).toHaveLength(25);
+      expect(await migrationRows(url)).toHaveLength(32);
       expect(await enumValues(url)).toContain('CANCELLED');
     } finally {
       await pool.end();
