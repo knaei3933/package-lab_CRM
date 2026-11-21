@@ -1455,6 +1455,45 @@ describe('P2 decision: 納期・数量 are frozen into the maker PO at the repre
     expect((await auditRows('FILM_SUPPLY_ORDER_DELIVERY_DATES_UPDATED', world.orderId))).toHaveLength(1);
   });
 
+  /** Rewrites a stored paper to its pre-P2 shape (no deliveryTerms) with the matching digest. */
+  async function toPreP2Shape(paperId: string) {
+    const row = await storedSnapshot(paperId);
+    const { deliveryTerms: _dropped, ...legacy } = row.snapshot as Record<string, unknown>;
+    const legacyHash = computeMakerPoSnapshotSha256(legacy as any);
+    await db.update(makerPurchaseOrders).set({ snapshot: legacy, snapshotSha256: legacyHash }).where(eq(makerPurchaseOrders.id, paperId));
+    return legacyHash;
+  }
+
+  it('a draft made before P2 is re-frozen with the delivery terms by the approval (card and approval agree)', async () => {
+    const world = await paperWithTerms();
+    const legacyHash = await toPreP2Shape(world.paperId);
+    const card = await get('admin', `/api/maker-purchase-orders/${world.paperId}/approval-card`);
+    expect(card.body.makerPurchaseOrder.snapshotDrifted).toBe(true);
+    expect(card.body.makerPurchaseOrder.approvalSnapshotSha256).not.toBe(legacyHash);
+    const approved = await post('admin', `/api/maker-purchase-orders/${world.paperId}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, world.paperId));
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    const row = await storedSnapshot(world.paperId);
+    expect((row.snapshot as any).deliveryTerms).toMatchObject({ requestedDeliveryDate: '2027-01-20', sevenPoOrderedQuantity: '1200.000' });
+    expect(row.snapshotSha256).toBe(card.body.makerPurchaseOrder.approvalSnapshotSha256);
+  });
+
+  it('a paper approved before P2 is not voided at the send (its identity check keeps the stored shape)', async () => {
+    const world = await paperWithTerms();
+    const approved = await post('admin', `/api/maker-purchase-orders/${world.paperId}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, world.paperId));
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    await toPreP2Shape(world.paperId);
+    const evidence = await uploadOk(world.sevenPoId, world.orderId, { documentType: 'send_evidence', issuerEntity: 'kanei' });
+    const sent = await post('staff', `/api/maker-purchase-orders/${world.paperId}/send-evidence`, {
+      evidenceDocumentVersionId: evidence.version.id,
+      senderAddress: 'staff@kanei.example',
+      recipients: [PAPER_RECIPIENT],
+      sentAt: new Date(Date.now() - 60_000).toISOString()
+    });
+    expect(sent.body?.code, JSON.stringify(sent.body)).not.toBe('SNAPSHOT_VOIDED');
+    expect((await storedSnapshot(world.paperId)).status).not.toBe('SNAPSHOT_VOIDED');
+    expect(await db.select().from(makerPoEvents).where(and(eq(makerPoEvents.makerPurchaseOrderId, world.paperId), eq(makerPoEvents.eventType, 'SNAPSHOT_VOIDED')))).toHaveLength(0);
+  });
+
   it('a paper frozen before P2 (no deliveryTerms) keeps its digest exactly', () => {
     const base = {
       order: { id: 'o-1', code: 'FILM-1', sevenPoNumber: 'SC-1' },
