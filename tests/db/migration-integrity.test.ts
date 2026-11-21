@@ -153,14 +153,14 @@ describe('drizzle migration ordering and 0021', () => {
     const journal = JSON.parse(
       await readFile(path.resolve(process.cwd(), 'packages/db/drizzle/meta/_journal.json'), 'utf8')
     ) as { entries: Array<{ idx: number; when: number; tag: string }> };
-    expect(journal.entries).toHaveLength(33);
+    expect(journal.entries).toHaveLength(34);
     for (let index = 1; index < journal.entries.length; index += 1) {
       expect(journal.entries[index]!.when, journal.entries[index]!.tag)
         .toBeGreaterThan(journal.entries[index - 1]!.when);
     }
     expect(journal.entries.at(-1)).toMatchObject({
-      idx: 32,
-      tag: '0032_p2_auditor_session_guard',
+      idx: 33,
+      tag: '0033_p2_auditor_session_guard_lock',
       when: expect.any(Number)
     });
     expect(journal.entries.at(-1)!.when).toBeGreaterThan(1795731560000);
@@ -190,8 +190,8 @@ describe('drizzle migration ordering and 0021', () => {
       expect(await enumValues(url)).toContain('CANCELLED');
       expect(await enumValues(url)).toEqual(expect.arrayContaining(['CANCELLATION_REVIEW', 'CANCELLED']));
       const rows = await migrationRows(url);
-      expect(rows).toHaveLength(33);
-      expect(rows.at(-1)).toMatchObject({ created_at: '1796768760000' });
+      expect(rows).toHaveLength(34);
+      expect(rows.at(-1)).toMatchObject({ created_at: '1796855160000' });
     } finally {
       await pool.end();
     }
@@ -209,7 +209,7 @@ describe('drizzle migration ordering and 0021', () => {
       encoding: 'utf8'
     });
     expect(result.stdout).toContain('migrations applied successfully');
-    expect(await migrationRows(url)).toHaveLength(33);
+    expect(await migrationRows(url)).toHaveLength(34);
     const functionClient = new pg.Client({ connectionString: url });
     await functionClient.connect();
     const functionConfig = await functionClient.query(`
@@ -239,8 +239,8 @@ describe('drizzle migration ordering and 0021', () => {
 
       await migrate(drizzle(pool), { migrationsFolder: path.join(tempRoot, 'drizzle') });
       const rows = await migrationRows(url);
-      expect(rows).toHaveLength(33);
-      expect(rows.at(-1)).toMatchObject({ created_at: '1796768760000' });
+      expect(rows).toHaveLength(34);
+      expect(rows.at(-1)).toMatchObject({ created_at: '1796855160000' });
       const values = await enumValues(url);
       expect(values).toContain('CANCELLED');
       expect(values.indexOf('CANCELLED')).toBe(values.length - 1);
@@ -289,7 +289,7 @@ describe('drizzle migration ordering and 0021', () => {
 
       await migrate(drizzle(pool), { migrationsFolder: path.join(tempRoot, 'drizzle') });
 
-      expect(await migrationRows(url)).toHaveLength(33);
+      expect(await migrationRows(url)).toHaveLength(34);
       const afterColumns = await tableSchema();
       // P2 (0025-0031) adds columns and tables of its own; they are checked in
       // tests/db/p2-migration-integrity.test.ts. Everything else must be unchanged.
@@ -369,7 +369,7 @@ describe('drizzle migration ordering and 0021', () => {
       // and guarded constraint let the same pending migration replay safely.
       await writeFile(failingFile, original);
       await migrate(drizzle(pool), { migrationsFolder: staged });
-      expect(await migrationRows(url)).toHaveLength(33);
+      expect(await migrationRows(url)).toHaveLength(34);
       expect(await enumValues(url)).toContain('CANCELLED');
     } finally {
       await pool.end();
