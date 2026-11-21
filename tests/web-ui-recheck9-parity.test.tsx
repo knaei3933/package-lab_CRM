@@ -18,6 +18,7 @@ import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * Recheck 9 (demo-eml/server-rules-recheck9/RECHECK_REPORT.md) Medium-3, against
@@ -79,7 +80,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
 
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
 const { loadMakerPaperCleanup } = await import('../apps/web/src/lib/maker-po-data.js');
 
 function signIn(role: 'admin' | 'staff') {

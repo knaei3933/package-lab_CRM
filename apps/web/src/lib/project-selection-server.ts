@@ -1,32 +1,28 @@
-import { redirect } from 'next/navigation';
-import { loadSession, readSelectedProjectId } from './api';
+import { cookies } from 'next/headers';
+import { loadSession, PROJECT_COOKIE } from './api';
 import { loadSelectableProjectList } from './project-data';
-import { decideProjectSelection, projectSelectionHref } from './project-selection';
+import { decideProjectSelection } from './project-selection';
 import type { ProjectSelection } from './project-selection';
+import { decodeRouteCode, LAST_PROJECT_COOKIE } from './project-route';
+import { pickLegacyProject } from './project-route-server';
 
 /**
- * ui/fix-project-select: the project a screen works on. A server component
- * cannot write cookies, so when the remembered choice must change (forgotten
- * because it can no longer be opened, or the operator's only project opened
- * for them) the screen hands over to the /project-selection route, which
- * writes the cookie and comes straight back. The list read is shared with the
- * layout's selector (React cache), so a valid choice costs no extra request.
+ * ui/fix-project-select → P1 R20: the project the home screen opens. The
+ * remembered choice is the last project opened in this browser (the
+ * LAST_PROJECT_COOKIE code middleware writes on /p/{code}), else the legacy
+ * selection cookie, else the operator's only project. A remembered project that
+ * is not in the operator's list is simply not opened (no message). The screen
+ * then moves to /p/{code}; nothing here writes a cookie or decides a write.
  */
-export async function projectSelectionFor(returnTo: string): Promise<ProjectSelection> {
-  // P0 R04 (B4): Next renders a screen alongside the root layout. Without a usable
-  // session the layout shows the login / outage notice instead of the screen, so the
-  // screen must not queue its own API calls (each would wait out the timeout in turn).
-  // The session read is the layout's own (React cache): no extra request.
+export async function projectSelectionFor(_returnTo: string): Promise<ProjectSelection> {
+  // P0 R04 (B4): without a usable session the layout shows its notice; no list read.
   const session = await loadSession();
   if (session.kind !== 'user') return { kind: 'none' };
-  const [remembered, list] = await Promise.all([readSelectedProjectId(), loadSelectableProjectList()]);
-  const decision = decideProjectSelection(remembered, list);
-  if (decision.cookie !== undefined) redirect(projectSelectionHref(returnTo));
-  return decision.selection;
-}
-
-/** The open project's id, or null when the operator still has to choose (or has none). */
-export async function openProjectIdFor(returnTo: string): Promise<string | null> {
-  const selection = await projectSelectionFor(returnTo);
-  return selection.kind === 'open' ? selection.projectId : null;
+  const [store, list] = await Promise.all([cookies(), loadSelectableProjectList()]);
+  const lastCode = decodeRouteCode(store.get(LAST_PROJECT_COOKIE)?.value ?? null);
+  const legacyId = store.get(PROJECT_COOKIE)?.value ?? null;
+  if (list.error) return decideProjectSelection(null, list).selection;
+  const remembered = pickLegacyProject({ lastCode, legacyId }, list.projects);
+  if (remembered) return { kind: 'open', projectId: remembered.id };
+  return decideProjectSelection(null, list).selection;
 }

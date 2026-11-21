@@ -232,11 +232,11 @@ describe('fieldForActionMessage (1-①)', () => {
       'components/ChangeRequestFields.tsx',
       'components/DeliveryRecordForm.tsx',
       'components/ProjectPicker.tsx',
-      'app/orders/page.tsx',
-      'app/documents/page.tsx',
-      'app/approvals/page.tsx',
-      'app/maker-po/page.tsx',
-      'app/deliveries/page.tsx'
+      'screens/OrdersScreen.tsx',
+      'screens/DocumentsScreen.tsx',
+      'screens/ApprovalsScreen.tsx',
+      'screens/MakerPoScreen.tsx',
+      'screens/DeliveriesScreen.tsx'
     ].map(read).join('\n');
     const pseudo = new Set([FILE_FIELD, lineField(0, 'description'), lineField(0, 'quantity'), lineField(0, 'unit')]);
     for (const { field } of ACTION_MESSAGE_FIELDS) {

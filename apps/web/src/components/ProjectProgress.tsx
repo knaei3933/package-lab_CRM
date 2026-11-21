@@ -16,6 +16,7 @@ import type {
   ScreenPath,
   Workspace
 } from '../lib/project-data';
+import { orderPath, scopeHref } from '../lib/project-route';
 
 /**
  * UI batch B (①): the project's progress at the top of every operator screen —
@@ -49,12 +50,25 @@ function Stepper({ marks, label }: { marks: ProgressStepMark[]; label: string })
   );
 }
 
-function OrderProgressRow({ order, stateLabel }: { order: FilmSupplyOrderView; stateLabel: (key: string) => string }) {
+function OrderProgressRow({
+  order,
+  stateLabel,
+  projectCode
+}: {
+  order: FilmSupplyOrderView;
+  stateLabel: (key: string) => string;
+  projectCode?: string | null | undefined;
+}) {
   const progress = orderProgress(order);
   return (
     <div className="progress-row">
       <p className="progress-head">
-        <span className="progress-code">{order.code}</span>
+        {/* P1 R21: the order code opens that order's own screen. */}
+        {projectCode ? (
+          <Link className="progress-code" href={orderPath(projectCode, order.code)}>{order.code}</Link>
+        ) : (
+          <span className="progress-code">{order.code}</span>
+        )}
         {progress.status === null ? null : progress.phase === 'exception' || progress.phase === 'cancelled' ? (
           <span className="progress-badge">{stateLabel(progress.status)}</span>
         ) : (
@@ -75,11 +89,13 @@ function OrderProgressRow({ order, stateLabel }: { order: FilmSupplyOrderView; s
 function NextActionBody({
   action,
   orderCode,
-  currentPath
+  currentPath,
+  projectCode
 }: {
   action: NextActionView;
   orderCode: string | null;
-  currentPath: ScreenPath;
+  currentPath: ScreenPath | null;
+  projectCode?: string | null | undefined;
 }) {
   return (
     <>
@@ -95,7 +111,7 @@ function NextActionBody({
             screen === currentPath ? (
               <span key={screen}>この画面の下にあります</span>
             ) : (
-              <Link key={screen} href={screen}>
+              <Link key={screen} href={scopeHref(projectCode, screen)}>
                 {SCREEN_NAMES[screen]}画面を開く
               </Link>
             )
@@ -109,11 +125,14 @@ function NextActionBody({
 export function ProjectProgress({
   workspace,
   role,
-  currentPath
+  currentPath,
+  projectCode
 }: {
   workspace: Workspace;
   role: string | null | undefined;
-  currentPath: ScreenPath;
+  currentPath: ScreenPath | null;
+  /** P1 R20: the URL's project — screen links stay inside /p/{code}/…, order codes open the order. */
+  projectCode?: string | null | undefined;
 }) {
   // Without the project (an unreadable or refused selection) there is no
   // progress to claim; the screen shows the API's error instead.
@@ -150,7 +169,7 @@ export function ProjectProgress({
         </div>
       ) : null}
       {active.map((order) => (
-        <OrderProgressRow key={order.id} order={order} stateLabel={stateLabel} />
+        <OrderProgressRow key={order.id} order={order} stateLabel={stateLabel} projectCode={projectCode} />
       ))}
       {hidden.length > 0 ? (
         <div className="progress-row">
@@ -163,7 +182,7 @@ export function ProjectProgress({
         <details className="progress-completed">
           <summary>完了した発注 {completed.length}件</summary>
           {completed.map((order) => (
-            <OrderProgressRow key={order.id} order={order} stateLabel={stateLabel} />
+            <OrderProgressRow key={order.id} order={order} stateLabel={stateLabel} projectCode={projectCode} />
           ))}
         </details>
       ) : null}
@@ -171,12 +190,12 @@ export function ProjectProgress({
       <div className="next-card">
         <h2>次にやること</h2>
         {items.length === 1 ? (
-          <NextActionBody action={items[0]!.action} orderCode={items[0]!.orderCode} currentPath={currentPath} />
+          <NextActionBody action={items[0]!.action} orderCode={items[0]!.orderCode} currentPath={currentPath} projectCode={projectCode} />
         ) : (
           <ul className="next-list">
             {items.map((item) => (
               <li key={item.key}>
-                <NextActionBody action={item.action} orderCode={item.orderCode} currentPath={currentPath} />
+                <NextActionBody action={item.action} orderCode={item.orderCode} currentPath={currentPath} projectCode={projectCode} />
               </li>
             ))}
           </ul>

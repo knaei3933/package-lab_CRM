@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import type { DashboardItem, DashboardView } from '../lib/dashboard';
+import { isRouteCode, orderPath, scopeHref } from '../lib/project-route';
 
 /**
  * UI nav-dashboard: the parts of the dashboard screen. Server markup only;
@@ -7,7 +8,7 @@ import type { DashboardItem, DashboardView } from '../lib/dashboard';
  */
 
 /** The flow strip: open orders per step of the film order flow, and the one next action. */
-export function DashboardFlow({ view }: { view: DashboardView }) {
+export function DashboardFlow({ view, projectCode }: { view: DashboardView; projectCode?: string | null | undefined }) {
   const outside = [
     view.exceptionCount > 0 ? `止まっている ${view.exceptionCount}件` : null,
     view.completedCount > 0 ? `完了 ${view.completedCount}件` : null,
@@ -42,7 +43,7 @@ export function DashboardFlow({ view }: { view: DashboardView }) {
           {view.nextAction.owner ? <span className="dash-next-owner">（担当: {view.nextAction.owner}）</span> : null}
         </p>
         {view.nextAction.href && view.nextAction.linkLabel ? (
-          <Link href={view.nextAction.href} className="dash-next-link">{view.nextAction.linkLabel}</Link>
+          <Link href={scopeHref(projectCode, view.nextAction.href)} className="dash-next-link">{view.nextAction.linkLabel}</Link>
         ) : null}
       </div>
     </section>
@@ -59,20 +60,41 @@ function ItemMeta({ item }: { item: DashboardItem }) {
 }
 
 /** A list of dashboard items; each one is a link to the screen (and order) where it is done. */
-export function DashboardItemList({ items, label, empty }: { items: readonly DashboardItem[]; label: string; empty: string }) {
+/**
+ * P1 R21: an item about one film order opens that order's own screen
+ * (/p/{案件}/o/{発注}); the others open their list inside the same project.
+ */
+export const ORDER_LINK_LABEL = 'この発注を開く';
+
+export function dashboardItemHref(item: Pick<DashboardItem, 'href' | 'orderCode'>, projectCode: string | null | undefined): string {
+  if (projectCode && isRouteCode(item.orderCode)) return orderPath(projectCode, item.orderCode);
+  return scopeHref(projectCode, item.href);
+}
+
+export function DashboardItemList({
+  items,
+  label,
+  empty,
+  projectCode
+}: {
+  items: readonly DashboardItem[];
+  label: string;
+  empty: string;
+  projectCode?: string | null | undefined;
+}) {
   if (items.length === 0) return <p className="dash-empty">{empty}</p>;
   return (
     <ul className="dash-items" aria-label={label}>
       {items.map((item) => (
         <li key={item.key}>
-          <Link href={item.href} className="dash-item">
+          <Link href={dashboardItemHref(item, projectCode)} className="dash-item">
             <span className="dash-item-head">
               {item.orderCode ? <span className="dash-item-code" translate="no">{item.orderCode}</span> : null}
               <span className="dash-item-title">{item.title}</span>
             </span>
             {item.detail ? <span className="dash-item-detail">{item.detail}</span> : null}
             <ItemMeta item={item} />
-            <span className="dash-item-go">{item.linkLabel}</span>
+            <span className="dash-item-go">{projectCode && isRouteCode(item.orderCode) ? ORDER_LINK_LABEL : item.linkLabel}</span>
           </Link>
         </li>
       ))}
@@ -80,7 +102,7 @@ export function DashboardItemList({ items, label, empty }: { items: readonly Das
   );
 }
 
-export function DashboardActivity({ view }: { view: DashboardView }) {
+export function DashboardActivity({ view, projectCode }: { view: DashboardView; projectCode?: string | null | undefined }) {
   return (
     <>
       {view.activity.length > 0 ? (
@@ -89,7 +111,7 @@ export function DashboardActivity({ view }: { view: DashboardView }) {
             <li key={row.key}>
               <span className="dash-activity-at">{row.at}</span>
               <span className="dash-activity-text">
-                {row.href ? <Link href={row.href}>{row.text}</Link> : row.text}
+                {row.href ? <Link href={scopeHref(projectCode, row.href)}>{row.text}</Link> : row.text}
                 <span className="dash-activity-actor">{row.actor}</span>
               </span>
             </li>

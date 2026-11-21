@@ -7,6 +7,10 @@ export const SAVED_RECORD_EVENT = 'kanei:record-saved';
 
 export interface SavedRecordDetail {
   changedId: string | null;
+  /** P1 R34: the success sentence, for the step panel's announcer (focus moves there). */
+  message?: string | null | undefined;
+  /** P1 R34: 「次:」 — where the work continues. */
+  link?: { href: string; label: string } | null | undefined;
 }
 
 export const RECORD_ID_ATTRIBUTE = 'data-record-id';

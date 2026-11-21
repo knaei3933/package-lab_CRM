@@ -16,6 +16,7 @@ import {
 import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI nav-dashboard (demo-eml/ui-nav-dashboard/REPORT.md) against the REAL API
@@ -72,6 +73,8 @@ vi.mock('next/cache', () => ({ revalidatePath: () => undefined, refresh: () => u
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
 
 const { default: DashboardPage } = await import('../apps/web/src/app/dashboard/page.js');
+// P1 R20: the dashboard of an open project is its overview at /p/{code}.
+const ProjectPage = projectScreen((await import('../apps/web/src/screens/ProjectOverviewScreen.js')).ProjectOverviewScreen);
 const { default: GuidePage } = await import('../apps/web/src/app/guide/page.js');
 
 function signIn(role: Role, withProject = true) {
@@ -269,13 +272,15 @@ describe('the API itself: amounts reach the representative only', () => {
 describe('dashboard by role on the real API', () => {
   it('admin: the 代表承認 with its amount and the hold release are the representative’s own work', async () => {
     signIn('admin');
-    const html = await render(DashboardPage);
+    const html = await render(ProjectPage);
     expect(html).not.toMatch(HANGUL);
     const todo = panel(html, 'いま自分がやること');
     expect(todo).toContain(chain.readyCode);
     expect(todo).toContain('メーカー発注書の代表承認を記録する（発注書は作成済み）。');
     expect(todo).toContain('金額: ¥480,000');
-    expect(todo).toContain(`href="/maker-po#maker-order-${chain.readyId}"`);
+    // P1 R21: an item about one order opens that order's own screen.
+    expect(todo).toContain(`href="/p/TEST-P/o/${chain.readyCode}"`);
+    expect(todo).toContain('この発注を開く');
     expect(todo).toContain(chain.heldCode);
     expect(todo).toContain('保留の理由: 色見本の再確認待ち（合成ND）');
     expect(todo).toContain('支払条件: 前払い');
@@ -304,7 +309,7 @@ describe('dashboard by role on the real API', () => {
 
   it('staff: its own record is listed, the representative’s steps wait; no amount anywhere on the page', async () => {
     signIn('staff');
-    const html = await render(DashboardPage);
+    const html = await render(ProjectPage);
     expect(html).not.toMatch(AMOUNT);
     expect(html).not.toMatch(HANGUL);
     const todo = panel(html, 'いま自分がやること');
@@ -326,7 +331,7 @@ describe('dashboard by role on the real API', () => {
 
   it('viewer: nothing to record, the work in progress and what is stuck are readable; no amount', async () => {
     signIn('viewer');
-    const html = await render(DashboardPage);
+    const html = await render(ProjectPage);
     expect(html).not.toMatch(AMOUNT);
     expect(html).not.toMatch(HANGUL);
     expect(panel(html, 'いま自分がやること')).toContain('閲覧者は記録・変更をしません。');
@@ -343,7 +348,7 @@ describe('dashboard by role on the real API', () => {
     // (the cards for several projects: web-fix-project-select-parity).
     signIn('staff', false);
     const target = await render(DashboardPage).then(() => null, (error: { digest?: string }) => error.digest ?? String(error));
-    expect(target).toContain('/project-selection?next=%2Fdashboard');
+    expect(target).toContain(';/p/TEST-ND-PROJECT;');
   });
 
   it('the guide page is Japanese; Korean only in the closed 「한국어 설명」 note under each section; the role’s day comes first', async () => {

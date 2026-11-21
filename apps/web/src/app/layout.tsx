@@ -7,7 +7,7 @@ import { SideNav } from '../components/NavLinks';
 import { ProjectPicker } from '../components/ProjectPicker';
 import { ScreenGuideLine } from '../components/ScreenGuide';
 import { cookies, headers } from 'next/headers';
-import { loadSession, readSelectedProjectId } from '../lib/api';
+import { loadSession } from '../lib/api';
 import { RenderedContextProvider } from '../components/RenderedContext';
 import { SavedRecordRefresher } from '../components/SavedRecordRefresher';
 import { SessionNotice } from '../components/SessionNotice';
@@ -17,11 +17,13 @@ import { decodeDisplayNameCookie, DISPLAY_NAME_COOKIE, operatorName, roleLabel }
 import { loadSelectableProjects } from '../lib/project-data';
 import type { ProjectSummary } from '../lib/project-data';
 import { DASHBOARD_PATH, GUIDE_PATH, navGroupsForRole, navRoleNote } from '../lib/navigation';
+import { parseProjectPath } from '../lib/project-route';
 import { selectProjectAction } from './actions';
 // Astryx trial: the layer order first, then the stylesheets (layer-order.css).
 import './layer-order.css';
 import './globals.css';
 import './p0-notices.css';
+import './p1.css';
 
 // UI batch A: each screen sets its own title (tabs stay distinguishable); the
 // template adds the product name.
@@ -42,10 +44,12 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   const rememberedName = user
     ? decodeDisplayNameCookie((await cookies()).get(DISPLAY_NAME_COOKIE)?.value, user.id)
     : null;
-  const projectId = await readSelectedProjectId();
   // M8-UI3: the selector lists the projects this operator may open, so the id
   // no longer has to be pasted by hand. The API narrows the list by role.
   const selectableProjects: ProjectSummary[] = user ? await loadSelectableProjects() : [];
+  // P1 R20: the project shown is the one the URL names (/p/{code}/…), not a cookie.
+  const scoped = parseProjectPath(path);
+  const projectId = scoped ? selectableProjects.find((project) => project.code === scoped.projectCode)?.id ?? null : null;
   const projectChoices = selectableProjects.map((project) => ({
     value: project.id,
     label: `${project.code}（${project.name}）`
@@ -97,7 +101,9 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
               {user ? <ScreenGuideLine /> : null}
               {gate === 'screen' ? (
                 <RenderedContextProvider
-                  value={{ projectId: projectId ?? '', showKorean: user ? normalizeRole(user.role) === 'admin' : false }}
+                  // P1 R20: outside /p/{code}/… no project is rendered ('' — a write is refused);
+                  // the project layout provides the URL's project to its own forms.
+                  value={{ projectId: '', showKorean: user ? normalizeRole(user.role) === 'admin' : false }}
                 >
                   {children}
                   <SavedRecordRefresher />

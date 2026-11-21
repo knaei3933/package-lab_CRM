@@ -19,6 +19,7 @@ import { buildAuditViewForRole } from '../apps/api/src/audit-view.js';
 import type { AuditHistoryRow } from '../apps/api/src/audit-view.js';
 import { buildMakerPoViewForRole } from '../apps/api/src/maker-po-view.js';
 import type { MakerPoRecord } from '../apps/api/src/maker-po-view.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch B (flow visibility): the progress stepper and 「次にやること」, the
@@ -81,11 +82,11 @@ const { createProjectPickerIntent, MAIN_REGION_ID, POINTER_PICK_WINDOW_MS } = aw
 );
 const { shortId } = await import('../apps/web/src/lib/short-id.js');
 const { toMakerPoChoices } = await import('../apps/web/src/lib/document-maker-po.js');
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
-const { default: DocumentsPage } = await import('../apps/web/src/app/documents/page.js');
-const { default: ApprovalsPage } = await import('../apps/web/src/app/approvals/page.js');
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
-const { default: DeliveriesPage } = await import('../apps/web/src/app/deliveries/page.js');
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
+const DocumentsPage = projectScreen((await import('../apps/web/src/screens/DocumentsScreen.js')).DocumentsScreen);
+const ApprovalsPage = projectScreen((await import('../apps/web/src/screens/ApprovalsScreen.js')).ApprovalsScreen);
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
+const DeliveriesPage = projectScreen((await import('../apps/web/src/screens/DeliveriesScreen.js')).DeliveriesScreen);
 
 type Role = 'admin' | 'staff' | 'viewer';
 const ROLES: Role[] = ['admin', 'staff', 'viewer'];

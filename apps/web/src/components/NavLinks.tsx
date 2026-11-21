@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useRef } from 'react';
 import { isCurrentPath } from '../lib/navigation';
+import { parseProjectPath, scopeHref, unscopedPath } from '../lib/project-route';
 import type { NavGroup } from '../lib/navigation';
 import { DRAWER_TITLE_ID, drawerDialogAttributes, SIDEBAR_ID, useDrawerKeyboard, useNavDrawer } from './NavDrawer';
 
@@ -19,6 +20,9 @@ export const isCurrentNavItem = isCurrentPath;
  */
 export function SideNav({ groups, roleNote }: { groups: readonly NavGroup[]; roleNote: string | null }) {
   const pathname = usePathname();
+  // P1 R20: inside /p/{code}/… the menu's screens stay in that project.
+  const projectCode = parseProjectPath(pathname)?.projectCode ?? null;
+  const currentScreen = unscopedPath(pathname);
   const { open } = useNavDrawer();
   const container = useRef<HTMLDivElement | null>(null);
   const close = useDrawerKeyboard(container);
@@ -62,10 +66,10 @@ export function SideNav({ groups, roleNote }: { groups: readonly NavGroup[]; rol
               </p>
               <ul aria-labelledby={`nav-group-${group.key}`}>
                 {group.items.map((item) => {
-                  const current = isCurrentPath(pathname, item.href);
+                  const current = isCurrentPath(currentScreen, item.href);
                   return (
                     <li key={item.href}>
-                      <Link href={item.href} aria-current={current ? 'page' : undefined}>
+                      <Link href={scopeHref(projectCode, item.href)} aria-current={current ? 'page' : undefined}>
                         {item.label}
                       </Link>
                     </li>

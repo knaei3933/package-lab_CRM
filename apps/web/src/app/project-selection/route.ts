@@ -1,6 +1,7 @@
 import { callApi, PROJECT_COOKIE, SESSION_COOKIE } from '../../lib/api';
 import type { ProjectSummary } from '../../lib/project-data';
 import { decideProjectSelection, safeReturnPath } from '../../lib/project-selection';
+import { LAST_PROJECT_COOKIE } from '../../lib/project-route';
 
 /**
  * ui/fix-project-select: writes the screen's project decision into the
@@ -30,9 +31,11 @@ function cookieValue(header: string | null, name: string): string | null {
 
 const ATTRIBUTES = 'Path=/; HttpOnly; SameSite=Lax';
 
-function goTo(location: string, setCookie: string | null): Response {
+function goTo(location: string, setCookie: string | null, forgetLast = false): Response {
   const headers = new Headers({ location, 'cache-control': 'no-store' });
   if (setCookie) headers.append('set-cookie', setCookie);
+  // P1 R20: 「案件を選び直す」 also forgets the last project opened (the home shortcut).
+  if (forgetLast) headers.append('set-cookie', `${LAST_PROJECT_COOKIE}=; ${ATTRIBUTES}; Max-Age=0`);
   return new Response(null, { status: 303, headers });
 }
 
@@ -56,11 +59,12 @@ export async function GET(request: Request): Promise<Response> {
   const decision = decideProjectSelection(reset ? null : stored, list);
   let cookie = decision.cookie;
   if (reset && stored && cookie === undefined) cookie = null;
-  if (cookie === undefined) return goTo(next, null);
+  if (cookie === undefined) return goTo(next, null, reset);
   return goTo(
     next,
     cookie === null
       ? `${PROJECT_COOKIE}=; ${ATTRIBUTES}; Max-Age=0`
-      : `${PROJECT_COOKIE}=${encodeURIComponent(cookie)}; ${ATTRIBUTES}`
+      : `${PROJECT_COOKIE}=${encodeURIComponent(cookie)}; ${ATTRIBUTES}`,
+    reset
   );
 }

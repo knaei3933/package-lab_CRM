@@ -12,6 +12,7 @@ import {
 } from '@kanei/core';
 import { buildAuditViewForRole } from '../apps/api/src/audit-view.js';
 import type { AuditHistoryRow } from '../apps/api/src/audit-view.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch C, part 2 (screens): the maker-PO stage function, the status tone
@@ -54,11 +55,11 @@ const { DataTable } = await import('../apps/web/src/components/DataTable.js');
 const { MAKER_PO_STATUS_LABELS } = await import('../apps/web/src/lib/maker-po-data.js');
 const { VERIFICATION_STATUS_LABELS } = await import('../apps/web/src/lib/vocabulary.js');
 const { HIDDEN_BY_ROLE_LABEL } = await import('../apps/web/src/lib/redaction.js');
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
-const { default: DocumentsPage } = await import('../apps/web/src/app/documents/page.js');
-const { default: ApprovalsPage } = await import('../apps/web/src/app/approvals/page.js');
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
-const { default: DeliveriesPage } = await import('../apps/web/src/app/deliveries/page.js');
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
+const DocumentsPage = projectScreen((await import('../apps/web/src/screens/DocumentsScreen.js')).DocumentsScreen);
+const ApprovalsPage = projectScreen((await import('../apps/web/src/screens/ApprovalsScreen.js')).ApprovalsScreen);
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
+const DeliveriesPage = projectScreen((await import('../apps/web/src/screens/DeliveriesScreen.js')).DeliveriesScreen);
 
 type Role = 'admin' | 'staff' | 'viewer';
 const ROLES: Role[] = ['admin', 'staff', 'viewer'];

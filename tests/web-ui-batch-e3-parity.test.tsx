@@ -13,6 +13,7 @@ import {
 import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch E3 (demo-eml/ui-batch-e3/REPORT.md) against the REAL API on the
@@ -65,7 +66,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined, refresh: () => undefined }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
 
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
 const { loadWorkspace } = await import('../apps/web/src/lib/project-data.js');
 const { HIDDEN_BY_ROLE_LABEL } = await import('../apps/web/src/lib/redaction.js');
 

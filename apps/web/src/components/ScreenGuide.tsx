@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { screenGuideFor } from '../lib/navigation';
+import { parseProjectPath, scopeHref, unscopedPath } from '../lib/project-route';
 
 /**
  * UI nav-dashboard (C): one line above every operator screen (Japanese, like the screens) — where this
@@ -11,7 +12,10 @@ import { screenGuideFor } from '../lib/navigation';
  * of each order stays in the screen's own 「次にやること」.
  */
 export function ScreenGuideLine() {
-  const guide = screenGuideFor(usePathname());
+  const pathname = usePathname();
+  // P1 R20: the guide of the list a /p/{code}/… address stands for; the order screen has none.
+  const guide = screenGuideFor(unscopedPath(pathname));
+  const projectCode = parseProjectPath(pathname)?.projectCode ?? null;
   if (!guide) return null;
   return (
     // A plain block, not a landmark: it sits inside <main> above the screen's h1.
@@ -26,7 +30,7 @@ export function ScreenGuideLine() {
       {guide.next ? (
         <p className="screen-guide-text">
           <span className="screen-guide-label">次の段階</span>
-          {guide.next.text}<Link href={guide.next.href}>{guide.next.label}画面を開く</Link>
+          {guide.next.text}<Link href={scopeHref(projectCode, guide.next.href)}>{guide.next.label}画面を開く</Link>
         </p>
       ) : null}
     </div>

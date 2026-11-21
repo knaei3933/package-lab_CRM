@@ -5,6 +5,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildAuditViewForRole } from '../apps/api/src/audit-view.js';
 import type { AuditHistoryRow } from '../apps/api/src/audit-view.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch A follow-up (review of 938abf6: M1, M2, M4, L1, L3, L5).
@@ -37,11 +38,11 @@ const { loadWorkspace, officialRegistrationText, revisionNumberText, sevenPurcha
 );
 const { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } = await import('../apps/web/src/lib/redaction.js');
 const { formatTimestamp } = await import('../apps/web/src/lib/vocabulary.js');
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
-const { default: DeliveriesPage } = await import('../apps/web/src/app/deliveries/page.js');
-const { default: ApprovalsPage } = await import('../apps/web/src/app/approvals/page.js');
-const { default: DocumentsPage } = await import('../apps/web/src/app/documents/page.js');
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
+const DeliveriesPage = projectScreen((await import('../apps/web/src/screens/DeliveriesScreen.js')).DeliveriesScreen);
+const ApprovalsPage = projectScreen((await import('../apps/web/src/screens/ApprovalsScreen.js')).ApprovalsScreen);
+const DocumentsPage = projectScreen((await import('../apps/web/src/screens/DocumentsScreen.js')).DocumentsScreen);
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
 
 type Role = 'admin' | 'staff' | 'viewer';
 const ROLES: Role[] = ['admin', 'staff', 'viewer'];
@@ -542,7 +543,7 @@ describe('review of f81a5e5: distinct PO labels and the surviving mutants', () =
 describe('source guard kept from batch A', () => {
   it('the 公式登録 form gate reads the known registration, not the hidden flag', () => {
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-    const orders = readFileSync(path.join(repoRoot, 'apps/web/src/app/orders/page.tsx'), 'utf8');
+    const orders = readFileSync(path.join(repoRoot, 'apps/web/src/screens/OrdersScreen.tsx'), 'utf8');
     // Behaviour is pinned by the rendered tests above; this only guards against
     // re-introducing the hidden flag as a form gate (it would drop the staff form).
     expect(orders).not.toMatch(/officialRegistrationHidden\s*\?\s*null/);

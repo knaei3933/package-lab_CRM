@@ -15,6 +15,51 @@ export interface ErrorDictionaryEntry {
 }
 
 export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = {
+  // P1 (p1-server API_CONTRACT §7)
+  MAKER_PO_SNAPSHOT_DRIFTED: {
+    ja: '発注書の作成後に明細または版が変わりました。承認すると最新の内容で確定します。',
+    ko: '발주서 작성 후 명세 또는 판이 바뀌었습니다. 승인하면 최신 내용으로 확정됩니다.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  MAKER_PO_AMOUNT_MISSING: {
+    ja: 'メーカー発注書に金額が記載されていません。担当者に金額の入力を依頼してください。',
+    ko: '제조사 발주서에 금액이 없습니다. 담당자에게 금액 입력을 요청하세요.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  EXPECTED_SNAPSHOT_SHA256_INVALID: {
+    ja: '承認する発注書の確認値が正しくありません。画面を再読み込みしてください。',
+    ko: '승인할 발주서의 확인 값이 올바르지 않습니다. 화면을 새로 고치세요.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  MAKER_PO_SNAPSHOT_CHANGED: {
+    ja: '承認画面を開いた後に発注書の内容（明細・版）が変わりました。最新の内容を確認してから、もう一度承認してください。',
+    ko: '승인 화면을 연 뒤 발주서 내용(명세·판)이 바뀌었습니다. 최신 내용을 확인한 뒤 다시 승인하세요.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  MAKER_PO_RETURN_ONLY_DRAFT: {
+    ja: '差し戻しできるのは代表承認前のメーカー発注書だけです。承認済みの発注書は取消の手順を使ってください。',
+    ko: '대표 승인 전 제조사 발주서만 반려할 수 있습니다. 승인된 발주서는 취소 절차를 쓰세요.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  MAKER_PO_RETURN_REASON_TOO_LONG: {
+    ja: '差し戻しの理由は1000文字以下にしてください。',
+    ko: '반려 사유는 1000자 이하로 입력하세요.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  MAKER_PO_RETURN_REASON_REQUIRED: {
+    ja: '差し戻しの理由を入力してください。',
+    ko: '반려 사유를 입력하세요.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  ARTWORK_REVISION_REQUIRED: {
+    ja: '校正ゲラ（版）がまだ登録されていません。版を登録すると自動で進みます。',
+    ko: '교정본(판)이 아직 등록되지 않았습니다. 판을 등록하면 자동으로 진행됩니다.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  AUTO_TRANSITION_ONLY: {
+    ja: 'この段階は条件がそろうと自動で進みます。手で進める必要はありません。',
+    ko: '이 단계는 조건이 갖춰지면 자동으로 진행됩니다. 직접 진행할 필요가 없습니다.'
+  },
   ACCEPT_EVIDENCE_DOCUMENT_TYPE_INVALID: {
     ja: '選んだ書類は受領証跡（検収）ではありません。文書画面で登録した受領証跡を選んでください。',
     ko: '선택한 문서는 수령 증빙(검수)이 아닙니다. 문서 화면에 등록한 수령 증빙을 선택하세요.'

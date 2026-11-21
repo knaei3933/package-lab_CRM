@@ -624,7 +624,7 @@ function dashboardNextAction(
 export const ACTIVITY_EXCLUDED_ACTIONS = ['DOCUMENT_VERSION_VIEWED', 'DOCUMENT_VERSION_DOWNLOADED'] as const;
 const READ_ONLY_ACTIONS: ReadonlySet<string> = new Set(ACTIVITY_EXCLUDED_ACTIONS);
 
-const ACTION_LABELS: Readonly<Record<string, string>> = {
+export const ACTION_LABELS: Readonly<Record<string, string>> = {
   PROJECT_CREATED: '案件を作成',
   PROJECT_UPDATED: '案件を更新',
   SEVEN_PO_CREATED: 'セブン化学発注書を登録',
@@ -646,6 +646,11 @@ const ACTION_LABELS: Readonly<Record<string, string>> = {
   MAKER_PO_CEO_APPROVED: 'メーカー発注書の代表承認を記録',
   MAKER_PO_STATUS_CHANGED: 'メーカー発注書の状態を変更',
   MAKER_PO_SEND_MANUAL_VERIFICATION_RECORDED: '送信の手動確認を記録',
+  // P1 R21: every action the order screen's records list may show has words.
+  MAKER_PO_SEND_PENDING_MANUAL_VERIFICATION: '送信メールを記録（代表の確認待ち）',
+  MAKER_PO_DUAL_APPROVAL_RECHECK: '校了を再確認（メーカー発注書）',
+  ARTWORK_APPROVAL_RECORDED: '承認（校了）を記録',
+  PRE_ORDER_REFERENCE_CREATED: '先行発注を記録',
   MAKER_PO_ACCEPT_RECORDED_PROVISIONAL: '受入（仮）を記録',
   MAKER_PO_ACCEPT_EVIDENCE_REGISTERED: '最終受入を記録',
   MAKER_PO_CANCELLED: 'メーカー発注書を取り消し',

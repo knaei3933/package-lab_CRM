@@ -12,6 +12,8 @@ export const REPRESENTATIVE_QUEUE_PROJECT_LIMIT = 30;
 
 /** Order states whose next step is the representative's, and that step in words. */
 export const REPRESENTATIVE_WORK: Readonly<Record<string, string>> = {
+  // P1 R25: a 校了 order waits for the representative's maker paper (P-6: admin draws it up).
+  DUAL_APPROVED: 'メーカー発注書の作成と代表承認（校了済み）',
   MAKER_PO_READY: 'メーカー発注書の作成と代表承認',
   // Review L4: shared step — the representative's part comes after the staff record and the evidence.
   MAKER_PO_SENT_MANUALLY: '受入の最終確認（担当者の仮記録・受領証跡のあと）',
@@ -21,6 +23,8 @@ export const REPRESENTATIVE_WORK: Readonly<Record<string, string>> = {
 
 export interface RepresentativeTask {
   projectId: string;
+  /** P1 R25: the project code — the row links to /p/{code}/o/{orderCode}. */
+  projectCode: string;
   orderId: string;
   projectLabel: string;
   orderCode: string;
@@ -78,7 +82,7 @@ export function representativeTasks(
   return orders.flatMap((order) => {
     const work = REPRESENTATIVE_WORK[order.status];
     return work
-      ? [{ projectId: project.id, orderId: order.id, projectLabel: `${project.code}（${project.name}）`, orderCode: order.code, status: order.status, work }]
+      ? [{ projectId: project.id, projectCode: project.code, orderId: order.id, projectLabel: `${project.code}（${project.name}）`, orderCode: order.code, status: order.status, work }]
       : [];
   });
 }

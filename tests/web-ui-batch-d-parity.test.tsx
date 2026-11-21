@@ -19,6 +19,7 @@ import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch D — recheck 6 (demo-eml/server-rules-recheck6/RECHECK_REPORT.md)
@@ -86,8 +87,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
 
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
 const {
   makerPoSendProof,
   sendManualVerificationsFromAuditEvents

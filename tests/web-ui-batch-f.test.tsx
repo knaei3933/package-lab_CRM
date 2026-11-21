@@ -287,7 +287,7 @@ const PROOF = '01a1ec53-af67-75da-a932-e03a00000003';
 
 function revisionForm(entries: Record<string, string>): FormData {
   const data = new FormData();
-  data.set('_kaneiRenderedProjectId', ''); // P0 R03: the form was drawn for the selected project
+  data.set('_kaneiRenderedProjectId', 'project-test'); // P1 R20: the form was drawn for the URL's project
   const base = { orderId: ORDER, designKey: 'label-front', fileDocumentVersionId: PROOF };
   for (const [key, value] of Object.entries({ ...base, ...entries })) data.set(key, value);
   return data;
@@ -685,7 +685,7 @@ describe('document download relay', () => {
   });
 
   it('the documents screen links with a plain <a>, never next/link (no prefetch = no unrequested download record)', () => {
-    const page = read('apps/web/src/app/documents/page.tsx');
+    const page = read('apps/web/src/screens/DocumentsScreen.tsx');
     expect(page).toContain('href={documentDownloadHref(version.id)}');
     expect(page).not.toContain("from 'next/link'");
   });

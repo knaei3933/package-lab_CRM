@@ -281,20 +281,22 @@ describe('F-23: the representative queue across projects', () => {
     ]);
     expect(orders).toEqual([{ id: 'a', code: 'FSO-A', status: 'ON_HOLD' }, { id: 'b', code: 'FSO-B', status: 'SEVEN_PO_VERIFIED' }]);
     const tasks = representativeTasks({ id: 'p1', code: 'P-1', name: '合成案件' }, orders);
-    expect(tasks).toEqual([{ projectId: 'p1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: REPRESENTATIVE_WORK.ON_HOLD }]);
+    expect(tasks).toEqual([{ projectId: 'p1', projectCode: 'P-1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: REPRESENTATIVE_WORK.ON_HOLD }]);
   });
-  it('the panel: a row per task with 「この案件を開く」, and a plain line when nothing waits', () => {
-    const queue = { tasks: [{ projectId: 'p1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: '保留の解除（理由の確認）' }], unreadProjects: ['P-9'], skippedProjects: 0 };
-    const html = renderToString(<RepresentativeQueuePanel queue={queue} selectAction={noop} currentProjectId={null} />);
+  it('the panel: a row per task that links to the order (P1 R25 deep link), and a plain line when nothing waits', () => {
+    const queue = { tasks: [{ projectId: 'p1', projectCode: 'P-1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: '保留の解除（理由の確認）' }], unreadProjects: ['P-9'], skippedProjects: 0 };
+    const html = renderToString(<RepresentativeQueuePanel queue={queue} currentProjectId={null} />);
     expect(html).toContain('<caption class="visually-hidden">代表者の対応待ち（全案件）</caption>');
     expect(html).toContain('保留の解除（理由の確認）');
-    expect(html).toContain('この案件を開く');
-    expect(html).toContain('name="projectId" value="p1"');
+    // An <a href> (Ctrl+click opens a new tab), straight to the order's own screen — no form.
+    expect(html).toContain('href="/p/P-1/o/FSO-A"');
+    expect(html).toContain('FSO-A を開く');
+    expect(html).not.toContain('<form');
     expect(html).toContain('読み込めなかった案件: P-9。');
-    const none = renderToString(<RepresentativeQueuePanel queue={{ tasks: [], unreadProjects: [], skippedProjects: 0 }} selectAction={noop} currentProjectId={null} />);
+    const none = renderToString(<RepresentativeQueuePanel queue={{ tasks: [], unreadProjects: [], skippedProjects: 0 }} currentProjectId={null} />);
     expect(none).toContain('代表者の対応待ちはありません。');
     // Review M1: a failed project-list read is said as such, never 「ありません」.
-    const failed = renderToString(<RepresentativeQueuePanel queue={failedRepresentativeQueue('一時的に取得できません')} selectAction={noop} currentProjectId={null} />)
+    const failed = renderToString(<RepresentativeQueuePanel queue={failedRepresentativeQueue('一時的に取得できません')} currentProjectId={null} />)
       .replaceAll('<!-- -->', '');
     expect(failed).toContain('案件の一覧を読み込めなかったため、代表者の対応待ちを表示できません（一時的に取得できません）。');
     expect(failed).not.toContain('ありません。');

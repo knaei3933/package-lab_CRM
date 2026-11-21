@@ -18,6 +18,7 @@ import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * Recheck 8 (demo-eml/server-rules-recheck8/RECHECK_REPORT.md) web fixes,
@@ -77,8 +78,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
 
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
-const { default: ApprovalsPage } = await import('../apps/web/src/app/approvals/page.js');
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
+const ApprovalsPage = projectScreen((await import('../apps/web/src/screens/ApprovalsScreen.js')).ApprovalsScreen);
 const { registerArtworkRevisionAction } = await import('../apps/web/src/app/actions.js');
 const {
   acknowledgeMakerPoCancellationAction,

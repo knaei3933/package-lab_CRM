@@ -25,6 +25,8 @@ import type { SavedRecordDetail } from '../lib/saved-record';
 import { IDEMPOTENCY_FIELD, isKeyReuseLocked, locksForKeyReuse, newIdempotencyKey, PROJECT_CONTEXT_MISMATCH, shouldRenewSubmitKey } from '../lib/project-context';
 import { KEY_REUSED_CODE } from '../lib/action-result';
 import { loginHrefFor } from '../lib/return-path';
+import { forget as forgetUnsaved, markDirty } from '../lib/unsaved-guard';
+import { installUnsavedGuard } from './unsaved-guard-dom';
 import { RenderedProjectField, useRenderedContext } from './RenderedContext';
 
 /**
@@ -385,6 +387,8 @@ export function FormResult({ state, successHint }: { state: ActionState | null; 
             </span>
             <span>{displayActionMessage(state.message)}</span>
             {successHint ? <span className="form-result-hint">{successHint}</span> : null}
+            {/* P1 R34 (M14): where the work continues, right after the result. */}
+            {state.link ? <a className="form-result-action" href={state.link.href}>{state.link.label}</a> : null}
           </>
         ) : null}
       </span>
@@ -543,7 +547,9 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
     if (!form || !shouldResetAfterResult(state, resetFor.current)) return;
     resetFor.current = state;
     form.reset();
-    const detail: SavedRecordDetail = { changedId: state?.changedId ?? null };
+    // P1 R34: the saved input is no longer "unsaved".
+    markDirty(form, false);
+    const detail: SavedRecordDetail = { changedId: state?.changedId ?? null, message: state?.message ?? null, link: state?.link ?? null };
     window.dispatchEvent(new CustomEvent(SAVED_RECORD_EVENT, { detail }));
   }, [state]);
 
@@ -558,7 +564,18 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
     findControl(form, resolution.field)?.focus();
   }, [state]);
 
+  // P1 R34 (M9): typed input marks the form unsaved until a successful submit.
+  useEffect(() => {
+    const form = formRef.current;
+    installUnsavedGuard();
+    return () => {
+      if (form) forgetUnsaved(form);
+    };
+  }, []);
+
   function clearFieldError(event: FormEvent<HTMLFormElement>): void {
+    const target = event.target as Element;
+    if (formRef.current && target instanceof HTMLElement && target.getAttribute('type') !== 'hidden') markDirty(formRef.current, true);
     const key = feedbackKey(event.target as Element);
     if (!key || !(key in errors)) return;
     const next = { ...errors };

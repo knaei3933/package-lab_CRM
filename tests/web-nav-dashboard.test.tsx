@@ -572,8 +572,8 @@ describe('item links', () => {
 
   it('the screens carry the anchors the dashboard links to', async () => {
     const { readFileSync } = await import('node:fs');
-    const orders = readFileSync(new URL('../apps/web/src/app/orders/page.tsx', import.meta.url), 'utf8');
-    const maker = readFileSync(new URL('../apps/web/src/app/maker-po/page.tsx', import.meta.url), 'utf8');
+    const orders = readFileSync(new URL('../apps/web/src/screens/OrdersScreen.tsx', import.meta.url), 'utf8');
+    const maker = readFileSync(new URL('../apps/web/src/screens/MakerPoScreen.tsx', import.meta.url), 'utf8');
     expect(orders).toContain('id={`order-${order.id}`}');
     expect(maker).toContain('id={`maker-order-${entry.order.id}`}');
   });
