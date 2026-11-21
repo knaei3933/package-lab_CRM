@@ -630,6 +630,13 @@ const READ_ONLY_ACTIONS: ReadonlySet<string> = new Set(ACTIVITY_EXCLUDED_ACTIONS
 
 export const ACTION_LABELS: Readonly<Record<string, string>> = {
   PROJECT_CREATED: '案件を作成',
+  // P2 (contract v1.3): the new records.
+  FILM_SUPPLY_ORDER_DELIVERY_DATES_UPDATED: '納期（希望納期・納品予定日）を記録',
+  SEVEN_PO_ORDER_FACTS_UPDATED: 'セブン化学発注書の数量・金額を記録',
+  MAKER_ACCOUNT_CREATED: 'メーカーを登録',
+  MAKER_RECIPIENT_ADDRESS_CREATED: 'メーカーの宛先を登録',
+  MAKER_RECIPIENT_ADDRESS_UPDATED: 'メーカーの宛先を変更',
+  USER_DISPLAY_LANGUAGE_UPDATED: '表示言語を変更',
   PROJECT_UPDATED: '案件を更新',
   SEVEN_PO_CREATED: 'セブン化学発注書を登録',
   SEVEN_PO_OFFICIALLY_REGISTERED: 'セブン化学発注書の本登録を記録',

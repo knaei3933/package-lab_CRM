@@ -151,3 +151,7 @@ export async function loadMakerAccounts(): Promise<MakerAccountsRead> {
     return { kind: 'error', error: 'メーカーの一覧を取得できませんでした' };
   }
 }
+
+/** P2: on /makers a DUPLICATE is a name or an e-mail, never a number (the dictionary's 「この番号は…」 does not fit). */
+export const MAKER_NAME_DUPLICATE_MESSAGE = 'この名前のメーカーはすでに登録されています。一覧で確認してください。';
+export const RECIPIENT_DUPLICATE_MESSAGE = 'このメールアドレスは、このメーカーの宛先にすでに登録されています。一覧で確認してください。';

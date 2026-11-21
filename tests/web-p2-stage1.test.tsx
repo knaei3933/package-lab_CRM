@@ -114,6 +114,22 @@ describe('§1 durable Idempotency-Key answers', () => {
     expect(actionResult.refreshesListOn(null)).toBe(false);
   });
 
+  it('a 5xx, a failure without an answer and a non-4xx status are never settled (the key is kept)', () => {
+    for (const status of [500, 502, 503, 599]) {
+      expect(actionResult.isSettledRefusal({ status, failure: null, code: 'INTERNAL' }), String(status)).toBe(false);
+    }
+    expect(actionResult.isSettledRefusal({ status: 0, failure: 'timeout', code: null })).toBe(false);
+    expect(actionResult.isSettledRefusal({ status: 399, failure: null, code: null })).toBe(false);
+    expect(actionResult.isSettledRefusal({ status: 400, failure: null, code: 'BAD' })).toBe(true);
+    expect(actionResult.isSettledRefusal({ status: 499, failure: null, code: 'BAD' })).toBe(true);
+  });
+
+  it('the form announces the list refresh (SAVED_RECORD_EVENT) after OUTCOME_UNKNOWN as well as KEY_REUSED', () => {
+    // No DOM here to run the effect; the condition is pinned in the source (a pure helper would be better).
+    const source = readFileSync(path.join(root, 'apps/web/src/components/form-feedback.tsx'), 'utf8');
+    expect(source).toMatch(/if \(locksForKeyReuse\(state\) \|\| \(state !== null && !state\.ok && state\.code === OUTCOME_UNKNOWN_CODE\)\) \{\s+const detail: SavedRecordDetail = \{ changedId: null \};\s+window\.dispatchEvent\(new CustomEvent\(SAVED_RECORD_EVENT/);
+  });
+
   it('KEY_REUSED still locks the form; OUTCOME_UNKNOWN waits for the check and never locks', () => {
     const reused = { ok: false, code: 'IDEMPOTENCY_KEY_REUSED' };
     const unknown = { ok: false, code: 'IDEMPOTENCY_OUTCOME_UNKNOWN' };
@@ -368,6 +384,11 @@ describe('§2 stored MPO numbers', () => {
     expect(makerPoNumberOf('MPO-2026-0001')).toBe('MPO-2026-0001');
     expect(makerPoNumberOf('MPO-2026-10000')).toBe('MPO-2026-10000');
     expect(makerPoNumberOf('<b>x</b>')).toBeNull();
+    // The whole value must have the shape (no prefix or suffix smuggled around a valid number).
+    expect(makerPoNumberOf('<b>MPO-2026-0001</b>')).toBeNull();
+    expect(makerPoNumberOf('xMPO-2026-0001')).toBeNull();
+    expect(makerPoNumberOf('MPO-2026-0001 ')).toBeNull();
+    expect(makerPoNumberOf('MPO-2026-001')).toBeNull();
     expect(makerPoNumberOf(42)).toBeNull();
   });
 

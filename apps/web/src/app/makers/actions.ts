@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache';
 import { callApi } from '../../lib/api';
 import { recordIdOf, refreshesListOn, refusalState } from '../../lib/action-result';
 import { RECIPIENT_EMAIL_INVALID_MESSAGE } from '../../lib/form-messages';
-import { isUuidLike } from '../../lib/maker-master';
+import { isUuidLike, MAKER_NAME_DUPLICATE_MESSAGE, RECIPIENT_DUPLICATE_MESSAGE } from '../../lib/maker-master';
 import { idempotencyKeyOf } from '../../lib/project-context';
 import type { ActionState } from '../../lib/types';
 
@@ -32,7 +32,7 @@ function isEmailAddress(value: string): boolean {
   return value.length <= 254 && /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]+$/.test(value);
 }
 
-async function send(formData: FormData, method: 'POST' | 'PATCH', path: string, body: unknown, success: string): Promise<ActionState> {
+async function send(formData: FormData, method: 'POST' | 'PATCH', path: string, body: unknown, success: string, duplicate?: string): Promise<ActionState> {
   const result = await callApi(path, { method, body, idempotencyKey: idempotencyKeyOf(formData) });
   if (result.ok) {
     revalidatePath('/makers');
@@ -40,8 +40,9 @@ async function send(formData: FormData, method: 'POST' | 'PATCH', path: string, 
   }
   // P2 R05: the earlier submit with this key may be stored — the list is read again.
   if (refreshesListOn(result.code)) revalidatePath('/makers');
-  // The dictionary's words (DUPLICATE, MAKER_*_INVALID, *_NOT_FOUND, CEO_ONLY …).
-  return refusalState(result);
+  // The dictionary's words (MAKER_*_INVALID, *_NOT_FOUND, CEO_ONLY …); DUPLICATE in this screen's words.
+  const refused = refusalState(result);
+  return duplicate && result.code === 'DUPLICATE' ? { ...refused, message: duplicate, messageKo: null } : refused;
 }
 
 export async function createMakerAccountAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
@@ -55,7 +56,8 @@ export async function createMakerAccountAction(_prev: ActionState | null, formDa
     'POST',
     '/api/maker-accounts',
     externalCode.length > 0 ? { name, externalCode } : { name },
-    `メーカー「${name}」を追加しました。`
+    `メーカー「${name}」を追加しました。`,
+    MAKER_NAME_DUPLICATE_MESSAGE
   );
 }
 
@@ -74,7 +76,8 @@ export async function addRecipientAddressAction(_prev: ActionState | null, formD
     'POST',
     `/api/maker-accounts/${encodeURIComponent(accountId)}/recipient-addresses`,
     body,
-    body.isDefault ? '宛先を追加し、既定にしました。これまでの既定は外れます。' : '宛先を追加しました。'
+    body.isDefault ? '宛先を追加し、既定にしました。これまでの既定は外れます。' : '宛先を追加しました。',
+    RECIPIENT_DUPLICATE_MESSAGE
   );
 }
 

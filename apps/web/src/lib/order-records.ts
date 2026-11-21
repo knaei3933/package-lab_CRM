@@ -9,7 +9,8 @@ import type { AuditEventView } from './project-data';
 export function orderRecordText(event: Pick<AuditEventView, 'action' | 'entityType' | 'afterState'>, stateLabel: (key: string) => string): string {
   const base = ACTION_LABELS[event.action] ?? '記録';
   const status = event.afterState && typeof event.afterState.status === 'string' ? event.afterState.status : null;
-  if (event.entityType === 'film_supply_order' && status && event.action !== 'FILM_SUPPLY_ORDER_CREATED') {
+  // P2: a delivery-date record carries the order's status but does not move it.
+  if (event.entityType === 'film_supply_order' && status && event.action !== 'FILM_SUPPLY_ORDER_CREATED' && event.action !== 'FILM_SUPPLY_ORDER_DELIVERY_DATES_UPDATED') {
     return `${base}（→「${stateLabel(status)}」）`;
   }
   return base;

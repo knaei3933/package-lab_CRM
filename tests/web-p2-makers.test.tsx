@@ -327,7 +327,8 @@ describe('maker master actions (no project, the API decides; Idempotency-Key for
     expect(callApi).toHaveBeenCalledTimes(3);
   });
 
-  it.each(['DUPLICATE', 'MAKER_ACCOUNT_INVALID', 'MAKER_RECIPIENT_ADDRESS_INVALID', 'RECIPIENT_ADDRESS_INVALID', 'MAKER_ACCOUNT_NOT_FOUND', 'MAKER_RECIPIENT_ADDRESS_NOT_FOUND', 'CEO_ONLY'])(
+  // P2 live fix: DUPLICATE has this screen's own sentence (an e-mail, not a number) — tested below.
+  it.each(['MAKER_ACCOUNT_INVALID', 'MAKER_RECIPIENT_ADDRESS_INVALID', 'RECIPIENT_ADDRESS_INVALID', 'MAKER_ACCOUNT_NOT_FOUND', 'MAKER_RECIPIENT_ADDRESS_NOT_FOUND', 'CEO_ONLY'])(
     'a %s refusal shows the dictionary text and its code', async (code) => {
       callApi.mockResolvedValue(refuse(code === 'CEO_ONLY' ? 403 : code.endsWith('NOT_FOUND') ? 404 : code === 'DUPLICATE' ? 409 : 422, code));
       const result = await makersActions.addRecipientAddressAction(null, form({ accountId: MAKER_ID, email: 'a@b.example' }));
@@ -646,5 +647,33 @@ describe('/maker-po: the create form, MPO numbers, roles', () => {
     expect(html).not.toContain('明細・金額');
     expect(html).not.toContain('金額やスナップショット');
     expect(html).toContain('role-notice');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live check (demo-eml/p2-web s4b): a duplicate e-mail read 「この番号はすでに登録されています」.
+describe('P2 live fix: /makers says what was duplicated (a name or an e-mail, not a number)', () => {
+  it('a duplicate address and a duplicate maker name have their own sentence; other refusals keep the dictionary', async () => {
+    const { MAKER_NAME_DUPLICATE_MESSAGE, RECIPIENT_DUPLICATE_MESSAGE } = await import('../apps/web/src/lib/maker-master.js');
+    const makers = await import('../apps/web/src/app/makers/actions.js');
+    const data = (entries: Record<string, string>) => { const f = new FormData(); for (const [k, v] of Object.entries(entries)) f.set(k, v); return f; };
+    callApi.mockResolvedValue({ ok: false, status: 409, data: { code: 'DUPLICATE' }, error: 'この番号はすでに登録されています。', errorKo: '이미 등록된 번호입니다.', code: 'DUPLICATE', failure: null });
+    const address = await makers.addRecipientAddressAction(null, data({ accountId: '01a1fdaf-0000-7000-8000-000000000001', email: 'dup@maker.example.jp' }));
+    expect(address).toMatchObject({ ok: false, code: 'DUPLICATE', message: RECIPIENT_DUPLICATE_MESSAGE, messageKo: null });
+    const maker = await makers.createMakerAccountAction(null, data({ name: '合成メーカー' }));
+    expect(maker).toMatchObject({ ok: false, code: 'DUPLICATE', message: MAKER_NAME_DUPLICATE_MESSAGE });
+    expect(JSON.stringify([address, maker])).not.toContain('番号');
+    callApi.mockResolvedValue({ ok: false, status: 422, data: { code: 'MAKER_ACCOUNT_INVALID' }, error: '辞書の文', errorKo: null, code: 'MAKER_ACCOUNT_INVALID', failure: null });
+    expect(await makers.createMakerAccountAction(null, data({ name: '合成メーカー' }))).toMatchObject({ message: '辞書の文' });
+  });
+});
+
+describe('P2 live fix: the order records name the new P2 actions', () => {
+  it('delivery dates and seven PO facts have their own words, and a date record does not claim a state change', async () => {
+    const { orderRecordText } = await import('../apps/web/src/lib/order-records.js');
+    const label = (key: string) => (key === 'SEVEN_PO_VERIFIED' ? '発注書の照合済み' : key);
+    expect(orderRecordText({ action: 'FILM_SUPPLY_ORDER_DELIVERY_DATES_UPDATED', entityType: 'film_supply_order', afterState: { status: 'SEVEN_PO_VERIFIED' } }, label)).toBe('納期（希望納期・納品予定日）を記録');
+    expect(orderRecordText({ action: 'SEVEN_PO_ORDER_FACTS_UPDATED', entityType: 'seven_purchase_order', afterState: {} }, label)).toBe('セブン化学発注書の数量・金額を記録');
+    expect(orderRecordText({ action: 'FILM_SUPPLY_ORDER_TRANSITIONED', entityType: 'film_supply_order', afterState: { status: 'SEVEN_PO_VERIFIED' } }, label)).toContain('→「発注書の照合済み」');
   });
 });
