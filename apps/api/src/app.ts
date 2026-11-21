@@ -2055,17 +2055,15 @@ export function createApp({
     // check any staff member could freeze "dual approved" onto an order nobody
     // approved twice.
     if (target === 'MAKER_PO_READY' || target === 'DUAL_APPROVED') {
-      const approvalContext = await loadApprovalContext(orderId);
-      const approvalGate = deriveOrderApprovalGate(
-        approvalContext.revisions,
-        approvalContext.events,
-        approvalContext.verifications
-      );
+      // Re-review N1: the manual recovery uses the same review-scoped gate as
+      // the automatic steps — after a change review, 校了 needs re-approval.
+      const { gate: approvalGate, reviewStartedAt } = await loadReviewScopedApprovalGate(db, orderId);
       if (!approvalGate.dualApproved) {
         return context.json({
           error: '全デザインの両組織承認が必要です',
           code: 'DUAL_APPROVAL_REQUIRED',
           missingApprovals: approvalGate.missingApprovals,
+          ...(reviewStartedAt ? { reapprovalRequiredSince: reviewStartedAt } : {}),
           ...(target === 'DUAL_APPROVED'
             ? {
                 dualApprovedRecordedOnlyViaApprovalEndpoint:
@@ -4641,6 +4639,34 @@ export function createApp({
    * applies a plan reads them inside its transaction while holding the order
    * row lock, so nothing can change under the decision.
    */
+  /**
+   * P1 review M4 / re-review N1: the dual-approval gate as the order's own
+   * steps may use it. After a change review only approvals recorded since the
+   * order last entered CHANGE_REVIEW count (re-approval after a review), so the
+   * automatic steps and the manual DUAL_APPROVED recovery decide alike. The
+   * plain gate (current revisions, all approvals) is unchanged elsewhere.
+   */
+  async function loadReviewScopedApprovalGate(executor: MakerPoQueryExecutor, orderId: string) {
+    const [lastReview] = await executor.select({ occurredAt: auditEvents.occurredAt }).from(auditEvents)
+      .where(and(
+        eq(auditEvents.entityType, 'film_supply_order'),
+        eq(auditEvents.entityId, orderId),
+        eq(auditEvents.action, 'FILM_SUPPLY_ORDER_TRANSITIONED'),
+        sql`${auditEvents.afterState} ->> 'status' = 'CHANGE_REVIEW'`
+      ))
+      .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+      .limit(1);
+    const approvalContext = await loadApprovalContext(orderId, executor);
+    const since = lastReview ? new Date(lastReview.occurredAt).getTime() : null;
+    const events = since === null
+      ? approvalContext.events
+      : approvalContext.events.filter((event) => new Date(event.recordedAt).getTime() >= since);
+    return {
+      gate: deriveOrderApprovalGate(approvalContext.revisions, events, approvalContext.verifications),
+      reviewStartedAt: lastReview?.occurredAt ?? null
+    };
+  }
+
   async function loadAutoAdvanceFacts(
     executor: MakerPoReadWriteExecutor,
     order: { id: string; status: string; sevenPurchaseOrderId: string | null; paymentTerms: string | null },
@@ -4705,12 +4731,7 @@ export function createApp({
       .from(artworkRevisions).where(eq(artworkRevisions.filmSupplyOrderId, order.id)).limit(1);
     let dualApproved = false;
     if (anyRevision) {
-      const approvalContext = await loadApprovalContext(order.id, executor);
-      const since = lastReview ? new Date(lastReview.occurredAt).getTime() : null;
-      const events = since === null
-        ? approvalContext.events
-        : approvalContext.events.filter((event) => new Date(event.recordedAt).getTime() >= since);
-      dualApproved = deriveOrderApprovalGate(approvalContext.revisions, events, approvalContext.verifications).dualApproved;
+      dualApproved = (await loadReviewScopedApprovalGate(executor, order.id)).gate.dualApproved;
     }
     return { sevenPoGateOpen, sevenPoGateRefusal, hasArtworkRevision, dualApproved, paymentTerms: order.paymentTerms };
   }
@@ -4987,8 +5008,12 @@ export function createApp({
           sql`${artworkRevisions.createdAt} >= ${lastReviewEntry!.occurredAt}`
         )).limit(1)
       : [];
+    // Re-review N2: the covered-cycle shortcut is for normal orders before
+    // printing only; a printed (or later) order always enters the review.
+    const statusIndex = FILM_SUPPLY_ORDER_STATES.indexOf(order.status as typeof FILM_SUPPLY_ORDER_STATES[number]);
+    const beforePrinting = statusIndex >= 0 && statusIndex < FILM_SUPPLY_ORDER_STATES.indexOf('FILM_IN_PRODUCTION');
     const entersChangeReview = invalidatedApprovals
-      && !reviewCycleCoversApprovals
+      && !(reviewCycleCoversApprovals && beforePrinting)
       && order.status !== 'CHANGE_REVIEW'
       && !isExceptionFilmSupplyOrderState(order.status)
       && !isTerminalFilmSupplyOrderState(order.status);
@@ -4998,8 +5023,6 @@ export function createApp({
     // The facts may be skipped only for a normal order before printing; any
     // printed, held or reviewed order keeps the full rule (incl. the
     // representative's printed-change approval).
-    const statusIndex = FILM_SUPPLY_ORDER_STATES.indexOf(order.status as typeof FILM_SUPPLY_ORDER_STATES[number]);
-    const beforePrinting = statusIndex >= 0 && statusIndex < FILM_SUPPLY_ORDER_STATES.indexOf('FILM_IN_PRODUCTION');
     const requiresChangeFacts = invalidatedApprovals && !(factsInCycle !== undefined && beforePrinting);
     const statusAfter = entersChangeReview ? 'CHANGE_REVIEW' as const : order.status;
 
@@ -7859,6 +7882,8 @@ export function createApp({
       items,
       blocked,
       counts: { items: items.length, blocked: blocked.length, byKind },
+      // Effective per-kind limit (default 100, at most 500).
+      limit,
       truncated
     });
   });
