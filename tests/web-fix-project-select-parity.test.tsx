@@ -13,6 +13,7 @@ import {
 import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * ui/fix-project-select (demo-eml/ui-fix-project-select/REPORT.md). Symptom: a
@@ -73,20 +74,21 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined, refresh: () => undefined }));
 vi.mock('next/headers', () => ({
   cookies: async () => ({
-    get: () => undefined,
+    // P1 R20: the legacy selection cookie is still read as a remembered project (home shortcut only).
+    get: (name: string) => (name === 'kanei_web_project' && signedIn.projectId ? { value: signedIn.projectId } : undefined),
     set: (name: string, value: string) => { signedIn.cookiesSet.push([name, value]); }
   })
 }));
 
 const { default: DashboardPage } = await import('../apps/web/src/app/dashboard/page.js');
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
-const { default: DocumentsPage } = await import('../apps/web/src/app/documents/page.js');
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
+const DocumentsPage = projectScreen((await import('../apps/web/src/screens/DocumentsScreen.js')).DocumentsScreen);
 const { GET: projectSelectionRoute } = await import('../apps/web/src/app/project-selection/route.js');
 const { POST: logoutRoute } = await import('../apps/web/src/app/api/auth/logout/route.js');
 const { openProjectFromCardAction } = await import('../apps/web/src/app/actions.js');
 const { decideProjectSelection, safeReturnPath, projectSelectionHref } = await import('../apps/web/src/lib/project-selection.js');
 const { CHOOSE_TITLE, NONE_TITLE, LIST_FAILED_TITLE, OPEN_PROJECT_LABEL } = await import('../apps/web/src/components/ProjectChooser.js');
-const { NO_PROJECT_SELECTED_MESSAGE } = await import('../apps/web/src/lib/project-data.js');
+const { legacyScreenPage } = await import('../apps/web/src/screens/LegacyScreenRedirect.js');
 
 const OLD_MESSAGE = '選択中の案件を開けません';
 
@@ -223,29 +225,29 @@ describe('a remembered project this operator cannot open is forgotten without a 
     ['not a project id at all', 'old-demo']
   ];
   for (const [label, remembered] of cases) {
-    it(`${label}: the dashboard hands over, the route deletes the cookie, the cards follow`, async () => {
+    it(`${label}: the dashboard does not open it — the cards follow, no message (P1 R20)`, async () => {
       signIn('many', remembered);
-      expect(await redirectOf(DashboardPage)).toBe('/project-selection?next=%2Fdashboard');
-      const answer = await selectRoute('many', '?next=%2Fdashboard', remembered);
-      expect(answer.status).toBe(303);
-      expect(answer.location).toBe('/dashboard');
-      expect(answer.setCookie).toEqual(['kanei_web_project=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0']);
-      signIn('many');
+      expect(await redirectOf(DashboardPage)).toBeNull();
       const html = await render(DashboardPage);
       expect(html).not.toContain(OLD_MESSAGE);
       expect(html).not.toContain('案件が見つかりません');
       expect(html).toContain(CHOOSE_TITLE);
+      // 「案件を選び直す」 route still forgets it.
+      const answer = await selectRoute('many', '?next=%2Fdashboard', remembered);
+      expect(answer.status).toBe(303);
+      expect(answer.location).toBe('/dashboard');
+      expect(answer.setCookie).toEqual(['kanei_web_project=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0']);
     });
   }
 
-  it('the other screens do the same and come back to themselves', async () => {
+  it('the old addresses move to /p/{code}/… of a project the operator can open, else to the cards', async () => {
     signIn('many', NOT_IN_DB);
-    expect(await redirectOf(OrdersPage)).toBe('/project-selection?next=%2Forders');
-    expect(await redirectOf(DocumentsPage)).toBe('/project-selection?next=%2Fdocuments');
-    expect((await selectRoute('many', '?next=%2Forders', NOT_IN_DB)).location).toBe('/orders');
-    // Without a remembered project and several to choose from, the screen asks for a choice.
-    signIn('many');
-    expect(await render(OrdersPage)).toContain(NO_PROJECT_SELECTED_MESSAGE);
+    expect(await redirectOf(() => legacyScreenPage('orders', {}))).toBe('/dashboard');
+    signIn('many', project.b);
+    expect(await redirectOf(() => legacyScreenPage('orders', {}))).toBe('/p/TEST-PS-B/orders');
+    expect(await redirectOf(() => legacyScreenPage('documents', { download: 'expired' }))).toBe('/p/TEST-PS-B/documents?download=expired');
+    signIn('one');
+    expect(await redirectOf(() => legacyScreenPage('maker-po', {}))).toBe('/p/TEST-PS-A/maker-po');
   });
 
   it('with only one project left, the forgotten one is replaced by it', async () => {
@@ -255,16 +257,9 @@ describe('a remembered project this operator cannot open is forgotten without a 
 });
 
 describe('after login: 1 / N / 0 projects (real API)', () => {
-  it('1 project: opened for the operator, the dashboard shows it', async () => {
+  it('1 project: opened for the operator at its own address (/p/{code})', async () => {
     signIn('one');
-    expect(await redirectOf(DashboardPage)).toBe('/project-selection?next=%2Fdashboard');
-    const answer = await selectRoute('one', '?next=%2Fdashboard', null);
-    expect(answer.location).toBe('/dashboard');
-    expect(answer.setCookie).toEqual([`kanei_web_project=${project.a}; Path=/; HttpOnly; SameSite=Lax`]);
-    signIn('one', project.a);
-    const html = await render(DashboardPage);
-    expect(html).toContain('案件: TEST-PS-A（合成PS案件A）');
-    expect(html).not.toContain(CHOOSE_TITLE);
+    expect(await redirectOf(DashboardPage)).toBe('/p/TEST-PS-A');
   });
 
   it('N projects: one large card per project the operator may open — not the deleted or unassigned ones', async () => {
@@ -273,25 +268,27 @@ describe('after login: 1 / N / 0 projects (real API)', () => {
     const html = await render(DashboardPage);
     expect(html).toContain(CHOOSE_TITLE);
     expect(html).toContain('あなたが開ける案件は2件です。');
-    const cards = html.match(/<button type="submit" class="project-choice">[\s\S]*?<\/button>/g) ?? [];
+    const cards = html.match(/<a class="project-choice" href="[^"]+">[\s\S]*?<\/a>/g) ?? [];
     expect(cards).toHaveLength(2);
     expect(cards[0]).toContain('合成PS案件A');
     expect(cards[0]).toContain('TEST-PS-A');
     expect(cards[0]).toContain(OPEN_PROJECT_LABEL);
     expect(cards[1]).toContain('合成PS案件B');
-    expect(html).toContain(`name="projectId" value="${project.a}"`);
+    // P1 R20: each card is a link to the project's address (Ctrl+click opens a new tab).
+    expect(html).toContain('href="/p/TEST-PS-A"');
+    expect(html).toContain('href="/p/TEST-PS-B"');
     expect(html).not.toContain('TEST-PS-X');
     expect(html).not.toContain('TEST-PS-D');
     // The route leaves a valid choice alone.
     expect((await selectRoute('many', '?next=%2Fdashboard', project.b)).setCookie).toEqual([]);
   });
 
-  it('N projects: a card opens its project; a card for a project the API refuses writes nothing', async () => {
+  it('the header selector opens the project at its address; a project the API refuses writes nothing', async () => {
     signIn('many');
     const form = new FormData();
     form.set('projectId', project.b);
-    await expect(openProjectFromCardAction(form)).rejects.toMatchObject({ digest: expect.stringContaining(';/dashboard;') });
-    expect(signedIn.cookiesSet).toEqual([['kanei_web_project', project.b]]);
+    await expect(openProjectFromCardAction(form)).rejects.toMatchObject({ digest: expect.stringContaining(';/p/TEST-PS-B;') });
+    expect(signedIn.cookiesSet).toEqual([['kanei_web_project', project.b], ['kanei_web_last_project', 'TEST-PS-B']]);
 
     signIn('many');
     form.set('projectId', project.unassigned);
@@ -299,10 +296,9 @@ describe('after login: 1 / N / 0 projects (real API)', () => {
     expect(signedIn.cookiesSet).toEqual([]);
   });
 
-  it('N projects with a valid remembered one: that project opens, no hand-over', async () => {
+  it('N projects with a valid remembered one: the dashboard opens it at its address', async () => {
     signIn('many', project.b);
-    expect(await redirectOf(DashboardPage)).toBeNull();
-    expect(await render(DashboardPage)).toContain('案件: TEST-PS-B（合成PS案件B）');
+    expect(await redirectOf(DashboardPage)).toBe('/p/TEST-PS-B');
   });
 
   it('0 projects: why, and the next step for the role — no card, no dead end', async () => {
@@ -331,10 +327,13 @@ describe('after login: 1 / N / 0 projects (real API)', () => {
 describe('the /project-selection route', () => {
   it('「案件を選び直す」 (reset=1) forgets even a valid project, then decides again', async () => {
     expect((await selectRoute('many', '?next=%2Fmaker-po&reset=1', project.a))).toEqual({
-      status: 303, location: '/maker-po', setCookie: ['kanei_web_project=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0']
+      status: 303,
+      location: '/maker-po',
+      // P1 R20: the last project opened (home shortcut) is forgotten with it.
+      setCookie: ['kanei_web_project=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0', 'kanei_web_last_project=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0']
     });
     // With one project, re-selecting lands on it again.
-    expect((await selectRoute('one', '?reset=1', project.a)).setCookie).toEqual([`kanei_web_project=${project.a}; Path=/; HttpOnly; SameSite=Lax`]);
+    expect((await selectRoute('one', '?reset=1', project.a)).setCookie).toEqual([`kanei_web_project=${project.a}; Path=/; HttpOnly; SameSite=Lax`, 'kanei_web_last_project=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0']);
   });
 
   it('never sends the operator to another site', async () => {
@@ -369,6 +368,7 @@ describe('logout forgets the project for the next person on this browser', () =>
     vi.stubGlobal('fetch', async () => new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }));
     const reached = await logoutRoute(new Request('http://projsel.localhost:3092/api/auth/logout', { method: 'POST', headers: { cookie: `kanei_web_project=${project.a}` } }));
     expect(reached.headers.getSetCookie()).toContain('kanei_web_project=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
+    expect(reached.headers.getSetCookie()).toContain('kanei_web_last_project=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
     vi.stubGlobal('fetch', async () => { throw new Error('unreachable'); });
     const unreachable = await logoutRoute(new Request('http://projsel.localhost:3092/api/auth/logout', { method: 'POST' }));
     expect(unreachable.status).toBe(502);

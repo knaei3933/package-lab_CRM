@@ -12,6 +12,7 @@ import {
 } from '@kanei/core';
 import { buildAuditViewForRole } from '../apps/api/src/audit-view.js';
 import type { AuditHistoryRow } from '../apps/api/src/audit-view.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch C, part 2 (screens): the maker-PO stage function, the status tone
@@ -54,11 +55,11 @@ const { DataTable } = await import('../apps/web/src/components/DataTable.js');
 const { MAKER_PO_STATUS_LABELS } = await import('../apps/web/src/lib/maker-po-data.js');
 const { VERIFICATION_STATUS_LABELS } = await import('../apps/web/src/lib/vocabulary.js');
 const { HIDDEN_BY_ROLE_LABEL } = await import('../apps/web/src/lib/redaction.js');
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
-const { default: DocumentsPage } = await import('../apps/web/src/app/documents/page.js');
-const { default: ApprovalsPage } = await import('../apps/web/src/app/approvals/page.js');
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
-const { default: DeliveriesPage } = await import('../apps/web/src/app/deliveries/page.js');
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
+const DocumentsPage = projectScreen((await import('../apps/web/src/screens/DocumentsScreen.js')).DocumentsScreen);
+const ApprovalsPage = projectScreen((await import('../apps/web/src/screens/ApprovalsScreen.js')).ApprovalsScreen);
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
+const DeliveriesPage = projectScreen((await import('../apps/web/src/screens/DeliveriesScreen.js')).DeliveriesScreen);
 
 type Role = 'admin' | 'staff' | 'viewer';
 const ROLES: Role[] = ['admin', 'staff', 'viewer'];
@@ -608,7 +609,7 @@ describe('2-⑤ tables: caption, header scope, scroll region (5 screens × 3 rol
       if (!(page === 'approvals' && role === 'viewer')) expect(tables.length, 'a table to check').toBeGreaterThan(0);
       expect(html.match(/<table\b[^>]*><caption\b/g) ?? []).toHaveLength(tables.length);
       const headers = html.match(/<th\b/g) ?? [];
-      expect(html.match(/<th scope="(col|row)"/g) ?? []).toHaveLength(headers.length);
+      expect(html.match(/<th\b[^>]*\bscope="(col|row)"/g) ?? []).toHaveLength(headers.length);
       expect(html.match(/<div class="table-scroll" role="region" aria-label="[^"]+" tabindex="0"><table/g) ?? [])
         .toHaveLength(tables.length);
       // The old ad-hoc badge style is gone; badges carry a symbol.
@@ -685,7 +686,7 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
   it('admin, review M1: an unmet gate keeps the badge short (the reason is wrapping text), and an all-cancelled order shows the large box again', async () => {
     serveAs('admin');
     const base = callApi.getMockImplementation()!;
-    const reason = '決済条件（G6）が未確定のため承認できません。取引条件を前払いか搬入時払いに設定してから代表承認してください。';
+    const reason = '支払条件が未確定のため承認できません。取引条件を前払いか搬入時払いに設定してから代表承認してください。';
     callApi.mockImplementation(async (apiPath: string, ...rest: unknown[]) => {
       if (apiPath.endsWith('/payment-gate')) {
         return {
@@ -733,10 +734,10 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
   it('the new film order card and the audit dashboard are folded (closed <details>)', async () => {
     serveAs('admin');
     const html = await renderPage(MakerPoPage);
-    expect(html).toMatch(/<details class="collapsed-card"[^>]*><summary><h2[^>]*>新しいフィルム発注を作成する（支払条件つき）<\/h2><\/summary>/);
-    expect(html).toMatch(/<details class="collapsed-card"[^>]*><summary><h2[^>]*>⑤ 監査ダッシュボード（役割に応じた表示）— 1件<\/h2><\/summary>/);
-    expect(html).not.toContain('<h2 style="font-size:20px;margin:0 0 4px">決済条件を設定して発注を作成する</h2>');
-    expect(html).not.toMatch(/<details class="collapsed-card"[^>]* open/);
+    expect(html).toMatch(/<details class="collapsed-card[^"]*"[^>]*><summary><h2[^>]*>新しいフィルム発注を作成する（支払条件つき）<\/h2><\/summary>/);
+    expect(html).toMatch(/<details class="collapsed-card[^"]*"[^>]*><summary><h2[^>]*>⑤ 監査ダッシュボード（役割に応じた表示）— 1件<\/h2><\/summary>/);
+    expect(html).not.toContain('<h2 style="font-size:20px;margin:0 0 4px">支払条件を設定して発注を作成する</h2>');
+    expect(html).not.toMatch(/<details class="collapsed-card[^"]*"[^>]* open/);
   });
 
   it('a send waiting for the manual check: ③′ is current, with the corrected wording', async () => {
@@ -793,8 +794,9 @@ describe('2-⑤ status badges on the screens', () => {
   it('orders (admin): film order statuses are badges; 下書き never wraps', async () => {
     serveAs('admin');
     const html = await renderPage(OrdersPage);
-    expect(html).toContain('<td style="border:1px solid var(--line);padding:6px 8px;vertical-align:top" class="status-cell"><span class="status-badge status-badge--active"><span class="status-badge-mark" aria-hidden="true">●</span>下書き</span>');
-    // UI batch E (F-16): 保留中 keeps the blocked colour but reads ‖ (paused), not the ✕ of キャンセル終了.
+    // R27: the cell style is the ui-td class now (no inline style).
+    expect(html).toContain('<td class="status-cell ui-td"><span class="status-badge status-badge--active"><span class="status-badge-mark" aria-hidden="true">●</span>下書き</span>');
+    // UI batch E (F-16): 保留中 keeps the blocked colour but reads ‖ (paused), not the ✕ of 取消済.
     expect(html).toContain('status-badge--blocked"><span class="status-badge-mark" aria-hidden="true">‖</span>保留中');
   });
 

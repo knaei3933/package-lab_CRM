@@ -139,7 +139,7 @@ export function ChangeRequestFields({
           </div>
         ) : null}
         <p style={noteStyle}>
-          印刷開始（フィルム製造中）以降の変更は、代表者の承認と実費の記録が必須です。代表者が登録すると、その代表者が承認者として記録されます。
+          印刷開始（製造中）以降の変更は、代表者の承認と実費の記録が必須です。代表者が登録すると、その代表者が承認者として記録されます。
         </p>
         {printed && open ? (
           <p className="role-notice" role="note">

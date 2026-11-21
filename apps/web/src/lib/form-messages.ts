@@ -30,7 +30,7 @@ export const EXPECTED_TERMS_MISSING_MESSAGE =
 /** P0 review M2: PAYMENT_TERMS_LOCKED by its reason (the server rule, not 「下書きの間だけ」). */
 export const PAYMENT_TERMS_LOCKED_MESSAGES: Readonly<Record<string, string>> = {
   ceo_approved: '代表承認済みのメーカー発注書があるため、支払条件は変更できません。変更する場合は、メーカー発注書を取り消して作り直してください。',
-  order_frozen: '保留・変更レビュー・取消レビュー中の発注は、支払条件を変更できません。状態を解決してから変更してください。'
+  order_frozen: '保留・変更確認・取消確認中の発注は、支払条件を変更できません。状態を解決してから変更してください。'
 };
 
 export type MessageMatch = 'exact' | 'prefix' | 'suffix';
@@ -62,7 +62,7 @@ export const ACTION_MESSAGE_FIELDS: readonly ActionMessageField[] = [
   // app/actions.ts
   { message: '案件を選択するか、案件IDを入力してください。', match: 'exact', field: 'projectId', source: 'actions' },
   { message: '発注番号を入力してください。', match: 'exact', field: 'poNumber', source: 'actions' },
-  { message: '公式登録日を入力してください。', match: 'exact', field: 'officialRegisteredAt', source: 'actions' },
+  { message: '本登録日を入力してください。', match: 'exact', field: 'officialRegisteredAt', source: 'actions' },
   { message: '発注コードを入力してください。', match: 'exact', field: 'code', source: 'actions' },
   // UI batch E (F-05, F-07): the PO link a film order and an official artifact need.
   { message: 'セブン化学発注書を選択してください。', match: 'exact', field: 'sevenPurchaseOrderId', source: 'actions' },

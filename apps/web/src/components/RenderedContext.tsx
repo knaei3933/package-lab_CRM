@@ -14,6 +14,8 @@ import { RENDERED_PROJECT_FIELD } from '../lib/project-context';
 export interface RenderedContextValue {
   projectId: string;
   showKorean: boolean;
+  /** P1 R29: the operator's display mode (ja / ja-ko / ko); absent = derived from showKorean. */
+  lang?: 'ja' | 'ja-ko' | 'ko' | undefined;
 }
 
 const RenderedContext = createContext<RenderedContextValue | null>(null);
@@ -34,4 +36,11 @@ export function RenderedProjectField() {
   const context = useContext(RenderedContext);
   if (!context) return null;
   return <input type="hidden" readOnly name={RENDERED_PROJECT_FIELD} value={context.projectId} />;
+}
+
+/** P1 R29: a Korean gloss after a Japanese label, only in the bilingual / Korean modes. */
+export function KoGloss({ ko }: { ko: string | null | undefined }) {
+  const context = useContext(RenderedContext);
+  if (!ko || !context?.showKorean) return null;
+  return <span className="p1-ko" lang="ko">{ko}</span>;
 }

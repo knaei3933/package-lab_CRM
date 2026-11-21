@@ -19,6 +19,7 @@ import {
 import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch F (demo-eml/ui-batch-f/REPORT.md) against the REAL API on the
@@ -78,8 +79,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
 
-const { default: ApprovalsPage } = await import('../apps/web/src/app/approvals/page.js');
-const { default: DocumentsPage } = await import('../apps/web/src/app/documents/page.js');
+const ApprovalsPage = projectScreen((await import('../apps/web/src/screens/ApprovalsScreen.js')).ApprovalsScreen);
+const DocumentsPage = projectScreen((await import('../apps/web/src/screens/DocumentsScreen.js')).DocumentsScreen);
 const { registerArtworkRevisionAction } = await import('../apps/web/src/app/actions.js');
 const { GET: downloadRelay } = await import('../apps/web/src/app/api/document-versions/[versionId]/download/route.js');
 const { loadWorkspace } = await import('../apps/web/src/lib/project-data.js');
@@ -383,7 +384,7 @@ describe('R1-4: document downloads from the documents screen', () => {
     expect(refused.status).toBe(303);
     expect(refused.headers.get('location')).toBe('/documents?download=forbidden');
     const notice = await render(() => DocumentsPage({ searchParams: Promise.resolve({ download: 'forbidden' }) }));
-    expect(notice).toContain('<div role="alert"');
+    expect(notice).toContain('<div class="ui-info" role="alert">');
     expect(notice).toContain('この書類をダウンロードする権限がありません（閲覧者、または担当外の案件です）。');
 
     signIn('staff');

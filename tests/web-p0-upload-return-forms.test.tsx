@@ -193,12 +193,13 @@ describe('R08: safeReturnPath', () => {
       expect(await redirectTarget('/orders?x=1')).toBe('/orders?x=1');
     });
 
-    it('goes to the dashboard without ?next=', async () => {
-      expect(await redirectTarget(undefined)).toBe('/dashboard');
+    // P1 R26: without ?next= the operator lands on the role's home.
+    it('goes to the role home without ?next=', async () => {
+      expect(await redirectTarget(undefined)).toBe('/home');
     });
 
-    it.each(['//evil.test', 'https://evil.test', '/\\evil.test', '/api/auth/logout'])('never follows %j (the dashboard instead)', async (next) => {
-      expect(await redirectTarget(next)).toBe('/dashboard');
+    it.each(['//evil.test', 'https://evil.test', '/\\evil.test', '/api/auth/logout'])('never follows %j (the role home instead)', async (next) => {
+      expect(await redirectTarget(next)).toBe('/home');
     });
   });
 });

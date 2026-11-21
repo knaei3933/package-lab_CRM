@@ -30,7 +30,7 @@ interface StatusLabelsPayload {
 
 const sectionTitles: Array<{ heading: string; note: string; key: keyof StatusLabelsPayload }> = [
   { heading: 'フィルム発注の状態', note: '発注から納品・受領確認までのF1フィルム商材の流れ', key: 'filmSupplyOrderStates' },
-  { heading: '製造先発注書の状態', note: 'メーカー発注書の承認・送信・受領の状態', key: 'makerPurchaseOrderStatuses' },
+  { heading: 'メーカー発注書の状態', note: 'メーカー発注書の承認・送信・受領の状態', key: 'makerPurchaseOrderStatuses' },
   { heading: '校了の組織', note: 'デザインごとの校了（承認）組織', key: 'approvalOrganizations' },
   { heading: '充填製品納品の確認状態', note: '納品行ごとの納品証跡確認状態', key: 'fillingDeliveryConfirmationStates' },
   { heading: '手数料計算の準備状態', note: '納品証跡がそろって初めて手数料計算が可能になります', key: 'commissionReadinessStates' }
@@ -65,27 +65,27 @@ export default async function StatusPage() {
 
   return (
     <section>
-      <h1 style={{ fontSize: 28, marginBottom: 8 }}>ステータス一覧（日本語表記）</h1>
-      <p style={{ color: 'var(--ink-sub)' }}>
+      <h1 className="sx-2b405ed">ステータス一覧（日本語表記）</h1>
+      <p className="sx-3ff301c">
         F1案件で使う状態の日本語ラベル一覧です。ラベルはシステムの共通定義をそのまま表示しています。
       </p>
 
       {!labels.ok && (
-        <p style={{ marginTop: 24, padding: 16, border: '1px solid var(--danger)', borderRadius: 'var(--radius)', background: 'var(--danger-tint)', color: 'var(--danger)' }}>
+        <p className="sx-e5142ac">
           {labels.message}
         </p>
       )}
 
       {labels.ok && (
-        <div style={{ display: 'grid', gap: 16, marginTop: 24 }}>
+        <div className="sx-776e8ca">
           {sectionTitles.map((section) => (
-            <div key={section.key} style={cardStyle}>
-              <h2 style={{ margin: 0, fontSize: 20 }}>{section.heading}</h2>
-              <p style={{ margin: '4px 0 12px', color: 'var(--ink-sub)', fontSize: 14 }}>{section.note}</p>
+            <div className="ui-card" key={section.key}>
+              <h2 className="sx-291e42c">{section.heading}</h2>
+              <p className="sx-1578276">{section.note}</p>
               <div>
                 {labels.payload[section.key].map((entry) => (
                   <div key={entry.key} style={rowStyle}>
-                    <code style={{ color: 'var(--ink-sub)', overflowWrap: 'anywhere' }}>{entry.key}</code>
+                    <code className="sx-5ca78ee">{entry.key}</code>
                     <span>{entry.label}</span>
                   </div>
                 ))}

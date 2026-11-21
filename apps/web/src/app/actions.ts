@@ -4,9 +4,10 @@ import { revalidatePath } from 'next/cache';
 import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { FILM_UNITS, FILLING_UNITS, OFFICIAL_ARTIFACT_DOCUMENT_TYPES } from '@kanei/core';
-import { callApi, PROJECT_COOKIE, readSelectedProjectId } from '../lib/api';
+import { callApi, PROJECT_COOKIE } from '../lib/api';
 import { isSettledRefusal, KEY_REUSED_CODE, recordIdOf, refusalState } from '../lib/action-result';
-import { refuseIfProjectSwitched } from '../lib/project-guard';
+import { refuseIfProjectSwitched, writeProjectOf } from '../lib/project-guard';
+import { LAST_PROJECT_COOKIE, LAST_PROJECT_COOKIE_OPTIONS, projectPath } from '../lib/project-route';
 import { idempotencyKeyOf } from '../lib/project-context';
 import { duplicateRefusal } from '../lib/duplicate-check';
 import { webErrorText } from '../lib/error-dictionary';
@@ -50,8 +51,13 @@ function numberField(formData: FormData, key: string): number | null {
 
 const dateTimeField = offsetDateTimeField;
 
-async function requireProjectId(): Promise<string | ActionState> {
-  const projectId = await readSelectedProjectId();
+/**
+ * P1 R20: the project a write goes to is the one its screen was drawn for
+ * (/p/{案件コード}, carried by the form) — never a cookie. refuseIfProjectSwitched
+ * has already refused a form without it.
+ */
+async function requireProjectId(formData: FormData): Promise<string | ActionState> {
+  const projectId = writeProjectOf(formData);
   if (!projectId) {
     return { ok: false, message: '案件が選択されていません。上部の「案件の選択」で案件IDを入力してください。' };
   }
@@ -218,7 +224,8 @@ export async function selectProjectAction(_prev: ActionState | null, formData: F
   // M8-UI3: the selector is a dropdown of the projects the operator may open.
   // The direct-input field stays for a project that is not in the list; the
   // dropdown wins when both are filled, so the recorded choice is never
-  // ambiguous.
+  // ambiguous. P1 R20: choosing opens the project's own address (/p/{code});
+  // the cookie only remembers it as the last project opened.
   const projectId = field(formData, 'projectId') || field(formData, 'directProjectId');
   if (projectId.length === 0) {
     return { ok: false, message: '案件を選択するか、案件IDを入力してください。' };
@@ -227,15 +234,13 @@ export async function selectProjectAction(_prev: ActionState | null, formData: F
   if (!result.ok || !result.data) return refusalState(result);
   const store = await cookies();
   store.set(PROJECT_COOKIE, projectId, { path: '/', httpOnly: true, sameSite: 'lax' });
-  refresh();
-  return { ok: true, message: `案件 ${result.data.code}（${result.data.name}）を選択しました。` };
+  store.set(LAST_PROJECT_COOKIE, result.data.code, LAST_PROJECT_COOKIE_OPTIONS);
+  redirect(projectPath(result.data.code));
 }
 
 /**
- * ui/fix-project-select: a project card on the dashboard. The same check and
- * cookie as the header selector; afterwards the dashboard is shown again — for
- * the opened project, or (when the API refused it, so nothing was written)
- * with the cards again.
+ * ui/fix-project-select: a project card on the dashboard (P1 R20: the cards are
+ * links now; this stays for a form posted by an old page).
  */
 export async function openProjectFromCardAction(formData: FormData): Promise<void> {
   await selectProjectAction(null, formData);
@@ -249,7 +254,7 @@ export async function openProjectFromCardAction(formData: FormData): Promise<voi
 export async function createSevenPurchaseOrderAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
   const switched = await refuseIfProjectSwitched(formData);
   if (switched) return switched;
-  const projectId = await requireProjectId();
+  const projectId = await requireProjectId(formData);
   if (!isProjectId(projectId)) return projectId;
   const poNumber = field(formData, 'poNumber');
   if (poNumber.length === 0) return { ok: false, message: '発注番号を入力してください。' };
@@ -271,7 +276,7 @@ export async function registerSevenPurchaseOrderAction(_prev: ActionState | null
   const poId = field(formData, 'poId');
   const registeredAt = field(formData, 'officialRegisteredAt');
   if (poId.length === 0) return { ok: false, message: 'セブン発注書が選択されていません。' };
-  if (registeredAt.length === 0) return { ok: false, message: '公式登録日を入力してください。' };
+  if (registeredAt.length === 0) return { ok: false, message: '本登録日を入力してください。' };
   return post(formData, `/api/seven-purchase-orders/${encodeURIComponent(poId)}/register-official`, {
     officialRegisteredAt: registeredAt
   });
@@ -312,7 +317,7 @@ export async function verifySevenPurchaseOrderAction(_prev: ActionState | null, 
 export async function createFilmSupplyOrderAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
   const switched = await refuseIfProjectSwitched(formData);
   if (switched) return switched;
-  const projectId = await requireProjectId();
+  const projectId = await requireProjectId(formData);
   if (!isProjectId(projectId)) return projectId;
   const code = field(formData, 'code');
   if (code.length === 0) return { ok: false, message: '発注コードを入力してください。' };
@@ -401,7 +406,7 @@ export async function verifyEvidenceManualAction(_prev: ActionState | null, form
 export async function createFillingOrderAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
   const switched = await refuseIfProjectSwitched(formData);
   if (switched) return switched;
-  const projectId = await requireProjectId();
+  const projectId = await requireProjectId(formData);
   if (!isProjectId(projectId)) return projectId;
   const code = field(formData, 'code');
   if (code.length === 0) return { ok: false, message: '発注コードを入力してください。' };
@@ -522,7 +527,7 @@ export async function resolveCancellationReviewAction(
   if (outcome !== 'resume' && outcome !== 'cancel') {
     return { ok: false, message: '処理（再開する／取消で終了する）を選択してください。' };
   }
-  const reason = reasonField(formData, 'reason', '取消レビューの処理理由');
+  const reason = reasonField(formData, 'reason', '取消確認の処理理由');
   if (!reason.ok) return reason.state;
   // Legacy review without a recorded origin: the resume target the operator picked (resume only).
   const resumeStatus = outcome === 'resume' ? optionalField(formData, 'resumeStatus') : undefined;
@@ -559,7 +564,7 @@ const PO_REQUIRED_DOCUMENT_TYPES: readonly string[] = OFFICIAL_ARTIFACT_DOCUMENT
 export async function uploadDocumentAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
   const switched = await refuseIfProjectSwitched(formData);
   if (switched) return switched;
-  const projectId = await requireProjectId();
+  const projectId = await requireProjectId(formData);
   if (!isProjectId(projectId)) return projectId;
   const filename = field(formData, 'filename');
   const contentBase64 = field(formData, 'contentBase64');
@@ -906,7 +911,7 @@ export async function confirmDeliveryAction(_prev: ActionState | null, formData:
 export async function evaluateCommissionReadinessAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
   const switched = await refuseIfProjectSwitched(formData);
   if (switched) return switched;
-  const projectId = await requireProjectId();
+  const projectId = await requireProjectId(formData);
   if (!isProjectId(projectId)) return projectId;
   const result = await callApi<{
     readinessState: string;

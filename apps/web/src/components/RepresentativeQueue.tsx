@@ -1,21 +1,18 @@
-import { ActionForm } from './ActionForm';
-import type { FormAction } from './ActionForm';
 import { DataTable } from './DataTable';
+import { isRouteCode, orderPath, projectPath } from '../lib/project-route';
 import type { RepresentativeQueue } from '../lib/representative-queue';
 import { noteStyle, tdStyle, thStyle } from '../lib/ui';
 
 /**
  * UI batch E (F-23): 「代表者の対応待ち」 across every project, on the first
- * screen after login. Each row opens its project (the same select action as
- * the header's 「案件」); the work itself is recorded on that project's screens.
+ * screen after login. P1 R25: each row is a link to the order's own screen
+ * (/p/{案件}/o/{発注}) — Ctrl+click opens it in a new tab; the work is recorded there.
  */
 export function RepresentativeQueuePanel({
   queue,
-  selectAction,
   currentProjectId
 }: {
   queue: RepresentativeQueue;
-  selectAction: FormAction;
   currentProjectId: string | null;
 }) {
   const notes = [
@@ -49,9 +46,12 @@ export function RepresentativeQueuePanel({
                   {task.projectId === currentProjectId ? (
                     <span style={noteStyle}>この案件です（下に表示）</span>
                   ) : (
-                    <ActionForm action={selectAction} submitLabel="この案件を開く">
-                      <input type="hidden" readOnly name="projectId" value={task.projectId} />
-                    </ActionForm>
+                    <a
+                      className="dash-next-link"
+                      href={isRouteCode(task.orderCode) ? orderPath(task.projectCode, task.orderCode) : projectPath(task.projectCode)}
+                    >
+                      {`${task.orderCode} を開く`}
+                    </a>
                   )}
                 </td>
               </tr>

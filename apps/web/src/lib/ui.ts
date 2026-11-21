@@ -25,7 +25,9 @@ export const inputStyle = {
   border: '1px solid var(--line-strong)',
   borderRadius: 'var(--radius)',
   padding: '6px 8px',
-  fontSize: 'var(--text-sm)',
+  // P1 R27 (§8-5): 40px / 15px on a mouse, 44px / 16px on touch (tokens in p1.css; iOS never zooms).
+  minHeight: 'var(--control-h, 40px)',
+  fontSize: 'var(--control-text, 15px)',
   background: 'var(--surface)'
 } as const;
 
@@ -33,7 +35,9 @@ export const buttonStyle = {
   border: '1px solid var(--primary)',
   borderRadius: 'var(--radius)',
   padding: '6px 14px',
-  fontSize: 'var(--text-sm)',
+  // P1 R27 (§8-5): the same control sizes as the inputs.
+  minHeight: 'var(--control-h, 40px)',
+  fontSize: 'var(--control-text, 15px)',
   background: 'var(--primary)',
   color: 'var(--surface)',
   cursor: 'pointer'

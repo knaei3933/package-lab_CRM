@@ -1,5 +1,6 @@
 import type { ProjectSummary } from '../lib/project-data';
 import type { ProjectSelection } from '../lib/project-selection';
+import { projectPath } from '../lib/project-route';
 
 /**
  * ui/fix-project-select: the dashboard before a project is open. Several
@@ -32,12 +33,10 @@ export const LIST_FAILED_NEXT = '少し待ってから、この画面を再読�
 
 export function ProjectChooser({
   selection,
-  role,
-  openAction
+  role
 }: {
   selection: Exclude<ProjectSelection, { kind: 'open' }>;
   role: string;
-  openAction: (formData: FormData) => Promise<void>;
 }) {
   if (selection.kind === 'choose') {
     return (
@@ -47,14 +46,12 @@ export function ProjectChooser({
         <ul className="project-choice-list">
           {selection.projects.map((project: ProjectSummary) => (
             <li key={project.id}>
-              <form action={openAction}>
-                <input type="hidden" readOnly name="projectId" value={project.id} />
-                <button type="submit" className="project-choice">
-                  <span className="project-choice-name">{project.name}</span>
-                  <span className="project-choice-code" translate="no">{project.code}</span>
-                  <span className="project-choice-cta" aria-hidden="true">{OPEN_PROJECT_LABEL}</span>
-                </button>
-              </form>
+              {/* P1 R20: a link to the project's own address (Ctrl+click opens a new tab). */}
+              <a className="project-choice" href={projectPath(project.code)}>
+                <span className="project-choice-name">{project.name}</span>
+                <span className="project-choice-code" translate="no">{project.code}</span>
+                <span className="project-choice-cta" aria-hidden="true">{OPEN_PROJECT_LABEL}</span>
+              </a>
             </li>
           ))}
         </ul>

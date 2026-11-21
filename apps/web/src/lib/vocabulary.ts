@@ -35,7 +35,7 @@ export const DOCUMENT_TYPE_LABELS: Readonly<Record<DocumentType, string>> = {
 export const ISSUER_ENTITY_LABELS: Readonly<Record<IssuerEntity, string>> = {
   seven: 'セブン化学',
   kanei: 'カネイ',
-  maker: '製造先',
+  maker: 'メーカー',
   customer_generated: '顧客作成',
   unknown: '不明'
 };
@@ -123,7 +123,7 @@ export const APPROVAL_DECISION_LABELS: Readonly<Record<string, string>> = {
 export const READINESS_BLOCKING_LABELS: Readonly<Record<string, string>> = {
   FILM_DELIVERY_NOT_RECORDED: 'フィルム納品がまだ記録されていません',
   FILLING_DELIVERY_NOT_RECORDED: '充填製品納品がまだ記録されていません',
-  SEVEN_PO_NOT_OFFICIALLY_REGISTERED: 'セブン化学発注書の公式登録がありません',
+  SEVEN_PO_NOT_OFFICIALLY_REGISTERED: 'セブン化学発注書の本登録がありません',
   FILM_DELIVERY_PENDING_CONFIRMATION: 'フィルム納品の確認（受領証跡の確認）が未完了です',
   FILLING_DELIVERY_PENDING_CONFIRMATION: '充填製品納品の確認（受領証跡の確認）が未完了です'
 };
@@ -182,7 +182,7 @@ const JP_DATE_FORMAT = new Intl.DateTimeFormat('ja-JP', {
 });
 
 /**
- * UI batch E (F-15): a value recorded from a date-only field (公式登録日). The
+ * UI batch E (F-15): a value recorded from a date-only field (本登録日). The
  * form posts YYYY-MM-DD, which is stored as midnight UTC — 09:00 JST, a time
  * nobody entered. Such an instant (midnight UTC or midnight JST) reads as the
  * date alone; any other instant keeps its JST time.

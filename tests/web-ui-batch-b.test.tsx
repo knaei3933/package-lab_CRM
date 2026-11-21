@@ -19,6 +19,7 @@ import { buildAuditViewForRole } from '../apps/api/src/audit-view.js';
 import type { AuditHistoryRow } from '../apps/api/src/audit-view.js';
 import { buildMakerPoViewForRole } from '../apps/api/src/maker-po-view.js';
 import type { MakerPoRecord } from '../apps/api/src/maker-po-view.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch B (flow visibility): the progress stepper and 「次にやること」, the
@@ -80,17 +81,19 @@ const { createProjectPickerIntent, MAIN_REGION_ID, POINTER_PICK_WINDOW_MS } = aw
   '../apps/web/src/lib/project-picker-intent.js'
 );
 const { shortId } = await import('../apps/web/src/lib/short-id.js');
+const { STANDARD_LABELS } = await import('../apps/web/src/lib/terms.js');
 const { toMakerPoChoices } = await import('../apps/web/src/lib/document-maker-po.js');
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
-const { default: DocumentsPage } = await import('../apps/web/src/app/documents/page.js');
-const { default: ApprovalsPage } = await import('../apps/web/src/app/approvals/page.js');
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
-const { default: DeliveriesPage } = await import('../apps/web/src/app/deliveries/page.js');
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
+const DocumentsPage = projectScreen((await import('../apps/web/src/screens/DocumentsScreen.js')).DocumentsScreen);
+const ApprovalsPage = projectScreen((await import('../apps/web/src/screens/ApprovalsScreen.js')).ApprovalsScreen);
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
+const DeliveriesPage = projectScreen((await import('../apps/web/src/screens/DeliveriesScreen.js')).DeliveriesScreen);
 
 type Role = 'admin' | 'staff' | 'viewer';
 const ROLES: Role[] = ['admin', 'staff', 'viewer'];
 const ALL_STATES = [...FILM_SUPPLY_ORDER_STATES, ...FILM_SUPPLY_ORDER_EXCEPTION_STATES] as FilmSupplyOrderState[];
-const label = (key: string) => (FILM_SUPPLY_ORDER_STATUS_LABELS as Record<string, string>)[key] ?? key;
+// R28: screens say the standard wording (lib/terms) first, then the API label.
+const label = (key: string) => STANDARD_LABELS.filmSupplyOrderStates[key]?.ja ?? (FILM_SUPPLY_ORDER_STATUS_LABELS as Record<string, string>)[key] ?? key;
 
 const PROJECT_ID = '01a1ec52-a795-7bdb-bc42-fd346d93d333';
 const USER_ID = '01a1ec52-a730-7596-aff1-4072d76c1cf8';
@@ -446,7 +449,7 @@ describe('① replay: lastNormalStatus and the receipt assumption', () => {
     it('orders (staff): 次にやること for that hold links no maker PO screen (B-M1); the release is the representative\'s', async () => {
       serveAs('staff', [...HEAD, created(ORDER_GAP, 'FSO-GAP'), ...toReady(ORDER_GAP), hold(ORDER_GAP, 'APPROVED_FOR_MANUAL_SEND')]);
       const html = await renderPage(OrdersPage);
-      expect(html).toContain('代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「製造先発注準備完了」に戻ります）。');
+      expect(html).toContain('代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「メーカー発注準備完了」に戻ります）。');
       expect(html).toContain('保留の解除は代表者が行います。');
       const links = [...html.matchAll(/<p class="next-links">([\s\S]*?)<\/p>/g)].map((match) => match[1]!);
       expect(links.length).toBeGreaterThan(0);
@@ -514,11 +517,11 @@ describe('① 次にやること: the step, the owner and the reason a role cann
   it('DRAFT: names what the workspace shows is missing, then the transition', () => {
     const unregistered = { ...po, officiallyRegistered: false, officialRegisteredAt: null };
     expect(nextActionForOrder(order('DRAFT'), workspace([unregistered]), 'admin')).toMatchObject({
-      text: 'セブン化学発注書（SC-B-1）の公式登録日を記録する。', operation: 'seven_po:register', screens: ['/orders']
+      text: 'セブン化学発注書（SC-B-1）の本登録日を記録する。', operation: 'seven_po:register', screens: ['/orders']
     });
     const unverified = { ...po, verificationStatus: null };
     expect(nextActionForOrder(order('DRAFT'), workspace([unverified]), 'admin')).toMatchObject({
-      text: 'セブン化学発注書（SC-B-1）の真性行チェックリストを記録し、確認済みにする。', operation: 'seven_po:verify'
+      text: 'セブン化学発注書（SC-B-1）の発注書の照合チェックを記録し、確認済みにする。', operation: 'seven_po:verify'
     });
     expect(nextActionForOrder(order('DRAFT'), workspace(), 'admin')).toMatchObject({
       text: `状態を「${label('SEVEN_PO_VERIFIED')}」へ進める。`, operation: 'film_order:transition', refusal: null
@@ -527,7 +530,7 @@ describe('① 次にやること: the step, the owner and the reason a role cann
       .toContain('セブン化学発注書に紐付いていないため');
     // Staff do not read the order's PO link: never a guess. UI batch E (F-05, T2):
     // with every visible PO registered and verified, the step is the transition
-    // and the one cause left — never 「公式登録と真性行チェックリストを済ませ」 again.
+    // and the one cause left — never 「本登録と発注書の照合チェックを済ませ」 again.
     const general = nextActionForOrder(order('DRAFT', { detailsHidden: true, sevenPurchaseOrderId: null }), workspace(), 'staff');
     expect(general).toMatchObject({ operation: 'film_order:transition', refusal: null });
     expect(general.text).toBe(
@@ -535,7 +538,7 @@ describe('① 次にやること: the step, the owner and the reason a role cann
     );
     // A PO still to register or verify: the general step stays.
     const pending = nextActionForOrder(order('DRAFT', { detailsHidden: true, sevenPurchaseOrderId: null }), workspace([{ ...po, verificationStatus: null }]), 'staff');
-    expect(pending.text).toBe(`セブン化学発注書の公式登録と真性行チェックリストを済ませ、状態を「${label('SEVEN_PO_VERIFIED')}」へ進める。`);
+    expect(pending.text).toBe(`セブン化学発注書の本登録と発注書の照合チェックを済ませ、状態を「${label('SEVEN_PO_VERIFIED')}」へ進める。`);
   });
 
   it('ARTWORK_RECEIVED: asks for the proof revision, but never claims it missing when revisions are withheld (L8)', () => {
@@ -559,11 +562,11 @@ describe('① 次にやること: the step, the owner and the reason a role cann
   const MAKER_CHAIN_LEFT = ['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED'] as const;
   const EXCEPTION_STEP = {
     ON_HOLD: {
-      text: '代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「製造先発注準備完了」に戻ります）。',
+      text: '代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「メーカー発注準備完了」に戻ります）。',
       owner: '代表者', operation: 'film_order:release_hold'
     },
     CANCELLATION_REVIEW: {
-      text: '代表者が理由を記録して取消レビューを処理する（再開するか、取消で終了するか）。',
+      text: '代表者が理由を記録して取消確認を処理する（再開するか、取消で終了するか）。',
       owner: '代表者', operation: 'film_order:resolve_cancellation_review'
     },
     CHANGE_REVIEW: {
@@ -610,7 +613,7 @@ describe('① 次にやること: the step, the owner and the reason a role cann
 
   it('exception, terminal and withheld states', () => {
     expect(nextActionForOrder(order('ON_HOLD'), workspace(), 'staff')).toMatchObject({
-      text: '代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「製造先発注準備完了」に戻ります）。', screens: ['/orders'],
+      text: '代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「メーカー発注準備完了」に戻ります）。', screens: ['/orders'],
       refusal: 'この操作は代表者が行います。'
     });
     expect(nextActionForOrder(order('CHANGE_REVIEW'), workspace(), 'staff')).toMatchObject({
@@ -632,7 +635,7 @@ describe('① 次にやること: the step, the owner and the reason a role cann
     });
     const hidden = nextActionForOrder(order('DRAFT', { statusHidden: true }), workspace(), 'viewer');
     expect(hidden).toMatchObject({ owner: null, screens: [], refusal: '閲覧権限のため操作できません。' });
-    expect(hidden.text).not.toContain('セブン化学発注書確認済');
+    expect(hidden.text).not.toContain('発注書の照合済み');
   });
 
   it('every state yields a Japanese sentence without an English state code', () => {
@@ -765,7 +768,7 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
   it('CANCELLED (取消終了) offers nothing, with its own reason', () => {
     // Recheck 7 Medium-3: this plain reason only when the maker paper is settled ('none').
     expect(transitionChoicesFor('CANCELLED', label, null, 'none')).toMatchObject({
-      choices: [], emptyReason: 'この発注は取消で終了しています（キャンセル終了）。これ以上進める先はありません。'
+      choices: [], emptyReason: 'この発注は取消で終了しています（取消済）。これ以上進める先はありません。'
     });
   });
 
@@ -925,7 +928,7 @@ describe('⑥ shortId', () => {
     expect(sevenPurchaseOrderChoiceLabel({
       id: PO_ID, poNumber: '', poNumberHidden: true, officialRegisteredAt: null, officiallyRegistered: true,
       verificationStatus: null, reviewPending: false, officialRegistrationHidden: true, verificationHidden: true
-    })).toBe('発注番号 閲覧権限なし・ID …0000aa01（公式登録済み）');
+    })).toBe('発注番号 閲覧権限なし・ID …0000aa01（本登録済み）');
   });
 });
 

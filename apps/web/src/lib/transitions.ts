@@ -41,17 +41,17 @@ export const MAKER_CHAIN_NOTICE = '次はメーカー発注画面の操作で進
 export const HOLD_RELEASE_NOTICE =
   '保留の解除は下の「保留を解除する（代表者のみ）」で行います。再開する状態は、保留にする前の状態にシステムが戻します。';
 export const CANCELLATION_REVIEW_NOTICE =
-  '取消レビューは下の「取消レビューを処理する（代表者のみ）」で、再開するか取消で終了するかを決めます。';
-export const CANCELLED_ORDER_NOTICE = 'この発注は取消で終了しています（キャンセル終了）。これ以上進める先はありません。';
+  '取消確認は下の「取消確認を処理する（代表者のみ）」で、再開するか取消で終了するかを決めます。';
+export const CANCELLED_ORDER_NOTICE = 'この発注は取消で終了しています（取消済）。これ以上進める先はありません。';
 /**
  * Recheck 7 Medium-3: a cancelled order whose maker paper still needs
  * cleaning up (live paper, an owed 取り消し承認), or whose paper could not be
  * read — the plain notice above is then never shown.
  */
 export const CANCELLED_ORDER_CLEANUP_NOTICE =
-  'この発注は取消で終了しています（キャンセル終了）。状態はこれ以上進みませんが、メーカー発注書の整理（取り消し・取り消し承認）が残っています。メーカー発注画面で代表者が記録してください。';
+  'この発注は取消で終了しています（取消済）。状態はこれ以上進みませんが、メーカー発注書の整理（取り消し・取り消し承認）が残っています。メーカー発注画面で代表者が記録してください。';
 export const CANCELLED_ORDER_UNREAD_NOTICE =
-  'この発注は取消で終了しています（キャンセル終了）。状態はこれ以上進みません。メーカー発注書の整理が残っていないかは、メーカー発注画面で確認してください。';
+  'この発注は取消で終了しています（取消済）。状態はこれ以上進みません。メーカー発注書の整理が残っていないかは、メーカー発注画面で確認してください。';
 
 /** none: the maker paper is settled; cleanup: some is left; unknown (or not read): cannot tell. */
 export type MakerCleanupHint = 'none' | 'cleanup' | 'unknown';

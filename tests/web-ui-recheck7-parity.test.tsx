@@ -19,6 +19,7 @@ import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * Recheck 7 (demo-eml/server-rules-recheck7/RECHECK_REPORT.md) web fixes,
@@ -83,8 +84,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
 
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
 const {
   releaseFilmOrderHoldAction,
   resolveCancellationReviewAction,
@@ -390,7 +391,7 @@ describe('Medium-3: a cancelled order with live maker paper', () => {
     expect(orderRow(orders, chain.orderCode)).toContain(CANCELLED_ORDER_CLEANUP_NOTICE);
     expect(orders).not.toContain(CANCELLED_ORDER_NOTICE);
     expect(nextCard(orders)).toContain('この発注は取消で終了していますが、メーカー発注書の整理が残っています（取り消されていない発注書 1件）');
-    expect(nextCard(orders)).toContain('href="/maker-po"');
+    expect(nextCard(orders)).toContain('href="/p/TEST-P/maker-po"');
     expect(orders).not.toContain('これ以上の作業はありません');
 
     const card = orderCard(await render(MakerPoPage), chain.orderCode);
@@ -464,8 +465,8 @@ describe('Low-7: hold wording, hold reason refusals, and the 取り消し承認 
     // A held order with live paper: cleanup on the board, a link from 次にやること.
     const heldOrders = await render(OrdersPage);
     expect(nextCard(heldOrders)).toContain('解除の前でも、メーカー発注画面で取り消し・取り消し承認を記録できます');
-    expect(nextCard(heldOrders)).toContain('href="/maker-po"');
-    expect(orderRow(heldOrders, chain.orderCode)).toContain('残っている発注書がない場合は「製造先発注準備完了」（発注書の作成）から再開します');
+    expect(nextCard(heldOrders)).toContain('href="/p/TEST-P/maker-po"');
+    expect(orderRow(heldOrders, chain.orderCode)).toContain('残っている発注書がない場合は「メーカー発注準備完了」（発注書の作成）から再開します');
     expect(orderRow(heldOrders, chain.orderCode)).toContain('解除に取り消し承認は要りません');
     expect(orderCard(await render(MakerPoPage), chain.orderCode)).toContain('整理だけができます');
 

@@ -2,7 +2,7 @@ import type { FilmSupplyOrderView, Workspace } from './project-data';
 
 /**
  * UI batch E (F-06): the evidence a state stands for — デザイン受領 for a bound
- * document, 校正ゲラ準備完了 for a proof revision, フィルム納品完了 for a
+ * document, 校正準備完了 for a proof revision, 納品済み for a
  * recorded delivery. The API does not check it today (a policy decision for
  * the representative), so the screen only warns and asks for a confirming
  * reason before such a transition; it never blocks. A gap is claimed only

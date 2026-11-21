@@ -222,10 +222,12 @@ describe('R06: a success refreshes the screen and reports the changed id', () =>
     expect(revalidatePath).not.toHaveBeenCalled();
   });
 
-  it('a guard refusal (project switched) does not refresh', async () => {
-    state.selected = 'project-b';
-    await actions.createSevenPurchaseOrderAction(null, form({ poNumber: 'S-1' }));
+  it('a guard refusal (no rendered project) does not refresh', async () => {
+    const data = form({ poNumber: 'S-1' });
+    data.set('_kaneiRenderedProjectId', '');
+    await actions.createSevenPurchaseOrderAction(null, data);
     expect(revalidatePath).not.toHaveBeenCalled();
+    expect(callApi).not.toHaveBeenCalled();
   });
 
   it('a client-side refusal (missing field) does not refresh', async () => {

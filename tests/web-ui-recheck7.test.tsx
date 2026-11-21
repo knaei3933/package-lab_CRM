@@ -219,7 +219,7 @@ describe('Low-7', () => {
     const order = { id: 'o1', code: 'FSO-H', status: 'ON_HOLD', sevenPurchaseOrderId: null, lineCount: 1, lines: [],
       detailsHidden: false, statusHidden: false, lastNormalStatus: 'MAKER_PO_SENT_MANUALLY', createdAt: '', updatedAt: '' };
     const plain = nextActionForOrder(order, { labels, sevenPurchaseOrders: [], revisions: [] }, 'admin');
-    expect(plain.text).toContain('残っている発注書がない場合は「製造先発注準備完了」に戻ります');
+    expect(plain.text).toContain('残っている発注書がない場合は「メーカー発注準備完了」に戻ります');
     expect(plain.screens).toEqual(['/orders']);
     const withCleanup = nextActionForOrder(order, {
       labels, sevenPurchaseOrders: [], revisions: [],

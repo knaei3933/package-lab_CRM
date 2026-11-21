@@ -102,8 +102,8 @@ describe('validationMessage (1-①)', () => {
   });
 
   it('uses the field-supplied format hint for a pattern mismatch, and a generic text without one', () => {
-    expect(validationMessage({ patternMismatch: true }, '公式登録日', { formatHint: '2026/11/18 の形' })).toBe(
-      '公式登録日は2026/11/18 の形で入力してください。'
+    expect(validationMessage({ patternMismatch: true }, '本登録日', { formatHint: '2026/11/18 の形' })).toBe(
+      '本登録日は2026/11/18 の形で入力してください。'
     );
     expect(validationMessage({ patternMismatch: true }, '納品数量')).toBe('納品数量の形式が正しくありません。');
   });
@@ -232,11 +232,11 @@ describe('fieldForActionMessage (1-①)', () => {
       'components/ChangeRequestFields.tsx',
       'components/DeliveryRecordForm.tsx',
       'components/ProjectPicker.tsx',
-      'app/orders/page.tsx',
-      'app/documents/page.tsx',
-      'app/approvals/page.tsx',
-      'app/maker-po/page.tsx',
-      'app/deliveries/page.tsx'
+      'screens/OrdersScreen.tsx',
+      'screens/DocumentsScreen.tsx',
+      'screens/ApprovalsScreen.tsx',
+      'screens/MakerPoScreen.tsx',
+      'screens/DeliveriesScreen.tsx'
     ].map(read).join('\n');
     const pseudo = new Set([FILE_FIELD, lineField(0, 'description'), lineField(0, 'quantity'), lineField(0, 'unit')]);
     for (const { field } of ACTION_MESSAGE_FIELDS) {
@@ -249,7 +249,7 @@ describe('fieldForActionMessage (1-①)', () => {
 
   it('maps exact, template and long messages to their field', () => {
     expect(fieldForActionMessage('発注番号を入力してください。')).toBe('poNumber');
-    expect(fieldForActionMessage('公式登録日を入力してください。')).toBe('officialRegisteredAt');
+    expect(fieldForActionMessage('本登録日を入力してください。')).toBe('officialRegisteredAt');
     // P0 R11: the verifier and the time are recorded by the API — the forms no longer ask for them.
     expect(fieldForActionMessage('検証者名を入力してください。')).toBeNull();
     expect(fieldForActionMessage('検証者名（verifierName）を入力してください。')).toBeNull();
@@ -281,17 +281,17 @@ describe('displayActionMessage (1-①)', () => {
   });
 
   it('shows payment terms in Japanese', () => {
-    // P0 R01 / P-10: the old 決済条件 wording is read back with the glossary word 支払条件.
-    expect(displayActionMessage('決済条件を記録しました（prepaid）。記録は入金確認ではありません。')).toBe(
+    // P0 R01 / P-10: the old 支払条件 wording is read back with the glossary word 支払条件.
+    expect(displayActionMessage('支払条件を記録しました（prepaid）。記録は入金確認ではありません。')).toBe(
       '支払条件を記録しました（前払い）。記録は入金確認ではありません。'
     );
-    expect(displayActionMessage('決済条件を記録しました（on_delivery）。記録は入金確認ではありません。')).toContain('（納品後払い）');
-    expect(displayActionMessage('決済条件を記録しました（undetermined）。記録は入金確認ではありません。')).toContain('（未定）');
-    expect(displayActionMessage('決済条件（prepaid／on_delivery／undetermined）を選択してください。')).toBe(
-      '決済条件（前払い／納品後払い／未定）を選択してください。'
+    expect(displayActionMessage('支払条件を記録しました（on_delivery）。記録は入金確認ではありません。')).toContain('（納品後払い）');
+    expect(displayActionMessage('支払条件を記録しました（undetermined）。記録は入金確認ではありません。')).toContain('（未定）');
+    expect(displayActionMessage('支払条件（prepaid／on_delivery／undetermined）を選択してください。')).toBe(
+      '支払条件（前払い／納品後払い／未定）を選択してください。'
     );
     // An unknown code is left as it is.
-    expect(displayActionMessage('決済条件を記録しました（barter）。')).toBe('決済条件を記録しました（barter）。');
+    expect(displayActionMessage('支払条件を記録しました（barter）。')).toBe('支払条件を記録しました（barter）。');
   });
 
   it('drops internal field codes and fixes the send-confirmation wording', () => {
@@ -463,7 +463,7 @@ describe('fields render hint / error links (1-①, 1-④)', () => {
   });
 
   it('DateTextField keeps the name, submits YYYY-MM-DD and shows the example hint', () => {
-    const html = render(<DateTextField name="officialRegisteredAt" label="公式登録日" required />);
+    const html = render(<DateTextField name="officialRegisteredAt" label="本登録日" required />);
     expect(html).toContain('name="officialRegisteredAt"');
     expect(html).toContain('type="text"');
     expect(html).not.toContain('type="date"');

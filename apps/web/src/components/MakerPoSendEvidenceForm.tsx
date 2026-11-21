@@ -164,7 +164,7 @@ export function MakerPoSendEvidenceForm({
         const emlText = typeof headerReader.result === 'string' ? headerReader.result : '';
         const defaults = readEmlFormDefaults(emlText);
         let outgoingEml = emlText;
-        let outgoingSubject = defaults.subject ?? '製造先発注書';
+        let outgoingSubject = defaults.subject ?? 'メーカー発注書';
         const notices: string[] = [];
         if (orderCode) {
           const subjectEdit = insertMakerPoMailSubject(emlText, orderCode);

@@ -7,6 +7,7 @@ import {
 import type { FilmSupplyOrderState, Operation } from '@kanei/core';
 import { cache } from 'react';
 import { callApi } from './api';
+import { standardTerm } from './terms';
 import { operationRefusal } from './permissions';
 import { shortId } from './short-id';
 import { codeWithStatus, displayText, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT, isFieldHiddenByRole, isStateWithheld } from './redaction';
@@ -99,8 +100,8 @@ export interface FilmSupplyOrderView {
    */
   hold?: FilmOrderHoldView | null | undefined;
   /**
-   * UI batch E3: the 決済条件 (G6) the audit history recorded — the creation
-   * value, replaced by each later 決済条件の記録. Since the representative's
+   * UI batch E3: the 支払条件 (G6) the audit history recorded — the creation
+   * value, replaced by each later 支払条件の記録. Since the representative's
    * decision the API answers it to staff and viewer too (amounts stay hidden);
    * null when it was not recorded or the role may not read it (paymentTermsHidden).
    */
@@ -110,7 +111,7 @@ export interface FilmSupplyOrderView {
    * oldest first — who, when, from what to what and the optional reason.
    */
   paymentTermsHistory?: PaymentTermsChangeView[] | undefined;
-  /** UI batch E3: the API withheld the 決済条件 from this role. */
+  /** UI batch E3: the API withheld the 支払条件 from this role. */
   paymentTermsHidden?: boolean | undefined;
   createdAt: string;
   updatedAt: string;
@@ -138,7 +139,7 @@ export interface SevenPurchaseOrderView {
   poNumber: string;
   /** UI batch A follow-up: the PO number was withheld from the role (staff/viewer). */
   poNumberHidden: boolean;
-  /** The recorded 公式登録日 — only ever the API's own value, never a stand-in. */
+  /** The recorded 本登録日 — only ever the API's own value, never a stand-in. */
   officialRegisteredAt: string | null;
   /**
    * The PO is known to be officially registered: the date is visible, or the
@@ -158,7 +159,7 @@ export interface SevenPurchaseOrderView {
  * PO number is named as withheld and the short id keeps the choices apart — its
  * last 8 characters, because a uuidv7's leading characters are its creation
  * time and POs made within ~65 seconds share them; the
- * registration part says what is known — 公式登録済み (date visible, or the
+ * registration part says what is known — 本登録済み (date visible, or the
  * registration action seen), 未登録 only when the API shows the PO unregistered,
  * and 閲覧権限なし when the role may not read it. Never 「（閲覧権限なし）（未登録）」.
  */
@@ -167,7 +168,7 @@ export function sevenPurchaseOrderChoiceLabel(po: SevenPurchaseOrderView): strin
     ? `発注番号 ${HIDDEN_BY_ROLE_SHORT}・ID ${shortId(po.id)}`
     : po.poNumber;
   const registration = po.officiallyRegistered
-    ? '公式登録済み'
+    ? '本登録済み'
     : po.officialRegistrationHidden
       ? `登録状況 ${HIDDEN_BY_ROLE_SHORT}`
       : '未登録';
@@ -175,7 +176,7 @@ export function sevenPurchaseOrderChoiceLabel(po: SevenPurchaseOrderView): strin
 }
 
 /**
- * The 公式登録 cell: the recorded date when the API sent it; 「公式登録済み」 with
+ * The 本登録 cell: the recorded date when the API sent it; 「本登録済み」 with
  * the date named as withheld when the role saw only the registration action;
  * 「閲覧権限なし」 when the role cannot tell; 未登録 only when shown unregistered.
  */
@@ -183,8 +184,8 @@ export function officialRegistrationText(po: SevenPurchaseOrderView): string {
   if (po.officialRegisteredAt) return formatDateOrTimestamp(po.officialRegisteredAt);
   if (po.officiallyRegistered) {
     return po.officialRegistrationHidden
-      ? `公式登録済み（登録日は${HIDDEN_BY_ROLE_SHORT}）`
-      : '公式登録済み（登録日未記録）';
+      ? `本登録済み（登録日は${HIDDEN_BY_ROLE_SHORT}）`
+      : '本登録済み（登録日未記録）';
   }
   return po.officialRegistrationHidden ? HIDDEN_BY_ROLE_LABEL : '未登録';
 }
@@ -447,7 +448,8 @@ export function labelLookup(
       map.set(entry.key, entry.label);
     }
   }
-  return (key: string) => map.get(key) ?? key;
+  // P1 R28: the §9 standard wording first (lib/terms), then the API's label, never the key unless unknown to both.
+  return (key: string) => standardTerm(section, key)?.ja ?? map.get(key) ?? key;
 }
 
 async function loadProject(projectId: string): Promise<{ project: ProjectView | null; error: string | null; refused?: boolean }> {
@@ -602,7 +604,7 @@ export async function loadWorkspace(
         updatedAt: event.occurredAt
       });
     } else if (event.action === 'FILM_SUPPLY_ORDER_PAYMENT_TERMS_UPDATED') {
-      // UI batch E3: a later 決済条件の記録 replaces the creation value. Its full
+      // UI batch E3: a later 支払条件の記録 replaces the creation value. Its full
       // state is never empty ({ paymentTerms }), so an empty answer was trimmed.
       const current = filmOrders.get(event.entityId);
       if (current) {
@@ -632,7 +634,7 @@ export async function loadWorkspace(
       // UI batch D: the admin-only hold release and cancellation review
       // resolution record their own actions (afterState.status is the state
       // resumed, or CANCELLED); without them a released order kept reading
-      // 保留中 and a cancelled one キャンセルレビュー中.
+      // 保留中 and a cancelled one 取消確認中.
       || event.action === 'FILM_SUPPLY_ORDER_HOLD_RELEASED'
       || event.action === 'FILM_SUPPLY_ORDER_CANCELLATION_REVIEW_RESOLVED'
     ) {
@@ -1196,7 +1198,7 @@ export function orderProgress(
   if (status === null) {
     return { phase: 'hidden', status: null, currentStep: null, interruptedStep: null, marks: unmarked };
   }
-  // CANCELLATION_REVIEW resolved as cancel ends the order (キャンセル終了): no
+  // CANCELLATION_REVIEW resolved as cancel ends the order (取消済): no
   // step is current or done any more, and it is not an unknown status.
   if (status === FILM_ORDER_CANCELLATION_STATE) {
     return { phase: 'cancelled', status, currentStep: null, interruptedStep: null, marks: unmarked };
@@ -1352,7 +1354,7 @@ function draftNextAction(
 ): NextActionView {
   const both = OWNER_STAFF_AND_ADMIN;
   const general = nextAction(
-    `セブン化学発注書の公式登録と真性行チェックリストを済ませ、${advance('SEVEN_PO_VERIFIED')}。`,
+    `セブン化学発注書の本登録と発注書の照合チェックを済ませ、${advance('SEVEN_PO_VERIFIED')}。`,
     both, ['/orders'], 'film_order:transition', role
   );
   // Staff and viewer do not read the order's PO link. UI batch E (F-05, T2):
@@ -1381,10 +1383,10 @@ function draftNextAction(
   if (!po) return general;
   const name = po.poNumberHidden ? 'セブン化学発注書' : `セブン化学発注書（${po.poNumber}）`;
   if (!po.officiallyRegistered && !po.officialRegistrationHidden) {
-    return nextAction(`${name}の公式登録日を記録する。`, both, ['/orders'], 'seven_po:register', role);
+    return nextAction(`${name}の本登録日を記録する。`, both, ['/orders'], 'seven_po:register', role);
   }
   if (!po.verificationHidden && po.verificationStatus !== 'verified') {
-    return nextAction(`${name}の真性行チェックリストを記録し、確認済みにする。`, both, ['/orders'], 'seven_po:verify', role);
+    return nextAction(`${name}の発注書の照合チェックを記録し、確認済みにする。`, both, ['/orders'], 'seven_po:verify', role);
   }
   if (po.officiallyRegistered && po.verificationStatus === 'verified') {
     return nextAction(`${advance('SEVEN_PO_VERIFIED')}。`, both, ['/orders'], 'film_order:transition', role);
@@ -1491,7 +1493,7 @@ export function nextActionForOrder(
     case 'CANCELLATION_REVIEW': {
       const cleanup = workspace.makerPaperCleanup?.[order.id];
       return nextAction(
-        `代表者が理由を記録して取消レビューを処理する（再開するか、取消で終了するか）。${frozenCleanupLine(cleanup)}`,
+        `代表者が理由を記録して取消確認を処理する（再開するか、取消で終了するか）。${frozenCleanupLine(cleanup)}`,
         OWNER_ADMIN, cleanup?.state === 'cleanup' ? ['/orders', '/maker-po'] : ['/orders'],
         'film_order:resolve_cancellation_review', role
       );

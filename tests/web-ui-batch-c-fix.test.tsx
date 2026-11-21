@@ -8,6 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { japaneseStatusSurface } from '@kanei/core';
 import { buildAuditViewForRole } from '../apps/api/src/audit-view.js';
 import type { AuditHistoryRow } from '../apps/api/src/audit-view.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch C review fixes (H1, M1–M4, L6, L8): what this file pins, by
@@ -56,8 +57,8 @@ const { DeliveryRecordForm } = await import('../apps/web/src/components/Delivery
 const { DocumentUploadForm } = await import('../apps/web/src/components/DocumentUploadForm.js');
 const { MakerPoSendEvidenceForm } = await import('../apps/web/src/components/MakerPoSendEvidenceForm.js');
 const { OrderCreateForm } = await import('../apps/web/src/components/OrderCreateForm.js');
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const source = (relative: string) => readFileSync(path.join(repoRoot, relative), 'utf8');
@@ -444,10 +445,10 @@ beforeEach(() => {
   callApi.mockReset();
 });
 
-describe('M3: /orders — 公式登録, 真性行チェックリスト, 支払条件 ask first (primary tone, disabled before hydration)', () => {
+describe('M3: /orders — 本登録, 発注書の照合チェック, 支払条件 ask first (primary tone, disabled before hydration)', () => {
   it.each([
-    ['公式登録する', '公式登録日を記録しますか？', ['公式登録日']],
-    ['チェックリストを記録する', '真性行チェックリストを記録しますか？', ['相違あり・確認中', '履歴に残ります']],
+    ['本登録する', '本登録日を記録しますか？', ['本登録日']],
+    ['チェックリストを記録する', '発注書の照合チェックを記録しますか？', ['相違あり・確認中', '履歴に残ります']],
     ['支払条件を変更する', '発注 FSO-DRAFT の支払条件を変更しますか？', ['入金確認ではありません', '代表承認の前なら記録し直せます']]
   ] as const)('%s → dialog 「%s」', async (button, title, bodyParts) => {
     serve([...SEVEN_PO_ROWS, ...filmOrder(ORDER_DRAFT, 'FSO-DRAFT', [])]);
@@ -461,7 +462,7 @@ describe('M3: /orders — 公式登録, 真性行チェックリスト, 支払�
   });
 
   it('the summary fields name real controls of each form (the dialog rows are read from them)', () => {
-    const page = source('apps/web/src/app/orders/page.tsx');
+    const page = source('apps/web/src/screens/OrdersScreen.tsx');
     expect(page).toContain("summaryFields: ['officialRegisteredAt']");
     expect(page).toContain("summaryFields: ['paymentTerms', 'reason']");
     expect(page).toMatch(/summaryFields: \[\s*'quoteMatchesPo',\s*'quoteCompared',\s*'uncertain',\s*'confirmationReplyRecorded',\s*'documentNumber',\s*'issueDate'\s*\]/);
@@ -481,7 +482,7 @@ describe('M3: /maker-po — 受入記録（仮） asks first and names the empty
     expect(form).toContain('発注書の状態は動きません');
     expect(form).toContain('受入日時なしで記録されます');
     expect(submitButtons(form).map(isDisabled)).toEqual([true]);
-    expect(source('apps/web/src/app/maker-po/page.tsx')).toContain("summaryFields: ['acceptedAt']");
+    expect(source('apps/web/src/screens/MakerPoScreen.tsx')).toContain("summaryFields: ['acceptedAt']");
   });
 });
 

@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 /**
  * UI nav-dashboard (demo-eml/ui-nav-dashboard/REPORT.md): the left sidebar by
  * role, the screen guide lines, the dashboard calculation and its redaction
- * (amounts only for the representative; 決済条件 for every role). Pure helpers
+ * (amounts only for the representative; 支払条件 for every role). Pure helpers
  * and server markup on fixtures; the real-API checks for all three roles are
  * in web-nav-dashboard-parity.test.tsx.
  */
@@ -59,8 +59,8 @@ const LABELS = {
   filmSupplyOrderStates: [
     { key: 'ON_HOLD', label: '保留中' },
     { key: 'APPROVAL_PENDING', label: '校了確認待ち' },
-    { key: 'ARTWORK_RECEIVED', label: 'デザインデータ受領' },
-    { key: 'MAKER_PO_READY', label: '製造先発注準備完了' }
+    { key: 'ARTWORK_RECEIVED', label: 'デザイン受領' },
+    { key: 'MAKER_PO_READY', label: 'メーカー発注準備完了' }
   ],
   makerPurchaseOrderStatuses: [],
   commissionReadinessStates: [],
@@ -112,14 +112,15 @@ const MIXED = [
 
 describe('sidebar menu by role (A)', () => {
   it('admin and staff see every screen in the order of the work', () => {
-    const all = ['/dashboard', '/orders', '/documents', '/approvals', '/maker-po', '/deliveries', '/guide', '/status'];
+    // P1 R26: the role's home (承認箱 / 自分の作業 / 履歴) comes first.
+    const all = ['/home', '/dashboard', '/orders', '/documents', '/approvals', '/maker-po', '/deliveries', '/guide', '/status'];
     expect(navHrefsForRole('admin')).toEqual(all);
     expect(navHrefsForRole('staff')).toEqual(all);
     expect(navGroupsForRole('admin').map((group) => group.step)).toEqual([null, 1, 2, 3, 4, null]);
   });
 
   it('a viewer is not shown 文書 and 承認 (the API refuses it document:read and artwork_approval:read)', () => {
-    expect(navHrefsForRole('viewer')).toEqual(['/dashboard', '/orders', '/maker-po', '/deliveries', '/guide', '/status']);
+    expect(navHrefsForRole('viewer')).toEqual(['/home', '/dashboard', '/orders', '/maker-po', '/deliveries', '/guide', '/status']);
     // The デザイン・校正 group has no item left for a viewer and is dropped, not shown empty.
     expect(navGroupsForRole('viewer').map((group) => group.key)).not.toContain('artwork');
   });
@@ -138,7 +139,7 @@ describe('sidebar menu by role (A)', () => {
     const html = markup(<SideNav groups={navGroupsForRole('staff')} roleNote={null} />);
     expect(html.match(/aria-current="page"/g)).toHaveLength(1);
     expect(html).toContain('<a aria-current="page" href="/maker-po">メーカー発注</a>');
-    expect(html).toContain('<a href="/orders">案件（発注）一覧／作成</a>');
+    expect(html).toContain('<a href="/orders">発注の一覧</a>');
     expect(isCurrentNavItem('/orders-archive', '/orders')).toBe(false);
     nav.pathname = '/orders';
   });
@@ -203,7 +204,7 @@ describe('sidebar menu by role (A)', () => {
     const { readFileSync } = await import('node:fs');
     const layout = readFileSync(new URL('../apps/web/src/app/layout.tsx', import.meta.url), 'utf8');
     expect(layout).toContain('<main id="main" tabIndex={-1} className="app-main">');
-    expect(layout).toContain('<SideNav groups={navGroupsForRole(user.role)} roleNote={navRoleNote(user.role)} />');
+    expect(layout).toContain('<SideNav groups={navGroupsForRole(user.role)} roleNote={navRoleNote(user.role)} korean=');
     expect(layout).toContain('<NavDrawerToggle />');
     expect(layout).toContain('<ScreenGuideLine />');
     expect(layout).toContain('href={GUIDE_PATH}');
@@ -214,7 +215,8 @@ describe('sidebar menu by role (A)', () => {
 describe('screen guide lines (C)', () => {
   it('every menu screen has a 「この画面でやること」 line', () => {
     for (const group of NAV_GROUPS) {
-      for (const item of group.items) expect(SCREEN_GUIDES[item.href], item.href).toBeDefined();
+      // P1 R26: the role homes explain themselves (REDESIGN §6-2: no guide box).
+      for (const item of group.items) if (item.href !== '/home') expect(SCREEN_GUIDES[item.href], item.href).toBeDefined();
     }
     expect(screenGuideFor('/maker-po/123')?.phase).toBe('メーカー発注');
     expect(screenGuideFor('/')).toBeNull();
@@ -301,14 +303,14 @@ describe('dashboard: 「いま自分がやること」 by role (B)', () => {
     expect(buildDashboard(settled).todo).toEqual([]);
   });
 
-  it('変更レビュー follows the server: resumed through film_order:transition, so it is staff work; the admin sees it as staff work (review R-1)', () => {
+  it('変更確認 follows the server: resumed through film_order:transition, so it is staff work; the admin sees it as staff work (review R-1)', () => {
     const cr = [order('cr', 'CHANGE_REVIEW', { lastNormalStatus: 'APPROVAL_PENDING' })];
     const staff = buildDashboard(input('staff', cr));
     expect(staff.todo.map((item) => item.key)).toEqual(['order-cr']);
     expect(staff.todo[0]!.owner).toBe('担当者・代表者');
     expect(staff.todo[0]!.detail).toBe(CHANGE_REVIEW_NOTE);
     expect(CHANGE_REVIEW_NOTE).toContain('担当者・代表者が行えます');
-    expect(CHANGE_REVIEW_NOTE).toContain('印刷開始（フィルム製造中）以降の変更は、代表者の承認と実費の記録が必要です');
+    expect(CHANGE_REVIEW_NOTE).toContain('印刷開始（製造中）以降の変更は、代表者の承認と実費の記録が必要です');
     const admin = buildDashboard(input('admin', cr));
     expect(admin.todo).toEqual([]);
     expect(admin.others.map((item) => item.key)).toEqual(['order-cr']);
@@ -318,9 +320,9 @@ describe('dashboard: 「いま自分がやること」 by role (B)', () => {
       expect(own.todo.map((item) => item.key), status).toEqual(['order-x']);
       expect(buildDashboard(input('staff', [order('x', status, { lastNormalStatus: 'APPROVAL_PENDING' })])).todo, status).toEqual([]);
     }
-    expect(TODO_SCOPE.admin).toContain('保留の解除、取消レビューの処理');
-    expect(TODO_SCOPE.admin).not.toContain('変更レビュー');
-    expect(TODO_SCOPE.staff).toContain('変更レビューからの再開');
+    expect(TODO_SCOPE.admin).toContain('保留の解除、取消確認の処理');
+    expect(TODO_SCOPE.admin).not.toContain('変更確認');
+    expect(TODO_SCOPE.staff).toContain('変更確認からの再開');
   });
 
   it('staff: the records staff makes; the representative’s steps are listed as waiting, never as staff work', () => {
@@ -374,7 +376,7 @@ describe('dashboard: 「いま自分がやること」 by role (B)', () => {
   });
 });
 
-describe('dashboard redaction: amounts only for the representative, 決済条件 for everyone', () => {
+describe('dashboard redaction: amounts only for the representative, 支払条件 for everyone', () => {
   it('dashboardAmount: admin reads the formatted total; staff, viewer and an unknown role never do — even from a row that carries it', () => {
     expect(dashboardAmount('admin', DRAFT_PAPER)).toBe('¥480,000');
     for (const role of ['staff', 'viewer', null, undefined, 'superuser']) {
@@ -399,7 +401,7 @@ describe('dashboard redaction: amounts only for the representative, 決済条件
     expect(adminHtml).toContain('金額: ¥480,000');
   });
 
-  it('the 決済条件 is on every order item for every role; a withheld one says so, never 未記録', () => {
+  it('the 支払条件 is on every order item for every role; a withheld one says so, never 未記録', () => {
     for (const role of ['admin', 'staff', 'viewer']) {
       const view = buildDashboard(input(role, MIXED));
       expect([...view.todo, ...view.others].every((item) => item.paymentTerms === '前払い'), role).toBe(true);
@@ -517,13 +519,13 @@ describe('dashboard: 막힌 건 (blocked)', () => {
       boards: [
         { order: { id: 'ready' }, makerPurchaseOrders: [], paymentGate: {
           orderId: 'ready', orderStatus: 'MAKER_PO_READY', paymentTerms: 'undetermined', paymentConfirmedAt: null,
-          gate: { satisfied: false, code: 'PAYMENT_TERMS_UNDETERMINED', reason: '決済条件が未確定です' }
+          gate: { satisfied: false, code: 'PAYMENT_TERMS_UNDETERMINED', reason: '支払条件が未確定です' }
         } },
         { order: { id: 'sent' }, makerPurchaseOrders: [{ id: 'mpo-u', status: 'SEND_UNVERIFIED' }], paymentGate: null }
       ]
     });
     expect(view.blocked.map((item) => item.key)).toEqual(['gate-ready', 'unverified-mpo-u', 'readiness']);
-    expect(view.blocked[0]!.detail).toBe('決済条件が未確定です');
+    expect(view.blocked[0]!.detail).toBe('支払条件が未確定です');
     expect(view.blocked[2]!.detail).toBe('フィルム納品がまだ記録されていません');
   });
 });
@@ -572,8 +574,8 @@ describe('item links', () => {
 
   it('the screens carry the anchors the dashboard links to', async () => {
     const { readFileSync } = await import('node:fs');
-    const orders = readFileSync(new URL('../apps/web/src/app/orders/page.tsx', import.meta.url), 'utf8');
-    const maker = readFileSync(new URL('../apps/web/src/app/maker-po/page.tsx', import.meta.url), 'utf8');
+    const orders = readFileSync(new URL('../apps/web/src/screens/OrdersScreen.tsx', import.meta.url), 'utf8');
+    const maker = readFileSync(new URL('../apps/web/src/screens/MakerPoScreen.tsx', import.meta.url), 'utf8');
     expect(orders).toContain('id={`order-${order.id}`}');
     expect(maker).toContain('id={`maker-order-${entry.order.id}`}');
   });

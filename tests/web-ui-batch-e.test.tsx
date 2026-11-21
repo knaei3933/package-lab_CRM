@@ -68,7 +68,7 @@ describe('F-15: amounts and date-only values as people write them', () => {
   });
 
   it('the date field has no placeholder that looks like a value; the example is the hint outside it (T5)', () => {
-    const html = renderToString(<DateTextField name="officialRegisteredAt" label="公式登録日" />);
+    const html = renderToString(<DateTextField name="officialRegisteredAt" label="本登録日" />);
     expect(html).not.toContain('placeholder=');
     expect(html).toContain('例 2026/11/18（日本時間の日付）');
   });
@@ -157,13 +157,13 @@ describe('F-16: 保留中 reads ‖, the other statuses keep their tone symbol',
   it('the badge markup', () => {
     expect(renderToString(<StatusBadge domain="filmOrder" status="ON_HOLD" label="保留中" />))
       .toBe('<span class="status-badge status-badge--blocked"><span class="status-badge-mark" aria-hidden="true">‖</span>保留中</span>');
-    expect(renderToString(<StatusBadge domain="filmOrder" status="CANCELLED" label="キャンセル終了" />))
-      .toContain('aria-hidden="true">✕</span>キャンセル終了');
+    expect(renderToString(<StatusBadge domain="filmOrder" status="CANCELLED" label="取消済" />))
+      .toContain('aria-hidden="true">✕</span>取消済');
   });
 });
 
 describe('F-05: a film order is created with its セブン化学発注書', () => {
-  const choices = [{ value: 'po-1', label: 'SC-E-1（公式登録済み）' }];
+  const choices = [{ value: 'po-1', label: 'SC-E-1（本登録済み）' }];
   it('the PO select is required, starts blank and offers no 「紐付けない」', () => {
     const html = renderToString(
       <OrderCreateForm action={noop} orderKind="film" unitChoices={[{ value: 'rolls', label: 'ロール' }]} sevenPurchaseOrderChoices={choices} />
@@ -215,7 +215,7 @@ describe('F-07: the PO link follows the document type', () => {
         documentTypeChoices={[{ value: firstType, label: firstType }]}
         issuerEntityChoices={[{ value: 'kanei', label: 'カネイ' }]}
         contentTypeChoices={[{ value: 'text/plain', label: 'テキスト' }]}
-        sevenPurchaseOrderChoices={[{ value: 'po-ready', label: 'SC-E-2（公式登録済み）', ready: true }]}
+        sevenPurchaseOrderChoices={[{ value: 'po-ready', label: 'SC-E-2（本登録済み）', ready: true }]}
         filmSupplyOrderChoices={[]}
       />
     );
@@ -224,7 +224,7 @@ describe('F-07: the PO link follows the document type', () => {
     const html = upload('proof');
     expect(html).toMatch(/セブン化学発注書の紐付け<span style="color:var\(--danger\)">（必須）<\/span>/);
     expect(html).toMatch(/<select name="sevenPurchaseOrderId" required=""/);
-    expect(html).toContain('<option value="po-ready" selected="">SC-E-2（公式登録済み）</option>');
+    expect(html).toContain('<option value="po-ready" selected="">SC-E-2（本登録済み）</option>');
     expect(html).not.toContain('セブン化学発注書の紐付け（任意）');
   });
   it('a purchase order document: 「任意」 and 「紐付けない」 stay', () => {
@@ -233,7 +233,7 @@ describe('F-07: the PO link follows the document type', () => {
     expect(html).toContain('紐付けない');
     expect(html).not.toMatch(/<select name="sevenPurchaseOrderId" required=""/);
     // Not preselected for a type that does not need the link.
-    expect(html).toContain('<option value="po-ready">SC-E-2（公式登録済み）</option>');
+    expect(html).toContain('<option value="po-ready">SC-E-2（本登録済み）</option>');
   });
   it('the upload action refuses an official artifact without a PO on the field', async () => {
     expect(fieldForActionMessage('セブン化学発注書を選択してください（校正ゲラ・各種証跡では必須です）。')).toBe('sevenPurchaseOrderId');
@@ -281,20 +281,22 @@ describe('F-23: the representative queue across projects', () => {
     ]);
     expect(orders).toEqual([{ id: 'a', code: 'FSO-A', status: 'ON_HOLD' }, { id: 'b', code: 'FSO-B', status: 'SEVEN_PO_VERIFIED' }]);
     const tasks = representativeTasks({ id: 'p1', code: 'P-1', name: '合成案件' }, orders);
-    expect(tasks).toEqual([{ projectId: 'p1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: REPRESENTATIVE_WORK.ON_HOLD }]);
+    expect(tasks).toEqual([{ projectId: 'p1', projectCode: 'P-1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: REPRESENTATIVE_WORK.ON_HOLD, step: null }]);
   });
-  it('the panel: a row per task with 「この案件を開く」, and a plain line when nothing waits', () => {
-    const queue = { tasks: [{ projectId: 'p1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: '保留の解除（理由の確認）' }], unreadProjects: ['P-9'], skippedProjects: 0 };
-    const html = renderToString(<RepresentativeQueuePanel queue={queue} selectAction={noop} currentProjectId={null} />);
+  it('the panel: a row per task that links to the order (P1 R25 deep link), and a plain line when nothing waits', () => {
+    const queue = { tasks: [{ projectId: 'p1', projectCode: 'P-1', orderId: 'a', projectLabel: 'P-1（合成案件）', orderCode: 'FSO-A', status: 'ON_HOLD', work: '保留の解除（理由の確認）' }], unreadProjects: ['P-9'], skippedProjects: 0 };
+    const html = renderToString(<RepresentativeQueuePanel queue={queue} currentProjectId={null} />);
     expect(html).toContain('<caption class="visually-hidden">代表者の対応待ち（全案件）</caption>');
     expect(html).toContain('保留の解除（理由の確認）');
-    expect(html).toContain('この案件を開く');
-    expect(html).toContain('name="projectId" value="p1"');
+    // An <a href> (Ctrl+click opens a new tab), straight to the order's own screen — no form.
+    expect(html).toContain('href="/p/P-1/o/FSO-A"');
+    expect(html).toContain('FSO-A を開く');
+    expect(html).not.toContain('<form');
     expect(html).toContain('読み込めなかった案件: P-9。');
-    const none = renderToString(<RepresentativeQueuePanel queue={{ tasks: [], unreadProjects: [], skippedProjects: 0 }} selectAction={noop} currentProjectId={null} />);
+    const none = renderToString(<RepresentativeQueuePanel queue={{ tasks: [], unreadProjects: [], skippedProjects: 0 }} currentProjectId={null} />);
     expect(none).toContain('代表者の対応待ちはありません。');
     // Review M1: a failed project-list read is said as such, never 「ありません」.
-    const failed = renderToString(<RepresentativeQueuePanel queue={failedRepresentativeQueue('一時的に取得できません')} selectAction={noop} currentProjectId={null} />)
+    const failed = renderToString(<RepresentativeQueuePanel queue={failedRepresentativeQueue('一時的に取得できません')} currentProjectId={null} />)
       .replaceAll('<!-- -->', '');
     expect(failed).toContain('案件の一覧を読み込めなかったため、代表者の対応待ちを表示できません（一時的に取得できません）。');
     expect(failed).not.toContain('ありません。');

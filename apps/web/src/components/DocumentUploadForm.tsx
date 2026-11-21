@@ -322,7 +322,7 @@ export function DocumentUploadForm({
               <FieldError id={poFeedback.errorId} message={poFeedback.error} />
               <span id={poFeedback.hintId} style={noteStyle}>
                 {poRequired
-                  ? '校正ゲラ・承認証跡・送信証跡・受領証跡は、確認済み（公式登録と真性行チェックリスト済み）の発注書に紐付けて登録します。'
+                  ? '校正ゲラ・承認証跡・送信証跡・受領証跡は、確認済み（本登録と発注書の照合チェック済み）の発注書に紐付けて登録します。'
                   : '発注書・見積書は紐付けなしでも登録できます。'}
               </span>
             </div>

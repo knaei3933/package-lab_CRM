@@ -18,6 +18,7 @@ import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch E (demo-eml/ui-batch-e/REPORT.md) against the REAL API on the
@@ -73,10 +74,10 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined, refresh: () => undefined }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
 
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
-const { default: DocumentsPage } = await import('../apps/web/src/app/documents/page.js');
-const { default: DeliveriesPage } = await import('../apps/web/src/app/deliveries/page.js');
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
+const DocumentsPage = projectScreen((await import('../apps/web/src/screens/DocumentsScreen.js')).DocumentsScreen);
+const DeliveriesPage = projectScreen((await import('../apps/web/src/screens/DeliveriesScreen.js')).DeliveriesScreen);
 const { loadWorkspace, PROJECT_UNAVAILABLE_MESSAGE } = await import('../apps/web/src/lib/project-data.js');
 const { ProjectUnavailable } = await import('../apps/web/src/components/ProjectUnavailable.js');
 const { ceoApprovalFacts } = await import('../apps/web/src/lib/decision-facts.js');
@@ -249,13 +250,13 @@ describe('F-05: an order without its セブン化学発注書', () => {
     signIn('admin');
     const row = orderRow(await render(OrdersPage), code);
     expect(row).toContain('紐付けなし');
-    expect(row).toContain('この発注は「セブン化学発注書確認済」へ進められません。紐付けは作成のときだけ選べます。');
+    expect(row).toContain('この発注は「発注書の照合済み」へ進められません。紐付けは作成のときだけ選べます。');
 
     // Server batch E: staff reads the PO link too, so staff gets the same cause and remedy (F-05: role-independent).
     signIn('staff');
     const staffHtml = await render(OrdersPage);
-    expect(staffHtml).not.toContain('セブン化学発注書の公式登録と真性行チェックリストを済ませ');
-    expect(orderRow(staffHtml, code)).toContain('この発注は「セブン化学発注書確認済」へ進められません。紐付けは作成のときだけ選べます。');
+    expect(staffHtml).not.toContain('セブン化学発注書の本登録と発注書の照合チェックを済ませ');
+    expect(orderRow(staffHtml, code)).toContain('この発注は「発注書の照合済み」へ進められません。紐付けは作成のときだけ選べます。');
     expect(staffHtml).toContain('この発注はセブン化学発注書に紐付いていないため');
     // The create form (staff may create) requires the PO.
     expect(staffHtml).toMatch(/<select name="sevenPurchaseOrderId" required=""/);
@@ -284,13 +285,13 @@ describe('F-11, F-16: the hold reason, by role', () => {
 });
 
 describe('F-06: the evidence warning before a transition', () => {
-  it('an order at セブン化学発注書確認済 with no document offers the warning and the reason field for デザイン受領', async () => {
+  it('an order at 発注書の照合済み with no document offers the warning and the reason field for デザイン受領', async () => {
     const sevenPoId = await verifiedSevenPo();
     const { orderId, orderCode } = await linkedOrder(sevenPoId);
     expect((await call(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'SEVEN_PO_VERIFIED' })).status).toBe(200);
     signIn('staff');
     const row = orderRow(await render(OrdersPage), orderCode);
-    expect(row).toContain('証跡がないまま進める場合（「デザインデータ受領」）');
+    expect(row).toContain('証跡がないまま進める場合（「デザイン受領」）');
     expect(row).toContain('この発注に紐付いた書類（デザイン入稿データ）が、文書画面にまだ登録されていません。');
     expect(row).toContain('name="evidenceNote"');
     // Warn only: the API still accepts the transition (the gate is a policy decision).
@@ -367,7 +368,7 @@ describe('F-07: the upload form names the PO state', () => {
     signIn('admin');
     const html = await render(DocumentsPage);
     // Review L3: the label names the step that is missing.
-    expect(html).toMatch(/SEVEN-BE-UNV-\d+（未登録） 真性行チェックリストがまだです/);
+    expect(html).toMatch(/SEVEN-BE-UNV-\d+（未登録） 発注書の照合チェックがまだです/);
   });
 });
 
@@ -378,13 +379,13 @@ describe('F-12: a project the API no longer opens', () => {
     const workspace = await loadWorkspace(signedIn.projectId);
     expect(workspace.project).toBeNull();
     expect(workspace.projectRefused).toBe(true);
-    // ui/fix-project-select: the screen no longer stops on it — a project the
-    // operator's list does not offer is forgotten first (the /project-selection
-    // route writes the cookie), and the message stays for a refusal of a
-    // listed project (ProjectUnavailable, below and web-ui-batch-e).
-    const target = await render(OrdersPage).then(() => null, (error: { digest?: string }) => error.digest ?? String(error));
-    expect(target).toContain('/project-selection?next=%2Forders');
-    expect(renderToString(<ProjectUnavailable title="案件（発注）一覧／作成" reason={workspace.error} returnTo="/orders" />)).toContain(PROJECT_UNAVAILABLE_MESSAGE);
+    // P1 R20: the project route resolves the URL's code against the operator's
+    // list first (ProjectNotFound, tests/web-p1-*); a listed project the API then
+    // refuses draws only the way out (ProjectUnavailable) — no forms.
+    const html = await render(OrdersPage);
+    expect(html).toContain(PROJECT_UNAVAILABLE_MESSAGE);
+    expect(html).not.toContain('<form');
+    expect(renderToString(<ProjectUnavailable title="発注の一覧" reason={workspace.error} returnTo="/orders" />)).toContain(PROJECT_UNAVAILABLE_MESSAGE);
     signedIn.projectId = projectId;
   });
 });
@@ -461,7 +462,7 @@ describe('F-00 (server batch E 9972e99) on the screen: the delivery line choice 
     // F-01/F-09 on the screen: staff and the viewer read the state (no 閲覧権限なし).
     signIn('staff');
     expect((await loadWorkspace(projectId)).readiness).toMatchObject({ readinessState: 'READY', hidden: false });
-    expect(await render(DeliveriesPage)).toContain('手数料計算可能');
+    expect(await render(DeliveriesPage)).toContain('手数料計算の準備完了');
     signedIn.role = 'staff';
   });
 });
@@ -485,7 +486,7 @@ describe('E2 (server follow-up db4bd88): document identity for staff, the unit m
     expect(at, 'file name on the 書類 list').toBeGreaterThan(-1);
     const row = html.slice(html.lastIndexOf('<tr', at), html.indexOf('</tr>', at));
     // The 発行主体 cell reads the issuer; only the version hash stays 「閲覧権限なし」.
-    expect(row).toMatch(/<td[^>]*>製造先<\/td>/);
+    expect(row).toMatch(/<td[^>]*>メーカー<\/td>/);
     expect(row).toContain('ハッシュ 閲覧権限なし');
     signIn('admin');
   });

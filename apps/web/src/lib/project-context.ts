@@ -8,10 +8,19 @@ export const RENDERED_PROJECT_FIELD = '_kaneiRenderedProjectId';
 export const PROJECT_CONTEXT_MISMATCH = 'PROJECT_CONTEXT_MISMATCH';
 
 /**
- * Whether a write may run: the project the form was drawn for must be the
- * project the session cookie names now. A missing field (a form drawn without
- * the context) is refused too — fail closed. '' on both sides (no project) is
- * a match; the action then asks for a project as before.
+ * P1 R20: the project id a form was drawn for — a non-empty id of the shape the
+ * API issues (UUID-like: letters, digits, `-`, `_`; at most 64). Anything else
+ * (missing, a file, empty, spaces, a path) is not a project: the write is refused.
+ */
+export function renderedProjectOf(rendered: unknown): string | null {
+  if (typeof rendered !== 'string') return null;
+  return /^[A-Za-z0-9_-]{1,64}$/.test(rendered) ? rendered : null;
+}
+
+/**
+ * P0 R03: whether the rendered project equals a given one. Kept for the
+ * screens' own comparisons; the write guard no longer compares with a cookie
+ * (P1 R20 — the write goes to the rendered project itself).
  */
 export function renderedProjectMatches(rendered: unknown, current: string | null): boolean {
   if (typeof rendered !== 'string') return false;

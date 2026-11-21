@@ -8,6 +8,7 @@ import { accounts, auditEvents, createDatabase, filmSupplyOrders, projectAssignm
 import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * P0 against the REAL API on the isolated test database. The web's own
@@ -56,8 +57,8 @@ const actions = await import('../apps/web/src/app/actions.js');
 const { locksForKeyReuse, shouldRenewSubmitKey } = await import('../apps/web/src/lib/project-context.js');
 const makerActions = await import('../apps/web/src/app/maker-po/actions.js');
 const { loadWorkspace } = await import('../apps/web/src/lib/project-data.js');
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
 const { PAYMENT_TERMS_REQUIRED_MESSAGE } = await import('../apps/web/src/lib/form-messages.js');
 const { UPLOAD_MAX_BYTES } = await import('../apps/web/src/lib/form-validation.js');
 
@@ -415,10 +416,20 @@ describe('R09 / R08: refusals in operator words (real API)', () => {
     expect(session.kind).toBe('user');
   });
 
-  it('a stale tab (project switched) writes nothing', async () => {
+  it('P1 R20 (B3): a tab drawn for this project writes here even after another tab opened another project', async () => {
+    signIn('admin', 'another-project');
+    const before = (await loadWorkspace(projectId)).sevenPurchaseOrders.length;
+    const result = await actions.createSevenPurchaseOrderAction(null, form({ poNumber: `SEVEN-STALE-${nextTag()}` }, projectId));
+    expect(result).toMatchObject({ ok: true });
+    expect((await loadWorkspace(projectId)).sevenPurchaseOrders.length).toBe(before + 1);
+    const posts = seen.requests.filter((request) => request.method === 'POST');
+    expect(posts.every((request) => !request.path.includes('another-project'))).toBe(true);
+  });
+
+  it('a form drawn without a project (empty rendered project) writes nothing', async () => {
     signIn('admin');
     const before = (await loadWorkspace(projectId)).sevenPurchaseOrders.length;
-    const result = await actions.createSevenPurchaseOrderAction(null, form({ poNumber: `SEVEN-STALE-${nextTag()}` }, 'another-project'));
+    const result = await actions.createSevenPurchaseOrderAction(null, form({ poNumber: `SEVEN-EMPTY-${nextTag()}` }, ''));
     expect(result).toMatchObject({ ok: false, code: 'PROJECT_CONTEXT_MISMATCH' });
     expect((await loadWorkspace(projectId)).sevenPurchaseOrders.length).toBe(before);
     expect(seen.requests.filter((request) => request.method === 'POST')).toEqual([]);

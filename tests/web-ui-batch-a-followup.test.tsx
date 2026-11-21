@@ -5,6 +5,7 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildAuditViewForRole } from '../apps/api/src/audit-view.js';
 import type { AuditHistoryRow } from '../apps/api/src/audit-view.js';
+import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch A follow-up (review of 938abf6: M1, M2, M4, L1, L3, L5).
@@ -37,11 +38,11 @@ const { loadWorkspace, officialRegistrationText, revisionNumberText, sevenPurcha
 );
 const { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } = await import('../apps/web/src/lib/redaction.js');
 const { formatTimestamp } = await import('../apps/web/src/lib/vocabulary.js');
-const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
-const { default: DeliveriesPage } = await import('../apps/web/src/app/deliveries/page.js');
-const { default: ApprovalsPage } = await import('../apps/web/src/app/approvals/page.js');
-const { default: DocumentsPage } = await import('../apps/web/src/app/documents/page.js');
-const { default: MakerPoPage } = await import('../apps/web/src/app/maker-po/page.js');
+const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
+const DeliveriesPage = projectScreen((await import('../apps/web/src/screens/DeliveriesScreen.js')).DeliveriesScreen);
+const ApprovalsPage = projectScreen((await import('../apps/web/src/screens/ApprovalsScreen.js')).ApprovalsScreen);
+const DocumentsPage = projectScreen((await import('../apps/web/src/screens/DocumentsScreen.js')).DocumentsScreen);
+const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
 
 type Role = 'admin' | 'staff' | 'viewer';
 const ROLES: Role[] = ['admin', 'staff', 'viewer'];
@@ -199,7 +200,7 @@ describe('M2 + M1: セブン発注書 registration is told apart from hidden, pe
     });
     // UI batch E (F-15, T4): a date-only registration reads as the date alone (no 09:00 nobody entered).
     expect(officialRegistrationText(registered)).toBe('2026/11/16');
-    expect(sevenPurchaseOrderChoiceLabel(registered)).toBe('SC-REG-1（公式登録済み）');
+    expect(sevenPurchaseOrderChoiceLabel(registered)).toBe('SC-REG-1（本登録済み）');
     expect(unregistered).toMatchObject({ officialRegisteredAt: null, officiallyRegistered: false, officialRegistrationHidden: false });
     expect(officialRegistrationText(unregistered)).toBe('未登録');
     expect(sevenPurchaseOrderChoiceLabel(unregistered)).toBe('SC-NEW-2（未登録）');
@@ -214,7 +215,7 @@ describe('M2 + M1: セブン発注書 registration is told apart from hidden, pe
       officialRegisteredAt: REGISTERED_AT, officiallyRegistered: true, officialRegistrationHidden: false, poNumberHidden: false
     });
     expect(officialRegistrationText(registered)).toBe('2026/11/16');
-    expect(sevenPurchaseOrderChoiceLabel(registered)).toBe('SC-REG-1（公式登録済み）');
+    expect(sevenPurchaseOrderChoiceLabel(registered)).toBe('SC-REG-1（本登録済み）');
     expect(unregistered).toMatchObject({ officialRegisteredAt: null, officiallyRegistered: false, officialRegistrationHidden: false });
     expect(officialRegistrationText(unregistered)).toBe('未登録');
     expect(sevenPurchaseOrderChoiceLabel(unregistered)).toBe('SC-NEW-2（未登録）');
@@ -229,8 +230,8 @@ describe('M2 + M1: セブン発注書 registration is told apart from hidden, pe
       expect(registered).toMatchObject({
         officialRegisteredAt: null, officiallyRegistered: true, officialRegistrationHidden: true, poNumberHidden: true
       });
-      expect(officialRegistrationText(registered)).toBe('公式登録済み（登録日は閲覧権限なし）');
-      expect(sevenPurchaseOrderChoiceLabel(registered)).toBe('発注番号 閲覧権限なし・ID …902de940（公式登録済み）');
+      expect(officialRegistrationText(registered)).toBe('本登録済み（登録日は閲覧権限なし）');
+      expect(sevenPurchaseOrderChoiceLabel(registered)).toBe('発注番号 閲覧権限なし・ID …902de940（本登録済み）');
       expect(unregistered).toMatchObject({ officialRegisteredAt: null, officiallyRegistered: false, officialRegistrationHidden: true });
       expect(officialRegistrationText(unregistered)).toBe(HIDDEN_BY_ROLE_LABEL);
       expect(sevenPurchaseOrderChoiceLabel(unregistered)).toBe('発注番号 閲覧権限なし・ID …902de941（登録状況 閲覧権限なし）');
@@ -310,14 +311,14 @@ describe('M4: deliveries, approvals, document versions and readiness use the sam
 });
 
 describe('rendered screens per role (display only — the forms and permissions are unchanged)', () => {
-  it.each(ROLES)('orders (%s): PO choices never read 「（閲覧権限なし）（未登録）」, the 公式登録 form follows the known registration', async (role) => {
+  it.each(ROLES)('orders (%s): PO choices never read 「（閲覧権限なし）（未登録）」, the 本登録 form follows the known registration', async (role) => {
     serveAs(role);
     const html = await renderPage(OrdersPage);
     expect(html).not.toContain('（閲覧権限なし）（未登録）');
     // The form is offered only for the PO not known to be registered (unchanged
     // rule: hidden registration state does not hide the form — see M3). UI batch
     // B: a viewer is offered no write form at all (the API refuses it anyway).
-    expect(html.match(/>公式登録日を記録する<\/summary>/g) ?? []).toHaveLength(role === 'viewer' ? 0 : 1);
+    expect(html.match(/>本登録日を記録する<\/summary>/g) ?? []).toHaveLength(role === 'viewer' ? 0 : 1);
     if (role !== 'viewer') {
       // Server batch E: staff reads the PO number and the date as the admin does.
       expect(html).toContain('SC-NEW-2（未登録）');
@@ -325,7 +326,7 @@ describe('rendered screens per role (display only — the forms and permissions 
       expect(html).toContain('>2026/11/16</td>');
       expect(html).not.toContain('2026/11/16 09:00 JST');
     } else {
-      expect(html).toContain('公式登録済み（登録日は閲覧権限なし）');
+      expect(html).toContain('本登録済み（登録日は閲覧権限なし）');
       // UI batch B: the viewer gets no create form, so no PO select to label.
       if (role === 'viewer') {
         expect(html).not.toContain('（登録状況 閲覧権限なし）');
@@ -348,13 +349,14 @@ describe('rendered screens per role (display only — the forms and permissions 
     const html = await renderPage(DeliveriesPage);
     if (role === 'admin') {
       expect(html).toContain('2026/11/18 08:00 JST');
-      expect(html).toContain('CONFIRMED');
-      expect(html).toContain('PENDING_VERIFICATION');
+      // R28: the standard wording of the delivery confirmation and readiness states.
+      expect(html).toContain('充填製品の納品確認済み');
+      expect(html).toContain('納品確認待ち');
       expect(html).not.toContain(HIDDEN_BY_ROLE_LABEL);
     } else if (role === 'staff') {
       // Server batch E: staff reads the delivery date and the readiness state.
       expect(html).toContain('2026/11/18 08:00 JST');
-      expect(html).toContain('PENDING_VERIFICATION');
+      expect(html).toContain('納品確認待ち');
       expect(html).not.toContain('MISSING_DATA');
     } else {
       expect(html).toContain(HIDDEN_BY_ROLE_LABEL);
@@ -420,7 +422,7 @@ describe('rendered screens per role (display only — the forms and permissions 
       expect(html).toContain('フィルム発注の作成は、閲覧権限のため操作できません。');
     } else {
       // Server batch E: staff reads the PO number as the admin does.
-      expect(html).toContain('SC-REG-1（公式登録済み）');
+      expect(html).toContain('SC-REG-1（本登録済み）');
     }
   });
 });
@@ -521,7 +523,7 @@ describe('review of f81a5e5: distinct PO labels and the surviving mutants', () =
     const [quantity, sequenceCell, deliveredAt] = cells.slice(2, 5);
     if (role !== 'viewer') {
       // Server batch E: staff reads the quantity, the sequence and the date.
-      expect([quantity, sequenceCell, deliveredAt]).toEqual(['10.000 rolls', '1', '2026/11/18 08:00 JST']);
+      expect([quantity, sequenceCell, deliveredAt]).toEqual(['10 ロール', '1', '2026/11/18 08:00 JST']);
     } else {
       expect([quantity, sequenceCell, deliveredAt]).toEqual([HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_LABEL]);
       expect(row).not.toContain('未記録');
@@ -533,16 +535,16 @@ describe('review of f81a5e5: distinct PO labels and the surviving mutants', () =
     const html = await renderPage(OrdersPage);
     const note = /（準備状態: (.*?)）/.exec(html.replaceAll('<!-- -->', ''))?.[1];
     // Server batch E: staff and viewer read the readiness state (F-01, F-09).
-    expect(note).toBe('PENDING_VERIFICATION');
+    expect(note).toBe('納品確認待ち');
     expect(note).not.toBe(HIDDEN_BY_ROLE_SHORT);
     expect(note).not.toBe('MISSING_DATA');
   });
 });
 
 describe('source guard kept from batch A', () => {
-  it('the 公式登録 form gate reads the known registration, not the hidden flag', () => {
+  it('the 本登録 form gate reads the known registration, not the hidden flag', () => {
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-    const orders = readFileSync(path.join(repoRoot, 'apps/web/src/app/orders/page.tsx'), 'utf8');
+    const orders = readFileSync(path.join(repoRoot, 'apps/web/src/screens/OrdersScreen.tsx'), 'utf8');
     // Behaviour is pinned by the rendered tests above; this only guards against
     // re-introducing the hidden flag as a form gate (it would drop the staff form).
     expect(orders).not.toMatch(/officialRegistrationHidden\s*\?\s*null/);

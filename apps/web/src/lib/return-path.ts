@@ -5,7 +5,8 @@
  * the login page cannot be turned into an open redirect. Client-safe.
  */
 export const RETURN_PARAM = 'next';
-export const DEFAULT_AFTER_LOGIN = '/dashboard';
+/** P1 R26: after login, the role's home (承認箱 / 自分の作業 / 履歴). */
+export const DEFAULT_AFTER_LOGIN = '/home';
 
 export function safeReturnPath(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;

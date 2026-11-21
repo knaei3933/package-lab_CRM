@@ -98,13 +98,14 @@ describe('design tokens and copy (UI batch A)', () => {
   });
 
   it('gives every screen its own title', () => {
-    for (const route of ['orders', 'documents', 'approvals', 'maker-po', 'deliveries', 'status']) {
+    // P1 R20: the lists live at /p/{案件コード}/<screen>; the old addresses only redirect.
+    for (const route of ['p/[project]/orders', 'p/[project]/documents', 'p/[project]/approvals', 'p/[project]/maker-po', 'p/[project]/deliveries', 'p/[project]/new', 'p/[project]', 'status']) {
       const page = readFileSync(path.join(webSrc, 'app', route, 'page.tsx'), 'utf8');
       expect(page, route).toMatch(/export const metadata: Metadata = \{ title: '[^']+' \}/);
     }
   });
 
-  // The 公式登録 form gate is pinned by rendering the orders screen for admin,
+  // The 本登録 form gate is pinned by rendering the orders screen for admin,
   // staff and viewer in tests/web-ui-batch-a-followup.test.tsx (it replaced the
   // source-text check that stood here).
 

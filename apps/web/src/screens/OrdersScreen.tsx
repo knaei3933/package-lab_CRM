@@ -1,0 +1,907 @@
+import type { Metadata } from 'next';
+import { LEGACY_HOLD_RELEASE_TARGETS } from '@kanei/core';
+import { Banner } from '@astryxdesign/core/Banner';
+import { Card } from '@astryxdesign/core/Card';
+import { Divider } from '@astryxdesign/core/Divider';
+import { Heading } from '@astryxdesign/core/Heading';
+import { Text } from '@astryxdesign/core/Text';
+import { VStack } from '@astryxdesign/core/VStack';
+import { ActionForm } from '../components/ActionForm';
+import { AstryxIsland } from '../components/AstryxIsland';
+import { EmptyNote } from '../components/EmptyNote';
+import { ChoiceDisclosure, ChoiceToneActionForm } from '../components/ChoiceDrivenForm';
+import { OrderCreateForm } from '../components/OrderCreateForm';
+import { RepresentativeQueuePanel } from '../components/RepresentativeQueue';
+import { failedRepresentativeQueue, loadRepresentativeQueue } from '../lib/representative-queue';
+import { ProjectProgress } from '../components/ProjectProgress';
+import { ProjectUnavailable } from '../components/ProjectUnavailable';
+import type { ProjectScreenProps } from './screen-props';
+import { RoleGate, ViewerPageNotice } from '../components/RoleGate';
+import { TechDetails } from '../components/TechDetails';
+import { DataTable } from '../components/DataTable';
+import { StatusBadge } from '../components/StatusBadge';
+import { CheckboxField, DateTextField, SelectField, TextareaField, TextField } from '../components/fields';
+import {
+  assumeFilmReceiptAction,
+  createFilmSupplyOrderAction,
+  createFillingOrderAction,
+  createSevenPurchaseOrderAction,
+  registerSevenPurchaseOrderAction,
+  releaseFilmOrderHoldAction,
+  resolveCancellationReviewAction,
+  selectProjectAction,
+  transitionFilmSupplyOrderAction,
+  updateFilmPaymentTermsAction,
+  verifySevenPurchaseOrderAction
+} from '../app/actions';
+import { callApi, loadSessionUser } from '../lib/api';
+import { loadPaymentGate, PAYMENT_TERMS_LABELS } from '../lib/maker-po-data';
+import { canRoleOperate } from '../lib/permissions';
+import {
+  knownStatus,
+  labelLookup,
+  loadSelectableProjectList,
+  loadWorkspace,
+  makerCleanupRecords,
+  NO_PROJECT_SELECTED_MESSAGE,
+  officialRegistrationText,
+  sevenPurchaseOrderChoiceLabel,
+  UNLINKED_ORDER_REMEDY,
+  uncancellableLivePapers
+} from '../lib/project-data';
+import type { FilmSupplyOrderView, Workspace } from '../lib/project-data';
+import { holdReleaseFacts, holdSummaryText, paymentTermsText } from '../lib/decision-facts';
+import { EVIDENCE_GAP_SUFFIX, EVIDENCE_NOTE_FIELD, evidenceGapsFor } from '../lib/transition-evidence';
+import type { MakerPaperCleanupSummary } from '../lib/maker-po-data';
+import { MAKER_CHAIN_NOTICE, transitionChoicesFor } from '../lib/transitions';
+import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../lib/redaction';
+import { noteStyle, tdStyle, thStyle } from '../lib/ui';
+import { formatTimestamp, unitChoices, unitLabel, VERIFICATION_STATUS_LABELS } from '../lib/vocabulary';
+import { formatQuantityWithUnit } from '../lib/number-format';
+
+
+/** UI batch A: per-screen tab title (layout template adds 「｜KANEI CRM」). */
+
+/**
+ * Criterion 3: 発注の一覧. Film supply orders are listed with the
+ * Japanese status labels served by GET /api/status-labels, and created through
+ * the existing POST /api/projects/:projectId/film-supply-orders endpoint. The
+ * seven purchase order intake (create → official registration → authenticity
+ * checklist) lives here too, because a film order can only leave DRAFT once
+ * its purchase order is registered and checklist-verified.
+ */
+
+const QUOTE_MATCH_CHOICES = [
+  { value: 'true', label: '見積と一致している' },
+  { value: 'false', label: '見積と一致していない' }
+];
+
+/** M8-OPER2 FIX 1: the G6 terms an operator can record while the order is a draft. */
+/**
+ * P0 R01 (B1, policy P-5): the order states in which the 支払条件 may still be
+ * changed — up to the 代表承認 (mirror of p0-server PAYMENT_TERMS_EDITABLE_ORDER_STATES;
+ * the API decides, and refuses once a maker PO carries the 代表承認).
+ */
+const PAYMENT_TERMS_EDITABLE_STATES: ReadonlySet<string> = new Set([
+  'DRAFT',
+  'SEVEN_PO_VERIFIED',
+  'ARTWORK_RECEIVED',
+  'PROOF_READY',
+  'APPROVAL_PENDING',
+  'DUAL_APPROVED',
+  'MAKER_PO_READY'
+]);
+
+const PAYMENT_TERMS_CHOICES = [
+  { value: 'prepaid', label: PAYMENT_TERMS_LABELS.prepaid! },
+  { value: 'on_delivery', label: PAYMENT_TERMS_LABELS.on_delivery! },
+  { value: 'undetermined', label: PAYMENT_TERMS_LABELS.undetermined! }
+];
+
+/** Astryx trial: the empty note when the workspace read failed (the Banner above says why). */
+const LOAD_FAILED_NOTE = '一覧を表示できませんでした。画面上部の案内を確認してください。';
+
+/** UI batch E (F-23): the queue of every project but the open one; a failed list read says so (review M1). */
+async function representativeQueueFor(openProjectId: string | null) {
+  const list = await loadSelectableProjectList();
+  if (list.error) return failedRepresentativeQueue(list.error);
+  return loadRepresentativeQueue(list.projects.filter((project) => project.id !== openProjectId));
+}
+
+export async function OrdersScreen({ projectId, projectCode }: ProjectScreenProps) {
+  // UI batch E (F-23, review M3): the other projects' waiting decisions (this project's are in
+  // 「次にやること」 below), read alongside the workspace, admin only.
+  const [user, workspace, representativeQueue] = await Promise.all([
+    loadSessionUser(),
+    loadWorkspace(projectId),
+    loadSessionUser().then((who) => (who?.role === 'admin' ? representativeQueueFor(projectId) : null))
+  ]);
+  // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
+  if (workspace.projectRefused) return <ProjectUnavailable title="発注の一覧" reason={workspace.error} returnTo="/orders" />;
+  const role = user?.role ?? null;
+  const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
+  const readinessLabel = labelLookup(workspace.labels, 'commissionReadinessStates');
+  // UI batch B (④): the 操作 column only when the role has a form to show in it.
+  const showOrderOperations = canRoleOperate(role, 'film_order:transition');
+  const poLabelById = new Map(workspace.sevenPurchaseOrders.map((po) => [po.id, po.poNumber]));
+  const poChoices = workspace.sevenPurchaseOrders.map((po) => ({
+    value: po.id,
+    label: sevenPurchaseOrderChoiceLabel(po)
+  }));
+
+  // M8-OPER2 FIX 1: the current G6 terms of the draft orders, read from the
+  // API's payment-gate answer (the same read the maker-PO screen uses), so the
+  // form always shows the recorded value instead of guessing from history.
+  // A withheld status (viewer) is not a draft: the 'DRAFT' value there is only
+  // the data layer's placeholder, so no payment-gate read is made for it.
+  // UI batch E: a viewer now reads statuses (server batch E) but has no 操作 column, so its
+  // drafts' payment gates are never shown — and never read.
+  // P0 integration (R01, P-5): the API says per order whether the 支払条件 may still be
+  // changed (until a maker PO carries the 代表承認; not while frozen or closed).
+  const termsEditable = showOrderOperations ? await loadPaymentTermsEditability(projectId) : null;
+  const draftOrders = showOrderOperations
+    ? workspace.filmOrders.filter((order) => (termsEditable?.get(order.id) ?? PAYMENT_TERMS_EDITABLE_STATES.has(knownStatus(order) ?? '')))
+    : [];
+  const paymentGates = await Promise.all(draftOrders.map((order) => loadPaymentGate(order.id)));
+  const paymentGateByOrderId = new Map<string, Awaited<ReturnType<typeof loadPaymentGate>>>();
+  for (const [index, order] of draftOrders.entries()) {
+    paymentGateByOrderId.set(order.id, paymentGates[index] ?? null);
+  }
+
+  // A failed read leaves the lists empty: then say so, never 「まだありません」 + "create one".
+  const loadFailed = Boolean(workspace.error);
+  const canCreateFilmOrder = canRoleOperate(role, 'film_order:create');
+  const canCreateFillingOrder = canRoleOperate(role, 'filling_order:create');
+
+  // Astryx trial: this screen is an Astryx island (DESIGN_RULES §1). The tables,
+  // status badges and forms are still ours — their markup is the tested contract.
+  return (
+    <AstryxIsland>
+    <VStack as="section" gap={5}>
+      <header>
+        <Heading level={1}>発注の一覧</Heading>
+        <ProjectProgress workspace={workspace} role={role} currentPath="/orders" projectCode={projectCode} />
+        <ViewerPageNotice role={role} />
+        {workspace.project ? (
+          <Text as="p" type="supporting">
+            案件 {workspace.project.code}（{workspace.project.name}）／ ルート {workspace.project.route}
+          </Text>
+        ) : (
+          <TechDetails context="案件ID">{projectId}</TechDetails>
+        )}
+        {workspace.error ? <Banner status="error" title={workspace.error} /> : null}
+        {representativeQueue && (representativeQueue.tasks.length > 0 || representativeQueue.listError) ? (
+          <details className="progress-completed sx-9c9cee2">
+            <summary>ほかの案件の代表者の対応待ち（{representativeQueue.tasks.length}件）</summary>
+            <RepresentativeQueuePanel queue={representativeQueue} currentProjectId={projectId} />
+          </details>
+        ) : null}
+      </header>
+
+      <SevenPurchaseOrderSection
+        orders={workspace.sevenPurchaseOrders}
+        poChoices={poChoices}
+        verificationLabel={VERIFICATION_STATUS_LABELS}
+        role={role}
+        loadFailed={loadFailed}
+      />
+
+      <Card>
+        <VStack gap={3}>
+        <Heading level={2}>フィルム発注 一覧</Heading>
+        <Text as="p" type="supporting">
+          行の操作で状態を進めます。受領確認（問題なしとみなす）は「{stateLabel('FILM_DELIVERED')}」の発注でだけ記録できます。
+        </Text>
+        {workspace.filmOrders.length === 0 ? (
+          loadFailed ? <EmptyNote title={LOAD_FAILED_NOTE} next={null} /> : <EmptyNote title="フィルム発注はまだありません" next={canCreateFilmOrder ? '下の「フィルム発注を作成する」で、確認済みのセブン化学発注書から作成します。' : null} />
+        ) : (
+          <DataTable caption="フィルム発注の一覧" captionHidden>
+            <thead>
+              <tr>
+                <th className="ui-th" scope="col">発注コード</th>
+                <th className="ui-th" scope="col">状態</th>
+                <th className="ui-th" scope="col">セブン発注書</th>
+                <th className="ui-th" scope="col">支払条件</th>
+                <th className="ui-th" scope="col">明細</th>
+                <th className="ui-th" scope="col">作成</th>
+                <th className="ui-th" scope="col">更新</th>
+                {showOrderOperations ? <th className="ui-th" scope="col">操作</th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {workspace.filmOrders.map((order) => {
+                const status = knownStatus(order);
+                return (
+                  // UI nav-dashboard: the dashboard links to this row (#order-<id>).
+                  <tr key={order.id} id={`order-${order.id}`} data-record-id={order.id} className="anchor-target">
+                    <td className="ui-td">
+                      {order.code}
+                      <TechDetails context="ID">{order.id}</TechDetails>
+                    </td>
+                    <td className="status-cell ui-td">
+                      {status === null
+                        ? <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} />
+                        : <StatusBadge domain="filmOrder" status={status} label={stateLabel(status)} />}
+                      {status === 'ON_HOLD' && order.hold ? <div className="ui-note">{holdSummaryText(order.hold)}</div> : null}
+                    </td>
+                    <td className="ui-td">
+                      {order.sevenPurchaseOrderId
+                        ? poLabelById.get(order.sevenPurchaseOrderId) ?? '紐付けあり'
+                        : order.detailsHidden
+                          ? HIDDEN_BY_ROLE_LABEL
+                          : '紐付けなし'}
+                      {/* UI batch E (F-05): an unlinked draft cannot leave DRAFT — say what to do. */}
+                      {!order.sevenPurchaseOrderId && !order.detailsHidden && status === 'DRAFT' ? (
+                        <p className="role-notice">
+                          {`この発注は「${stateLabel('SEVEN_PO_VERIFIED')}」へ進められません。${UNLINKED_ORDER_REMEDY(stateLabel)}。`}
+                        </p>
+                      ) : null}
+                    </td>
+                    {/* UI batch E3: the 支払条件 is shown to every role (amounts are not). */}
+                    <td className="ui-td">
+                      {paymentTermsText(order)}
+                      {/* P0 R01 (P-5): the change history stays readable after the 代表承認 too. */}
+                      <PaymentTermsHistory order={order} />
+                    </td>
+                    <td className="ui-td">
+                      <OrderLinesCell order={order} />
+                    </td>
+                    <td className="ui-td">{formatTimestamp(order.createdAt)}</td>
+                    <td className="ui-td">{formatTimestamp(order.updatedAt)}</td>
+                    {showOrderOperations ? (
+                      <td className="ui-td sx-576879f">
+                        {status === null ? null : (
+                          <TransitionCell
+                            order={order}
+                            status={status}
+                            stateLabel={stateLabel}
+                            role={role}
+                            makerCleanup={workspace.makerPaperCleanup?.[order.id]}
+                            workspace={workspace}
+                          />
+                        )}
+                        {(termsEditable?.get(order.id) ?? PAYMENT_TERMS_EDITABLE_STATES.has(status ?? '')) ? (
+                          <RoleGate role={role} operation="film_order:update_payment_terms" label="支払条件の記録">
+                            <PaymentTermsCell order={order} gate={paymentGateByOrderId.get(order.id) ?? null} />
+                          </RoleGate>
+                        ) : null}
+                        {status === 'FILM_DELIVERED' ? (
+                          <RoleGate role={role} operation="film_order:assume_receipt" label="受領確認の記録">
+                            <details className="sx-36ca0af">
+                              <summary className="sx-c981838">受領確認（問題なしとみなす）</summary>
+                              <ActionForm
+                                action={assumeFilmReceiptAction}
+                                submitLabel="受領確認を記録する"
+                                hint={`証跡の代わりに問題なしとみなす記録です。メモは必須で、状態は「${stateLabel('FILM_RECEIPT_ASSUMED_NO_ISSUE')}」になります。`}
+                                confirm={{
+                                  title: '受領確認（問題なしとみなす）を記録しますか？',
+                                  body: `発注 ${order.code} を、証跡なしで問題なしとみなした記録として残し、状態を「${stateLabel('FILM_RECEIPT_ASSUMED_NO_ISSUE')}」にします。この状態は最終の状態で、記録は取り消せません。`,
+                                  summaryFields: ['note', 'acknowledgeNoEvidence']
+                                }}
+                              >
+                                <input type="hidden" readOnly name="orderId" value={order.id} />
+                                <TextField name="note" label="確認メモ" required width={280} />
+                                {/* UI batch E (F-17): required here, so an unticked box stops before the dialog. */}
+                                <CheckboxField name="acknowledgeNoEvidence" label="証跡なしで問題なしとみなすことに同意します" required />
+                              </ActionForm>
+                            </details>
+                          </RoleGate>
+                        ) : null}
+                      </td>
+                    ) : null}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </DataTable>
+        )}
+        </VStack>
+      </Card>
+
+      <Card>
+        <VStack gap={3}>
+        <Heading level={2}>フィルム発注を作成する</Heading>
+        <RoleGate role={role} operation="film_order:create" label="フィルム発注の作成">
+          <Text as="p" type="supporting">明細の単位はフィルム商材の単位（ロール／メートル／枚）です。</Text>
+          <OrderCreateForm
+            action={createFilmSupplyOrderAction}
+            orderKind="film"
+            unitChoices={unitChoices('film')}
+            sevenPurchaseOrderChoices={poChoices}
+            paymentTermsChoices={PAYMENT_TERMS_CHOICES}
+          />
+        </RoleGate>
+        </VStack>
+      </Card>
+
+      <Card>
+        <VStack gap={3}>
+        <Heading level={2}>充填発注 一覧・作成</Heading>
+        <Text as="p" type="supporting">
+          充填製品（カプセル等）の発注です。単位はポッド／個。納品の確認状態は「納品確認・手数料準備」画面で扱います
+          （準備状態: {workspace.readiness?.hidden
+            ? HIDDEN_BY_ROLE_SHORT
+            : readinessLabel(workspace.readiness?.readinessState ?? 'MISSING_DATA')}）。
+        </Text>
+        {workspace.fillingOrders.length === 0 ? (
+          loadFailed ? <EmptyNote title={LOAD_FAILED_NOTE} next={null} /> : <EmptyNote title="充填発注はまだありません" next={canCreateFillingOrder ? '下のフォームで作成します。' : null} />
+        ) : (
+          <DataTable caption="充填発注の一覧" captionHidden>
+            <thead>
+              <tr>
+                <th className="ui-th" scope="col">発注コード</th>
+                <th className="ui-th" scope="col">明細</th>
+                <th className="ui-th" scope="col">作成</th>
+              </tr>
+            </thead>
+            <tbody>
+              {workspace.fillingOrders.map((order) => (
+                <tr key={order.id} id={`filling-order-${order.id}`} data-record-id={order.id} className="anchor-target">
+                  <td className="ui-td">
+                    {order.code}
+                    <TechDetails context="ID">{order.id}</TechDetails>
+                  </td>
+                  <td className="ui-td">
+                    {order.lines.length === 0 && order.detailsHidden ? HIDDEN_BY_ROLE_LABEL : null}
+                    {order.lines.map((line) => (
+                      <div key={line.id}>
+                        {line.lineNumber}. {line.description} ／ {formatQuantityWithUnit(line.orderedQuantity, line.unit)}
+                        <TechDetails context="明細ID">{line.id}</TechDetails>
+                      </div>
+                    ))}
+                  </td>
+                  <td className="ui-td">{formatTimestamp(order.createdAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </DataTable>
+        )}
+        <Divider />
+        <RoleGate role={role} operation="filling_order:create" label="充填発注の作成">
+          <OrderCreateForm action={createFillingOrderAction} orderKind="filling" unitChoices={unitChoices('filling')} />
+        </RoleGate>
+        </VStack>
+      </Card>
+    </VStack>
+    </AstryxIsland>
+  );
+}
+
+/**
+ * UI batch B (③): the transition form offers only the targets the generic
+ * transition endpoint can accept from this state (core state machine, minus
+ * the maker chain and the 受領確認 terminal state), with an empty first choice
+ * so nothing is pre-selected. The API still decides every request.
+ */
+function TransitionCell({
+  order,
+  status,
+  stateLabel,
+  role,
+  makerCleanup,
+  workspace
+}: {
+  order: FilmSupplyOrderView;
+  status: string;
+  stateLabel: (key: string) => string;
+  role: string | null;
+  /** Medium-3: the maker paper left on a cancelled or frozen order (absent: not read). */
+  makerCleanup: MakerPaperCleanupSummary | undefined;
+  workspace: Pick<Workspace, 'documents' | 'revisions' | 'revisionsWithheld' | 'deliveries'>;
+}) {
+  const set = transitionChoicesFor(status, stateLabel, order.lastNormalStatus, makerCleanup?.state ?? 'unknown');
+  const offersHold = set.choices.some((choice) => choice.value === 'ON_HOLD');
+  // UI batch E (F-06): targets whose evidence the workspace shows missing — warned, never blocked.
+  const gaps = evidenceGapsFor(order, workspace, set.choices.map((choice) => choice.value));
+  const gapTargets = gaps.map((gap) => gap.target);
+  const summaryFields = [
+    'to',
+    ...(offersHold ? ['holdReason'] : []),
+    ...(gaps.length > 0 ? [EVIDENCE_NOTE_FIELD] : [])
+  ];
+  return (
+    <>
+      {set.makerChainNotice ? <p className="ui-note">{MAKER_CHAIN_NOTICE}。</p> : null}
+      {set.resumeNotice ? <p className="role-notice">{set.resumeNotice}</p> : null}
+      {set.choices.length === 0 ? (
+        <p className="ui-note">{set.emptyReason}</p>
+      ) : (
+        <ActionForm
+          action={transitionFilmSupplyOrderAction}
+          submitLabel="状態を進める"
+          hint="条件がそろっていない場合は、理由がここに表示されます。"
+          confirm={{
+            title: '発注の状態を変更しますか？',
+            body: `状態を変更します。発注 ${order.code} の状態を、選んだ「進める先の状態」に変更し、変更は履歴に記録されます（記録は消えません）。`,
+            summaryFields,
+            // UI batch E (F-18): each reason row only for the target it belongs to.
+            summaryWhen: {
+              holdReason: { field: 'to', values: ['ON_HOLD'] },
+              [EVIDENCE_NOTE_FIELD]: { field: 'to', values: gapTargets }
+            }
+          }}
+        >
+          <input type="hidden" readOnly name="orderId" value={order.id} />
+          <SelectField
+            name="to"
+            label="進める先の状態"
+            required
+            includeBlank
+            blankLabel="（進める先を選ぶ）"
+            width={280}
+            choices={set.choices}
+            hint={set.hint ?? undefined}
+          />
+          {offersHold ? (
+            // The API refuses a hold without a reason (HOLD_REASON_REQUIRED);
+            // the other targets take none, so the field stays folded (one per
+            // row would double every row's height). Low-7 (d): choosing
+            // 「保留中」 opens it and makes it required; a refusal focuses it.
+            <ChoiceDisclosure
+              selectName="to"
+              value="ON_HOLD"
+              fieldName="holdReason"
+              summary={`「${stateLabel('ON_HOLD')}」にするときの理由（必須）`}
+            >
+              <TextareaField
+                name="holdReason"
+                label={`保留にする理由（「${stateLabel('ON_HOLD')}」を選ぶときは必須）`}
+                rows={2}
+                width={280}
+              />
+            </ChoiceDisclosure>
+          ) : null}
+          {gaps.length > 0 ? (
+            <ChoiceDisclosure
+              selectName="to"
+              value={gapTargets}
+              fieldName={EVIDENCE_NOTE_FIELD}
+              summary={`証跡がないまま進める場合（${gaps.map((gap) => `「${stateLabel(gap.target)}」`).join('・')}）`}
+            >
+              {gaps.map((gap) => (
+                <p key={gap.target} className="role-notice">
+                  {`注意（「${stateLabel(gap.target)}」）: ${gap.message}${EVIDENCE_GAP_SUFFIX}`}
+                </p>
+              ))}
+              <TextareaField
+                name={EVIDENCE_NOTE_FIELD}
+                label="証跡がないまま進める理由（履歴に保存されます）"
+                hint="理由は監査の履歴に残ります（1000字まで）。証跡があとから届く場合は、その予定を書いてください。"
+                rows={2}
+                width={280}
+              />
+            </ChoiceDisclosure>
+          ) : null}
+        </ActionForm>
+      )}
+      {status === 'ON_HOLD' ? <HoldReleaseForm order={order} role={role} stateLabel={stateLabel} /> : null}
+      {status === 'CANCELLATION_REVIEW' ? (
+        <CancellationReviewForm order={order} role={role} stateLabel={stateLabel} makerCleanup={makerCleanup} />
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * A legacy hold or review whose origin the API has no audit row for: the API
+ * then needs the resume target named (HOLD_ORIGIN_UNKNOWN /
+ * CANCELLATION_RESUME_REQUIRED) and accepts only DRAFT through
+ * MAKER_PO_ACCEPTED. The screen cannot tell such a row apart (it replays all
+ * transitions; the API reads only the hold/review event), so the field is
+ * always there but folded and blank: nothing is sent unless picked, and with a
+ * recorded origin the API refuses any other value.
+ */
+function LegacyResumeField({ stateLabel, hint }: { stateLabel: (key: string) => string; hint: string }) {
+  return (
+    <details>
+      <summary className="sx-c981838">前の状態が記録されていない古い発注の場合</summary>
+      <SelectField
+        name="resumeStatus"
+        label="再開する状態（「再開する状態の指定が必要です」と表示されたときだけ選びます）"
+        includeBlank
+        blankLabel="（選ばない：記録された前の状態に戻す）"
+        width={280}
+        hint={hint}
+        choices={LEGACY_HOLD_RELEASE_TARGETS.map((value) => ({ value, label: stateLabel(value) }))}
+      />
+    </details>
+  );
+}
+
+/**
+ * Hold release: representative only, reason required. The API returns the
+ * order to the state it left (from its own hold audit row) — or to
+ * MAKER_PO_READY when the maker paper of that state was cancelled meanwhile —
+ * so no target is chosen here, except for a legacy hold (LegacyResumeField).
+ */
+function HoldReleaseForm({
+  order,
+  role,
+  stateLabel
+}: {
+  order: FilmSupplyOrderView;
+  role: string | null;
+  stateLabel: (key: string) => string;
+}) {
+  return (
+    <RoleGate role={role} operation="film_order:release_hold" label="保留の解除">
+      <details className="sx-36ca0af" open>
+        <summary className="sx-c981838">保留を解除する（代表者のみ）</summary>
+        <ActionForm
+          action={releaseFilmOrderHoldAction}
+          submitLabel="保留を解除する"
+          hint={`理由は必須です（1000字以内）。発注は原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「${stateLabel('MAKER_PO_READY')}」（発注書の作成）から再開します。解除に取り消し承認は要りませんが、送信ずみの発注書を取り消した場合、新しい発注書の作成の前に「取り消し承認」の記録が必要です（保留中でもメーカー発注画面で記録できます）。`}
+          confirm={{
+            title: '保留を解除しますか？',
+            body: `発注 ${order.code} の保留を解除し、原則として保留にする前の状態に戻します（保留中にメーカー発注書がすべて取り消された場合は「${stateLabel('MAKER_PO_READY')}」に戻ります）。解除の理由と結果は履歴に記録されます（記録は消えません）。`,
+            tone: 'primary',
+            facts: holdReleaseFacts(order),
+            summaryFields: ['reason', 'resumeStatus']
+          }}
+        >
+          <input type="hidden" readOnly name="orderId" value={order.id} />
+          {order.hold ? <p className="ui-note">{holdSummaryText(order.hold)}</p> : null}
+          <TextareaField name="reason" label="保留解除の理由" required rows={2} width={280} />
+          <LegacyResumeField
+            stateLabel={stateLabel}
+            hint="保留前の状態が記録から分からない場合だけ選んでください。記録と違う状態を選ぶと、解除は記録されません。"
+          />
+        </ActionForm>
+      </details>
+    </RoleGate>
+  );
+}
+
+const CANCELLATION_OUTCOME_CHOICES = [
+  { value: 'resume', label: '再開する（取消確認前の状態に戻す）' },
+  { value: 'cancel', label: '取消で終了する（取消済・元に戻せません）' }
+];
+
+/**
+ * Cancellation review resolution: representative only, reason required.
+ * resume returns the order to the state it left; cancel ends it for good
+ * (CANCELLED — no transition, release or new maker PO afterwards).
+ */
+function CancellationReviewForm({
+  order,
+  role,
+  stateLabel,
+  makerCleanup
+}: {
+  order: FilmSupplyOrderView;
+  role: string | null;
+  stateLabel: (key: string) => string;
+  makerCleanup: MakerPaperCleanupSummary | undefined;
+}) {
+  const body = `発注 ${order.code} の取消確認を、選んだ処理で終えます。「取消で終了する」は元に戻せません（以後、状態の変更・保留の解除・メーカー発注書の作成はできません）。「再開する」は取消確認前の状態に戻します。`;
+  const warning = makerPaperWarning(makerCleanup);
+  return (
+    <RoleGate role={role} operation="film_order:resolve_cancellation_review" label="取消確認の処理">
+      <details className="sx-36ca0af" open>
+        <summary className="sx-c981838">取消確認を処理する（代表者のみ）</summary>
+        {warning ? <p className="role-notice">{warning}</p> : null}
+        <ChoiceToneActionForm
+          selectName="outcome"
+          dangerValue="cancel"
+          dangerConfirmBody={warning ? `${body}${warning}` : undefined}
+          action={resolveCancellationReviewAction}
+          submitLabel="取消確認を処理する"
+          hint={`理由は必須です（1000字以内）。「取消で終了する」を選ぶと状態は「${stateLabel('CANCELLED')}」になり、以後この発注は進められません。`}
+          confirm={{
+            title: '取消確認を処理しますか？',
+            body,
+            summaryFields: ['outcome', 'reason', 'resumeStatus']
+          }}
+        >
+          <input type="hidden" readOnly name="orderId" value={order.id} />
+          <SelectField
+            name="outcome"
+            label="処理"
+            required
+            includeBlank
+            blankLabel="（処理を選ぶ）"
+            width={280}
+            choices={CANCELLATION_OUTCOME_CHOICES}
+          />
+          <TextareaField name="reason" label="処理の理由" required rows={2} width={280} />
+          <LegacyResumeField
+            stateLabel={stateLabel}
+            hint="「再開する」で、取消確認前の状態が記録から分からない場合だけ選んでください（「取消で終了する」では使いません）。"
+          />
+        </ChoiceToneActionForm>
+      </details>
+    </RoleGate>
+  );
+}
+
+/**
+ * Recheck 7 Medium-3: ending the order does not touch its maker paper (the
+ * server resolves the review without retiring it), so the dialog says what
+ * is left before 「取消で終了する」 is confirmed.
+ */
+function makerPaperWarning(cleanup: MakerPaperCleanupSummary | undefined): string | null {
+  if (cleanup === undefined || cleanup.state === 'unknown') {
+    return '注意: この発注のメーカー発注書の状態を確認できませんでした。取消で終了しても、メーカー発注書は自動では取り消されません。メーカー発注画面で残っている発注書がないか確認してください。';
+  }
+  if (cleanup.state === 'none') return null;
+  const parts = [
+    cleanup.livePapers > 0
+      ? `取り消されていないメーカー発注書が${cleanup.livePapers}件あります（メーカーが生産する可能性があります）`
+      : null,
+    cleanup.acknowledgementPapers > 0
+      ? `送信ずみのまま取り消し、取り消し承認が未記録の発注書が${cleanup.acknowledgementPapers}件あります`
+      : null
+  ].filter((part): part is string => part !== null);
+  const stuck = uncancellableLivePapers(cleanup) > 0
+    ? `そのうち${uncancellableLivePapers(cleanup)}件は取り消せない状態（送信未確認・受入済み）のため、メーカーへの連絡と対応を代表者が判断してください。`
+    : '';
+  const records = makerCleanupRecords(cleanup);
+  return `注意: ${parts.join('。')}。${stuck}取消で終了しても、メーカー発注書は自動では取り消されません。`
+    + (records.length > 0 ? `終了の前後に、メーカー発注画面で${records.join('・')}を記録してください。` : '');
+}
+
+function OrderLinesCell({ order }: { order: FilmSupplyOrderView }) {
+  if (order.lines.length === 0) {
+    if (order.lineCount > 0) return <span>{`${order.lineCount}行`}</span>;
+    return <span>{order.detailsHidden ? HIDDEN_BY_ROLE_LABEL : '—'}</span>;
+  }
+  return (
+    <div>
+      {order.lines.map((line) => (
+        <div key={line.id}>
+          {line.lineNumber}. {line.description} ／ {formatQuantityWithUnit(line.orderedQuantity, line.unit)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * M8-OPER2 FIX 1: the G6 terms of one DRAFT order — the current value from the
+ * payment-gate read, the 入金確認 that never self-fills, and the recording form.
+ * The API keeps the write open for drafts only and answers its own refusal once
+ * the order has moved on.
+ */
+function PaymentTermsCell({
+  order,
+  gate
+}: {
+  order: FilmSupplyOrderView;
+  gate: Awaited<ReturnType<typeof loadPaymentGate>>;
+}) {
+  const current = gate?.paymentTerms ?? order.paymentTerms ?? null;
+  const currentTerms = current
+    ? PAYMENT_TERMS_LABELS[current] ?? '（不明）'
+    : '（支払条件の状態を取得できませんでした）';
+  const undecided = current === 'undetermined';
+  return (
+    // P0 R01 (B1): open while 「未定」 — the one thing that will stop the 代表承認 later.
+    <details className="sx-36ca0af" open={undecided || undefined}>
+      <summary className="sx-c981838">
+        支払条件: {currentTerms} ／ 入金確認: {gate?.paymentConfirmedAt ? '確認済み' : '未確認'}
+      </summary>
+      {undecided ? (
+        <p className="field-warning">
+          <span aria-hidden="true">⚠</span> 支払条件が「未定」です。このままでは代表承認できません。決まったらここで変更してください。
+        </p>
+      ) : null}
+      <ActionForm
+        action={updateFilmPaymentTermsAction}
+        submitLabel="支払条件を変更する"
+        hint="代表承認の前なら、担当者・代表者のどちらも変更できます（変更は履歴に残ります）。記録は入金確認ではありません。"
+        confirm={{
+          title: `発注 ${order.code} の支払条件を変更しますか？`,
+          body: '選んだ支払条件をこのフィルム発注に記録します。代表承認の前なら記録し直せます。記録は入金確認ではありません。',
+          tone: 'primary',
+          summaryFields: ['paymentTerms', 'reason']
+        }}
+      >
+        <input type="hidden" readOnly name="orderId" value={order.id} />
+        <SelectField
+          name="paymentTerms"
+          label="支払条件"
+          required
+          width={280}
+          choices={PAYMENT_TERMS_CHOICES}
+          {...(current && current in PAYMENT_TERMS_LABELS ? { defaultValue: current } : {})}
+        />
+        <TextField name="reason" label="変更の理由（任意）" width={280} />
+      </ActionForm>
+    </details>
+  );
+}
+
+/**
+ * P0 integration: GET /api/projects/:projectId/film-supply-orders answers
+ * paymentTermsEditable per order (p0-server). Null when the list cannot be read —
+ * the screen then falls back to the state list and the API still decides.
+ */
+async function loadPaymentTermsEditability(projectId: string): Promise<Map<string, boolean> | null> {
+  const result = await callApi<{ orders?: Array<{ id?: unknown; paymentTermsEditable?: unknown }> }>(
+    `/api/projects/${encodeURIComponent(projectId)}/film-supply-orders`
+  );
+  if (!result.ok || !Array.isArray(result.data?.orders)) return null;
+  const editable = new Map<string, boolean>();
+  for (const order of result.data.orders) {
+    if (typeof order.id === 'string') editable.set(order.id, order.paymentTermsEditable === true);
+  }
+  return editable;
+}
+
+/** P0 R01 (P-5): the 支払条件 changes on record — every change stays visible, oldest first. */
+function PaymentTermsHistory({ order }: { order: FilmSupplyOrderView }) {
+  const history = order.paymentTermsHistory ?? [];
+  if (history.length === 0) return null;
+  const label = (value: string | null) => (value ? PAYMENT_TERMS_LABELS[value] ?? '（不明）' : '（記録なし）');
+  return (
+    <div className="sx-082f6e5">
+      <p className="ui-note sx-ff227d0">支払条件の変更履歴（{history.length}件）</p>
+      <ol className="payment-terms-history sx-746a3eb">
+        {history.map((change, index) => (
+          <li className="sx-eefff2f" key={`${change.at}-${index}`}>
+            {formatTimestamp(change.at)} {change.actorName ?? '（記録者不明）'}: {label(change.before)} → {label(change.after)}
+            {change.reason ? `（理由: ${change.reason}）` : ''}
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function SevenPurchaseOrderSection({
+  orders,
+  poChoices,
+  verificationLabel,
+  role,
+  loadFailed
+}: {
+  orders: Awaited<ReturnType<typeof loadWorkspace>>['sevenPurchaseOrders'];
+  poChoices: Array<{ value: string; label: string }>;
+  verificationLabel: Record<string, string>;
+  role: string | null;
+  loadFailed: boolean;
+}) {
+  // UI batch B (④): the 操作 column only for a role with a form to put in it.
+  const showOperations = canRoleOperate(role, 'seven_po:register') || canRoleOperate(role, 'seven_po:verify');
+  const canCreate = canRoleOperate(role, 'seven_po:create');
+  return (
+    <Card>
+      <VStack gap={3}>
+      <Heading level={2}>セブン化学発注書</Heading>
+      <Text as="p" type="supporting">
+        フィルム発注を進めるには、発注書の本登録と発注書の照合チェックの記録（確認済み）が必要です。ここで記録すると、
+        フィルム発注の紐付けと状態遷移、正式書類のアップロードの前提がそろいます。
+      </Text>
+
+      {orders.length === 0 ? (
+        loadFailed ? <EmptyNote title={LOAD_FAILED_NOTE} next={null} /> : <EmptyNote title="セブン化学発注書はまだありません" next={canCreate ? '紙の発注書が届いたら、下の「セブン化学発注書を登録する」で登録します。' : null} />
+      ) : (
+        <DataTable caption="セブン化学発注書の一覧" captionHidden>
+          <thead>
+            <tr>
+              <th className="ui-th" scope="col">発注番号</th>
+              <th className="ui-th" scope="col">本登録</th>
+              <th className="ui-th" scope="col">真性確認</th>
+              {showOperations ? <th className="ui-th" scope="col">操作</th> : null}
+            </tr>
+          </thead>
+          <tbody>
+            {orders.map((po) => (
+              <tr key={po.id} id={`seven-po-${po.id}`} data-record-id={po.id} className="anchor-target">
+                <td className="ui-td">
+                  {po.poNumber}
+                  <TechDetails context="ID">{po.id}</TechDetails>
+                </td>
+                <td className="ui-td">
+                  {officialRegistrationText(po)}
+                </td>
+                <td className="status-cell ui-td">
+                  {po.verificationStatus
+                    ? (
+                      <StatusBadge
+                        domain="verification"
+                        status={po.verificationStatus}
+                        label={verificationLabel[po.verificationStatus] ?? po.verificationStatus}
+                      />
+                    )
+                    : po.verificationHidden
+                      ? <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} />
+                      : <StatusBadge tone="waiting" label="未記録" />}
+                  {po.reviewPending ? <div className="ui-note">確認中（不一致レビュー）</div> : null}
+                </td>
+                {showOperations ? (
+                  <td className="ui-td sx-19a2daf">
+                    {po.officiallyRegistered ? null : (
+                      <RoleGate role={role} operation="seven_po:register" label="本登録日の記録">
+                        <details className="sx-7f3cbaf">
+                          <summary className="sx-c981838">本登録日を記録する</summary>
+                          <ActionForm
+                            action={registerSevenPurchaseOrderAction}
+                            submitLabel="本登録する"
+                            confirm={{
+                              title: '本登録日を記録しますか？',
+                              body: 'このセブン化学発注書の本登録日を記録します。本登録はフィルム発注を進める前提の一つです。記録した本登録日をあとから変更できるのは代表者だけです。',
+                              tone: 'primary',
+                              summaryFields: ['officialRegisteredAt']
+                            }}
+                          >
+                            <input type="hidden" readOnly name="poId" value={po.id} />
+                            <DateTextField name="officialRegisteredAt" label="本登録日" required width={200} />
+                          </ActionForm>
+                        </details>
+                      </RoleGate>
+                    )}
+                    <RoleGate role={role} operation="seven_po:verify" label="チェックリストの記録">
+                      <details>
+                        <summary className="sx-c981838">発注書の照合チェックを記録する</summary>
+                        <ActionForm
+                          action={verifySevenPurchaseOrderAction}
+                          submitLabel="チェックリストを記録する"
+                          hint="人は必須の記録項目をすべて埋めてください。見積と一致していない場合は「相違あり・確認中」になり、前提ゲートは閉じたままです。"
+                          confirm={{
+                            title: '発注書の照合チェックを記録しますか？',
+                            body: 'このセブン化学発注書の真性確認として、チェック内容を記録します。突合結果が「見積と一致していない」のときは「相違あり・確認中」になり、前提ゲートは閉じたままです。記録し直すと最新の内容で上書きされ、以前の記録は履歴に残ります。',
+                            tone: 'primary',
+                            summaryFields: [
+                              'quoteMatchesPo',
+                              'quoteCompared',
+                              'uncertain',
+                              'confirmationReplyRecorded',
+                              'documentNumber',
+                              'issueDate'
+                            ]
+                          }}
+                        >
+                          <input type="hidden" readOnly name="poId" value={po.id} />
+                          <div className="sx-e106d6d">
+                            <CheckboxField name="issuerNameRecorded" label="発行者名を確認した" />
+                            <TextField name="issuerName" label="発行者名" width={180} />
+                            <CheckboxField name="documentNumberRecorded" label="文書番号を確認した" />
+                            <TextField name="documentNumber" label="文書番号" width={160} />
+                            <CheckboxField name="issueDateRecorded" label="発行日を確認した" />
+                            <DateTextField name="issueDate" label="発行日" width={170} />
+                            <CheckboxField name="sendingChannelRecorded" label="送信経路を確認した" />
+                            <TextField name="sendingChannel" label="送信経路" width={180} />
+                            <CheckboxField name="pastTransactionCompared" label="過去取引と突合した" />
+                            <TextField name="pastTransactionNote" label="突合メモ" width={180} />
+                            <CheckboxField name="quoteCompared" label="見積と突合した" />
+                            <SelectField name="quoteMatchesPo" label="突合結果" required choices={QUOTE_MATCH_CHOICES} width={220} />
+                            <TextField name="quoteComparisonNote" label="突合メモ" width={180} />
+                            <TextField name="tamperHints" label="改ざん疑いのメモ（任意・参考記録）" width={220} />
+                            <CheckboxField name="uncertain" label="確認が不確かだった" />
+                            <CheckboxField name="confirmationReplyRecorded" label="確認の返信を記録した（不確かな場合必須）" />
+                            <TextField name="confirmationReplyNote" label="返信メモ" width={180} />
+                            <TextField name="verificationNote" label="検証メモ" width={220} />
+                          </div>
+                        </ActionForm>
+                      </details>
+                    </RoleGate>
+                  </td>
+                ) : null}
+              </tr>
+            ))}
+          </tbody>
+        </DataTable>
+      )}
+
+      <Divider />
+      <Heading level={3}>セブン化学発注書を登録する</Heading>
+      <RoleGate role={role} operation="seven_po:create" label="発注書の登録">
+        <ActionForm
+          action={createSevenPurchaseOrderAction}
+          submitLabel="発注書を登録する"
+          hint="発注番号は紙の発注書の番号です。本登録日は後から「本登録日を記録する」でも入力できます。"
+        >
+          <div className="sx-f11b79b">
+            <TextField name="poNumber" label="発注番号" required width={240} />
+            <DateTextField name="officialRegisteredAt" label="本登録日（任意）" width={200} />
+          </div>
+        </ActionForm>
+      </RoleGate>
+      {poChoices.length === 0 ? null : (
+        <Text as="p" type="supporting">登録済み: {poChoices.length}件</Text>
+      )}
+      </VStack>
+    </Card>
+  );
+}

@@ -5,9 +5,11 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
- * P0 R03 (B3): a write form carries the project it was drawn for; the server
- * action refuses the write when the selected-project cookie names another one
- * (another tab switched it), before any API call. Fail closed for a missing field.
+ * P0 R03 (B3) → P1 R20: a write form carries the project it was drawn for (the
+ * URL's /p/{案件コード}), and the write goes to THAT project — the selected /
+ * last-project cookie (another tab) never redirects it. A form without the
+ * field, or with an empty or malformed one, is refused before any API call
+ * (fail closed, as before).
  */
 const state = vi.hoisted(() => ({ selected: 'project-a' as string | null }));
 const callApi = vi.hoisted(() => vi.fn());
@@ -23,7 +25,8 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
 const revalidatePath = vi.hoisted(() => vi.fn());
 vi.mock('next/cache', () => ({ revalidatePath }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
-vi.mock('next/navigation', () => ({ redirect: () => undefined }));
+const redirect = vi.hoisted(() => vi.fn());
+vi.mock('next/navigation', () => ({ redirect }));
 
 const { renderedProjectMatches, RENDERED_PROJECT_FIELD, PROJECT_CONTEXT_MISMATCH } = await import('../apps/web/src/lib/project-context.js');
 const { refuseIfProjectSwitched } = await import('../apps/web/src/lib/project-guard.js');
@@ -82,21 +85,33 @@ describe('renderedProjectMatches (R03)', () => {
   });
 });
 
-describe('refuseIfProjectSwitched (R03)', () => {
-  it('lets the write through when the form was drawn for the selected project', async () => {
+describe('refuseIfProjectSwitched (R03 → R20)', () => {
+  it('lets the write through when the form carries its rendered project', async () => {
     expect(await refuseIfProjectSwitched(formWith('project-a'))).toBeNull();
   });
 
-  it('refuses with PROJECT_CONTEXT_MISMATCH and operator text when another tab switched the project', async () => {
+  it('a cookie naming another project (another tab) does not refuse it: the write goes to the rendered project', async () => {
     state.selected = 'project-b';
-    const refused = await refuseIfProjectSwitched(formWith('project-a'));
+    expect(await refuseIfProjectSwitched(formWith('project-a'))).toBeNull();
+  });
+
+  it.each([
+    ['without the field', null],
+    ['an empty field (a form drawn outside /p/{code})', ''],
+    ['spaces', '  '],
+    ['a path', 'project-a/../b'],
+    ['a trailing space', 'project-a '],
+    ['an over-long value', 'x'.repeat(65)]
+  ])('refuses a form %s with PROJECT_CONTEXT_MISMATCH and operator text', async (_label, rendered) => {
+    const refused = await refuseIfProjectSwitched(formWith(rendered));
     expect(refused).toMatchObject({ ok: false, code: PROJECT_CONTEXT_MISMATCH });
-    expect(refused?.message).toContain('別のタブ');
     expect(refused?.message).not.toMatch(/PROJECT_CONTEXT_MISMATCH/);
   });
 
-  it('refuses a form without the field', async () => {
-    expect(await refuseIfProjectSwitched(formWith(null))).toMatchObject({ ok: false, code: PROJECT_CONTEXT_MISMATCH });
+  it('refuses a file in place of the field', async () => {
+    const data = new FormData();
+    data.set(RENDERED_PROJECT_FIELD, new File(['project-a'], 'x.txt'));
+    expect(await refuseIfProjectSwitched(data)).toMatchObject({ ok: false, code: PROJECT_CONTEXT_MISMATCH });
   });
 });
 
@@ -143,9 +158,14 @@ describe('every write action refuses before the API (runtime)', () => {
     expect(all.map(([name]) => name)).toEqual(expect.arrayContaining(['createFilmSupplyOrderAction', 'createMakerPoAction', 'uploadDocumentAction', 'cancelMakerPoAction']));
   });
 
-  it.each(all.map(([name, action]) => [name, action] as const))('%s: another tab switched the project => refused, API not called', async (_name, action) => {
+  it.each(all.map(([name, action]) => [name, action] as const))('%s: another tab opened project-b => never written to project-b', async (_name, action) => {
     state.selected = 'project-b';
-    const result = await action(null, formWith('project-a', { orderId: 'o1', poId: 'p1', code: 'X', poNumber: 'X' }));
+    await action(null, formWith('project-a', { orderId: 'o1', poId: 'p1', code: 'X', poNumber: 'X' }));
+    for (const call of callApi.mock.calls) expect(String(call[0])).not.toContain('project-b');
+  });
+
+  it.each(all.map(([name, action]) => [name, action] as const))('%s: an empty rendered project => refused, API not called', async (_name, action) => {
+    const result = await action(null, formWith('', { orderId: 'o1', poId: 'p1', code: 'X', poNumber: 'X' }));
     expect(result).toMatchObject({ ok: false, code: PROJECT_CONTEXT_MISMATCH });
     expect(callApi).not.toHaveBeenCalled();
     expect(revalidatePath).not.toHaveBeenCalled();
@@ -170,18 +190,27 @@ describe('every write action refuses before the API (runtime)', () => {
     expect(callApi).toHaveBeenCalledTimes(1);
   });
 
-  it('the project and the order check stay: a stale tab cannot write into the new project even with a valid-looking order id', async () => {
+  it('B3 in the URL model: a tab drawn for project-a still creates in project-a after another tab opened project-b', async () => {
     state.selected = 'project-b';
-    const result = await mainActions.recordDeliveryAction(null, formWith('project-a', { kind: 'film', orderId: 'order-of-a', lineId: 'l', unit: 'rolls', deliveredQuantity: '1' }));
-    expect(result.code).toBe(PROJECT_CONTEXT_MISMATCH);
-    expect(callApi).not.toHaveBeenCalled();
+    const result = await mainActions.createSevenPurchaseOrderAction(null, formWith('project-a', { poNumber: 'SEVEN-GUARD-2' }));
+    expect(result.ok).toBe(true);
+    expect(callApi).toHaveBeenCalledTimes(1);
+    expect(callApi.mock.calls[0]![0]).toBe('/api/projects/project-a/seven-purchase-orders');
   });
 
-  it('selectProjectAction is not refused for a missing hidden field', async () => {
-    callApi.mockResolvedValue({ ok: true, status: 200, data: { code: 'P-1', name: '合成' }, error: null });
-    const result = await mainActions.selectProjectAction(null, formWith(null, { projectId: 'project-z' }));
-    expect(result.code ?? null).not.toBe(PROJECT_CONTEXT_MISMATCH);
+  it('an order-scoped write posts to the order of the form (the API checks the order belongs to the operator)', async () => {
+    state.selected = 'project-b';
+    const result = await mainActions.recordDeliveryAction(null, formWith('project-a', { kind: 'film', orderId: 'order-of-a', lineId: 'l', unit: 'rolls', deliveredQuantity: '1' }));
     expect(result.ok).toBe(true);
+    expect(callApi.mock.calls[0]![0]).toBe('/api/film-supply-orders/order-of-a/deliveries');
+  });
+
+  it('selectProjectAction is not refused for a missing hidden field and opens /p/{code}', async () => {
+    callApi.mockResolvedValue({ ok: true, status: 200, data: { code: 'P-1', name: '合成' }, error: null });
+    redirect.mockReset();
+    const result = await mainActions.selectProjectAction(null, formWith(null, { projectId: 'project-z' }));
+    expect(result?.code ?? null).not.toBe(PROJECT_CONTEXT_MISMATCH);
+    expect(redirect).toHaveBeenCalledWith('/p/P-1');
   });
 });
 

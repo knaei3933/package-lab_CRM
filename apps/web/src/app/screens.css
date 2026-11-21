@@ -1,0 +1,42 @@
+/* P1 R27: generated from the list screens' former inline styles (work/r27-codemod.py). One class per distinct style. */
+.sx-045aac8 { margin-bottom: 16px; }
+.sx-0682822 { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
+.sx-082f6e5 { margin-top: 6px; }
+.sx-11bfff5 { display: grid; gap: 24px; }
+.sx-1578276 { margin: 4px 0 12px; color: var(--ink-sub); font-size: 14px; }
+.sx-15b888e { font-size: 26px; margin: 0 0 4px; }
+.sx-19a2daf { min-width: min(280px, 80vw); }
+.sx-1f27ed4 { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.sx-2468269 { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 12px; }
+.sx-291e42c { margin: 0; font-size: 20px; }
+.sx-2b405ed { font-size: 28px; margin-bottom: 8px; }
+.sx-31dd06c { margin: 0; padding-left: 20px; }
+.sx-3562d27 { font-size: 16px; margin: 12px 0 8px; }
+.sx-36ca0af { margin-top: 8px; }
+.sx-3ff301c { color: var(--ink-sub); }
+.sx-49f2b59 { font-size: 15px; font-weight: 600; cursor: pointer; }
+.sx-51ef381 { display: inline; font-size: var(--text-md); margin: 0; }
+.sx-576879f { min-width: min(260px, 80vw); }
+.sx-5ca78ee { color: var(--ink-sub); overflow-wrap: anywhere; }
+.sx-72d6c38 { margin-bottom: 12px; }
+.sx-746a3eb { margin: 4px 0 0; padding-left: 20px; }
+.sx-776e8ca { display: grid; gap: 16px; margin-top: 24px; }
+.sx-7857254 { margin: 0; padding-left: 18px; }
+.sx-7f3cbaf { margin-bottom: 8px; }
+.sx-9162155 { font-size: 12px; cursor: pointer; }
+.sx-9c9cee2 { margin-top: 12px; }
+.sx-ab544d4 { border-color: var(--warn); color: var(--warn); background: var(--warn-tint); }
+.sx-b6f5052 { font-variant-numeric: tabular-nums; }
+.sx-c083946 { margin: 8px 0 0; padding-left: 20px; font-size: 13px; }
+.sx-c2faf0d { min-width: min(240px, 80vw); }
+.sx-c5c15d8 { font-size: 20px; margin: 0 0 4px; }
+.sx-c71373e { margin-top: 4px; }
+.sx-c981838 { font-size: 13px; cursor: pointer; }
+.sx-e106d6d { display: flex; flex-wrap: wrap; gap: 8px; }
+.sx-e40c8fc { margin: 0 0 12px; }
+.sx-e5142ac { margin-top: 24px; padding: 16px; border: 1px solid var(--danger); border-radius: var(--radius); background: var(--danger-tint); color: var(--danger); }
+.sx-e6251b7 { font-size: 16px; margin: 0 0 8px; }
+.sx-eefff2f { font-size: 13px; }
+.sx-f11b79b { display: flex; flex-wrap: wrap; gap: 12px; }
+.sx-f4deb8f { font-size: 16px; margin: 0 0 4px; }
+.sx-ff227d0 { margin: 0; }

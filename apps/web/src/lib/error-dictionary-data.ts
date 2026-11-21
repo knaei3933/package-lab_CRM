@@ -15,6 +15,51 @@ export interface ErrorDictionaryEntry {
 }
 
 export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = {
+  // P1 (p1-server API_CONTRACT §7)
+  MAKER_PO_SNAPSHOT_DRIFTED: {
+    ja: '発注書の作成後に明細または版が変わりました。承認すると最新の内容で確定します。',
+    ko: '발주서 작성 후 명세 또는 판이 바뀌었습니다. 승인하면 최신 내용으로 확정됩니다.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  MAKER_PO_AMOUNT_MISSING: {
+    ja: 'メーカー発注書に金額が記載されていません。担当者に金額の入力を依頼してください。',
+    ko: '제조사 발주서에 금액이 없습니다. 담당자에게 금액 입력을 요청하세요.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  EXPECTED_SNAPSHOT_SHA256_INVALID: {
+    ja: '承認する発注書の確認値が正しくありません。画面を再読み込みしてください。',
+    ko: '승인할 발주서의 확인 값이 올바르지 않습니다. 화면을 새로 고치세요.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  MAKER_PO_SNAPSHOT_CHANGED: {
+    ja: '承認画面を開いた後に発注書の内容（明細・版）が変わりました。最新の内容を確認してから、もう一度承認してください。',
+    ko: '승인 화면을 연 뒤 발주서 내용(명세·판)이 바뀌었습니다. 최신 내용을 확인한 뒤 다시 승인하세요.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  MAKER_PO_RETURN_ONLY_DRAFT: {
+    ja: '差し戻しできるのは代表承認前のメーカー発注書だけです。承認済みの発注書は取消の手順を使ってください。',
+    ko: '대표 승인 전 제조사 발주서만 반려할 수 있습니다. 승인된 발주서는 취소 절차를 쓰세요.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  MAKER_PO_RETURN_REASON_TOO_LONG: {
+    ja: '差し戻しの理由は1000文字以下にしてください。',
+    ko: '반려 사유는 1000자 이하로 입력하세요.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  MAKER_PO_RETURN_REASON_REQUIRED: {
+    ja: '差し戻しの理由を入力してください。',
+    ko: '반려 사유를 입력하세요.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  ARTWORK_REVISION_REQUIRED: {
+    ja: '校正ゲラ（版）がまだ登録されていません。版を登録すると自動で進みます。',
+    ko: '교정본(판)이 아직 등록되지 않았습니다. 판을 등록하면 자동으로 진행됩니다.'
+  },
+  // P1 (p1-server API_CONTRACT §7)
+  AUTO_TRANSITION_ONLY: {
+    ja: 'この段階は条件がそろうと自動で進みます。手で進める必要はありません。',
+    ko: '이 단계는 조건이 갖춰지면 자동으로 진행됩니다. 직접 진행할 필요가 없습니다.'
+  },
   ACCEPT_EVIDENCE_DOCUMENT_TYPE_INVALID: {
     ja: '選んだ書類は受領証跡（検収）ではありません。文書画面で登録した受領証跡を選んでください。',
     ko: '선택한 문서는 수령 증빙(검수)이 아닙니다. 문서 화면에 등록한 수령 증빙을 선택하세요.'
@@ -152,7 +197,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '변경 사유가 입력되지 않았습니다. 사유를 입력하세요.'
   },
   CHECKLIST_INCOMPLETE: {
-    ja: '真性行チェックに未記録の項目があります。すべての項目を人の目で確認して記録してください。',
+    ja: '発注書の照合チェックに未記録の項目があります。すべての項目を人の目で確認して記録してください。',
     ko: '진성행 체크에 기록되지 않은 항목이 있습니다. 모든 항목을 사람이 확인해 기록하세요.'
   },
   CONFIRMATION_REPLY_REQUIRED: {
@@ -664,7 +709,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '제조사 발주서를 찾을 수 없습니다. 화면을 다시 불러온 뒤 다시 선택하세요.'
   },
   MAKER_PO_NOT_READY: {
-    ja: 'メーカー発注書を作成できるのは、発注が「製造先発注準備完了」のときだけです。発注の状態を確認してください。',
+    ja: 'メーカー発注書を作成できるのは、発注が「メーカー発注準備完了」のときだけです。発注の状態を確認してください。',
     ko: '제조사 발주서를 작성할 수 있는 것은 발주가 「제조처 발주 준비 완료」일 때뿐입니다. 발주 상태를 확인하세요.'
   },
   MAKER_PO_SEND_ALREADY_CONFIRMED: {
@@ -692,11 +737,11 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '지정한 기록을 찾을 수 없습니다. 화면을 다시 불러온 뒤 다시 선택하세요.'
   },
   OFFICIAL_DATE_ALREADY_REGISTERED: {
-    ja: '公式登録日はすでに別の記録で登録されています。画面を再読み込みして、登録済みの日付を確認してください。',
+    ja: '本登録日はすでに別の記録で登録されています。画面を再読み込みして、登録済みの日付を確認してください。',
     ko: '공식 등록일이 이미 다른 기록으로 등록되었습니다. 화면을 다시 불러와 등록된 날짜를 확인하세요.'
   },
   OFFICIAL_REGISTRATION_REQUIRED: {
-    ja: 'セブン化学発注書の公式登録日が未入力です。公式登録日を記録してから、もう一度操作してください。',
+    ja: 'セブン化学発注書の本登録日が未入力です。本登録日を記録してから、もう一度操作してください。',
     ko: '세븐화학 발주서의 공식 등록일이 입력되지 않았습니다. 공식 등록일을 기록한 뒤 다시 시도하세요.'
   },
   ORDER_CODE_REQUIRED: {
@@ -712,7 +757,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '이 발주는 보류 중이 아닙니다. 화면을 다시 불러와 현재 상태를 확인하세요.'
   },
   ORDER_NOT_PAST_SEVEN_PO_VERIFIED: {
-    ja: '原稿の版を登録できるのは、発注が「セブン化学発注書確認済」以降のときだけです。発注の状態を確認してください。',
+    ja: '原稿の版を登録できるのは、発注が「発注書の照合済み」以降のときだけです。発注の状態を確認してください。',
     ko: '원고 판을 등록할 수 있는 것은 발주가 「세븐화학 발주서 확인 완료」 이후일 때뿐입니다. 발주 상태를 확인하세요.'
   },
   ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED: {
@@ -732,7 +777,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '승인 화면을 연 뒤 결제 조건이 바뀌었습니다. 화면을 다시 불러와 최신 결제 조건을 확인한 뒤 다시 승인하세요.'
   },
   PAYMENT_TERMS_LOCKED: {
-    ja: '代表承認済みのメーカー発注書がある発注、または保留・変更レビュー・取消レビュー中の発注は、支払条件を変更できません。代表承認の前で、保留・レビュー中でなければ変更できます。',
+    ja: '代表承認済みのメーカー発注書がある発注、または保留・変更確認・取消確認中の発注は、支払条件を変更できません。代表承認の前で、保留・レビュー中でなければ変更できます。',
     ko: '대표 승인된 제조사 발주서가 있거나 보류·변경 검토·취소 검토 중인 발주는 결제 조건을 바꿀 수 없습니다. 대표 승인 전이고 보류·검토 중이 아니면 바꿀 수 있습니다.'
   },
   PAYMENT_TERMS_REASON_INVALID: {
@@ -816,7 +861,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '이상 없음으로 완료하는 사유가 입력되지 않았습니다. 사유를 입력하세요.'
   },
   RECEIPT_ASSUMPTION_ONLY_FROM_FILM_DELIVERED: {
-    ja: '「問題なしで完了」にできるのは、発注が「フィルム納品完了」のときだけです。現在の状態を確認してください。',
+    ja: '「問題なしで完了」にできるのは、発注が「納品済み」のときだけです。現在の状態を確認してください。',
     ko: '「이상 없음 완료」는 발주가 「필름 납품 완료」일 때만 할 수 있습니다. 현재 상태를 확인하세요.'
   },
   RECEIPT_ASSUMPTION_STATE_CHANGED: {
@@ -928,7 +973,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '이 참조 코드에 연결된 세븐화학 발주서가 없습니다. 문서 화면에서 세븐화학 발주서를 등록해 연결하세요.'
   },
   SEVEN_PO_NOT_VERIFIED: {
-    ja: 'セブン化学発注書の真性行チェックが終わっていません。チェックを完了してから、もう一度操作してください。',
+    ja: 'セブン化学発注書の発注書の照合チェックが終わっていません。チェックを完了してから、もう一度操作してください。',
     ko: '세븐화학 발주서의 진성행 체크가 끝나지 않았습니다. 체크를 마친 뒤 다시 시도하세요.'
   },
   SEVEN_PO_PROJECT_MISMATCH: {

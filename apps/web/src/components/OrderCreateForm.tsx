@@ -51,8 +51,12 @@ interface OrderCreateFormProps {
 
 const SUBMIT_LABEL = '発注を作成する';
 
-/** The description / quantity / unit inputs of one line, with their field errors. */
-function LineInputs({
+/**
+ * The description / quantity / unit inputs of one line, with their field errors.
+ * P1 R34 (M15): each input has a visible label (説明・数量・単位); the line
+ * number is in the accessible name only, so the name stays 「明細1の説明」.
+ */
+export function LineInputs({
   index,
   line,
   unitChoices,
@@ -74,11 +78,11 @@ function LineInputs({
   ) as Record<(typeof parts)[number], { error: string | undefined; errorId: string; describedBy: string | undefined; invalid: true | undefined }>;
   return (
     <>
-      <span style={{ display: 'grid', gap: 2, flex: '0 1 260px', minWidth: 'min(160px, 100%)' }}>
+      <span className="line-field" style={{ display: 'grid', gap: 2, flex: '0 1 260px', minWidth: 'min(160px, 100%)' }}>
+        <label className="line-field-inner">
+        <span className="line-field-label"><span className="visually-hidden">{`明細${index + 1}の`}</span>説明</span>
         <input
           value={line.description}
-          placeholder="説明"
-          aria-label={`明細${index + 1}の説明`}
           required
           onChange={(event) => onChange({ description: event.target.value })}
           aria-describedby={state.description.describedBy}
@@ -86,13 +90,14 @@ function LineInputs({
           data-feedback-name={lineField(index, 'description')}
           style={{ ...inputStyle, width: '100%' }}
         />
+        </label>
         <FieldError id={state.description.errorId} message={state.description.error} />
       </span>
-      <span style={{ display: 'grid', gap: 2, flex: '0 1 120px', minWidth: 96 }}>
+      <span className="line-field" style={{ display: 'grid', gap: 2, flex: '0 1 120px', minWidth: 96 }}>
+        <label className="line-field-inner">
+        <span className="line-field-label"><span className="visually-hidden">{`明細${index + 1}の`}</span>数量</span>
         <input
           value={line.quantity}
-          placeholder="数量"
-          aria-label={`明細${index + 1}の数量`}
           inputMode="decimal"
           required
           pattern="\d+(\.\d+)?"
@@ -108,12 +113,14 @@ function LineInputs({
           data-feedback-format="正の数（例 1000、12.5）"
           style={{ ...inputStyle, width: '100%' }}
         />
+        </label>
         <FieldError id={state.quantity.errorId} message={state.quantity.error} />
       </span>
-      <span style={{ display: 'grid', gap: 2, flex: '0 1 140px', minWidth: 96 }}>
+      <span className="line-field" style={{ display: 'grid', gap: 2, flex: '0 1 140px', minWidth: 96 }}>
+        <label className="line-field-inner">
+        <span className="line-field-label"><span className="visually-hidden">{`明細${index + 1}の`}</span>単位</span>
         <select
           value={line.unit}
-          aria-label={`明細${index + 1}の単位`}
           onChange={(event) => onChange({ unit: event.target.value })}
           aria-describedby={state.unit.describedBy}
           aria-invalid={state.unit.invalid}
@@ -126,6 +133,7 @@ function LineInputs({
             </option>
           ))}
         </select>
+        </label>
         <FieldError id={state.unit.errorId} message={state.unit.error} />
       </span>
     </>
@@ -237,7 +245,7 @@ export function OrderCreateForm({
               <FieldError id={poFeedback.errorId} message={poFeedback.error} />
               <span id={poFeedback.hintId} style={noteStyle}>
                 {sevenPurchaseOrderChoices.length > 0
-                  ? '紐付けはここでしか選べません（あとから付け替えられません）。状態を進めるには、選んだ発注書の公式登録と真性行チェックリスト（確認済み）が必要です。'
+                  ? '紐付けはここでしか選べません（あとから付け替えられません）。状態を進めるには、選んだ発注書の本登録と発注書の照合チェック（確認済み）が必要です。'
                   : '先に「セブン化学発注書を登録する」で紙の発注書を登録してください。'}
               </span>
             </div>
@@ -312,7 +320,7 @@ export function OrderCreateForm({
             style={subtleButtonStyle}
             onClick={() => setLines([...lines, { description: '', quantity: '', unit: unitChoices[0]?.value ?? '' }])}
           >
-            明細を追加
+            {orderKind === 'film' ? '明細を追加（フィルム発注）' : '明細を追加（充填発注）'}
           </button>
         </div>
       </div>

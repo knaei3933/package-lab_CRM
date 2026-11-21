@@ -1,0 +1,495 @@
+/*
+ * P1 (R20–R22, R27, R34): the project-scoped screens. Tokens come from
+ * globals.css (紙・白・墨・罫・藍 + 状態); P1 adds 朱 (the 押印 seal only), the
+ * radius hierarchy and the control sizes of REDESIGN §8 — buttons and inputs
+ * 40px (fine pointer) / 44px with 16px text (coarse pointer), hover on every
+ * button. Transitions only on colours, off under reduced motion.
+ */
+:root {
+  --seal: #b5412e;
+  --radius-badge: 4px;
+  --radius-button: 6px;
+  --radius-panel: 8px;
+  --radius-sheet: 12px;
+  --control-h: 40px;
+  --control-text: 15px;
+  --t-meta: 12px;
+  --t-table: 14px;
+  --t-body: 15px;
+  --t-section: 18px;
+  --t-title: 24px;
+}
+
+@media (pointer: coarse) {
+  :root {
+    --control-h: 44px;
+    --control-text: 16px;
+    --t-body: 16px;
+  }
+}
+
+.project-choice { text-decoration: none; }
+
+/* ---- Buttons (wrappers: .p1-button and the shared form buttons) ---- */
+.p1-button,
+.form-shell button[type='submit'],
+.form-shell .form-result-action {
+  min-height: var(--control-h);
+  font-size: var(--control-text);
+  border-radius: var(--radius-button);
+  transition: background-color 120ms, border-color 120ms;
+  touch-action: manipulation;
+}
+
+.p1-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-4);
+  font: inherit;
+  font-weight: 700;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+  border: 1px solid var(--primary);
+}
+
+.p1-button--primary {
+  color: #fff;
+  background: var(--primary);
+}
+
+.p1-button--primary:hover { color: #fff; background: var(--primary-hover); }
+.p1-button--primary:active { background: #12304b; }
+
+.p1-button--quiet {
+  color: var(--primary);
+  background: var(--surface);
+}
+
+.p1-button--quiet:hover { background: var(--primary-tint); }
+
+.p1-button:focus-visible,
+.p1-link-button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.form-shell button[type='submit']:hover:not([disabled]):not([aria-disabled='true']) {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+}
+
+.p1-link-button {
+  min-height: 32px;
+  margin-left: var(--space-2);
+  padding: 0 var(--space-2);
+  font: inherit;
+  color: var(--primary);
+  text-decoration: underline;
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+
+/* ---- Inputs inside the new screens ---- */
+.p1-order input:not([type='checkbox']):not([type='radio']):not([type='hidden']),
+.p1-order select,
+.p1-order textarea,
+.p1-new input:not([type='checkbox']):not([type='radio']):not([type='hidden']),
+.p1-new select,
+.p1-new textarea {
+  min-height: var(--control-h);
+  font-size: var(--control-text);
+  border-radius: var(--radius-badge);
+}
+
+.p1-select {
+  min-height: var(--control-h);
+  max-width: 340px;
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: var(--control-text);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-badge);
+}
+
+/* ---- Text ---- */
+.p1-title {
+  margin: 0;
+  font-size: var(--t-title);
+  line-height: 1.3;
+  text-wrap: balance;
+  overflow-wrap: anywhere;
+}
+
+.p1-section-title {
+  margin: 0 0 var(--space-3);
+  font-size: var(--t-section);
+  line-height: 1.4;
+}
+
+.p1-lead { margin: var(--space-2) 0 0; color: var(--ink-sub); line-height: 1.75; }
+.p1-muted { margin: 0; color: var(--ink-sub); }
+.p1-field-label { display: block; margin: 0 0 var(--space-1); font-size: var(--t-table); font-weight: 700; }
+.p1-field-hint { margin: var(--space-1) 0 0; font-size: var(--t-meta); color: var(--ink-sub); }
+.p1-required { color: var(--danger); font-weight: 400; }
+.p1-hash { font-size: var(--t-meta); color: var(--ink-sub); }
+
+/* ---- Breadcrumb ---- */
+.p1-crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  list-style: none;
+  font-size: var(--t-table);
+}
+
+.p1-crumbs li + li::before { content: '›'; margin-right: var(--space-2); color: var(--ink-sub); }
+
+/* ---- Panels ---- */
+.p1-panel {
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+
+.p1-orders-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-3);
+}
+
+.p1-orders-head .p1-section-title { margin: 0; }
+
+.p1-order-rows { display: grid; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+
+.p1-order-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) auto minmax(120px, 1fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 48px;
+  padding: var(--space-2) var(--space-2);
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--line);
+}
+
+.p1-order-row:hover { background: var(--primary-tint); }
+.p1-order-row-code { font-weight: 700; overflow-wrap: anywhere; }
+.p1-order-row-meta { font-size: var(--t-table); color: var(--ink-sub); font-variant-numeric: tabular-nums; }
+.p1-order-row-go { font-weight: 700; color: var(--primary); }
+
+/* ---- Order screen ---- */
+.p1-order { display: grid; gap: var(--space-4); max-width: 1120px; }
+.p1-order-head { display: grid; gap: var(--space-2); }
+.p1-order-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
+
+.p1-order-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin: 0;
+  font-size: var(--t-table);
+  color: var(--ink-sub);
+  font-variant-numeric: tabular-nums;
+}
+
+.p1-order-links { display: flex; flex-wrap: wrap; gap: var(--space-4); margin: 0; font-size: var(--t-table); }
+
+.p1-order-grid {
+  display: grid;
+  grid-template-columns: minmax(200px, 260px) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.p1-banner {
+  margin: 0;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-left-width: 6px;
+  border-radius: var(--radius-badge);
+}
+
+.p1-banner--ok { color: var(--ok); background: var(--ok-tint); border-color: var(--ok); }
+.p1-banner--error { color: var(--danger); background: var(--danger-tint); border-color: var(--danger); }
+.p1-banner--exception { background: var(--warn-tint); border-color: var(--ink); font-weight: 700; }
+
+/* Timeline */
+.p1-timeline { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+
+.p1-tl-step {
+  display: grid;
+  grid-template-columns: 28px 1fr auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 36px;
+  padding: 0 var(--space-2);
+  font-size: var(--t-table);
+  color: var(--ink-sub);
+  border-radius: var(--radius-badge);
+}
+
+.p1-tl-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  font-size: var(--t-meta);
+  font-weight: 700;
+  border: 1px solid var(--line-strong);
+  border-radius: 50%;
+}
+
+.p1-tl-no { margin-right: var(--space-1); font-variant-numeric: tabular-nums; }
+.p1-tl-state { font-size: var(--t-meta); }
+.p1-tl-step--done { color: var(--ink); }
+.p1-tl-step--done .p1-tl-mark { color: var(--ok); border-color: var(--ok); }
+.p1-tl-step--current { color: var(--ink); font-weight: 700; background: var(--primary-tint); }
+.p1-tl-step--current .p1-tl-mark { color: #fff; background: var(--primary); border-color: var(--primary); }
+.p1-tl-step--interrupted { color: var(--ink); font-weight: 700; background: var(--warn-tint); }
+.p1-tl-step--interrupted .p1-tl-mark { color: var(--warn); border-color: var(--warn); }
+
+/* Step panel */
+.p1-step { display: grid; gap: var(--space-3); }
+.p1-step > p { margin: 0; }
+.p1-next { color: var(--ink-sub); font-size: var(--t-table); }
+.p1-waiting { margin: 0; color: var(--ink-sub); }
+.p1-done { margin: 0; color: var(--ok); font-weight: 700; }
+
+.p1-announce:empty { display: none; }
+
+.p1-announce {
+  padding: var(--space-3);
+  color: var(--ok);
+  background: var(--ok-tint);
+  border-radius: var(--radius-badge);
+  scroll-margin-top: 80px;
+}
+
+.p1-announce:focus { outline: 2px solid var(--ok); outline-offset: 2px; }
+
+.p1-blocked {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--warn-tint);
+  border: 1px solid var(--warn);
+  border-left-width: 6px;
+  border-radius: var(--radius-badge);
+}
+
+.p1-blocked > p { margin: 0; }
+.p1-blocked-title { font-weight: 700; color: var(--danger); }
+.p1-blocked-inline { margin: 0; color: var(--danger); font-weight: 700; }
+
+.p1-row { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: flex-start; }
+
+.p1-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: var(--space-2) var(--space-4);
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.p1-facts dt { font-weight: 700; color: var(--ink-sub); }
+.p1-facts dd { margin: 0; overflow-wrap: anywhere; }
+.p1-plain-list { margin: 0; padding: 0; list-style: none; }
+
+/* 押印欄: the seal is the one memorable element (REDESIGN §8-1) */
+.p1-approvals { display: grid; gap: var(--space-4); }
+.p1-approval-head { margin: 0 0 var(--space-2); font-weight: 700; }
+.p1-seal-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: var(--space-3); }
+
+.p1-seal-slot {
+  display: grid;
+  gap: var(--space-2);
+  align-content: start;
+  padding: var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-panel);
+}
+
+.p1-seal-name { margin: 0; font-weight: 700; }
+.p1-seal-state { margin: 0; font-size: var(--t-meta); color: var(--ink-sub); }
+.p1-seal { margin: 0; }
+
+.p1-seal-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  font-weight: 700;
+  color: var(--seal);
+  border: 3px solid var(--seal);
+  border-radius: 50%;
+  animation: p1-stamp 180ms ease-out;
+}
+
+@keyframes p1-stamp {
+  from { opacity: 0; transform: scale(1.08); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* Records */
+.p1-records { max-width: 1120px; }
+.p1-record-list { display: grid; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+
+.p1-record-list li {
+  display: grid;
+  grid-template-columns: 150px 140px minmax(0, 1fr);
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  font-size: var(--t-table);
+  border-bottom: 1px solid var(--line);
+}
+
+.p1-record-at { font-variant-numeric: tabular-nums; color: var(--ink-sub); }
+
+/* File field */
+.p1-file { display: grid; gap: var(--space-1); }
+.p1-file-input { max-width: 100%; }
+.p1-file-state { margin: 0; font-size: var(--t-meta); color: var(--ink-sub); min-height: 1em; }
+
+/* Wizard */
+.p1-new { display: grid; gap: var(--space-4); max-width: 960px; }
+.p1-wizard { display: grid; gap: var(--space-4); }
+
+.p1-fieldset {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel);
+}
+
+.p1-legend { padding: 0 var(--space-2); font-size: var(--t-section); font-weight: 700; }
+
+.p1-legend-no {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-right: var(--space-2);
+  color: #fff;
+  background: var(--primary);
+  border-radius: 50%;
+}
+
+.p1-check-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: var(--space-3); align-items: end; }
+.p1-choice-row { display: flex; flex-wrap: wrap; gap: var(--space-4); }
+.p1-radio { display: inline-flex; align-items: center; gap: var(--space-2); min-height: var(--control-h); }
+.p1-lines { display: grid; gap: var(--space-2); }
+.p1-line-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--space-2); }
+.p1-line-no { min-height: var(--control-h); display: inline-flex; align-items: center; font-size: var(--t-table); color: var(--ink-sub); }
+.line-field-inner { display: grid; gap: 2px; }
+.line-field-label { font-size: var(--t-meta); color: var(--ink-sub); }
+
+.p1-draft { display: inline-flex; flex-wrap: wrap; align-items: center; padding: var(--space-2) var(--space-3); font-size: var(--t-table); background: var(--primary-tint); border-radius: var(--radius-badge); }
+
+/* Not found */
+.p1-notfound { display: grid; gap: var(--space-3); max-width: 720px; }
+.p1-link-list { display: grid; gap: var(--space-2); margin: 0; padding-left: 1.2em; }
+.p1-link-list a { display: inline-flex; min-height: 32px; align-items: center; }
+
+/* Narrow screens: the timeline folds to the current step, the panel takes the width. */
+@media (max-width: 720px) {
+  .p1-order-grid { grid-template-columns: minmax(0, 1fr); }
+  .p1-timeline .p1-tl-step:not(.p1-tl-step--current):not(.p1-tl-step--interrupted) { display: none; }
+  .p1-order-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .p1-order-row-meta { grid-column: 1 / -1; }
+  .p1-record-list li { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .p1-button,
+  .form-shell button[type='submit'] { transition: none; }
+  .p1-seal-mark { animation: none; }
+}
+
+/* ---- R24 approval card ---- */
+.p1-card {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sheet);
+}
+
+.p1-card-title { margin: 0; font-size: var(--t-section); }
+.p1-card-actions { display: flex; flex-wrap: wrap; gap: var(--space-4); align-items: flex-start; }
+.p1-seal-row--three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.p1-seal-empty { margin: 0; min-height: 64px; display: grid; place-items: center start; color: var(--ink-sub); }
+.p1-figure { font-variant-numeric: tabular-nums; }
+.p1-muted-inline { color: var(--ink-sub); font-size: var(--t-table); }
+.p1-line-no-inline { display: inline-block; min-width: 1.5em; color: var(--ink-sub); font-variant-numeric: tabular-nums; }
+.p1-note { margin: 0; font-size: var(--t-table); }
+.p1-ko { display: block; font-family: 'IBM Plex Sans KR', 'Noto Sans KR', 'Malgun Gothic', var(--font-sans); font-size: 0.85em; font-weight: 400; color: var(--ink-sub); }
+
+/* ---- R26 home / R35 inbox ---- */
+.p1-home { display: grid; gap: var(--space-4); max-width: 1120px; }
+.p1-inbox { display: grid; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+
+.p1-inbox-item {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(160px, 2fr) minmax(120px, 1.5fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 56px;
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--line);
+}
+
+.p1-inbox-item > p { margin: 0; overflow-wrap: anywhere; }
+.p1-inbox-work { font-weight: 700; }
+.p1-inbox-facts { font-size: var(--t-table); color: var(--ink-sub); font-variant-numeric: tabular-nums; }
+.p1-inbox-item--blocked { grid-template-columns: minmax(120px, 1fr) minmax(200px, 3fr) auto; background: var(--warn-tint); }
+.p1-work-group { display: grid; gap: var(--space-2); }
+.p1-work-group .p1-inbox-item { grid-template-columns: minmax(160px, 1.2fr) minmax(200px, 3fr) auto; }
+
+.p1-history { width: 100%; border-collapse: collapse; font-size: var(--t-table); }
+.p1-history th, .p1-history td { padding: var(--space-2); text-align: left; border-bottom: 1px solid var(--line); }
+
+/* R35: on a phone the inbox rows are cards; the button is full width, 48px (§5-6). */
+@media (max-width: 640px) {
+  .p1-inbox { gap: var(--space-3); border-top: 0; }
+  .p1-inbox-item,
+  .p1-inbox-item--blocked,
+  .p1-work-group .p1-inbox-item {
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-1);
+    padding: var(--space-3);
+    background: var(--surface);
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius-panel);
+  }
+  .p1-inbox-item--blocked { background: var(--warn-tint); }
+  .p1-inbox-go { width: 100%; min-height: 48px; margin-top: var(--space-2); }
+  .p1-seal-row--three { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
+  .p1-seal-row--three .p1-seal-slot { padding: var(--space-2); }
+  .p1-seal-mark { width: 52px; height: 52px; }
+  .p1-card-actions { display: grid; }
+  .p1-card-actions .form-shell button[type='submit'] { width: 100%; min-height: 48px; }
+  .p1-facts { grid-template-columns: minmax(0, 1fr); }
+  .p1-facts dt { margin-top: var(--space-2); }
+}
+
+/* R29: in the Korean mode the Japanese business term stays next to the Korean text. */
+.p1-ja { margin-left: 0.4em; font-size: 0.85em; color: var(--ink-sub); }
+.p1-ja::before { content: '（'; }
+.p1-ja::after { content: '）'; }
+.app-sidebar .p1-ko { font-size: 11px; }
