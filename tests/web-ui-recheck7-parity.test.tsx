@@ -466,7 +466,7 @@ describe('Low-7: hold wording, hold reason refusals, and the 取り消し承認 
     const heldOrders = await render(OrdersPage);
     expect(nextCard(heldOrders)).toContain('解除の前でも、メーカー発注画面で取り消し・取り消し承認を記録できます');
     expect(nextCard(heldOrders)).toContain('href="/p/TEST-P/maker-po"');
-    expect(orderRow(heldOrders, chain.orderCode)).toContain('残っている発注書がない場合は「製造先発注準備完了」（発注書の作成）から再開します');
+    expect(orderRow(heldOrders, chain.orderCode)).toContain('残っている発注書がない場合は「メーカー発注準備完了」（発注書の作成）から再開します');
     expect(orderRow(heldOrders, chain.orderCode)).toContain('解除に取り消し承認は要りません');
     expect(orderCard(await render(MakerPoPage), chain.orderCode)).toContain('整理だけができます');
 

@@ -4,7 +4,7 @@ import { resolveRouteProject } from '../../../../lib/project-route-server';
 
 export const dynamic = 'force-dynamic';
 
-export const metadata: Metadata = { title: '案件（発注）一覧／作成' };
+export const metadata: Metadata = { title: '発注の一覧' };
 
 /** P1 R20: the project's list, drawn for the project the URL names (the layout shows a wrong or missing code). */
 export default async function Page({ params }: { params: Promise<{ project: string }> }) {

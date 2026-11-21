@@ -197,7 +197,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '변경 사유가 입력되지 않았습니다. 사유를 입력하세요.'
   },
   CHECKLIST_INCOMPLETE: {
-    ja: '真性行チェックに未記録の項目があります。すべての項目を人の目で確認して記録してください。',
+    ja: '発注書の照合チェックに未記録の項目があります。すべての項目を人の目で確認して記録してください。',
     ko: '진성행 체크에 기록되지 않은 항목이 있습니다. 모든 항목을 사람이 확인해 기록하세요.'
   },
   CONFIRMATION_REPLY_REQUIRED: {
@@ -709,7 +709,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '제조사 발주서를 찾을 수 없습니다. 화면을 다시 불러온 뒤 다시 선택하세요.'
   },
   MAKER_PO_NOT_READY: {
-    ja: 'メーカー発注書を作成できるのは、発注が「製造先発注準備完了」のときだけです。発注の状態を確認してください。',
+    ja: 'メーカー発注書を作成できるのは、発注が「メーカー発注準備完了」のときだけです。発注の状態を確認してください。',
     ko: '제조사 발주서를 작성할 수 있는 것은 발주가 「제조처 발주 준비 완료」일 때뿐입니다. 발주 상태를 확인하세요.'
   },
   MAKER_PO_SEND_ALREADY_CONFIRMED: {
@@ -737,11 +737,11 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '지정한 기록을 찾을 수 없습니다. 화면을 다시 불러온 뒤 다시 선택하세요.'
   },
   OFFICIAL_DATE_ALREADY_REGISTERED: {
-    ja: '公式登録日はすでに別の記録で登録されています。画面を再読み込みして、登録済みの日付を確認してください。',
+    ja: '本登録日はすでに別の記録で登録されています。画面を再読み込みして、登録済みの日付を確認してください。',
     ko: '공식 등록일이 이미 다른 기록으로 등록되었습니다. 화면을 다시 불러와 등록된 날짜를 확인하세요.'
   },
   OFFICIAL_REGISTRATION_REQUIRED: {
-    ja: 'セブン化学発注書の公式登録日が未入力です。公式登録日を記録してから、もう一度操作してください。',
+    ja: 'セブン化学発注書の本登録日が未入力です。本登録日を記録してから、もう一度操作してください。',
     ko: '세븐화학 발주서의 공식 등록일이 입력되지 않았습니다. 공식 등록일을 기록한 뒤 다시 시도하세요.'
   },
   ORDER_CODE_REQUIRED: {
@@ -757,7 +757,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '이 발주는 보류 중이 아닙니다. 화면을 다시 불러와 현재 상태를 확인하세요.'
   },
   ORDER_NOT_PAST_SEVEN_PO_VERIFIED: {
-    ja: '原稿の版を登録できるのは、発注が「セブン化学発注書確認済」以降のときだけです。発注の状態を確認してください。',
+    ja: '原稿の版を登録できるのは、発注が「発注書の照合済み」以降のときだけです。発注の状態を確認してください。',
     ko: '원고 판을 등록할 수 있는 것은 발주가 「세븐화학 발주서 확인 완료」 이후일 때뿐입니다. 발주 상태를 확인하세요.'
   },
   ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED: {
@@ -777,7 +777,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '승인 화면을 연 뒤 결제 조건이 바뀌었습니다. 화면을 다시 불러와 최신 결제 조건을 확인한 뒤 다시 승인하세요.'
   },
   PAYMENT_TERMS_LOCKED: {
-    ja: '代表承認済みのメーカー発注書がある発注、または保留・変更レビュー・取消レビュー中の発注は、支払条件を変更できません。代表承認の前で、保留・レビュー中でなければ変更できます。',
+    ja: '代表承認済みのメーカー発注書がある発注、または保留・変更確認・取消確認中の発注は、支払条件を変更できません。代表承認の前で、保留・レビュー中でなければ変更できます。',
     ko: '대표 승인된 제조사 발주서가 있거나 보류·변경 검토·취소 검토 중인 발주는 결제 조건을 바꿀 수 없습니다. 대표 승인 전이고 보류·검토 중이 아니면 바꿀 수 있습니다.'
   },
   PAYMENT_TERMS_REASON_INVALID: {
@@ -861,7 +861,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '이상 없음으로 완료하는 사유가 입력되지 않았습니다. 사유를 입력하세요.'
   },
   RECEIPT_ASSUMPTION_ONLY_FROM_FILM_DELIVERED: {
-    ja: '「問題なしで完了」にできるのは、発注が「フィルム納品完了」のときだけです。現在の状態を確認してください。',
+    ja: '「問題なしで完了」にできるのは、発注が「納品済み」のときだけです。現在の状態を確認してください。',
     ko: '「이상 없음 완료」는 발주가 「필름 납품 완료」일 때만 할 수 있습니다. 현재 상태를 확인하세요.'
   },
   RECEIPT_ASSUMPTION_STATE_CHANGED: {
@@ -973,7 +973,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '이 참조 코드에 연결된 세븐화학 발주서가 없습니다. 문서 화면에서 세븐화학 발주서를 등록해 연결하세요.'
   },
   SEVEN_PO_NOT_VERIFIED: {
-    ja: 'セブン化学発注書の真性行チェックが終わっていません。チェックを完了してから、もう一度操作してください。',
+    ja: 'セブン化学発注書の発注書の照合チェックが終わっていません。チェックを完了してから、もう一度操作してください。',
     ko: '세븐화학 발주서의 진성행 체크가 끝나지 않았습니다. 체크를 마친 뒤 다시 시도하세요.'
   },
   SEVEN_PO_PROJECT_MISMATCH: {

@@ -165,21 +165,21 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
     })));
 
   return (
-    <section style={{ display: 'grid', gap: 24 }}>
+    <section className="sx-11bfff5">
       <header>
-        <h1 style={{ fontSize: 26, margin: '0 0 4px' }}>承認（校了のダブル承認）</h1>
+        <h1 className="sx-15b888e">承認（校了のダブル承認）</h1>
         <ProjectProgress workspace={workspace} role={role} currentPath="/approvals" projectCode={projectCode} />
         <ViewerPageNotice role={role} />
-        <p style={noteStyle}>
+        <p className="ui-note">
           顧客とセブン化学の両組織の承認でダブル承認（校了）になります。承認は必ず承認証跡の
           書類バージョンを引用して記録します。どちらの組織が先でも構いません。
         </p>
-        {workspace.error ? <div style={infoBoxStyle}>{workspace.error}</div> : null}
+        {workspace.error ? <div className="ui-info">{workspace.error}</div> : null}
       </header>
 
       {orderIds.length === 0 ? (
-        <div style={cardStyle}>
-          <p style={noteStyle}>
+        <div className="ui-card">
+          <p className="ui-note">
             {workspace.revisionsWithheld > 0
               ? `校正ゲラの版は${workspace.revisionsWithheld}件記録されていますが、紐付け先の発注とデザインが${HIDDEN_BY_ROLE_SHORT}のため、ここには表示できません。`
               : '校了対象の版がまだありません。下の「校正ゲラの版を登録する」で版を登録すると、デザインごとの承認待ちが表示されます。'}
@@ -190,12 +190,12 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
           const gate = gateByOrderId.get(orderId);
           const orderRevisions = workspace.revisions.filter((revision) => revision.filmSupplyOrderId === orderId);
           return (
-            <div key={orderId} style={cardStyle}>
-              <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>
+            <div className="ui-card" key={orderId}>
+              <h2 className="sx-c5c15d8">
                 {orderCode(orderId)}
-                {gate ? <span style={noteStyle}> ／ 状態: {stateLabel(gate.orderStatus)}</span> : null}
+                {gate ? <span className="ui-note"> ／ 状態: {stateLabel(gate.orderStatus)}</span> : null}
               </h2>
-              <p style={noteStyle}>
+              <p className="ui-note">
                 {gate?.dualApproved
                   ? 'この発注の必要なデザインはすべてダブル承認済みです。'
                   : '未承認のデザインがあります。証跡を選んで承認を記録してください。'}
@@ -205,21 +205,21 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
                 <DataTable caption={`${orderCode(orderId)} のデザインごとの承認状況`}>
                   <thead>
                     <tr>
-                      <th scope="col" style={thStyle}>デザインキー</th>
-                      <th scope="col" style={thStyle}>現在の版</th>
-                      <th scope="col" style={thStyle}>顧客の承認</th>
-                      <th scope="col" style={thStyle}>セブン化学の承認</th>
-                      <th scope="col" style={thStyle}>ダブル承認</th>
+                      <th className="ui-th" scope="col">デザインキー</th>
+                      <th className="ui-th" scope="col">現在の版</th>
+                      <th className="ui-th" scope="col">顧客の承認</th>
+                      <th className="ui-th" scope="col">セブン化学の承認</th>
+                      <th className="ui-th" scope="col">ダブル承認</th>
                     </tr>
                   </thead>
                   <tbody>
                     {gate.designs.map((design) => (
                       <tr key={design.designKey}>
-                        <td style={tdStyle}>{design.designKey}</td>
-                        <td style={tdStyle}>版{design.currentRevisionNo}</td>
-                        <td style={tdStyle}>{organizationStateText(design.customer)}</td>
-                        <td style={tdStyle}>{organizationStateText(design.seven)}</td>
-                        <td style={tdStyle} className="status-cell">
+                        <td className="ui-td">{design.designKey}</td>
+                        <td className="ui-td">版{design.currentRevisionNo}</td>
+                        <td className="ui-td">{organizationStateText(design.customer)}</td>
+                        <td className="ui-td">{organizationStateText(design.seven)}</td>
+                        <td className="status-cell ui-td">
                           {design.dualApproved
                             ? <StatusBadge tone="done" label="済み（校了）" />
                             : <StatusBadge tone="waiting" label="未達" />}
@@ -229,18 +229,18 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
                   </tbody>
                 </DataTable>
               ) : (
-                <div style={infoBoxStyle}>
+                <div className="ui-info">
                   この発注の承認の状況を取得できませんでした。
                 </div>
               )}
 
-              <details style={{ marginTop: 8 }}>
-                <summary style={{ fontSize: 13, cursor: 'pointer' }}>登録済みの版（{orderRevisions.length}件）</summary>
-                <ul style={{ margin: '8px 0 0', paddingLeft: 20, fontSize: 13 }}>
+              <details className="sx-36ca0af">
+                <summary className="sx-c981838">登録済みの版（{orderRevisions.length}件）</summary>
+                <ul className="sx-c083946">
                   {orderRevisions.map((revision) => (
                     <li key={revision.id}>
                       デザイン {revision.designKey} ／ {revisionNumberText(revision)} ／ 登録 {formatTimestamp(revision.createdAt)}
-                      {revision.invalidatedApprovals ? <span style={noteStyle}>（既存の承認を無効化）</span> : null}
+                      {revision.invalidatedApprovals ? <span className="ui-note">（既存の承認を無効化）</span> : null}
                       <TechDetails context="版ID">{revision.id}</TechDetails>
                     </li>
                   ))}
@@ -261,12 +261,12 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
                 ? gate.designs
                     .filter((design) => !design.dualApproved)
                     .map((design) => (
-                      <div key={design.designKey} style={{ marginTop: 16, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
-                        <h3 style={{ fontSize: 16, margin: '0 0 4px' }}>
+                      <div className="sx-1f27ed4" key={design.designKey}>
+                        <h3 className="sx-f4deb8f">
                           承認を記録する：デザイン {design.designKey}（版{design.currentRevisionNo}）
                         </h3>
                         <RoleGate role={role} operation="artwork_approval:record" label="承認の記録">
-                          <p style={noteStyle}>
+                          <p className="ui-note">
                             必要な証跡：この発注とデザイン「{design.designKey}」に紐付けた承認証跡の書類バージョン。
                             顧客の承認には顧客の承認証跡（発行主体「顧客作成」）、セブン化学の承認にはセブン化学の承認証跡
                             （発行主体「セブン化学」）を、組織ごとに別の書類として登録して引用してください。
@@ -289,10 +289,10 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
         })
       )}
 
-      <div style={cardStyle}>
-        <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>校正ゲラの版を登録する</h2>
+      <div className="ui-card">
+        <h2 className="sx-c5c15d8">校正ゲラの版を登録する</h2>
         <RoleGate role={role} operation="artwork_revision:create" label="版の登録">
-          <p style={noteStyle}>
+          <p className="ui-note">
             発注が「{stateLabel('SEVEN_PO_VERIFIED')}」以降の状態で、取り消されていないメーカー発注書がないとき、
             校正ゲラの書類のバージョンを版として登録できます（取消で終了した発注には登録できません）。
             新しい版を登録すると、そのデザインの既存の承認は無効になり承認待ちに戻ります。
@@ -300,22 +300,22 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
             実費（なければ0）・ロット表記の記録が必要です。
           </p>
           {revisionTargets.blocked.length > 0 ? (
-            <div style={infoBoxStyle}>
+            <div className="ui-info">
               <strong>版を登録できない発注: </strong>
               {revisionTargets.blocked.map(({ order, papers }) => `${order.code}（メーカー発注書 ${papers
                 .map((paper) => `${shortId(paper.id)}: ${MAKER_PO_STATUS_LABELS[paper.status] ?? paper.status}`)
                 .join('、')}）`).join('／')}
-              <p style={noteStyle}>{ARTWORK_REVISION_LIVE_PAPER_REFUSAL}</p>
+              <p className="ui-note">{ARTWORK_REVISION_LIVE_PAPER_REFUSAL}</p>
             </div>
           ) : null}
           {revisionTargets.unread.length > 0 ? (
-            <p style={noteStyle}>
+            <p className="ui-note">
               {`${revisionTargets.unread.map((order) => order.code).join('、')}: メーカー発注書の状態を確認できませんでした。`
                 + '取り消されていないメーカー発注書がある場合、版は登録されません（理由が表示されます）。'}
             </p>
           ) : null}
           <ActionForm action={registerArtworkRevisionAction} submitLabel="版を登録する">
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+            <div className="sx-f11b79b">
               <SelectField
                 name="orderId"
                 label="フィルム発注"
@@ -345,27 +345,27 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
             </div>
           </ActionForm>
           {proofChoices.length === 0 ? (
-            <p style={noteStyle}>校正ゲラの書類がまだありません。文書画面から校正ゲラをアップロードしてください。</p>
+            <p className="ui-note">校正ゲラの書類がまだありません。文書画面から校正ゲラをアップロードしてください。</p>
           ) : null}
         </RoleGate>
       </div>
 
-      <div style={cardStyle}>
-        <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>承認の記録履歴</h2>
+      <div className="ui-card">
+        <h2 className="sx-c5c15d8">承認の記録履歴</h2>
         {workspace.approvalEvents.length === 0 ? (
-          <p style={noteStyle}>記録された承認はまだありません。</p>
+          <p className="ui-note">記録された承認はまだありません。</p>
         ) : (
           <DataTable caption="承認の記録履歴" captionHidden>
             <thead>
               <tr>
-                <th scope="col" style={thStyle}>デザイン</th>
-                <th scope="col" style={thStyle}>版</th>
-                <th scope="col" style={thStyle}>組織</th>
-                <th scope="col" style={thStyle}>決定</th>
-                <th scope="col" style={thStyle}>入手経路</th>
-                <th scope="col" style={thStyle}>引用した証跡バージョン</th>
-                <th scope="col" style={thStyle}>承認日時</th>
-                <th scope="col" style={thStyle}>記録</th>
+                <th className="ui-th" scope="col">デザイン</th>
+                <th className="ui-th" scope="col">版</th>
+                <th className="ui-th" scope="col">組織</th>
+                <th className="ui-th" scope="col">決定</th>
+                <th className="ui-th" scope="col">入手経路</th>
+                <th className="ui-th" scope="col">引用した証跡バージョン</th>
+                <th className="ui-th" scope="col">承認日時</th>
+                <th className="ui-th" scope="col">記録</th>
               </tr>
             </thead>
             <tbody>
@@ -375,32 +375,32 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
                     // UI batch A follow-up (P1-4): the role may not read the
                     // decision details; say so instead of 「—」 or 版0.
                     <>
-                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
-                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
-                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
-                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
-                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
-                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
-                      <td style={tdStyle}>{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
                     </>
                   ) : (
                     <>
-                      <td style={tdStyle}>{event.designKey}</td>
-                      <td style={tdStyle}>{event.revisionNo === null ? '版未記録' : `版${event.revisionNo}`}</td>
-                      <td style={tdStyle}>{organizationLabel(event.organization)}</td>
-                      <td style={tdStyle}>{APPROVAL_DECISION_LABELS[event.decision] ?? event.decision}</td>
-                      <td style={tdStyle}>
+                      <td className="ui-td">{event.designKey}</td>
+                      <td className="ui-td">{event.revisionNo === null ? '版未記録' : `版${event.revisionNo}`}</td>
+                      <td className="ui-td">{organizationLabel(event.organization)}</td>
+                      <td className="ui-td">{APPROVAL_DECISION_LABELS[event.decision] ?? event.decision}</td>
+                      <td className="ui-td">
                         {EVIDENCE_SOURCE_LABELS[event.evidenceSource as keyof typeof EVIDENCE_SOURCE_LABELS]
                           ?? event.evidenceSource}
                       </td>
-                      <td style={tdStyle}>
+                      <td className="ui-td">
                         {evidenceLabel(event.evidenceDocumentVersionId === '—' ? null : event.evidenceDocumentVersionId)}
                         <TechDetails context="ID">{event.evidenceDocumentVersionId}</TechDetails>
                       </td>
-                      <td style={tdStyle}>{event.eventTime ? formatTimestamp(event.eventTime) : '未記録'}</td>
+                      <td className="ui-td">{event.eventTime ? formatTimestamp(event.eventTime) : '未記録'}</td>
                     </>
                   )}
-                  <td style={tdStyle}>{formatTimestamp(event.recordedAt)}</td>
+                  <td className="ui-td">{formatTimestamp(event.recordedAt)}</td>
                 </tr>
               ))}
             </tbody>
@@ -526,22 +526,22 @@ function PendingVerificationSection({
   organizationText: (key: string) => string;
 }) {
   return (
-    <div style={{ marginTop: 16, borderTop: '1px solid var(--line)', paddingTop: 12 }}>
-      <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>
+    <div className="sx-1f27ed4">
+      <h3 className="sx-e6251b7">
         承認証跡の手動確認（PDF・画像の識別子確認）— {pending.length}件
       </h3>
-      <p style={noteStyle}>
+      <p className="ui-note">
         バイナリ証跡（PDF・画像）の承認は、識別子を自動検証できないため手動確認待ちとして記録されます。
         確認が記録されるまで二重承認には算入されません。確認の記録は代表者だけです。
       </p>
       {pending.map((entry) => (
-        <div key={entry.approvalEventId} style={{ marginBottom: 16 }}>
-          <div style={{ ...infoBoxStyle, borderColor: 'var(--warn)', color: 'var(--warn)', background: 'var(--warn-tint)' }}>
+        <div className="sx-045aac8" key={entry.approvalEventId}>
+          <div className="ui-info sx-ab544d4">
             <StatusBadge tone="waiting" label="手動確認待ち" />{' '}
             <strong>{organizationText(entry.organization)}</strong> の承認（デザイン {entry.designKey}／版
             {entry.revisionNo}）は手動確認待ちです。
             <EvidenceIssuerCheck entry={entry} organizationText={organizationText} />
-            <div style={noteStyle}>
+            <div className="ui-note">
               原本証跡: {evidenceLabel(entry.evidenceDocumentVersionId)}
               <TechDetails context="ID・識別子">
                 <p>証跡バージョンID: {entry.evidenceDocumentVersionId ?? '—'}</p>
@@ -573,7 +573,7 @@ function PendingVerificationSection({
               }}
             >
               <input type="hidden" readOnly name="approvalEventId" value={entry.approvalEventId} />
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+              <div className="sx-f11b79b">
                 {/* P0 R11 (M3): the API records the signed-in representative and the server time. */}
                 <SelectField
                   name="result"

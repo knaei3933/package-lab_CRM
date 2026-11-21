@@ -64,7 +64,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     key: 'intake',
     step: 1,
     title: '受付・発注',
-    items: [{ href: '/orders', label: '案件（発注）一覧／作成', roles: ALL }]
+    items: [{ href: '/orders', label: '発注の一覧', roles: ALL }]
   },
   {
     key: 'artwork',
@@ -147,8 +147,8 @@ export const SCREEN_GUIDES: Readonly<Record<string, ScreenGuide>> = {
   '/orders': {
     step: 1,
     phase: '受付・発注',
-    doHere: 'セブン化学発注書を登録し、公式登録日と真性行チェックリストを記録してから、フィルム発注を作成して状態を進めます（「フィルム製造中」「フィルム発送済み」への変更もこの画面です）。',
-    next: { href: '/documents', label: '文書', text: '「セブン化学発注書確認済」になったら、文書画面でデザイン入稿データを登録します。' }
+    doHere: 'セブン化学発注書を登録し、本登録日と発注書の照合チェックを記録してから、フィルム発注を作成して状態を進めます（「製造中」「出荷済み」への変更もこの画面です）。',
+    next: { href: '/documents', label: '文書', text: '「発注書の照合済み」になったら、文書画面でデザイン入稿データを登録します。' }
   },
   '/documents': {
     step: 2,
@@ -160,13 +160,13 @@ export const SCREEN_GUIDES: Readonly<Record<string, ScreenGuide>> = {
     step: 2,
     phase: 'デザイン・校正',
     doHere: '校正ゲラの版を登録し、同じ版に対する顧客の承認とセブン化学の承認をそれぞれ記録します（順番は問いません。両方そろって校了です）。',
-    next: { href: '/maker-po', label: 'メーカー発注', text: '「校了（顧客・セブン化学）」になったら、発注を「製造先発注準備完了」へ進めてメーカー発注画面へ。' }
+    next: { href: '/maker-po', label: 'メーカー発注', text: '「校了（顧客・セブン化学）」になったら、発注を「メーカー発注準備完了」へ進めてメーカー発注画面へ。' }
   },
   '/maker-po': {
     step: 3,
     phase: 'メーカー発注',
     doHere: 'メーカー発注書の作成と代表承認（代表者）→ 送信済みメールの原本（EML）で手動送信を記録 → 受入（仮）と最終受入、の順に進めます。',
-    next: { href: '/orders', label: '案件（発注）', text: '最終受入が済んだら、発注画面で「フィルム製造中」「フィルム発送済み」へ進めます。' }
+    next: { href: '/orders', label: '案件（発注）', text: '最終受入が済んだら、発注画面で「製造中」「出荷済み」へ進めます。' }
   },
   '/deliveries': {
     step: 4,

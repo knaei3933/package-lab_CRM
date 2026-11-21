@@ -105,7 +105,7 @@ describe('design tokens and copy (UI batch A)', () => {
     }
   });
 
-  // The 公式登録 form gate is pinned by rendering the orders screen for admin,
+  // The 本登録 form gate is pinned by rendering the orders screen for admin,
   // staff and viewer in tests/web-ui-batch-a-followup.test.tsx (it replaced the
   // source-text check that stood here).
 

@@ -4,7 +4,7 @@ import type { AuditHistoryRow } from '../apps/api/src/audit-view.js';
 
 /**
  * UI batch E3 (demo-eml/ui-batch-e3/REPORT.md): the representative decided the
- * 決済条件 (paymentTerms) is public — staff and viewer read it — while amounts
+ * 支払条件 (paymentTerms) is public — staff and viewer read it — while amounts
  * stay hidden. The redaction mirror itself is pinned against the API's own
  * lists by tests/web-redaction-labels.test.ts; the real-API answer and the
  * /orders column by tests/web-ui-batch-e3-parity.test.tsx.
@@ -69,7 +69,7 @@ beforeEach(() => {
   callApi.mockReset();
 });
 
-describe('E3: the redaction mirror carries the 決済条件, not the amounts', () => {
+describe('E3: the redaction mirror carries the 支払条件, not the amounts', () => {
   it('staff and viewer lists both carry paymentTerms; no amount key is on either', () => {
     expect(STAFF_VISIBLE_STATE_KEYS).toContain('paymentTerms');
     expect(VIEWER_VISIBLE_STATE_KEYS).toContain('paymentTerms');
@@ -87,7 +87,7 @@ describe('E3: the redaction mirror carries the 決済条件, not the amounts', (
   });
 });
 
-describe('E3: paymentTermsText — the cell of the 決済条件 column', () => {
+describe('E3: paymentTermsText — the cell of the 支払条件 column', () => {
   it('Japanese label, the withheld label, or 未記録 — never the stored code', () => {
     expect(paymentTermsText({ paymentTerms: 'prepaid', paymentTermsHidden: false })).toBe('前払い');
     expect(paymentTermsText({ paymentTerms: 'on_delivery', paymentTermsHidden: false })).toBe('納品後払い');
@@ -98,9 +98,9 @@ describe('E3: paymentTermsText — the cell of the 決済条件 column', () => {
   });
 });
 
-describe('E3: loadWorkspace replays the 決済条件 for every role', () => {
+describe('E3: loadWorkspace replays the 支払条件 for every role', () => {
   for (const role of ['admin', 'staff', 'viewer'] as const) {
-    it(`${role}: the later 決済条件の記録 replaces the creation value`, async () => {
+    it(`${role}: the later 支払条件の記録 replaces the creation value`, async () => {
       serve((rows) => buildAuditViewForRole(role, rows), [CREATED, RECORDED]);
       const [order] = (await loadWorkspace(PROJECT_ID)).filmOrders;
       expect(order).toMatchObject({ paymentTerms: 'prepaid', paymentTermsHidden: false });

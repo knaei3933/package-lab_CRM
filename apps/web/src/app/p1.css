@@ -487,3 +487,9 @@
   .p1-facts { grid-template-columns: minmax(0, 1fr); }
   .p1-facts dt { margin-top: var(--space-2); }
 }
+
+/* R29: in the Korean mode the Japanese business term stays next to the Korean text. */
+.p1-ja { margin-left: 0.4em; font-size: 0.85em; color: var(--ink-sub); }
+.p1-ja::before { content: '（'; }
+.p1-ja::after { content: '）'; }
+.app-sidebar .p1-ko { font-size: 11px; }

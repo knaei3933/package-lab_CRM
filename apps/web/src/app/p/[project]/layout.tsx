@@ -2,7 +2,7 @@ import type { ReactNode } from 'react';
 import { RenderedContextProvider } from '../../../components/RenderedContext';
 import { ProjectNotFound } from '../../../components/ProjectNotFound';
 import { loadSessionUser } from '../../../lib/api';
-import { normalizeRole } from '../../../lib/permissions';
+import { displayLanguage } from '../../../lib/locale-server';
 import { resolveRouteProject } from '../../../lib/project-route-server';
 
 /**
@@ -26,9 +26,10 @@ export default async function ProjectLayout({
   if (route.kind === 'list-failed') return <ProjectNotFound code={null} projects={[]} listError={route.error} />;
   if (route.kind === 'not-found') return <ProjectNotFound code={route.code} projects={route.projects} listError={null} />;
   const user = await loadSessionUser();
+  const display = await displayLanguage(user);
   return (
     <RenderedContextProvider
-      value={{ projectId: route.project.id, showKorean: user ? normalizeRole(user.role) === 'admin' : false }}
+      value={{ projectId: route.project.id, showKorean: display.showKorean, lang: display.lang }}
     >
       {children}
     </RenderedContextProvider>

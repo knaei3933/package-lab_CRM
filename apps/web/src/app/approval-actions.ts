@@ -18,7 +18,7 @@ import type { ActionState } from '../lib/types';
  * - 差し戻す: contract §2-3 POST …/return with the reason. Until the API has
  *   that route (404 without a code), the same outcome is recorded with the
  *   existing cancel of a DRAFT paper, its note naming it a 差し戻し — the paper
- *   is withdrawn, the order stays at 製造先発注準備完了 for a corrected paper.
+ *   is withdrawn, the order stays at メーカー発注準備完了 for a corrected paper.
  */
 function field(formData: FormData, key: string): string {
   const value = formData.get(key);

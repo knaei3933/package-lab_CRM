@@ -60,9 +60,9 @@ function sevenPoUploadChoices(orders: readonly SevenPurchaseOrderView[]): SevenP
       : po.verificationStatus === 'mismatch'
         ? '真性確認で相違ありです'
         : po.verificationStatus !== 'verified'
-          ? po.verificationHidden ? '真性確認の状態は閲覧権限なしです' : '真性行チェックリストがまだです'
+          ? po.verificationHidden ? '真性確認の状態は閲覧権限なしです' : '発注書の照合チェックがまだです'
           : !po.officiallyRegistered
-            ? po.officialRegistrationHidden ? '公式登録の状態は閲覧権限なしです' : '公式登録がまだです'
+            ? po.officialRegistrationHidden ? '本登録の状態は閲覧権限なしです' : '本登録がまだです'
             : '';
     return {
       value: po.id,
@@ -100,25 +100,25 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
   ];
 
   return (
-    <section style={{ display: 'grid', gap: 24 }}>
+    <section className="sx-11bfff5">
       <header>
-        <h1 style={{ fontSize: 26, margin: '0 0 4px' }}>文書</h1>
+        <h1 className="sx-15b888e">文書</h1>
         <ProjectProgress workspace={workspace} role={role} currentPath="/documents" projectCode={projectCode} />
         <ViewerPageNotice role={role} />
-        <p style={noteStyle}>
+        <p className="ui-note">
           発注書・見積書・校正ゲラ・各種証跡を案件に登録し、人の確認（確認済み／相違あり）を記録します。
           承認と納品確認で引用するのは、ここで登録した書類のバージョンです。
         </p>
-        {workspace.error ? <div style={infoBoxStyle}>{workspace.error}</div> : null}
-        {downloadNotice ? <div role="alert" style={infoBoxStyle}>{downloadNotice}</div> : null}
+        {workspace.error ? <div className="ui-info">{workspace.error}</div> : null}
+        {downloadNotice ? <div className="ui-info" role="alert">{downloadNotice}</div> : null}
       </header>
 
-      <div style={cardStyle}>
-        <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>書類をアップロードする</h2>
+      <div className="ui-card">
+        <h2 className="sx-c5c15d8">書類をアップロードする</h2>
         <RoleGate role={role} operation="document:create" label="書類のアップロード">
-          <p style={noteStyle}>
+          <p className="ui-note">
             セブン化学発注書は先行発注参照として記録される場合があります。正式書類（校正ゲラ・各種証跡）は、
-            セブン発注書の公式登録と真性確認がすんでいる必要があります。
+            セブン発注書の本登録と真性確認がすんでいる必要があります。
           </p>
           <DocumentUploadForm
             action={uploadDocumentAction}
@@ -135,12 +135,12 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
         </RoleGate>
       </div>
 
-      <div style={cardStyle}>
-        <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>書類一覧</h2>
-        <p style={noteStyle}>
+      <div className="ui-card">
+        <h2 className="sx-c5c15d8">書類一覧</h2>
+        <p className="ui-note">
           同じ（種別・発行主体・ファイル名）の書類に別の内容を送ると新しい版になります。版のIDは承認・納品確認で引用します。
         </p>
-        <p style={noteStyle}>
+        <p className="ui-note">
           {canDownload
             ? '各版の「ダウンロード」で書類ファイルを保存できます（ダウンロードは記録されます）。'
             : role === null
@@ -148,41 +148,41 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
               : '閲覧者は書類ファイルをダウンロードできません（一覧の閲覧のみ）。'}
         </p>
         {workspace.documents.length === 0 ? (
-          <p style={noteStyle}>書類はまだありません。</p>
+          <p className="ui-note">書類はまだありません。</p>
         ) : (
           <DataTable caption="書類の一覧" captionHidden>
             <thead>
               <tr>
-                <th scope="col" style={thStyle}>書類種別</th>
-                <th scope="col" style={thStyle}>発行主体</th>
-                <th scope="col" style={thStyle}>ファイル名</th>
-                <th scope="col" style={thStyle}>紐付け</th>
-                <th scope="col" style={thStyle}>検証状態</th>
-                <th scope="col" style={thStyle}>登録</th>
-                {showVerifyColumn ? <th scope="col" style={thStyle}>確認を記録する</th> : null}
+                <th className="ui-th" scope="col">書類種別</th>
+                <th className="ui-th" scope="col">発行主体</th>
+                <th className="ui-th" scope="col">ファイル名</th>
+                <th className="ui-th" scope="col">紐付け</th>
+                <th className="ui-th" scope="col">検証状態</th>
+                <th className="ui-th" scope="col">登録</th>
+                {showVerifyColumn ? <th className="ui-th" scope="col">確認を記録する</th> : null}
               </tr>
             </thead>
             <tbody>
               {workspace.documents.map((document) => (
                 <tr key={document.id} data-record-id={document.id}>
-                  <td style={tdStyle}>
+                  <td className="ui-td">
                     {document.typeHidden
                       ? HIDDEN_BY_ROLE_LABEL
                       : DOCUMENT_TYPE_LABELS[document.documentType as keyof typeof DOCUMENT_TYPE_LABELS]
                         ?? document.documentType}
                     <TechDetails context="ID">{document.id}</TechDetails>
                   </td>
-                  <td style={tdStyle}>
+                  <td className="ui-td">
                     {document.detailsHidden
                       ? HIDDEN_BY_ROLE_LABEL
                       : ISSUER_ENTITY_LABELS[document.issuerEntity as keyof typeof ISSUER_ENTITY_LABELS]
                         ?? document.issuerEntity}
                   </td>
-                  <td style={tdStyle}>
+                  <td className="ui-td">
                     {document.filename}
-                    {document.note ? <div style={noteStyle}>{document.note}</div> : null}
-                    <details style={{ marginTop: 4 }}>
-                      <summary style={{ fontSize: 12, cursor: 'pointer' }}>
+                    {document.note ? <div className="ui-note">{document.note}</div> : null}
+                    <details className="sx-c71373e">
+                      <summary className="sx-9162155">
                         {/* UI batch A follow-up (P1-4): versions whose document link is
                             withheld cannot be counted here — never claim 「0件」. */}
                         {document.versions.length === 0 && workspace.documentVersionsWithheld
@@ -190,7 +190,7 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                           : `版（${document.versions.length}件）`}
                       </summary>
                       {document.versions.map((version) => (
-                        <div key={version.id} style={monoStyle}>
+                        <div className="ui-mono" key={version.id}>
                           版{version.versionNumber}／{version.sha256
                             ? `${version.sha256.slice(0, 12)}…`
                             : version.sha256Hidden ? `ハッシュ ${HIDDEN_BY_ROLE_SHORT}` : 'ハッシュ未記録'}
@@ -211,7 +211,7 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                       ))}
                     </details>
                   </td>
-                  <td style={tdStyle}>
+                  <td className="ui-td">
                     {document.sevenPurchaseOrderId ? (
                       <div>セブン発注書: {poLabelById.get(document.sevenPurchaseOrderId) ?? shortId(document.sevenPurchaseOrderId)}</div>
                     ) : null}
@@ -228,7 +228,7 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                         : '—'
                       : null}
                   </td>
-                  <td style={tdStyle} className="status-cell">
+                  <td className="status-cell ui-td">
                     {document.verificationHidden
                       ? <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} />
                       : (
@@ -238,15 +238,15 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                           label={VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus}
                         />
                       )}
-                    {document.verificationNote ? <div style={noteStyle}>{document.verificationNote}</div> : null}
+                    {document.verificationNote ? <div className="ui-note">{document.verificationNote}</div> : null}
                     {/* UI batch E (F-19): the send itself is confirmed on the maker PO screen, not here. */}
                     {document.documentType === 'send_evidence' && !document.verificationHidden && document.verificationStatus === 'unverified' ? (
-                      <div style={noteStyle}>送信が確認済みかどうかは、メーカー発注画面の「送信の記録」に表示されます（この欄は書類そのものの確認です）。</div>
+                      <div className="ui-note">送信が確認済みかどうかは、メーカー発注画面の「送信の記録」に表示されます（この欄は書類そのものの確認です）。</div>
                     ) : null}
                   </td>
-                  <td style={tdStyle}>{formatTimestamp(document.createdAt)}</td>
+                  <td className="ui-td">{formatTimestamp(document.createdAt)}</td>
                   {showVerifyColumn ? (
-                    <td style={{ ...tdStyle, minWidth: 'min(240px, 80vw)' }}>
+                    <td className="ui-td sx-c2faf0d">
                       <ActionForm
                         action={verifyDocumentAction}
                         submitLabel="確認を記録する"

@@ -68,7 +68,7 @@ describe('F-15: amounts and date-only values as people write them', () => {
   });
 
   it('the date field has no placeholder that looks like a value; the example is the hint outside it (T5)', () => {
-    const html = renderToString(<DateTextField name="officialRegisteredAt" label="公式登録日" />);
+    const html = renderToString(<DateTextField name="officialRegisteredAt" label="本登録日" />);
     expect(html).not.toContain('placeholder=');
     expect(html).toContain('例 2026/11/18（日本時間の日付）');
   });
@@ -157,13 +157,13 @@ describe('F-16: 保留中 reads ‖, the other statuses keep their tone symbol',
   it('the badge markup', () => {
     expect(renderToString(<StatusBadge domain="filmOrder" status="ON_HOLD" label="保留中" />))
       .toBe('<span class="status-badge status-badge--blocked"><span class="status-badge-mark" aria-hidden="true">‖</span>保留中</span>');
-    expect(renderToString(<StatusBadge domain="filmOrder" status="CANCELLED" label="キャンセル終了" />))
-      .toContain('aria-hidden="true">✕</span>キャンセル終了');
+    expect(renderToString(<StatusBadge domain="filmOrder" status="CANCELLED" label="取消済" />))
+      .toContain('aria-hidden="true">✕</span>取消済');
   });
 });
 
 describe('F-05: a film order is created with its セブン化学発注書', () => {
-  const choices = [{ value: 'po-1', label: 'SC-E-1（公式登録済み）' }];
+  const choices = [{ value: 'po-1', label: 'SC-E-1（本登録済み）' }];
   it('the PO select is required, starts blank and offers no 「紐付けない」', () => {
     const html = renderToString(
       <OrderCreateForm action={noop} orderKind="film" unitChoices={[{ value: 'rolls', label: 'ロール' }]} sevenPurchaseOrderChoices={choices} />
@@ -215,7 +215,7 @@ describe('F-07: the PO link follows the document type', () => {
         documentTypeChoices={[{ value: firstType, label: firstType }]}
         issuerEntityChoices={[{ value: 'kanei', label: 'カネイ' }]}
         contentTypeChoices={[{ value: 'text/plain', label: 'テキスト' }]}
-        sevenPurchaseOrderChoices={[{ value: 'po-ready', label: 'SC-E-2（公式登録済み）', ready: true }]}
+        sevenPurchaseOrderChoices={[{ value: 'po-ready', label: 'SC-E-2（本登録済み）', ready: true }]}
         filmSupplyOrderChoices={[]}
       />
     );
@@ -224,7 +224,7 @@ describe('F-07: the PO link follows the document type', () => {
     const html = upload('proof');
     expect(html).toMatch(/セブン化学発注書の紐付け<span style="color:var\(--danger\)">（必須）<\/span>/);
     expect(html).toMatch(/<select name="sevenPurchaseOrderId" required=""/);
-    expect(html).toContain('<option value="po-ready" selected="">SC-E-2（公式登録済み）</option>');
+    expect(html).toContain('<option value="po-ready" selected="">SC-E-2（本登録済み）</option>');
     expect(html).not.toContain('セブン化学発注書の紐付け（任意）');
   });
   it('a purchase order document: 「任意」 and 「紐付けない」 stay', () => {
@@ -233,7 +233,7 @@ describe('F-07: the PO link follows the document type', () => {
     expect(html).toContain('紐付けない');
     expect(html).not.toMatch(/<select name="sevenPurchaseOrderId" required=""/);
     // Not preselected for a type that does not need the link.
-    expect(html).toContain('<option value="po-ready">SC-E-2（公式登録済み）</option>');
+    expect(html).toContain('<option value="po-ready">SC-E-2（本登録済み）</option>');
   });
   it('the upload action refuses an official artifact without a PO on the field', async () => {
     expect(fieldForActionMessage('セブン化学発注書を選択してください（校正ゲラ・各種証跡では必須です）。')).toBe('sevenPurchaseOrderId');

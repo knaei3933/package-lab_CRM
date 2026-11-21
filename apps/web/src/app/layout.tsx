@@ -18,12 +18,15 @@ import { loadSelectableProjects } from '../lib/project-data';
 import type { ProjectSummary } from '../lib/project-data';
 import { GUIDE_PATH, HOME_PATH, navGroupsForRole, navRoleNote } from '../lib/navigation';
 import { parseProjectPath } from '../lib/project-route';
+import { displayLanguage } from '../lib/locale-server';
 import { selectProjectAction } from './actions';
 // Astryx trial: the layer order first, then the stylesheets (layer-order.css).
 import './layer-order.css';
 import './globals.css';
 import './p0-notices.css';
 import './p1.css';
+import './ui.css';
+import './screens.css';
 
 // UI batch A: each screen sets its own title (tabs stay distinguishable); the
 // template adds the product name.
@@ -48,6 +51,8 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   // no longer has to be pasted by hand. The API narrows the list by role.
   const selectableProjects: ProjectSummary[] = user ? await loadSelectableProjects() : [];
   // P1 R20: the project shown is the one the URL names (/p/{code}/…), not a cookie.
+  // P1 R29: the operator's display language (Korean gloss / Korean first).
+  const display = await displayLanguage(user);
   const scoped = parseProjectPath(path);
   const projectId = scoped ? selectableProjects.find((project) => project.code === scoped.projectCode)?.id ?? null : null;
   const projectChoices = selectableProjects.map((project) => ({
@@ -65,7 +70,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
   // suppressHydrationWarning covers ONLY these two elements (one level deep),
   // so genuine mismatches inside the page tree still surface.
   return (
-    <html lang="ja" suppressHydrationWarning>
+    <html lang={display.lang === 'ko' ? 'ko' : 'ja'} suppressHydrationWarning>
       <body suppressHydrationWarning>
         <a className="skip-link" href="#main">本文へ移動</a>
         {/* UI nav-dashboard (A): a thin top bar (project, help, user, logout) and the
@@ -85,6 +90,8 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
                   </div>
                   <div className="app-user">
                     <Link href={GUIDE_PATH} className="app-help-link">使い方</Link>
+                    {/* P1 R29: the display language of this operator. */}
+                    <Link href="/settings" className="app-help-link" lang={display.lang === 'ko' ? 'ko' : undefined}>{display.lang === 'ko' ? '표시 언어' : '表示言語'}</Link>
                     <span className="app-user-name">
                       {operatorName(user, rememberedName)}
                       <span style={{ color: 'var(--ink-sub)' }}>（{roleLabel(user.role)}）</span>
@@ -96,14 +103,14 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
             </div>
           </header>
           <div className={user ? 'app-body app-body--signed-in' : 'app-body'}>
-            {user ? <SideNav groups={navGroupsForRole(user.role)} roleNote={navRoleNote(user.role)} /> : null}
+            {user ? <SideNav groups={navGroupsForRole(user.role)} roleNote={navRoleNote(user.role)} korean={display.showKorean} role={normalizeRole(user.role)} /> : null}
             <main id="main" tabIndex={-1} className="app-main">
               {user ? <ScreenGuideLine /> : null}
               {gate === 'screen' ? (
                 <RenderedContextProvider
                   // P1 R20: outside /p/{code}/… no project is rendered ('' — a write is refused);
                   // the project layout provides the URL's project to its own forms.
-                  value={{ projectId: '', showKorean: user ? normalizeRole(user.role) === 'admin' : false }}
+                  value={{ projectId: '', showKorean: display.showKorean, lang: display.lang }}
                 >
                   {children}
                   <SavedRecordRefresher />

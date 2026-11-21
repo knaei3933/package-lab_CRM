@@ -13,6 +13,7 @@ import { confirmDeliveryAction, evaluateCommissionReadinessAction, recordDeliver
 import { loadSessionUser } from '../lib/api';
 import { canRoleOperate } from '../lib/permissions';
 import { labelLookup, loadWorkspace, NO_PROJECT_SELECTED_MESSAGE } from '../lib/project-data';
+import { formatQuantityWithUnit } from '../lib/number-format';
 import { shortId } from '../lib/short-id';
 import type { DeliveryView } from '../lib/project-data';
 import { HIDDEN_BY_ROLE_LABEL } from '../lib/redaction';
@@ -71,7 +72,7 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
     code: order.code,
     lines: order.lines.map((line) => ({
       value: line.id,
-      label: `明細${line.lineNumber}：${line.description}（${line.orderedQuantity}${unitLabel(line.unit)}）`,
+      label: `明細${line.lineNumber}：${line.description}（${formatQuantityWithUnit(line.orderedQuantity, line.unit)}）`,
       unit: line.unit
     }))
   }));
@@ -80,7 +81,7 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
     code: order.code,
     lines: order.lines.map((line) => ({
       value: line.id,
-      label: `明細${line.lineNumber}：${line.description}（${line.orderedQuantity}${unitLabel(line.unit)}）`,
+      label: `明細${line.lineNumber}：${line.description}（${formatQuantityWithUnit(line.orderedQuantity, line.unit)}）`,
       unit: line.unit
     }))
   }));
@@ -98,26 +99,26 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
   const readinessIsReady = readiness?.isReady === true;
 
   return (
-    <section style={{ display: 'grid', gap: 24 }}>
+    <section className="sx-11bfff5">
       <header>
-        <h1 style={{ fontSize: 26, margin: '0 0 4px' }}>納品確認・手数料準備</h1>
+        <h1 className="sx-15b888e">納品確認・手数料準備</h1>
         <ProjectProgress workspace={workspace} role={role} currentPath="/deliveries" projectCode={projectCode} />
         <ViewerPageNotice role={role} />
-        <p style={noteStyle}>
+        <p className="ui-note">
           納品行の受領を、確認済みの受領証跡を引用して確認します。すべての納品が確認できて
-          セブン発注書の公式登録がそろったとき、手数料計算の準備が整います（{readinessStateLabel('READY')}）。
+          セブン発注書の本登録がそろったとき、手数料計算の準備が整います（{readinessStateLabel('READY')}）。
         </p>
-        {workspace.error ? <div style={infoBoxStyle}>{workspace.error}</div> : null}
+        {workspace.error ? <div className="ui-info">{workspace.error}</div> : null}
       </header>
 
-      <div style={cardStyle}>
-        <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>手数料計算の準備状態</h2>
+      <div className="ui-card">
+        <h2 className="sx-c5c15d8">手数料計算の準備状態</h2>
         {readiness ? (
           <DataTable caption="手数料計算の準備状態" captionHidden>
             <tbody>
               <tr>
-                <th scope="row" style={thStyle}>準備状態</th>
-                <td style={tdStyle}>
+                <th className="ui-th" scope="row">準備状態</th>
+                <td className="ui-td">
                   {readiness.hidden ? <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} /> : (
                     <>
                       <StatusBadge
@@ -131,25 +132,25 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
                 </td>
               </tr>
               <tr>
-                <th scope="row" style={thStyle}>準備完了</th>
-                <td style={tdStyle}>{readiness.hidden ? HIDDEN_BY_ROLE_LABEL : readinessIsReady ? 'はい' : 'いいえ'}</td>
+                <th className="ui-th" scope="row">準備完了</th>
+                <td className="ui-td">{readiness.hidden ? HIDDEN_BY_ROLE_LABEL : readinessIsReady ? 'はい' : 'いいえ'}</td>
               </tr>
               <tr>
-                <th scope="row" style={thStyle}>手数料計算</th>
-                <td style={tdStyle}>
+                <th className="ui-th" scope="row">手数料計算</th>
+                <td className="ui-td">
                   {readiness.hidden ? HIDDEN_BY_ROLE_LABEL : readinessIsReady ? '可能です' : 'まだできません'}
-                  <span style={noteStyle}>（「{readinessStateLabel('READY')}」のときだけ手数料計算ができます）</span>
+                  <span className="ui-note">（「{readinessStateLabel('READY')}」のときだけ手数料計算ができます）</span>
                 </td>
               </tr>
               <tr>
-                <th scope="row" style={thStyle}>未達の要件</th>
-                <td style={tdStyle}>
+                <th className="ui-th" scope="row">未達の要件</th>
+                <td className="ui-td">
                   {readiness.hidden
                     ? HIDDEN_BY_ROLE_LABEL
                     : readiness.blocking.length === 0
                     ? 'ありません'
                     : (
-                      <ul style={{ margin: 0, paddingLeft: 18 }}>
+                      <ul className="sx-7857254">
                         {readiness.blocking.map((code) => (
                           <li key={code}>
                             {READINESS_BLOCKING_LABELS[code] ?? code}
@@ -161,18 +162,18 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
                 </td>
               </tr>
               <tr>
-                <th scope="row" style={thStyle}>評価日時</th>
-                <td style={tdStyle}>{formatTimestamp(readiness.evaluatedAt)}</td>
+                <th className="ui-th" scope="row">評価日時</th>
+                <td className="ui-td">{formatTimestamp(readiness.evaluatedAt)}</td>
               </tr>
             </tbody>
           </DataTable>
         ) : (
-          <p style={noteStyle}>まだ評価されていません。納品と公式登録がそろったら「準備状態を再評価する」を実行してください。</p>
+          <p className="ui-note">まだ評価されていません。納品と本登録がそろったら「準備状態を再評価する」を実行してください。</p>
         )}
-        <div style={{ marginTop: 12 }}>
+        <div className="sx-9c9cee2">
           <RoleGate role={role} operation="commission_readiness:evaluate" label="準備状態の再評価">
             <ActionForm action={evaluateCommissionReadinessAction} submitLabel="準備状態を再評価する">
-              <p style={noteStyle}>
+              <p className="ui-note">
                 評価はサーバーが記録にもとづいて行います。記録は明示的な評価時だけ更新されます。
               </p>
             </ActionForm>
@@ -180,39 +181,39 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
         </div>
       </div>
 
-      <div style={cardStyle}>
-        <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>納品 一覧と確認</h2>
-        <p style={noteStyle}>
+      <div className="ui-card">
+        <h2 className="sx-c5c15d8">納品 一覧と確認</h2>
+        <p className="ui-note">
           確認には引用する受領証跡のバージョンが必須で、未確認の納品は手数料計算の準備を進めません。
         </p>
         {workspace.deliveries.length === 0 ? (
-          <p style={noteStyle}>納品の記録はまだありません。</p>
+          <p className="ui-note">納品の記録はまだありません。</p>
         ) : (
           <DataTable caption="納品の一覧" captionHidden>
             <thead>
               <tr>
-                <th scope="col" style={thStyle}>種別</th>
-                <th scope="col" style={thStyle}>発注</th>
-                <th scope="col" style={thStyle}>数量／単位</th>
-                <th scope="col" style={thStyle}>連番</th>
-                <th scope="col" style={thStyle}>納品日</th>
-                <th scope="col" style={thStyle}>確認状態</th>
-                <th scope="col" style={thStyle}>引用した証跡</th>
-                {showConfirmColumn ? <th scope="col" style={thStyle}>確認を記録する</th> : null}
+                <th className="ui-th" scope="col">種別</th>
+                <th className="ui-th" scope="col">発注</th>
+                <th className="ui-th" scope="col">数量／単位</th>
+                <th className="ui-th" scope="col">連番</th>
+                <th className="ui-th" scope="col">納品日</th>
+                <th className="ui-th" scope="col">確認状態</th>
+                <th className="ui-th" scope="col">引用した証跡</th>
+                {showConfirmColumn ? <th className="ui-th" scope="col">確認を記録する</th> : null}
               </tr>
             </thead>
             <tbody>
               {workspace.deliveries.map((delivery) => (
                 <tr key={delivery.id} data-record-id={delivery.id}>
-                  <td style={tdStyle}>{delivery.kind === 'film' ? 'フィルム納品' : '充填製品納品'}</td>
-                  <td style={tdStyle}>
+                  <td className="ui-td">{delivery.kind === 'film' ? 'フィルム納品' : '充填製品納品'}</td>
+                  <td className="ui-td">
                     {orderText(delivery)}
                     <TechDetails context="ID">{delivery.id}</TechDetails>
                   </td>
-                  <td style={tdStyle}>{hiddenOr(delivery, `${delivery.deliveredQuantity} ${delivery.unit}`)}</td>
-                  <td style={tdStyle}>{hiddenOr(delivery, delivery.deliverySequence === null ? '未記録' : String(delivery.deliverySequence))}</td>
-                  <td style={tdStyle}>{hiddenOr(delivery, delivery.deliveredAt ? formatTimestamp(delivery.deliveredAt) : '未記録')}</td>
-                  <td style={tdStyle} className="status-cell">
+                  <td className="ui-td">{hiddenOr(delivery, formatQuantityWithUnit(delivery.deliveredQuantity, delivery.unit))}</td>
+                  <td className="ui-td">{hiddenOr(delivery, delivery.deliverySequence === null ? '未記録' : String(delivery.deliverySequence))}</td>
+                  <td className="ui-td">{hiddenOr(delivery, delivery.deliveredAt ? formatTimestamp(delivery.deliveredAt) : '未記録')}</td>
+                  <td className="status-cell ui-td">
                     {delivery.confirmationHidden ? (
                       <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} />
                     ) : (
@@ -223,7 +224,7 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
                       />
                     )}
                   </td>
-                  <td style={tdStyle}>
+                  <td className="ui-td">
                     {delivery.confirmationHidden
                       ? HIDDEN_BY_ROLE_LABEL
                       : delivery.evidenceDocumentVersionId
@@ -237,9 +238,9 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
                     {delivery.confirmedAt ? <div>確認 {formatTimestamp(delivery.confirmedAt)}</div> : null}
                   </td>
                   {showConfirmColumn ? (
-                    <td style={{ ...tdStyle, minWidth: 'min(260px, 80vw)' }}>
+                    <td className="ui-td sx-576879f">
                       {delivery.confirmed ? (
-                        <span style={noteStyle}>確認済みです（確認は1回だけ記録できます）。</span>
+                        <span className="ui-note">確認済みです（確認は1回だけ記録できます）。</span>
                       ) : (
                         <ActionForm
                           action={confirmDeliveryAction}
@@ -276,12 +277,12 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
         )}
       </div>
 
-      <div style={cardStyle}>
-        <h2 style={{ fontSize: 20, margin: '0 0 4px' }}>納品を記録する</h2>
-        <p style={noteStyle}>
+      <div className="ui-card">
+        <h2 className="sx-c5c15d8">納品を記録する</h2>
+        <p className="ui-note">
           納品行の記録と受領の確認は別の操作です。記録だけでは準備状態は進まず、確認（証跡の引用）がそろって初めて進みます。
         </p>
-        <h3 style={{ fontSize: 16, margin: '12px 0 8px' }}>フィルム納品</h3>
+        <h3 className="sx-3562d27">フィルム納品</h3>
         <RoleGate role={role} operation="film_delivery:create" label="フィルム納品の記録">
           <DeliveryRecordForm
             action={recordDeliveryAction}
@@ -290,8 +291,8 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
             unitChoices={unitChoices('film')}
           />
         </RoleGate>
-        <hr style={{ border: 'none', borderTop: '1px solid var(--line)', margin: '16px 0' }} />
-        <h3 style={{ fontSize: 16, margin: '0 0 8px' }}>充填製品納品</h3>
+        <hr className="sx-0682822" />
+        <h3 className="sx-e6251b7">充填製品納品</h3>
         <RoleGate role={role} operation="filling_delivery:create" label="充填製品納品の記録">
           <DeliveryRecordForm
             action={recordDeliveryAction}

@@ -117,7 +117,7 @@ describe('loadMyWork', () => {
     const work = await loadMyWork([proj(1)], 'staff');
     expect(work.rows).toEqual([{
       key: 'ord-ARTWORK_RECEIVED', group: 'now', projectCode: 'PRJ-1', orderCode: 'FSO-ARTWORK_RECEIVED', step: 5, stepTitle: '5 校正',
-      text: '校正を進める', status: 'ARTWORK_RECEIVED', statusLabel: 'ARTWORK_RECEIVED', updatedAt: '2026-11-10T00:00:00Z'
+      text: '校正を進める', status: 'ARTWORK_RECEIVED', statusLabel: 'デザイン受領', updatedAt: '2026-11-10T00:00:00Z'
     }]);
     expect(work.unreadProjects).toEqual([]);
     expect(work.skippedProjects).toBe(0);

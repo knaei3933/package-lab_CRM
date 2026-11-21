@@ -20,7 +20,7 @@ export const REPRESENTATIVE_WORK: Readonly<Record<string, string>> = {
   // Review L4: shared step — the representative's part comes after the staff record and the evidence.
   MAKER_PO_SENT_MANUALLY: '受入の最終確認（担当者の仮記録・受領証跡のあと）',
   ON_HOLD: '保留の解除（理由の確認）',
-  CANCELLATION_REVIEW: '取消レビューの処理'
+  CANCELLATION_REVIEW: '取消確認の処理'
 };
 
 export interface RepresentativeTask {

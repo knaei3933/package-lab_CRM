@@ -1,0 +1,90 @@
+/*
+ * P1 R27 (REDESIGN §8): the operator screens' shared look as classes on the
+ * design tokens of globals.css — the former inline style objects of lib/ui.ts
+ * (cardStyle, thStyle, buttonStyle …) and the screens' one-off inline styles
+ * moved here, so every screen draws from one source and reacts to hover,
+ * focus and pointer type. Sizes (§8-5): buttons and inputs 40px on a mouse,
+ * 44px with 16px text on touch; colour transitions only, none under reduced
+ * motion.
+ */
+.ui-card {
+  padding: var(--card-pad);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-panel, 8px);
+}
+
+.ui-note { margin: 4px 0 12px; font-size: 13px; color: var(--ink-sub); }
+.ui-field-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
+
+.ui-input {
+  min-height: var(--control-h, 40px);
+  padding: 6px 8px;
+  font-size: var(--control-text, 15px);
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-badge, 4px);
+}
+
+.ui-button,
+.ui-button--subtle,
+.ui-button--danger {
+  min-height: var(--control-h, 40px);
+  padding: 6px 14px;
+  font: inherit;
+  font-size: var(--control-text, 15px);
+  font-weight: 700;
+  color: var(--surface);
+  cursor: pointer;
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-button, 6px);
+  transition: background-color 120ms, border-color 120ms;
+  touch-action: manipulation;
+}
+
+.ui-button:hover:not([disabled]):not([aria-disabled='true']) { background: var(--primary-hover); border-color: var(--primary-hover); }
+.ui-button--subtle { color: var(--primary); background: var(--surface); }
+.ui-button--subtle:hover:not([disabled]):not([aria-disabled='true']) { background: var(--primary-tint); }
+.ui-button--danger { color: #fff; background: var(--danger); border-color: var(--danger); }
+.ui-button--danger:hover:not([disabled]):not([aria-disabled='true']) { background: #861f1f; }
+
+.ui-button:focus-visible,
+.ui-button--subtle:focus-visible,
+.ui-button--danger:focus-visible,
+.ui-input:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+
+.ui-button[aria-disabled='true'],
+.ui-button[disabled],
+.ui-button--subtle[disabled],
+.ui-button--danger[disabled] { opacity: 0.6; cursor: not-allowed; }
+
+.ui-table { width: 100%; font-size: var(--text-sm); font-variant-numeric: tabular-nums; border-collapse: collapse; }
+.ui-th { padding: 6px 8px; text-align: left; white-space: nowrap; background: var(--surface-sub); border: 1px solid var(--line); }
+.ui-td { padding: 6px 8px; vertical-align: top; border: 1px solid var(--line); }
+.ui-ok { font-size: 13px; color: var(--ok); }
+.ui-error { font-size: 13px; color: var(--danger); }
+
+.ui-info {
+  padding: var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--danger);
+  background: var(--danger-tint);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-badge, 4px);
+}
+
+.ui-mono { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--ink-sub); }
+
+@media (pointer: coarse) {
+  .ui-input,
+  .ui-button,
+  .ui-button--subtle,
+  .ui-button--danger { min-height: 44px; font-size: 16px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-button,
+  .ui-button--subtle,
+  .ui-button--danger { transition: none; }
+}

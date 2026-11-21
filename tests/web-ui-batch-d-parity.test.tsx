@@ -450,19 +450,19 @@ describe('hold release and cancellation review: dedicated admin forms, real endp
     // The list replays FILM_SUPPLY_ORDER_HOLD_RELEASED: the row no longer reads 保留中.
     const releasedHtml = await render(OrdersPage);
     const row = releasedHtml.slice(releasedHtml.indexOf(`>${chain.orderCode}<`), releasedHtml.indexOf('</tr>', releasedHtml.indexOf(`>${chain.orderCode}<`)));
-    expect(row).toContain('製造先発注準備完了');
+    expect(row).toContain('メーカー発注準備完了');
     expect(row).not.toContain('保留中');
     expect(row).not.toContain('保留を解除する（代表者のみ）');
   });
 
-  it('cancellation review: resume returns to the origin; cancel ends it with the ✕ キャンセル終了 badge', async () => {
+  it('cancellation review: resume returns to the origin; cancel ends it with the ✕ 取消済 badge', async () => {
     const chain = await reachMakerPoReady();
     signIn('admin');
     expect((await transitionFilmSupplyOrderAction(null, form({ orderId: chain.orderId, to: 'CANCELLATION_REVIEW' }))).ok).toBe(true);
     const reviewHtml = await render(OrdersPage);
-    expect(reviewHtml).toContain('取消レビューを処理する（代表者のみ）');
-    expect(reviewHtml).toContain('<option value="resume">再開する（取消レビュー前の状態に戻す）</option>');
-    expect(reviewHtml).toContain('<option value="cancel">取消で終了する（キャンセル終了・元に戻せません）</option>');
+    expect(reviewHtml).toContain('取消確認を処理する（代表者のみ）');
+    expect(reviewHtml).toContain('<option value="resume">再開する（取消確認前の状態に戻す）</option>');
+    expect(reviewHtml).toContain('<option value="cancel">取消で終了する（取消済・元に戻せません）</option>');
 
     expect(await resolveCancellationReviewAction(null, form({ orderId: chain.orderId, outcome: 'maybe', reason: 'x' })))
       .toEqual({ ok: false, message: '処理（再開する／取消で終了する）を選択してください。' });
@@ -478,9 +478,9 @@ describe('hold release and cancellation review: dedicated admin forms, real endp
     const cancelledHtml = await render(OrdersPage);
     const badge = /<span class="status-badge status-badge--(\w+)"><span class="status-badge-mark" aria-hidden="true">(.)<\/span>([^<]*)<\/span>/g;
     const badges = [...cancelledHtml.matchAll(badge)].map((match) => [match[1], match[2], match[3]]);
-    expect(badges, cancelledHtml.slice(cancelledHtml.indexOf('<table'), cancelledHtml.indexOf('<table') + 1500)).toContainEqual(['blocked', '✕', 'キャンセル終了']);
-    expect(cancelledHtml).toContain('この発注は取消で終了しています（キャンセル終了）。これ以上進める先はありません。');
-    expect(cancelledHtml).toContain('この発注は取消で終了しました（キャンセル終了）。段階は進みません。');
+    expect(badges, cancelledHtml.slice(cancelledHtml.indexOf('<table'), cancelledHtml.indexOf('<table') + 1500)).toContainEqual(['blocked', '✕', '取消済']);
+    expect(cancelledHtml).toContain('この発注は取消で終了しています（取消済）。これ以上進める先はありません。');
+    expect(cancelledHtml).toContain('この発注は取消で終了しました（取消済）。段階は進みません。');
     // The terminal state really is terminal on the server.
     const reopen = await postAs(adminToken, `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'DRAFT' });
     expect(reopen.status).toBe(409);

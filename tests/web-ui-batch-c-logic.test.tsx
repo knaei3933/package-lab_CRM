@@ -90,9 +90,9 @@ describe('planInvalidSubmit: the refusal plan from validity-like descriptors', (
     const plan = planInvalidSubmit([
       control({ key: 'ok' }),
       control({ key: 'poNumber', label: '発注番号', validity: missing }),
-      control({ key: 'paymentTerms', label: '決済条件', validity: missing, info: { kind: 'select' } })
+      control({ key: 'paymentTerms', label: '支払条件', validity: missing, info: { kind: 'select' } })
     ]);
-    expect(plan.errors).toEqual({ poNumber: '発注番号を入力してください。', paymentTerms: '決済条件を選択してください。' });
+    expect(plan.errors).toEqual({ poNumber: '発注番号を入力してください。', paymentTerms: '支払条件を選択してください。' });
     expect(plan.count).toBe(2);
     expect(plan.focusIndex).toBe(1);
   });
@@ -170,7 +170,7 @@ describe('resolveActionFieldError: a new action result against the fields the fo
   });
 
   it('a mapped field this form does not render, or an unmapped refusal, marks nothing (the result line still shows it)', () => {
-    expect(resolveActionFieldError({ ok: false, message: '公式登録日を入力してください。' }, has)).toEqual({ kind: 'none' });
+    expect(resolveActionFieldError({ ok: false, message: '本登録日を入力してください。' }, has)).toEqual({ kind: 'none' });
     expect(resolveActionFieldError({ ok: false, message: 'APIが受け付けませんでした。' }, has)).toEqual({ kind: 'none' });
     expect(resolveActionFieldError({ ok: false, message: '' }, has)).toEqual({ kind: 'none' });
   });
@@ -438,7 +438,7 @@ const labelsOf = (html: string) => [...html.matchAll(/<label\b[^>]*>[\s\S]*?<\/l
 describe('labels wrap only the caption and the control (review L5)', () => {
   const errors = {
     poNumber: '発注番号を入力してください。',
-    paymentTerms: '決済条件を選択してください。',
+    paymentTerms: '支払条件を選択してください。',
     reasonNote: '根拠を入力してください。',
     acknowledge: 'チェックを入れてください。',
     officialRegisteredAt: '日付は 2026/11/18 の形で、実在する日付を入力してください。'
@@ -446,10 +446,10 @@ describe('labels wrap only the caption and the control (review L5)', () => {
   const html = render(
     <FormFeedbackContext.Provider value={{ errors, summaryCount: 5 }}>
       <TextField name="poNumber" label="発注番号" required hint="紙の発注書の番号" />
-      <SelectField name="paymentTerms" label="決済条件" choices={[{ value: 'prepaid', label: '前払い' }]} hint="下書きの間だけ" />
+      <SelectField name="paymentTerms" label="支払条件" choices={[{ value: 'prepaid', label: '前払い' }]} hint="下書きの間だけ" />
       <TextareaField name="reasonNote" label="根拠" hint="何を確認したか" />
       <CheckboxField name="acknowledge" label="確認した" hint="必ず確認" />
-      <DateTextField name="officialRegisteredAt" label="公式登録日" />
+      <DateTextField name="officialRegisteredAt" label="本登録日" />
     </FormFeedbackContext.Provider>
   );
 

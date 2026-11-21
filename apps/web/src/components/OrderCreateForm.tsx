@@ -245,7 +245,7 @@ export function OrderCreateForm({
               <FieldError id={poFeedback.errorId} message={poFeedback.error} />
               <span id={poFeedback.hintId} style={noteStyle}>
                 {sevenPurchaseOrderChoices.length > 0
-                  ? '紐付けはここでしか選べません（あとから付け替えられません）。状態を進めるには、選んだ発注書の公式登録と真性行チェックリスト（確認済み）が必要です。'
+                  ? '紐付けはここでしか選べません（あとから付け替えられません）。状態を進めるには、選んだ発注書の本登録と発注書の照合チェック（確認済み）が必要です。'
                   : '先に「セブン化学発注書を登録する」で紙の発注書を登録してください。'}
               </span>
             </div>

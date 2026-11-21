@@ -68,7 +68,7 @@ export async function loadMyWork(projects: readonly ProjectSummary[], role: stri
       continue;
     }
     const stateLabel = labelLookup(board.workspace.labels, 'filmSupplyOrderStates');
-    // Every order of the project (the maker board only holds orders from 製造先発注準備完了
+    // Every order of the project (the maker board only holds orders from メーカー発注準備完了
     // on); the board entry adds the maker paper and the payment gate when there is one.
     const entries = new Map(board.boards.map((entry) => [entry.order.id, entry]));
     for (const order of board.workspace.filmOrders) {

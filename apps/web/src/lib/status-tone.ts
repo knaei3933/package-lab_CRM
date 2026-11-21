@@ -47,7 +47,7 @@ export const FILM_ORDER_STATUS_TONES: Readonly<Record<FilmOrderStatus, StatusTon
   ON_HOLD: 'blocked',
   CHANGE_REVIEW: 'blocked',
   CANCELLATION_REVIEW: 'blocked',
-  // 取消終了: stopped for good — the ✕ mark with キャンセル終了, never neutral ○.
+  // 取消終了: stopped for good — the ✕ mark with 取消済, never neutral ○.
   CANCELLED: 'blocked'
 };
 
@@ -105,7 +105,7 @@ export function statusTone(domain: StatusDomain, status: string | null | undefin
 /**
  * UI batch E (F-16): a status whose symbol differs from its tone's. 保留中 is
  * stopped (blocked colour) but not refused or ended, so it reads ‖ (paused)
- * instead of the ✕ that キャンセル終了 and the reviews carry.
+ * instead of the ✕ that 取消済 and the reviews carry.
  */
 const STATUS_SYMBOL_OVERRIDES: Readonly<Partial<Record<StatusDomain, Readonly<Record<string, string>>>>> = {
   filmOrder: { ON_HOLD: '‖' }

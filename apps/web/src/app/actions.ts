@@ -276,7 +276,7 @@ export async function registerSevenPurchaseOrderAction(_prev: ActionState | null
   const poId = field(formData, 'poId');
   const registeredAt = field(formData, 'officialRegisteredAt');
   if (poId.length === 0) return { ok: false, message: 'セブン発注書が選択されていません。' };
-  if (registeredAt.length === 0) return { ok: false, message: '公式登録日を入力してください。' };
+  if (registeredAt.length === 0) return { ok: false, message: '本登録日を入力してください。' };
   return post(formData, `/api/seven-purchase-orders/${encodeURIComponent(poId)}/register-official`, {
     officialRegisteredAt: registeredAt
   });
@@ -527,7 +527,7 @@ export async function resolveCancellationReviewAction(
   if (outcome !== 'resume' && outcome !== 'cancel') {
     return { ok: false, message: '処理（再開する／取消で終了する）を選択してください。' };
   }
-  const reason = reasonField(formData, 'reason', '取消レビューの処理理由');
+  const reason = reasonField(formData, 'reason', '取消確認の処理理由');
   if (!reason.ok) return reason.state;
   // Legacy review without a recorded origin: the resume target the operator picked (resume only).
   const resumeStatus = outcome === 'resume' ? optionalField(formData, 'resumeStatus') : undefined;

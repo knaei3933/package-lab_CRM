@@ -2,6 +2,8 @@ import Link from 'next/link';
 import { OrderTimeline } from '../components/OrderTimeline';
 import { StepPanelView } from '../components/StepPanel';
 import { StepAnnouncer } from '../components/StepAnnouncer';
+import { KoGloss } from '../components/RenderedContext';
+import { standardTerm } from '../lib/terms';
 import { ClearDrafts } from '../components/ClearDrafts';
 import { StatusBadge } from '../components/StatusBadge';
 import { callApi, loadSessionUser } from '../lib/api';
@@ -131,6 +133,7 @@ export async function OrderDetailScreen({
         <div className="p1-order-title-row">
           <h1 id="order-title" className="p1-title" translate="no">{order.code}</h1>
           {status ? <StatusBadge domain="filmOrder" status={status} label={stateLabel(status)} /> : null}
+          {status ? <KoGloss ko={standardTerm('filmSupplyOrderStates', status)?.ko} /> : null}
         </div>
         <p className="p1-order-meta">
           <span>{lineSummary || '明細なし'}</span>

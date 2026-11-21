@@ -7,7 +7,7 @@ import type { ActionState } from './types';
 /**
  * P1 R21–R23 (web half): one submit of a step panel may need several API
  * writes that the operator used to send one by one (upload the proof → register
- * the 版 → 校正ゲラ準備完了 → 校了確認待ち). They are sent here in order, each a
+ * the 版 → 校正準備完了 → 校了確認待ち). They are sent here in order, each a
  * normal API call the API checks on its own — no rule is skipped or relaxed
  * (承認済みサーバー規則: 段階の飛ばしは API が拒否する). This is the contract
  * adapter for the server-side automatic transitions (R23, p1/server): when the

@@ -212,7 +212,7 @@ describe('hold / cancellation review actions: required reason, dedicated endpoin
     expect(await resolveCancellationReviewAction(null, form({ orderId: 'o', outcome: '', reason: '顧客都合' })))
       .toEqual({ ok: false, message: '処理（再開する／取消で終了する）を選択してください。' });
     expect(await resolveCancellationReviewAction(null, form({ orderId: 'o', outcome: 'resume', reason: '' })))
-      .toEqual({ ok: false, message: '取消レビューの処理理由は必須です。' });
+      .toEqual({ ok: false, message: '取消確認の処理理由は必須です。' });
     expect(callApi.mock.calls).toEqual([
       ['/api/film-supply-orders/o/hold-release', { method: 'POST', body: { reason: longReason } }],
       // cancel never carries a resume target

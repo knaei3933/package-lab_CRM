@@ -88,7 +88,7 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
           <Card>
             <VStack gap={3}>
               <Heading level={2}>止まっている発注</Heading>
-              <Text as="p" type="supporting">保留・変更レビュー・取消レビュー中のもの、明細やセブン化学発注書の紐付けがないもの、支払条件が「未定」のものや送信確認で進めないもの。</Text>
+              <Text as="p" type="supporting">保留・変更確認・取消確認中のもの、明細やセブン化学発注書の紐付けがないもの、支払条件が「未定」のものや送信確認で進めないもの。</Text>
               <DashboardItemList
                 projectCode={projectCode}
                 items={view.blocked}

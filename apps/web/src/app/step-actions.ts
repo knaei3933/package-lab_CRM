@@ -205,7 +205,7 @@ export async function startFilmOrderAction(_prev: ActionState | null, formData: 
 }
 
 // ---------------------------------------------------------------------------
-// 5 校正: the proof file → 版 → 校正ゲラ準備完了 → 校了確認待ち (one submit)
+// 5 校正: the proof file → 版 → 校正準備完了 → 校了確認待ち (one submit)
 // ---------------------------------------------------------------------------
 
 export async function submitProofStepAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
@@ -247,7 +247,7 @@ export async function submitProofStepAction(_prev: ActionState | null, formData:
       }))
     },
     {
-      label: '校正ゲラ準備完了',
+      label: '校正準備完了',
       // R23 contract: the 版 registration advances the order itself (answer status); the
       // manual move is then skipped, and a refusal AUTO_TRANSITION_ONLY becomes auto-advance.
       request: (answers) => status === 'ARTWORK_RECEIVED' && !alreadyAt(answeredOrderStatus(answers[1]), 'PROOF_READY')
@@ -349,7 +349,7 @@ export async function recordApprovalStepAction(_prev: ActionState | null, formDa
 }
 
 // ---------------------------------------------------------------------------
-// 7 メーカー発注書 (representative): 製造先発注準備完了 → the paper (one submit)
+// 7 メーカー発注書 (representative): メーカー発注準備完了 → the paper (one submit)
 // ---------------------------------------------------------------------------
 
 function isEmail(value: string): boolean {
@@ -370,7 +370,7 @@ export async function createMakerPoStepAction(_prev: ActionState | null, formDat
   const needsReady = field(formData, 'needsReadyTransition') === 'true';
   const steps: ChainStep[] = [
     {
-      label: '製造先発注準備完了',
+      label: 'メーカー発注準備完了',
       request: () => needsReady
         ? { path: `/api/film-supply-orders/${id(orderId)}/transitions`, body: { to: 'MAKER_PO_READY' } }
         : null,
@@ -464,7 +464,7 @@ export async function recordAcceptanceStepAction(_prev: ActionState | null, form
 }
 
 // ---------------------------------------------------------------------------
-// 12 納品: every line's delivered quantity → フィルム納品完了 (one submit)
+// 12 納品: every line's delivered quantity → 納品済み (one submit)
 // ---------------------------------------------------------------------------
 
 export async function recordDeliveryStepAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
@@ -496,7 +496,7 @@ export async function recordDeliveryStepAction(_prev: ActionState | null, formDa
       })
     })),
     {
-      label: 'フィルム納品完了',
+      label: '納品済み',
       request: () => ({ path: `/api/film-supply-orders/${id(orderId)}/transitions`, body: { to: 'FILM_DELIVERED' } })
     }
   ];

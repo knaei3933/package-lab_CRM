@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { useRef } from 'react';
 import { isCurrentPath } from '../lib/navigation';
 import { parseProjectPath, scopeHref, unscopedPath } from '../lib/project-route';
+import { MENU_TERMS } from '../lib/terms';
 import type { NavGroup } from '../lib/navigation';
 import { DRAWER_TITLE_ID, drawerDialogAttributes, SIDEBAR_ID, useDrawerKeyboard, useNavDrawer } from './NavDrawer';
 
@@ -18,7 +19,7 @@ export const isCurrentNavItem = isCurrentPath;
  * screen is marked by weight, an indigo bar and aria-current="page".
  * Under 1024px the same element is the drawer opened by 「メニュー」.
  */
-export function SideNav({ groups, roleNote }: { groups: readonly NavGroup[]; roleNote: string | null }) {
+export function SideNav({ groups, roleNote, korean = false, role = 'viewer' }: { groups: readonly NavGroup[]; roleNote: string | null; korean?: boolean; role?: string }) {
   const pathname = usePathname();
   // P1 R20: inside /p/{code}/… the menu's screens stay in that project.
   const projectCode = parseProjectPath(pathname)?.projectCode ?? null;
@@ -71,6 +72,8 @@ export function SideNav({ groups, roleNote }: { groups: readonly NavGroup[]; rol
                     <li key={item.href}>
                       <Link href={scopeHref(projectCode, item.href)} aria-current={current ? 'page' : undefined}>
                         {item.label}
+                        {/* P1 R29: the menu's Korean gloss (same table as the screens, lib/terms). */}
+                        {korean ? <span className="p1-ko" lang="ko">{(MENU_TERMS[item.href === '/home' ? `/home:${role}` : item.href] ?? null)?.ko}</span> : null}
                       </Link>
                     </li>
                   );

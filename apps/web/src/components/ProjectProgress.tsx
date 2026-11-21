@@ -77,7 +77,7 @@ function OrderProgressRow({
       </p>
       <Stepper marks={progress.marks} label={`${order.code} の進み具合`} />
       {progress.phase === 'cancelled' ? (
-        <p className="progress-note">この発注は取消で終了しました（キャンセル終了）。段階は進みません。</p>
+        <p className="progress-note">この発注は取消で終了しました（取消済）。段階は進みません。</p>
       ) : null}
       {progress.phase === 'exception' && progress.interruptedStep === null ? (
         <p className="progress-note">中断した段階は記録から分かりません。</p>

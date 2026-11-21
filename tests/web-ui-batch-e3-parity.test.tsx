@@ -17,11 +17,11 @@ import { projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch E3 (demo-eml/ui-batch-e3/REPORT.md) against the REAL API on the
- * isolated test database. The representative decided that the 決済条件
+ * isolated test database. The representative decided that the 支払条件
  * (paymentTerms) is public while amounts stay hidden; the API's audit-history
  * allowlists now carry paymentTerms for staff and viewer. Checked here: the
  * raw answer each role gets, the workspace the web replays from it (creation
- * value replaced by a later 決済条件の記録), and the 決済条件 column of
+ * value replaced by a later 支払条件の記録), and the 支払条件 column of
  * /orders for staff and viewer — never 閲覧権限なし, never an amount.
  */
 
@@ -191,8 +191,8 @@ afterAll(async () => {
   await pool.end();
 });
 
-describe('E3: the 決済条件 is public, amounts are not (representative decision)', () => {
-  it('the API answers paymentTerms to staff and viewer on creation and on 決済条件の記録', async () => {
+describe('E3: the 支払条件 is public, amounts are not (representative decision)', () => {
+  it('the API answers paymentTerms to staff and viewer on creation and on 支払条件の記録', async () => {
     for (const role of ['staff', 'viewer'] as const) {
       const events = await auditAs(role);
       const createdEvent = events.find((event) => event.action === 'FILM_SUPPLY_ORDER_CREATED' && event.entityId === orderId);
@@ -225,7 +225,7 @@ describe('E3: the 決済条件 is public, amounts are not (representative decisi
       .toMatchObject({ code: HIDDEN_BY_ROLE_LABEL, detailsHidden: true });
   });
 
-  it('/orders shows the 決済条件 column in Japanese to staff and viewer, never 閲覧権限なし there', async () => {
+  it('/orders shows the 支払条件 column in Japanese to staff and viewer, never 閲覧権限なし there', async () => {
     for (const role of ['staff', 'viewer'] as const) {
       signIn(role);
       const html = await render(OrdersPage);

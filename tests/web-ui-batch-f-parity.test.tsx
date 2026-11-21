@@ -384,7 +384,7 @@ describe('R1-4: document downloads from the documents screen', () => {
     expect(refused.status).toBe(303);
     expect(refused.headers.get('location')).toBe('/documents?download=forbidden');
     const notice = await render(() => DocumentsPage({ searchParams: Promise.resolve({ download: 'forbidden' }) }));
-    expect(notice).toContain('<div role="alert"');
+    expect(notice).toContain('<div class="ui-info" role="alert">');
     expect(notice).toContain('この書類をダウンロードする権限がありません（閲覧者、または担当外の案件です）。');
 
     signIn('staff');

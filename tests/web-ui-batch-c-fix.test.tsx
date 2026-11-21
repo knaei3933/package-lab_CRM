@@ -445,10 +445,10 @@ beforeEach(() => {
   callApi.mockReset();
 });
 
-describe('M3: /orders — 公式登録, 真性行チェックリスト, 支払条件 ask first (primary tone, disabled before hydration)', () => {
+describe('M3: /orders — 本登録, 発注書の照合チェック, 支払条件 ask first (primary tone, disabled before hydration)', () => {
   it.each([
-    ['公式登録する', '公式登録日を記録しますか？', ['公式登録日']],
-    ['チェックリストを記録する', '真性行チェックリストを記録しますか？', ['相違あり・確認中', '履歴に残ります']],
+    ['本登録する', '本登録日を記録しますか？', ['本登録日']],
+    ['チェックリストを記録する', '発注書の照合チェックを記録しますか？', ['相違あり・確認中', '履歴に残ります']],
     ['支払条件を変更する', '発注 FSO-DRAFT の支払条件を変更しますか？', ['入金確認ではありません', '代表承認の前なら記録し直せます']]
   ] as const)('%s → dialog 「%s」', async (button, title, bodyParts) => {
     serve([...SEVEN_PO_ROWS, ...filmOrder(ORDER_DRAFT, 'FSO-DRAFT', [])]);

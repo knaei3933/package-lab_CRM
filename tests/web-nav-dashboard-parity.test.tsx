@@ -26,7 +26,7 @@ import { projectScreen } from './helpers/project-screen.js';
  * role is rendered from what the API answers that role:
  * - admin: the 代表承認 with ¥480,000 and the hold in 「いま自分がやること」;
  * - staff and viewer: no amount anywhere on the page (the API withholds it and
- *   the dashboard never prints one for them), the 決済条件 前払い shown;
+ *   the dashboard never prints one for them), the 支払条件 前払い shown;
  * - staff: its own work listed, the representative's steps as waiting;
  * - viewer: nothing to record.
  * No API, schema or migration file is changed.
@@ -240,7 +240,7 @@ beforeAll(async () => {
   await transition(artwork.orderId, 'SEVEN_PO_VERIFIED');
   chain.artworkCode = artwork.orderCode;
 
-  // ④ An order in 変更レビュー (entered by staff through the general transition).
+  // ④ An order in 変更確認 (entered by staff through the general transition).
   const review = await linkedOrder(await verifiedSevenPo());
   await transition(review.orderId, 'SEVEN_PO_VERIFIED');
   await transition(review.orderId, 'CHANGE_REVIEW');
@@ -287,21 +287,21 @@ describe('dashboard by role on the real API', () => {
     // The staff step of order ③ is the staff's, shown as reference with its missing evidence as a note.
     const staffWork = panel(html, '担当者が進めている作業');
     expect(staffWork).toContain(chain.artworkCode);
-    // 変更レビュー is resumed by 担当者・代表者 (server: film_order:transition) — not the representative's own list (review R-1).
+    // 変更確認 is resumed by 担当者・代表者 (server: film_order:transition) — not the representative's own list (review R-1).
     expect(todo).not.toContain(chain.reviewCode);
     expect(staffWork).toContain(chain.reviewCode);
-    expect(todo).toContain('代表者だけが行う作業: メーカー発注書の作成・代表承認、最終受入、保留の解除、取消レビューの処理');
+    expect(todo).toContain('代表者だけが行う作業: メーカー発注書の作成・代表承認、最終受入、保留の解除、取消確認の処理');
     expect(staffWork).toContain('証跡が未登録: この発注に紐付いた書類（デザイン入稿データ）が、文書画面にまだ登録されていません。');
     const blocked = panel(html, '止まっている発注');
     expect(blocked).toContain('「保留中」で止まっています。');
-    expect(blocked).toContain('「変更レビュー中」で止まっています。');
+    expect(blocked).toContain('「変更確認中」で止まっています。');
     // A moving order's next evidence is not a block; fresh orders are not listed as quiet.
     expect(blocked).not.toContain('証跡が未登録');
     const stalled = panel(html, '更新が止まっている発注（確認用）');
     expect(stalled).toContain('納期は記録されていないため、遅れかどうかは判定していません');
     expect(stalled).toContain('7日以上更新が止まっている発注はありません。');
     const activity = panel(html, '最近の記録');
-    expect(activity).toContain(`${chain.reviewCode} 発注の状態を変更（→「変更レビュー中」）`);
+    expect(activity).toContain(`${chain.reviewCode} 発注の状態を変更（→「変更確認中」）`);
     expect(activity).toContain('合成担当者ND');
     // A line is named by its order (the line's own state carries the order link).
     expect(activity).toContain(`${chain.reviewCode} 発注明細を登録`);
@@ -314,9 +314,9 @@ describe('dashboard by role on the real API', () => {
     expect(html).not.toMatch(HANGUL);
     const todo = panel(html, 'いま自分がやること');
     expect(todo).toContain(chain.artworkCode);
-    // The 変更レビュー restart is the staff's own work, with the server's rule as its note.
+    // The 変更確認 restart is the staff's own work, with the server's rule as its note.
     expect(todo).toContain(chain.reviewCode);
-    expect(todo).toContain('変更レビューからの再開は担当者・代表者が行えます');
+    expect(todo).toContain('変更確認からの再開は担当者・代表者が行えます');
     expect(todo).toContain('デザイン入稿データを文書画面で登録し');
     expect(todo).toContain('証跡が未登録: この発注に紐付いた書類（デザイン入稿データ）');
     expect(todo).not.toContain(chain.readyCode);
@@ -364,14 +364,14 @@ describe('dashboard by role on the real API', () => {
     let outside = html;
     for (const note of notes) outside = outside.replace(note, '');
     expect(outside).not.toMatch(HANGUL);
-    // The wording follows the server: 変更レビュー is resumed by 担当者 too; only the hold and the cancellation review are the representative's.
+    // The wording follows the server: 変更確認 is resumed by 担当者 too; only the hold and the cancellation review are the representative's.
     expect(html).toContain('担当者・代表者が再開する状態');
-    expect(html).toContain('保留の解除と取消レビューの処理（再開するか、取消で終了するか）は代表者だけが行えます');
+    expect(html).toContain('保留の解除と取消確認の処理（再開するか、取消で終了するか）は代表者だけが行えます');
     expect(html).toContain('代表者に取消での終了を依頼します');
-    expect(html).not.toMatch(/変更レビュー[^。]*代表者だけ/);
+    expect(html).not.toMatch(/変更確認[^。]*代表者だけ/);
   });
 
-  it('the server rules the copy states: staff resumes a 変更レビュー; the hold release and the cancellation review resolve refuse staff', async () => {
+  it('the server rules the copy states: staff resumes a 変更確認; the hold release and the cancellation review resolve refuse staff', async () => {
     expect((await call('staff', `/api/film-supply-orders/${chain.readyId}/hold-release`, { reason: '合成' })).status).toBe(403);
     expect((await call('staff', `/api/film-supply-orders/${chain.readyId}/cancellation-review-resolve`, { reason: '合成', resolution: 'cancel' })).status).toBe(403);
     const resumed = await call('staff', `/api/film-supply-orders/${chain.reviewId}/transitions`, { to: 'ARTWORK_RECEIVED' });

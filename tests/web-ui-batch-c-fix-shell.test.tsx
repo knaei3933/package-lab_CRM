@@ -345,12 +345,12 @@ describe('H1: the reset after a result (effects run by hand)', () => {
   });
 
   it('refusal → the screen is not told', () => {
-    runWith({ ok: false, message: '公式登録日が必要です' });
+    runWith({ ok: false, message: '本登録日が必要です' });
     expect(dispatchEvent).not.toHaveBeenCalled();
   });
 
   it('refusal → no reset (every entered value stays)', () => {
-    expect(runWith({ ok: false, message: '公式登録日が必要です' })).not.toHaveBeenCalled();
+    expect(runWith({ ok: false, message: '本登録日が必要です' })).not.toHaveBeenCalled();
   });
 
   it('no result yet → no reset', () => {

@@ -29,7 +29,7 @@ import { formatMoney, formatTimestamp, READINESS_BLOCKING_LABELS } from './vocab
  *
  * Redaction (lib/redaction.ts policy): amounts, unit prices and commissions
  * are never put on an item for staff or viewer — not even when a row handed
- * in carries them (dashboardAmount). The 決済条件 is public and is shown to
+ * in carries them (dashboardAmount). The 支払条件 is public and is shown to
  * every role as the audit history answered it.
  */
 
@@ -46,11 +46,11 @@ export const TODO_TITLE = 'いま自分がやること';
 /**
  * What 「いま自分がやること」 holds per role, in the server's terms: only the
  * hold release, the cancellation review and the maker paper decisions are the
- * representative's alone; a 変更レビュー is resumed by 担当者・代表者.
+ * representative's alone; a 変更確認 is resumed by 担当者・代表者.
  */
 export const TODO_SCOPE: Record<'admin' | 'staff' | 'viewer', string> = {
-  admin: '代表者だけが行う作業: メーカー発注書の作成・代表承認、最終受入、保留の解除、取消レビューの処理、取消後のメーカー発注書の整理。',
-  staff: '担当者の作業: 発注書と状態の記録、証跡の登録、承認・送信・受入（仮）・納品の記録、変更レビューからの再開。',
+  admin: '代表者だけが行う作業: メーカー発注書の作成・代表承認、最終受入、保留の解除、取消確認の処理、取消後のメーカー発注書の整理。',
+  staff: '担当者の作業: 発注書と状態の記録、証跡の登録、承認・送信・受入（仮）・納品の記録、変更確認からの再開。',
   viewer: '閲覧者は記録・変更をしません。下の「止まっている発注」と「進行中の作業」で状況を確認します。'
 };
 
@@ -63,7 +63,7 @@ export const OTHERS_TITLE: Record<'admin' | 'staff' | 'viewer', string> = {
 };
 
 /** The basis line shown under the 「更新が止まっている発注」 list. */
-export const STALE_BASIS = `基準: 発注と関連する記録（明細・書類・版・承認・納品・セブン化学発注書）の最後の記録から${STALE_AFTER_DAYS}日以上。納期は記録されていないため、遅れかどうかは判定していません。フィルム製造中・発送済みは対象外です。`;
+export const STALE_BASIS = `基準: 発注と関連する記録（明細・書類・版・承認・納品・セブン化学発注書）の最後の記録から${STALE_AFTER_DAYS}日以上。納期は記録されていないため、遅れかどうかは判定していません。製造中・発送済みは対象外です。`;
 
 /** The newest activity rows the dashboard lists. */
 export const ACTIVITY_LIMIT = 8;
@@ -87,7 +87,7 @@ export interface DashboardItem {
   /** Where the item opens: the screen, with an anchor to the order when there is one. */
   href: string;
   linkLabel: string;
-  /** The 決済条件 as the role reads it (public), or null when not about an order. */
+  /** The 支払条件 as the role reads it (public), or null when not about an order. */
   paymentTerms: string | null;
   /** admin only: the maker PO total; always null for staff and viewer. */
   amount: string | null;
@@ -223,8 +223,8 @@ function isRepresentativeStep(status: string): boolean {
   return status in REPRESENTATIVE_WORK;
 }
 
-/** The note on a 変更レビュー item: who may resume it, and the print-start rule (app.ts PRINTED_CHANGE_ADMIN_APPROVAL_REQUIRED). */
-export const CHANGE_REVIEW_NOTE = '変更レビューからの再開は担当者・代表者が行えます（再開先は「デザインデータ受領」「校正ゲラ準備完了」「校了確認待ち」）。印刷開始（フィルム製造中）以降の変更は、代表者の承認と実費の記録が必要です。';
+/** The note on a 変更確認 item: who may resume it, and the print-start rule (app.ts PRINTED_CHANGE_ADMIN_APPROVAL_REQUIRED). */
+export const CHANGE_REVIEW_NOTE = '変更確認からの再開は担当者・代表者が行えます（再開先は「デザイン受領」「校正準備完了」「校了確認待ち」）。印刷開始（製造中）以降の変更は、代表者の承認と実費の記録が必要です。';
 
 /** Who or what an open order is waiting on, by state (shown on a stalled order). */
 const WAITING_ON: Readonly<Record<string, string>> = {
@@ -233,7 +233,7 @@ const WAITING_ON: Readonly<Record<string, string>> = {
   ARTWORK_RECEIVED: 'メーカーの校正ゲラ',
   PROOF_READY: '「校了確認待ち」への変更（社内）',
   APPROVAL_PENDING: '顧客・セブン化学の校了',
-  DUAL_APPROVED: '「製造先発注準備完了」への変更（社内）',
+  DUAL_APPROVED: '「メーカー発注準備完了」への変更（社内）',
   MAKER_PO_READY: '代表者のメーカー発注書作成・代表承認',
   APPROVED_FOR_MANUAL_SEND: 'メーカーへのメール送信と送信の記録',
   MAKER_PO_SENT_MANUALLY: 'メーカーの受入',
@@ -394,7 +394,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
       }
     }
 
-    // ---- blocked: exception states (保留・変更レビュー・取消レビュー).
+    // ---- blocked: exception states (保留・変更確認・取消確認).
     if (progress.phase === 'exception') {
       blocked.push({
         key: `exception-${order.id}`,
@@ -628,14 +628,14 @@ export const ACTION_LABELS: Readonly<Record<string, string>> = {
   PROJECT_CREATED: '案件を作成',
   PROJECT_UPDATED: '案件を更新',
   SEVEN_PO_CREATED: 'セブン化学発注書を登録',
-  SEVEN_PO_OFFICIALLY_REGISTERED: 'セブン化学発注書の公式登録を記録',
-  SEVEN_PO_VERIFICATION_RECORDED: '真性行チェックリストを記録',
+  SEVEN_PO_OFFICIALLY_REGISTERED: 'セブン化学発注書の本登録を記録',
+  SEVEN_PO_VERIFICATION_RECORDED: '発注書の照合チェックを記録',
   FILM_SUPPLY_ORDER_CREATED: 'フィルム発注を作成',
   FILM_SUPPLY_ORDER_LINE_CREATED: '発注明細を登録',
   FILM_SUPPLY_ORDER_PAYMENT_TERMS_UPDATED: '支払条件を記録',
   FILM_SUPPLY_ORDER_TRANSITIONED: '発注の状態を変更',
   FILM_SUPPLY_ORDER_HOLD_RELEASED: '保留を解除',
-  FILM_SUPPLY_ORDER_CANCELLATION_REVIEW_RESOLVED: '取消レビューを処理',
+  FILM_SUPPLY_ORDER_CANCELLATION_REVIEW_RESOLVED: '取消確認を処理',
   FILM_RECEIPT_ASSUMPTION_RECORDED: '受領確認（問題なしとみなす）を記録',
   DOCUMENT_CREATED: '書類を登録',
   DOCUMENT_VERSION_UPLOADED: '書類の版を登録',

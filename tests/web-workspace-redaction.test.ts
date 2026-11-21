@@ -108,7 +108,7 @@ describe('loadWorkspace role labels (UI batch A, P1-4)', () => {
     expect(po?.verificationHidden).toBe(false);
     expect(workspace.filmOrders[0]).toMatchObject({
       code: 'FSO-2026-001', status: 'DRAFT', statusHidden: false, detailsHidden: false, sevenPurchaseOrderId: PO_ID, lineCount: 1,
-      // UI batch E3: the 決済条件 is public by the representative's decision.
+      // UI batch E3: the 支払条件 is public by the representative's decision.
       paymentTerms: 'undetermined', paymentTermsHidden: false
     });
     expect(workspace.fillingOrders[0]).toMatchObject({ code: 'FIL-2026-001', detailsHidden: false });
@@ -119,13 +119,13 @@ describe('loadWorkspace role labels (UI batch A, P1-4)', () => {
     });
   });
 
-  it('viewer: the order status (server batch E) and the 決済条件 (E3) read; every other recorded value reads hidden — never 未記録 or 未登録', async () => {
+  it('viewer: the order status (server batch E) and the 支払条件 (E3) read; every other recorded value reads hidden — never 未記録 or 未登録', async () => {
     serveAs('viewer');
     const workspace = await loadWorkspace(PROJECT_ID);
     const [po] = workspace.sevenPurchaseOrders;
     expect(po).toMatchObject({ poNumber: HIDDEN_BY_ROLE_LABEL, officialRegistrationHidden: true, verificationHidden: true });
     expect(po?.officialRegisteredAt).toBeNull();
-    // UI batch E3: the 決済条件 reads for the viewer too; the order code does not.
+    // UI batch E3: the 支払条件 reads for the viewer too; the order code does not.
     expect(workspace.filmOrders[0]).toMatchObject({
       code: HIDDEN_BY_ROLE_LABEL, status: 'DRAFT', statusHidden: false, detailsHidden: true, paymentTerms: 'undetermined', paymentTermsHidden: false
     });

@@ -10,6 +10,15 @@ import { useRenderedContext } from './RenderedContext';
  */
 export function Bilingual({ ja, ko }: { ja: string; ko: string }) {
   const context = useRenderedContext();
+  // 한국어 mode: Korean first, the Japanese business wording kept next to it (§4-2 ③).
+  if (context?.lang === 'ko') {
+    return (
+      <>
+        <span lang="ko">{ko}</span>
+        <span className="p1-ja">{ja}</span>
+      </>
+    );
+  }
   return (
     <>
       {ja}

@@ -37,7 +37,7 @@ export function ceoApprovalFacts(
 
 
 /**
- * UI batch E3: the 決済条件 of one film order as the audit history showed this
+ * UI batch E3: the 支払条件 of one film order as the audit history showed this
  * role — 「前払い」, 「（閲覧権限なし）」 when withheld, 「（未記録）」 otherwise.
  * A recorded term is never a 入金確認.
  */
