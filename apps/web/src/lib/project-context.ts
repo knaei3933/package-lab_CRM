@@ -34,8 +34,32 @@ export const IDEMPOTENCY_FIELD = '_kaneiIdempotencyKey';
  * (settled). No after a timeout, an unreachable API, a 5xx or a refusal made on
  * the web: the same intent is retried with the same key.
  */
-export function shouldRenewSubmitKey(state: { ok: boolean; settled?: boolean | undefined } | null): boolean {
+export function shouldRenewSubmitKey(state: { ok: boolean; settled?: boolean | undefined; code?: string | null | undefined } | null): boolean {
+  if (state !== null && state.code === 'IDEMPOTENCY_KEY_REUSED') return false;
   return state === null || state.ok || state.settled === true;
+}
+
+/**
+ * Review NM1: after IDEMPOTENCY_KEY_REUSED (a timed-out submit, then the same key
+ * with edited fields) the earlier submit may already be stored. The form locks:
+ * no submit goes out — not even with the same key — until the operator has
+ * checked the list and pressed 「確認しました」, which starts a new intent with
+ * a new key (startNewIntent).
+ */
+export function locksForKeyReuse(state: { ok: boolean; code?: string | null | undefined } | null): boolean {
+  return state !== null && !state.ok && state.code === 'IDEMPOTENCY_KEY_REUSED';
+}
+
+/**
+ * Review NM1: the form's lock, derived in the same render the result arrives in
+ * (no effect gap): locked by a REUSED result until the operator confirmed that
+ * very result (startNewIntent remembers it as `confirmedFor`).
+ */
+export function isKeyReuseLocked<T extends { ok: boolean; code?: string | null | undefined }>(
+  state: T | null,
+  confirmedFor: T | null
+): boolean {
+  return locksForKeyReuse(state) && state !== confirmedFor;
 }
 
 /** The API's own key rule (p0-server idempotency.ts). */

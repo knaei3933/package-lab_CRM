@@ -1,7 +1,7 @@
 'use client';
 
 import '../app/forms.css';
-import { createContext, startTransition, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { createContext, startTransition, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, FormEvent, ReactNode } from 'react';
 import { ConfirmDialog } from './ConfirmDialog';
 import type { ConfirmSummaryItem } from './ConfirmDialog';
@@ -22,7 +22,8 @@ import type { ControlDescriptor, ControlKind } from '../lib/form-validation';
 import type { ActionState } from '../lib/types';
 import { createSubmitInFlight, SAVED_RECORD_EVENT } from '../lib/saved-record';
 import type { SavedRecordDetail } from '../lib/saved-record';
-import { IDEMPOTENCY_FIELD, newIdempotencyKey, PROJECT_CONTEXT_MISMATCH, shouldRenewSubmitKey } from '../lib/project-context';
+import { IDEMPOTENCY_FIELD, isKeyReuseLocked, locksForKeyReuse, newIdempotencyKey, PROJECT_CONTEXT_MISMATCH, shouldRenewSubmitKey } from '../lib/project-context';
+import { KEY_REUSED_CODE } from '../lib/action-result';
 import { loginHrefFor } from '../lib/return-path';
 import { RenderedProjectField, useRenderedContext } from './RenderedContext';
 
@@ -89,6 +90,12 @@ export interface ConfirmOptions {
 interface FormFeedbackValue {
   errors: Readonly<Record<string, string>>;
   summaryCount: number;
+  /**
+   * Review NM1: the form is locked after IDEMPOTENCY_KEY_REUSED until the operator
+   * confirms (startNewIntent draws a new key and unlocks).
+   */
+  keyReuseLocked?: boolean | undefined;
+  startNewIntent?: (() => void) | undefined;
   /** Review M1: the form has a confirm spec and is not hydrated yet — its submit buttons stay disabled. */
   submitLocked?: boolean | undefined;
 }
@@ -275,7 +282,7 @@ export function formDataFor(form: HTMLFormElement, submitter: HTMLElement | null
  */
 export function SubmitLock({ children }: { children: (locked: boolean) => ReactNode }) {
   const feedback = useContext(FormFeedbackContext);
-  return <>{children(feedback?.submitLocked === true)}</>;
+  return <>{children(feedback?.submitLocked === true || feedback?.keyReuseLocked === true)}</>;
 }
 
 /** Per-field ids and state for a control rendered inside (or outside) a feedback form. */
@@ -348,7 +355,8 @@ export function FormResult({ state, successHint }: { state: ActionState | null; 
   const failed = state !== null && !state.ok;
   const succeeded = state !== null && state.ok;
   const context = useRenderedContext();
-  const korean = failed && context?.showKorean && state.messageKo ? state.messageKo : null;
+  // Review NM1: the 「処理済みの可能性」 notice is always given in both languages.
+  const korean = failed && state.messageKo && (context?.showKorean || state.code === KEY_REUSED_CODE) ? state.messageKo : null;
   return (
     <>
       <span role="alert" className="form-result form-result--error">
@@ -390,6 +398,16 @@ export function FormResult({ state, successHint }: { state: ActionState | null; 
  * value (R08), open the record a duplicate number belongs to (R05).
  */
 function ResultRemedy({ state }: { state: ActionState }) {
+  const feedback = useContext(FormFeedbackContext);
+  if (state.code === KEY_REUSED_CODE && feedback?.keyReuseLocked && feedback.startNewIntent) {
+    const startNewIntent = feedback.startNewIntent;
+    return (
+      <button type="button" className="form-result-action" onClick={startNewIntent}>
+        一覧を確認しました（新しい入力として送信できるようにする）
+        <span className="form-result-ko" lang="ko">목록을 확인했습니다(새 입력으로 보낼 수 있게 하기)</span>
+      </button>
+    );
+  }
   if (state.code === PROJECT_CONTEXT_MISMATCH) {
     return (
       <button type="button" className="form-result-action" onClick={() => window.location.reload()}>
@@ -487,8 +505,22 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
   // refusal the API answered); after a timeout the retry carries the same key,
   // so a write the API stored while the answer was lost is not stored twice.
   const [submitKey, setSubmitKey] = useState('');
+  // Review NM1: after IDEMPOTENCY_KEY_REUSED the form is locked (no submit, same key)
+  // and the list is refreshed, until the operator confirms a new intent.
+  // The lock is derived from the result in the same render (no effect gap a click could use).
+  const [confirmedFor, setConfirmedFor] = useState<ActionState | null>(null);
+  const keyReuseLocked = isKeyReuseLocked(state, confirmedFor);
   useEffect(() => {
+    if (locksForKeyReuse(state)) {
+      const detail: SavedRecordDetail = { changedId: null };
+      window.dispatchEvent(new CustomEvent(SAVED_RECORD_EVENT, { detail }));
+      return;
+    }
     if (shouldRenewSubmitKey(state)) setSubmitKey(newIdempotencyKey());
+  }, [state]);
+  const startNewIntent = useCallback(() => {
+    setSubmitKey(newIdempotencyKey());
+    setConfirmedFor(state);
   }, [state]);
 
   const resetHandler = useRef(onReset);
@@ -550,6 +582,8 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
     const submitter = native.submitter instanceof HTMLElement ? native.submitter : null;
     // P0 R05: dropped before anything else while this form's action is running.
     if (inFlight.busy) return;
+    // Review NM1: nothing goes out until the operator has checked the list and confirmed.
+    if (keyReuseLocked) return;
     const check = checkForm(form);
     const dialog = !pending && check.count === 0 && confirm ? confirm(form, submitter) : null;
     const decision = gate.submit({ invalid: check.count > 0, needsConfirm: dialog !== null, pending });
@@ -599,7 +633,10 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
   }
 
   const submitLocked = Boolean(confirm) && !mounted;
-  const value = useMemo(() => ({ errors, summaryCount, submitLocked }), [errors, summaryCount, submitLocked]);
+  const value = useMemo(
+    () => ({ errors, summaryCount, submitLocked, keyReuseLocked, startNewIntent }),
+    [errors, summaryCount, submitLocked, keyReuseLocked, startNewIntent]
+  );
 
   return (
     <form

@@ -26,6 +26,7 @@ vi.mock('react', async (importOriginal) => {
     },
     useRef: (value: unknown) => ({ current: value === undefined ? null : value }),
     useMemo: (factory: () => unknown) => factory(),
+    useCallback: (callback: unknown) => callback,
     useId: () => ':r0:',
     useContext: () => null,
     startTransition: (scope: () => void) => scope()
@@ -236,6 +237,21 @@ describe('H1: every submit is prevented and dispatched by the shell', () => {
     tree.props.onSubmit(event);
     expect(event.preventDefault).toHaveBeenCalledTimes(1);
     expect(action).not.toHaveBeenCalled();
+  });
+
+  it('review NM1: after IDEMPOTENCY_KEY_REUSED the submit is prevented and nothing is dispatched (the form is locked)', () => {
+    const reused = { ok: false, code: 'IDEMPOTENCY_KEY_REUSED', message: '前回の送信が処理済みの可能性があります。', settled: false };
+    const { tree, action } = renderShell({ state: reused });
+    const submit = button('organization', 'customer');
+    const event = submitEvent(fakeForm([field('poId', 'p1'), submit]), submit);
+    tree.props.onSubmit(event);
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+    expect(action).not.toHaveBeenCalled();
+    // A timeout (no REUSED) is not locked: the same intent may be retried with the kept key.
+    const timeout = renderShell({ state: { ok: false, code: 'API_TIMEOUT', message: 'x', settled: false } });
+    const retry = submitEvent(fakeForm([field('poId', 'p1')]), null);
+    timeout.tree.props.onSubmit(retry);
+    expect(timeout.action).toHaveBeenCalledTimes(1);
   });
 
   it('an invalid field: prevented, nothing dispatched, focus on the field', () => {

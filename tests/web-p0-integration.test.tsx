@@ -241,3 +241,51 @@ describe('review M2: PAYMENT_TERMS_LOCKED says the real rule', () => {
     expect(PAYMENT_TERMS_LOCKED_MESSAGES.order_frozen).toContain('保留');
   });
 });
+
+
+describe('review NM1: IDEMPOTENCY_KEY_REUSED locks the form until the operator confirms', async () => {
+  const { FeedbackForm, FormFeedbackContext, FormResult, SubmitLock } = await import('../apps/web/src/components/form-feedback.js');
+  const { isKeyReuseLocked, locksForKeyReuse } = await import('../apps/web/src/lib/project-context.js');
+  const reused = { ok: false, code: 'IDEMPOTENCY_KEY_REUSED', message: '前回の送信が処理済みの可能性があります。一覧で登録内容を確認してから、必要なら修正してください。', messageKo: '이전 전송이 이미 처리되었을 수 있습니다. 목록에서 등록 내용을 확인한 뒤 필요하면 수정하세요.' };
+
+  it('not settled, key kept, the form locks', () => {
+    expect(isSettledRefusal({ status: 422, failure: null, code: 'IDEMPOTENCY_KEY_REUSED' })).toBe(false);
+    expect(shouldRenewSubmitKey({ ok: false, settled: true, code: 'IDEMPOTENCY_KEY_REUSED' })).toBe(false);
+    expect(locksForKeyReuse(reused)).toBe(true);
+    expect(locksForKeyReuse({ ok: false, code: 'API_TIMEOUT' })).toBe(false);
+    expect(refusalState({ status: 422, failure: null, error: reused.message, errorKo: reused.messageKo, code: 'IDEMPOTENCY_KEY_REUSED' }).settled).toBe(false);
+  });
+
+  it('the lock holds from the render the result arrives in, until that very result is confirmed', () => {
+    const later = { ...reused };
+    expect(isKeyReuseLocked(reused, null)).toBe(true);
+    expect(isKeyReuseLocked(reused, reused)).toBe(false); // the operator pressed 「一覧を確認しました」
+    expect(isKeyReuseLocked(later, reused)).toBe(true); // a new REUSED answer locks again
+    expect(isKeyReuseLocked({ ok: false, code: 'API_TIMEOUT', message: 'x' }, null)).toBe(false);
+    expect(isKeyReuseLocked(null, null)).toBe(false);
+  });
+
+  it('the dictionary says 「処理済みの可能性」 (ja + ko)', () => {
+    expect(ERROR_DICTIONARY.IDEMPOTENCY_KEY_REUSED!.ja).toBe(reused.message);
+    expect(ERROR_DICTIONARY.IDEMPOTENCY_KEY_REUSED!.ko).toBe(reused.messageKo);
+  });
+
+  it('while locked: both languages, the confirm button, and every submit button disabled', () => {
+    const html = renderToStaticMarkup(
+      <FormFeedbackContext.Provider value={{ errors: {}, summaryCount: 0, keyReuseLocked: true, startNewIntent: () => undefined }}>
+        <SubmitLock>{(locked) => <button type="submit" disabled={locked || undefined}>納品を記録する</button>}</SubmitLock>
+        <FormResult state={reused} />
+      </FormFeedbackContext.Provider>
+    );
+    expect(html).toContain(reused.message);
+    expect(html).toContain('lang="ko"');
+    expect(html).toContain(reused.messageKo);
+    expect(html).toContain('一覧を確認しました（新しい入力として送信できるようにする）');
+    expect(html).toMatch(/<button type="submit" disabled="">納品を記録する<\/button>/);
+  });
+
+  it('a delivery form renders the shell (FeedbackForm) every write form shares', () => {
+    const html = renderToStaticMarkup(<FeedbackForm action={() => undefined} state={null}><span>x</span></FeedbackForm>);
+    expect(html).toContain('<form');
+  });
+});

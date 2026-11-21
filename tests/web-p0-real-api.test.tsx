@@ -53,7 +53,7 @@ vi.mock('next/navigation', () => ({ redirect: () => undefined }));
 
 const api = await import('../apps/web/src/lib/api.js');
 const actions = await import('../apps/web/src/app/actions.js');
-const { shouldRenewSubmitKey } = await import('../apps/web/src/lib/project-context.js');
+const { locksForKeyReuse, shouldRenewSubmitKey } = await import('../apps/web/src/lib/project-context.js');
 const makerActions = await import('../apps/web/src/app/maker-po/actions.js');
 const { loadWorkspace } = await import('../apps/web/src/lib/project-data.js');
 const { default: OrdersPage } = await import('../apps/web/src/app/orders/page.js');
@@ -539,3 +539,68 @@ describe('review H1: a timeout, then the same intent again, is written once (rea
   });
 });
 
+describe('review NM1: timeout → edited resend → 422 IDEMPOTENCY_KEY_REUSED → no second row (real API)', () => {
+  it('the same key with an edited quantity is refused, the key is kept and the form locks; extra clicks never store a 2nd row', async () => {
+    signIn('staff');
+    const created = await actions.createFillingOrderAction(null, form({
+      code: `FIL-NM1-${nextTag()}`,
+      lines: JSON.stringify([{ description: '合成充填', orderedQuantity: '300', unit: 'pods' }])
+    }));
+    expect(created.ok, created.message).toBe(true);
+    const orderId = created.changedId!;
+    const lineId = ((await db.execute(sql`select id from filling_order_lines where filling_order_id = ${orderId}`)).rows[0] as { id: string }).id;
+    const count = async () => Number((await db.execute(sql`select count(*)::int as n from filling_deliveries where filling_order_line_id = ${lineId}`)).rows[0]!.n);
+    const submit = (quantity: string, key: string) =>
+      actions.recordDeliveryAction(null, form({ kind: 'filling', orderId, lineId, unit: 'pods', deliveredQuantity: quantity, _kaneiIdempotencyKey: key }));
+    const key = `p0-nm1-${nextTag()}`;
+    // 1) 130 is stored, the answer is lost.
+    seen.loseAnswerOnce = '/deliveries';
+    const first = await submit('130', key);
+    expect(first).toMatchObject({ ok: false, code: 'API_TIMEOUT' });
+    expect(shouldRenewSubmitKey(first)).toBe(false);
+    expect(await count()).toBe(1);
+    // 2) the operator edits to 140 and sends again with the same (kept) key → 422 REUSED.
+    revalidatePath.mockReset();
+    const edited = await submit('140', key);
+    expect(edited).toMatchObject({ ok: false, code: 'IDEMPOTENCY_KEY_REUSED', settled: false });
+    expect(edited.message).toBe('前回の送信が処理済みの可能性があります。一覧で登録内容を確認してから、必要なら修正してください。');
+    expect(edited.messageKo).toContain('이미 처리되었을 수');
+    expect(shouldRenewSubmitKey(edited)).toBe(false);
+    expect(locksForKeyReuse(edited)).toBe(true);
+    expect(revalidatePath).toHaveBeenCalledWith('/', 'layout'); // the list is refreshed: the stored 130 shows
+    // 3) more clicks: the form is locked; even a forced resend still carries the kept key → refused again.
+    for (const quantity of ['140', '140', '130']) {
+      const again = await submit(quantity, key);
+      if (quantity === '130') expect(again.ok).toBe(true); // the identical first intent is replayed, not stored again
+      else expect(again.code).toBe('IDEMPOTENCY_KEY_REUSED');
+    }
+    expect(await count()).toBe(1);
+  });
+});
+
+
+describe('review NM1: the same lock on a create form — seven PO (real API)', () => {
+  it('timeout → edited number with the kept key → 422 REUSED, the list is refreshed, no second seven PO is stored', async () => {
+    signIn('admin');
+    const tag = nextTag();
+    const key = `p0-nm1-7po-${tag}`;
+    const before = (await loadWorkspace(projectId)).sevenPurchaseOrders.length;
+    const create = (poNumber: string) =>
+      actions.createSevenPurchaseOrderAction(null, form({ poNumber, _kaneiIdempotencyKey: key }));
+    seen.loseAnswerOnce = '/seven-purchase-orders';
+    const first = await create(`SEVEN-NM1-${tag}`);
+    expect(first).toMatchObject({ ok: false, code: 'API_TIMEOUT' });
+    expect((await loadWorkspace(projectId)).sevenPurchaseOrders.length).toBe(before + 1);
+    revalidatePath.mockReset();
+    const edited = await create(`SEVEN-NM1-${tag}-B`);
+    expect(edited).toMatchObject({ ok: false, code: 'IDEMPOTENCY_KEY_REUSED', settled: false });
+    expect(edited.message).toBe('前回の送信が処理済みの可能性があります。一覧で登録内容を確認してから、必要なら修正してください。');
+    expect(shouldRenewSubmitKey(edited)).toBe(false);
+    expect(locksForKeyReuse(edited)).toBe(true);
+    expect(revalidatePath).toHaveBeenCalledWith('/', 'layout');
+    expect((await create(`SEVEN-NM1-${tag}-B`)).code).toBe('IDEMPOTENCY_KEY_REUSED');
+    const after = (await loadWorkspace(projectId)).sevenPurchaseOrders;
+    expect(after.length).toBe(before + 1);
+    expect(after.some((po) => po.poNumber === `SEVEN-NM1-${tag}-B`)).toBe(false);
+  });
+});

@@ -5,7 +5,7 @@ import { cookies } from 'next/headers';
 import { redirect } from 'next/navigation';
 import { FILM_UNITS, FILLING_UNITS, OFFICIAL_ARTIFACT_DOCUMENT_TYPES } from '@kanei/core';
 import { callApi, PROJECT_COOKIE, readSelectedProjectId } from '../lib/api';
-import { isSettledRefusal, recordIdOf, refusalState } from '../lib/action-result';
+import { isSettledRefusal, KEY_REUSED_CODE, recordIdOf, refusalState } from '../lib/action-result';
 import { refuseIfProjectSwitched } from '../lib/project-guard';
 import { idempotencyKeyOf } from '../lib/project-context';
 import { duplicateRefusal } from '../lib/duplicate-check';
@@ -129,6 +129,12 @@ async function post(
     const state = success?.(result.data) ?? { ok: true, message: '記録しました。' };
     return { ...state, changedId: state.changedId ?? recordIdOf(result.data) };
   }
+  // Review NM1: the earlier submit with this key may be stored — show the list as it
+  // is now, and answer with the dictionary notice (code kept: the form locks on it).
+  if (result.code === KEY_REUSED_CODE) {
+    refresh();
+    return refusalState(result);
+  }
   // P0 review H1: a refusal the API answered (4xx) ends the submit — mapped or not.
   const settled = isSettledRefusal(result);
   const specific = refusal?.(apiCode(result.data), result.data);
@@ -153,6 +159,10 @@ async function postCreate(
   if (result.ok) {
     refresh();
     return { ok: true, message: '記録しました。', changedId: recordIdOf(result.data) };
+  }
+  if (result.code === KEY_REUSED_CODE) {
+    refresh();
+    return refusalState(result);
   }
   const code = apiCode(result.data);
   const dup = await duplicateRefusal({ ...duplicate, status: result.status, code, data: result.data });

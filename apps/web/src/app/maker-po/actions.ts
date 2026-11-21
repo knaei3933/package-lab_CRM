@@ -4,7 +4,7 @@ import { isPlainAmount, normalizeAmountText } from '../../lib/amount';
 import { callApi } from '../../lib/api';
 import { offsetDateTimeField } from '../../lib/datetime';
 import type { ActionState } from '../../lib/types';
-import { recordIdOf, refusalState } from '../../lib/action-result';
+import { KEY_REUSED_CODE, recordIdOf, refusalState } from '../../lib/action-result';
 import { EXPECTED_TERMS_MISSING_MESSAGE, PAYMENT_TERMS_REQUIRED_MESSAGE, RECIPIENT_EMAIL_INVALID_MESSAGE } from '../../lib/form-messages';
 import { refuseIfProjectSwitched } from '../../lib/project-guard';
 import { idempotencyKeyOf } from '../../lib/project-context';
@@ -36,6 +36,8 @@ async function send(formData: FormData, method: 'POST' | 'PATCH', path: string, 
     refresh();
     return { ok: true, message: '記録しました。', changedId: recordIdOf(result.data) };
   }
+  // Review NM1: the earlier submit with this key may be stored — show the list as it is now.
+  if (result.code === KEY_REUSED_CODE) refresh();
   // P0 R09: the dictionary's operator text, never the API's English or enum text.
   return refusalState(result);
 }
@@ -229,7 +231,11 @@ export async function acknowledgeMakerPoCancellationAction(
     `/api/maker-purchase-orders/${encodeURIComponent(poId)}/cancellation-acknowledgement`,
     { method: 'POST', body, idempotencyKey: idempotencyKeyOf(formData) }
   );
-  if (!result.ok) return refusalState(result);
+  if (!result.ok) {
+    // Review NM1: the earlier submit with this key may be stored — show the list as it is now.
+    if (result.code === KEY_REUSED_CODE) refresh();
+    return refusalState(result);
+  }
   refresh();
   return { ok: true, message: acknowledgementRecordedMessage(result.data), changedId: poId };
 }

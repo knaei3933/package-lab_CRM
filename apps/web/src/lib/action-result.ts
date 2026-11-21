@@ -12,9 +12,15 @@ import type { ActionState } from './types';
  * are not settled — the form keeps its Idempotency-Key so a retry is answered
  * with the first result instead of writing again.
  */
-export function isSettledRefusal(result: Pick<ApiResult, 'status' | 'failure'>): boolean {
+export function isSettledRefusal(result: Pick<ApiResult, 'status' | 'failure'> & { code?: string | null | undefined }): boolean {
+  // Review NM1: IDEMPOTENCY_KEY_REUSED means the earlier submit with this key may be
+  // stored — the submit is not over, so the key is kept (the form locks instead).
+  if (result.code === KEY_REUSED_CODE) return false;
   return !result.failure && result.status >= 400 && result.status < 500;
 }
+
+/** Review NM1: the API saw this key with another body — the earlier submit may already be stored. */
+export const KEY_REUSED_CODE = 'IDEMPOTENCY_KEY_REUSED';
 
 export function refusalState(result: Pick<ApiResult, 'error' | 'errorKo' | 'code' | 'status' | 'failure'>): ActionState {
   return {
