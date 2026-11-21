@@ -9,6 +9,7 @@ import { EXPECTED_TERMS_MISSING_MESSAGE, PAYMENT_TERMS_REQUIRED_MESSAGE, RECIPIE
 import { refuseIfProjectSwitched, writeProjectOf } from '../../lib/project-guard';
 import { AMOUNT_MISSING_CONFIRM_MESSAGE, SNAPSHOT_UNREADABLE_MESSAGE } from '../../lib/approval-snapshot';
 import { idempotencyKeyOf } from '../../lib/project-context';
+import { RECIPIENT_CHOICE_INVALID_MESSAGE, RECIPIENT_UNAVAILABLE_CODE, recipientChoiceOf } from '../../lib/maker-master';
 import { revalidatePath } from 'next/cache';
 
 /**
@@ -56,16 +57,37 @@ function isEmailAddress(value: string): boolean {
   return value.length <= 254 && /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]+$/.test(value);
 }
 
-/** Screen 1: freeze the maker paper (admin only; the API refuses everyone else). */
+/**
+ * P2 R33 (contract §4): the chosen master address is no longer usable (deactivated,
+ * another maker's). In the screen's words (メーカー) so the form can mark
+ * the 送信先 choice (lib/form-messages); the screen is read again so the list is current.
+ */
+const RECIPIENT_UNAVAILABLE_REFUSAL = {
+  // The screen word is メーカー (P1 R28); the dictionary sentence uses the server word. Both end
+  // in 「の宛先から選び直してください。」, which lib/form-messages maps to the 送信先 choice.
+  message: '選んだ送信先は使用できません。この案件のメーカーの宛先から選び直してください。'
+} as const;
+
+/**
+ * Screen 1: freeze the maker paper (admin and assigned staff; the API decides).
+ * P2 R33: the 送信先 is a master address (`recipientAddressId` only) or the typed
+ * address (`recipientAddress` only, checked as an e-mail) — never both, because the
+ * API refuses a typed address that differs from the chosen one.
+ */
 export async function createMakerPoAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
   const switched = await refuseIfProjectSwitched(formData);
   if (switched) return switched;
   const orderId = field(formData, 'orderId');
-  const recipientAddress = field(formData, 'recipientAddress');
   if (orderId.length === 0) return { ok: false, message: 'フィルム発注を選択してください。' };
-  if (recipientAddress.length === 0) return { ok: false, message: 'メーカーの送信先メールアドレスを入力してください。' };
-  if (!isEmailAddress(recipientAddress)) return { ok: false, message: RECIPIENT_EMAIL_INVALID_MESSAGE };
-  const body: Record<string, unknown> = { recipientAddress };
+  const recipient = recipientChoiceOf(formData);
+  if (recipient.kind === 'bad_id') return { ok: false, message: RECIPIENT_CHOICE_INVALID_MESSAGE };
+  if (recipient.kind === 'typed') {
+    if (recipient.recipientAddress.length === 0) return { ok: false, message: 'メーカーの送信先メールアドレスを入力してください。' };
+    if (!isEmailAddress(recipient.recipientAddress)) return { ok: false, message: RECIPIENT_EMAIL_INVALID_MESSAGE };
+  }
+  const body: Record<string, unknown> = recipient.kind === 'id'
+    ? { recipientAddressId: recipient.recipientAddressId }
+    : { recipientAddress: recipient.recipientAddress };
   const currency = field(formData, 'currency');
   const totalAmount = normalizeAmountText(field(formData, 'totalAmount'));
   // UI batch E (F-15): the currency is a select with JPY preselected, so it alone
@@ -76,7 +98,10 @@ export async function createMakerPoAction(_prev: ActionState | null, formData: F
     }
     body.amounts = { currency: currency.length > 0 ? currency : 'JPY', totalAmount };
   }
-  return post(formData, `/api/film-supply-orders/${encodeURIComponent(orderId)}/maker-purchase-orders`, body);
+  const state = await post(formData, `/api/film-supply-orders/${encodeURIComponent(orderId)}/maker-purchase-orders`, body);
+  if (state.code !== RECIPIENT_UNAVAILABLE_CODE) return state;
+  refresh();
+  return { ...state, message: RECIPIENT_UNAVAILABLE_REFUSAL.message };
 }
 
 /** Screen 2: the CEO approval of the frozen digest (admin only). */

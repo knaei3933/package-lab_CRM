@@ -1,6 +1,7 @@
 'use server';
 
 import { redirect } from 'next/navigation';
+import { revalidatePath } from 'next/cache';
 import { FILM_UNITS } from '@kanei/core';
 import { refuseIfProjectSwitched, writeProjectOf } from '../lib/project-guard';
 import { isRouteCode, orderPath } from '../lib/project-route';
@@ -10,6 +11,8 @@ import { RECIPIENT_EMAIL_INVALID_MESSAGE } from '../lib/form-messages';
 import { isPlainAmount, normalizeAmountText } from '../lib/amount';
 import { STEP_REFUSALS } from '../lib/step-messages';
 import { deliveryDatesFromForm } from '../lib/delivery-dates';
+import { RECIPIENT_CHOICE_INVALID_MESSAGE, RECIPIENT_UNAVAILABLE_CODE, recipientChoiceOf } from '../lib/maker-master';
+import { EVIDENCE_NOTE_FIELD } from '../lib/transition-evidence';
 import type { ActionState } from '../lib/types';
 
 /**
@@ -364,11 +367,16 @@ export async function createMakerPoStepAction(_prev: ActionState | null, formDat
   const switched = await guard(formData);
   if (switched) return switched;
   const orderId = field(formData, 'orderId');
-  const recipientAddress = field(formData, 'recipientAddress');
   const currency = field(formData, 'currency') || 'JPY';
   const totalAmount = normalizeAmountText(field(formData, 'totalAmount'));
   if (orderId.length === 0) return missing('フィルム発注が見つかりません。');
-  if (!isEmail(recipientAddress)) return missing(RECIPIENT_EMAIL_INVALID_MESSAGE);
+  // P2 R33: a master address (its id only) or the typed address (checked as an e-mail) — never both.
+  const recipient = recipientChoiceOf(formData);
+  if (recipient.kind === 'bad_id') return missing(RECIPIENT_CHOICE_INVALID_MESSAGE);
+  if (recipient.kind === 'typed' && !isEmail(recipient.recipientAddress)) return missing(RECIPIENT_EMAIL_INVALID_MESSAGE);
+  const recipientBody = recipient.kind === 'id'
+    ? { recipientAddressId: recipient.recipientAddressId }
+    : { recipientAddress: recipient.recipientAddress };
   // R24: the amount is required — the representative never approves a paper without one.
   // The amount is optional (the API only warns; the approval card asks the representative to
   // confirm a paper without one). When typed it must be a plain number.
@@ -387,12 +395,76 @@ export async function createMakerPoStepAction(_prev: ActionState | null, formDat
       label: 'メーカー発注書の作成',
       request: () => ({
         path: `/api/film-supply-orders/${id(orderId)}/maker-purchase-orders`,
-        body: totalAmount.length > 0 ? { recipientAddress, amounts: { currency, totalAmount } } : { recipientAddress }
+        body: totalAmount.length > 0 ? { ...recipientBody, amounts: { currency, totalAmount } } : recipientBody
+      })
+    }
+  ];
+  const result = await runChain(formData, steps, {
+    success: 'メーカー発注書（下書き）を作成しました。代表の承認を待ちます。',
+    refusal: STEP_REFUSALS
+  });
+  // P2 R33: the chosen address is gone — the screen is read again so the list is current.
+  if (!result.ok && result.code === RECIPIENT_UNAVAILABLE_CODE) revalidatePath('/', 'layout');
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// 4 デザイン入稿: the design data file (bound to the order) → デザイン受領 (one submit)
+// ---------------------------------------------------------------------------
+
+/** P2 R22: the memo is what records the receipt when there is no file. */
+const ARTWORK_NOTE_REQUIRED = 'ファイルがないときは、受け取ったデザインのメモを入力してください（例: 11/20 に顧客からメールで受領）。';
+
+/**
+ * P2 R22 (contract §6, DESIGN §9): the customer's design data is registered as
+ * 「デザイン入稿データ」 (documentType artwork_submission) bound to this order —
+ * the API attaches the order's own セブン化学発注書 (none is sent) — and the order
+ * moves to デザイン受領, in one submit. 「ファイルがなく、受領だけを記録する」 keeps
+ * the P1 way: the move with the memo only.
+ */
+export async function submitArtworkStepAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await guard(formData);
+  if (switched) return switched;
+  const projectId = writeProjectOf(formData)!;
+  const orderId = field(formData, 'orderId');
+  if (orderId.length === 0) return missing('フィルム発注が見つかりません。');
+  const note = optional(formData, EVIDENCE_NOTE_FIELD);
+  const designKey = optional(formData, 'designKey');
+  const hasFile = field(formData, 'contentBase64').length > 0;
+  if (!hasFile && !flag(formData, 'noFile')) return missing('ファイルを選択してください。');
+  if (!hasFile && !note) return missing(ARTWORK_NOTE_REQUIRED);
+  const file = hasFile ? uploadedFile(formData) : null;
+  if (file && !isFile(file)) return file;
+  const upload = file as UploadedFile | null;
+  const steps: ChainStep[] = [
+    {
+      label: 'デザイン入稿データの登録',
+      request: () => upload ? {
+        path: `/api/projects/${id(projectId)}/documents`,
+        body: {
+          documentType: 'artwork_submission',
+          issuerEntity: 'customer_generated',
+          filmSupplyOrderId: orderId,
+          ...(designKey ? { designKey } : {}),
+          filename: upload.filename,
+          contentBase64: upload.contentBase64,
+          contentType: upload.contentType
+        }
+      } : null
+    },
+    {
+      label: 'デザイン受領',
+      request: () => ({
+        path: `/api/film-supply-orders/${id(orderId)}/transitions`,
+        body: note ? { to: 'ARTWORK_RECEIVED', evidenceNote: note } : { to: 'ARTWORK_RECEIVED' }
       })
     }
   ];
   return runChain(formData, steps, {
-    success: 'メーカー発注書（下書き）を作成しました。代表の承認を待ちます。',
+    success: upload
+      ? `デザイン入稿データ（${upload.filename}）を登録し、デザイン受領にしました。`
+      : 'デザインの受領を記録しました（ファイルなし・メモは履歴に残ります）。',
+    link: orderLink(formData, '次: 5 校正の登録'),
     refusal: STEP_REFUSALS
   });
 }

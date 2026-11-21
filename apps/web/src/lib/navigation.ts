@@ -46,7 +46,7 @@ const OPERATORS: readonly NavRole[] = ['admin', 'staff'];
 /** P2 P-2: the screens the auditor reads (their APIs answer the auditor; nothing to write there). */
 const READERS: readonly NavRole[] = ['admin', 'staff', 'viewer', 'auditor'];
 
-/** P2 R33: the representative's maker master (製造先と送信先メール). */
+/** P2 R33: the representative's maker master (メーカーと送信先メール). */
 export const MAKERS_PATH = '/makers';
 /** P2 P-2: the evidence metadata list of a project (GET …/evidence-metadata). */
 export const EVIDENCE_PATH = '/evidence';
@@ -90,7 +90,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     title: 'メーカー発注',
     items: [
       { href: '/maker-po', label: 'メーカー発注', roles: READERS },
-      { href: MAKERS_PATH, label: '製造先の宛先', roles: ['admin'] }
+      { href: MAKERS_PATH, label: 'メーカーの宛先', roles: ['admin'] }
     ]
   },
   {
@@ -190,7 +190,7 @@ export const SCREEN_GUIDES: Readonly<Record<string, ScreenGuide>> = {
   [MAKERS_PATH]: {
     step: 3,
     phase: 'メーカー発注',
-    doHere: '製造先（メーカー）と、メーカー発注書の送信先メールアドレスを登録します。既定の宛先は発注書の作成時に最初から選ばれます（代表者のみ）。',
+    doHere: 'メーカーと、メーカー発注書の送信先メールアドレスを登録します。既定の宛先は発注書の作成時に最初から選ばれます（代表者のみ）。',
     next: { href: '/maker-po', label: 'メーカー発注', text: '宛先を登録したら、メーカー発注書の作成で宛先を選べます。' }
   },
   [EVIDENCE_PATH]: {

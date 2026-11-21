@@ -7,6 +7,24 @@ import { PAYMENT_TERMS_LABELS } from '../lib/maker-po-data';
 import { ISSUER_ENTITY_LABELS, EVIDENCE_SOURCE_LABELS, formatTimestamp } from '../lib/vocabulary';
 import { webErrorText } from '../lib/error-dictionary';
 import { ERROR_DICTIONARY } from '../lib/error-dictionary-data';
+import { dateCell, DeliveryTermsRows } from './OrderTermsSection';
+import type { TermCell } from './OrderTermsSection';
+
+/** P2 R30 / P-8: the card's 条件ブロック cells; the web fallback card has none (「—」). */
+function termCells(card: ApprovalCardView): { requested: TermCell; planned: TermCell; quantity: TermCell; amount: TermCell } {
+  const terms = card.deliveryTerms;
+  const unknown: TermCell = { missing: 'unknown' };
+  if (!terms) return { requested: unknown, planned: unknown, quantity: unknown, amount: unknown };
+  const date = (value: string | null | undefined): TermCell => (value === undefined ? unknown : dateCell(value, true));
+  const seven = terms.sevenPo;
+  const fact = (value: string | null): TermCell => (value ? { text: value } : { missing: 'unrecorded' });
+  return {
+    requested: date(terms.requestedDeliveryDate),
+    planned: date(terms.plannedDeliveryDate),
+    quantity: seven === 'unlinked' ? { missing: 'unlinked' } : seven === 'unknown' ? unknown : fact(seven.quantityDisplay),
+    amount: seven === 'unlinked' ? { missing: 'unlinked' } : seven === 'unknown' ? unknown : fact(seven.amountDisplay)
+  };
+}
 
 /** P0 R09: a known code is said in the dictionary's words; the API's own text only for an unknown one. */
 function noteText(code: string, message: string): string {
@@ -58,6 +76,7 @@ function Seal({ name, ko, organization }: { name: string; ko: string; organizati
 export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean: boolean }) {
   const paperName = card.displayNumber ? `メーカー発注書 ${card.displayNumber}` : `${card.orderCode} のメーカー発注書`;
   const terms = card.paymentTerms ? PAYMENT_TERMS_LABELS[card.paymentTerms] ?? card.paymentTerms : '未記録';
+  const cells = termCells(card);
   return (
     <section className="p1-card" aria-labelledby="approval-card-title" data-korean={korean ? 'on' : undefined}>
       <h3 id="approval-card-title" className="p1-card-title">
@@ -68,8 +87,26 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
         <dd className="p1-figure">{card.amountDisplay ?? '未入力'}</dd>
         <dt><Bilingual ja="支払条件" ko="결제 조건" /></dt>
         <dd>{terms}<span className="p1-muted-inline"> ・ 入金確認は別の手順です</span></dd>
-        <dt><Bilingual ja="希望納期" ko="희망 납기" /></dt>
-        <dd>未記録<span className="p1-muted-inline">（納期の記録欄はまだありません）</span></dd>
+        {/* P2 R30 / P-8: the same 条件ブロック as the order screen (DESIGN §3). */}
+        <DeliveryTermsRows
+          requested={cells.requested}
+          planned={cells.planned}
+          quantity={cells.quantity}
+          amount={cells.amount}
+          emptyHint={<span className="p1-muted-inline">（承認前に<a href="#order-terms">発注の条件</a>で記録できます）</span>}
+        />
+      </dl>
+      <p className="p1-note p2-terms-fix">
+        {card.status === 'DRAFT' ? (
+          <Bilingual
+            ja="承認すると、この納期・数量で固定されます。変えるにはメーカー発注書を取り消して作り直します。"
+            ko="승인하면 이 납기·수량으로 고정됩니다. 바꾸려면 제조처 발주서를 취소하고 다시 만드세요."
+          />
+        ) : (
+          <Bilingual ja="納期・数量は代表承認で固定されています。" ko="납기·수량은 대표 승인으로 고정되어 있습니다." />
+        )}
+      </p>
+      <dl className="p1-facts">
         <dt><Bilingual ja="明細" ko="명세" /></dt>
         <dd>
           {card.items.length === 0 ? '—' : (
@@ -120,7 +157,22 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
             : '紐付けなし'}
         </dd>
         <dt><Bilingual ja="送信先" ko="송신처" /></dt>
-        <dd translate="no">{card.recipient.address ?? '未記録'}{card.recipient.address && !card.recipient.isEmail ? ' ✕ メールアドレスではありません' : ''}</dd>
+        <dd>
+          <span translate="no">{card.recipient.address ?? '未記録'}</span>{card.recipient.address && !card.recipient.isEmail ? ' ✕ メールアドレスではありません' : ''}
+          {/* P2 contract v1.1 L2: where the address comes from (a typed address is allowed, but visible). */}
+          {card.recipient.address && card.recipient.inMakerMaster === true ? (
+            <span className="p2-terms-source p1-muted-inline"><span aria-hidden="true">✓ </span><Bilingual ja="メーカーマスターの宛先" ko="제조처 마스터의 수신처" /></span>
+          ) : null}
+          {card.recipient.address && card.recipient.inMakerMaster === false ? (
+            <span className="p2-terms-source field-warning">
+              <span aria-hidden="true">⚠</span>{' '}
+              <Bilingual
+                ja="直接入力の宛先（メーカーマスター外）です。メーカーのメールアドレスと一致しているか確かめてから承認してください。"
+                ko="직접 입력한 수신처(제조처 마스터 외)입니다. 제조처의 메일 주소와 일치하는지 확인한 뒤 승인하세요."
+              />
+            </span>
+          ) : null}
+        </dd>
       </dl>
 
       {card.blockers.length > 0 ? (

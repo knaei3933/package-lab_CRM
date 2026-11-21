@@ -231,6 +231,8 @@ describe('fieldForActionMessage (1-①)', () => {
       // UI batch F: the change request fields of the revision form.
       'components/ChangeRequestFields.tsx',
       'components/DeliveryRecordForm.tsx',
+      // P2: R33 (lane X2) — the maker PO 送信先 (recipientAddress / recipientChoice) moved into its chooser.
+      'components/RecipientChooser.tsx',
       'components/ProjectPicker.tsx',
       'screens/OrdersScreen.tsx',
       'screens/DocumentsScreen.tsx',

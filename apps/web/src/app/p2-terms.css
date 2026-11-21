@@ -1,1 +1,19 @@
 /* P2 web: p2-terms — owned by one implementation lane (see demo-eml/p2-web/REPORT.md). */
+/* 「発注の条件」 (DESIGN §1) and the approval card's 条件ブロック (§3): existing tokens only. */
+
+.p2-terms { display: grid; gap: var(--space-3); scroll-margin-top: 80px; }
+.p2-terms > .p1-section-title { margin: 0; }
+.p2-terms-lock { display: grid; gap: var(--space-2); }
+.p2-terms-lock > .p1-banner { margin: 0; }
+
+/* The three forms are separated by a rule, not by headings (DESIGN §1, 390px). */
+.p2-terms-forms { display: grid; gap: var(--space-3); }
+.p2-terms-form { padding-top: var(--space-3); border-top: 1px solid var(--line); }
+
+/* The approval card: the recipient's source sits on its own line under the address. */
+.p2-terms-source { display: flex; margin-top: var(--space-1); }
+.p2-terms-fix { margin: var(--space-2) 0; }
+
+@media (max-width: 640px) {
+  .p2-terms-form .form-actions > button { width: 100%; }
+}

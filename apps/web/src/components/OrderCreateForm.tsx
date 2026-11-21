@@ -13,6 +13,7 @@ import {
   SubmitLock
 } from './form-feedback';
 import type { ConfirmOptions } from './form-feedback';
+import { DateTextField } from './fields';
 import { lineField } from '../lib/form-messages';
 import { normalizeQuantityText } from '../lib/form-validation';
 import type { Choice } from '../lib/types';
@@ -324,6 +325,23 @@ export function OrderCreateForm({
           </button>
         </div>
       </div>
+
+      {orderKind === 'film' ? (
+        // P2 R30: the optional 希望納期・納品予定日 of a film order (an empty field is not sent). No
+        // 「（任意）」 mark here: on this form it must never be read near the required PO (F-05).
+        <div className="p1-check-grid">
+          <DateTextField
+            name="requestedDeliveryDate"
+            label="希望納期"
+            hint="お客様が希望する納品日。わからなければ空のままで構いません。例 2026/12/01"
+          />
+          <DateTextField
+            name="plannedDeliveryDate"
+            label="納品予定日"
+            hint="メーカーが約束した納品日。空のままにして、あとから発注の画面で入れることもできます。"
+          />
+        </div>
+      ) : null}
 
       <div className="form-actions">
         <SubmitLock>

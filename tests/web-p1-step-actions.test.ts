@@ -82,7 +82,9 @@ const VALID: Record<string, () => Record<string, string | string[]>> = {
   recordApprovalStepAction: approvalForm,
   createMakerPoStepAction: makerForm,
   recordAcceptanceStepAction: acceptForm,
-  recordDeliveryStepAction: deliveryForm
+  recordDeliveryStepAction: deliveryForm,
+  // P2: R22 デザイン入稿 (lane X2) — the design data file bound to the order, then デザイン受領.
+  submitArtworkStepAction: () => ({ orderId: 'ord-1', ...file })
 };
 
 beforeEach(() => {

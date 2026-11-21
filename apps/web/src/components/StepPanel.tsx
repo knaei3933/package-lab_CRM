@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { ActionForm } from './ActionForm';
 import { MakerPoSendEvidenceForm } from './MakerPoSendEvidenceForm';
+import { RecipientChooser } from './RecipientChooser';
 import { StepFileField } from './StepFileField';
 import { CheckboxField, SelectField, TextareaField, TextField } from './fields';
 import {
@@ -16,10 +17,12 @@ import {
   recordAcceptanceStepAction,
   recordApprovalStepAction,
   recordDeliveryStepAction,
+  submitArtworkStepAction,
   submitProofStepAction
 } from '../app/step-actions';
 import { EVIDENCE_NOTE_FIELD } from '../lib/transition-evidence';
-import { PAYMENT_TERMS_LABELS } from '../lib/maker-po-data';
+import { makerPoNumberOf, PAYMENT_TERMS_LABELS } from '../lib/maker-po-data';
+import type { RecipientChoices } from '../lib/maker-master';
 import type { MakerPoEventRow, MakerPoViewRow } from '../lib/maker-po-data';
 import { waitingText } from '../lib/order-flow';
 import type { ApprovalSlotDesign, ApprovalSlotState, OrderFlowView } from '../lib/order-flow';
@@ -48,6 +51,11 @@ interface StepPanelProps {
   stateLabel: (key: string) => string;
   /** R24: the approval card of the paper waiting for the 代表承認 (admin only). */
   approvalCard?: ApprovalCardView | null | undefined;
+  /**
+   * P2 R33: the project maker's recipient addresses for the maker PO form
+   * (lib/maker-master loadMakerRecipients). Absent: typed address only.
+   */
+  recipients?: RecipientChoices | undefined;
 }
 
 const TERMS_CHOICES = [
@@ -71,6 +79,20 @@ function OrderFields({ order, projectCode }: { order: FilmSupplyOrderView; proje
       <input type="hidden" readOnly name="orderCode" value={order.code} />
       <input type="hidden" readOnly name="projectCode" value={projectCode} />
     </>
+  );
+}
+
+/**
+ * P2 R32 (DESIGN §6): the paper this step is about, by its MPO number — or the
+ * order-code name when the API did not answer one.
+ */
+function PaperLine({ maker, orderCode }: { maker: MakerPoViewRow | null; orderCode: string }) {
+  if (!maker) return null;
+  const number = makerPoNumberOf(maker.displayNumber);
+  return (
+    <p className="p1-muted-inline p2-paper-line">
+      {number ? <>メーカー発注書 <span translate="no" className="p1-figure p2-mpo-number">{number}</span></> : `${orderCode} のメーカー発注書`}
+    </p>
   );
 }
 
@@ -117,6 +139,8 @@ export function StepPanelView(props: StepPanelProps) {
         </>
       );
     case 'advance':
+      // P2 R22: 4 デザイン入稿 registers the file itself (an order without its セブン化学発注書 keeps the memo form).
+      if (action.to === 'ARTWORK_RECEIVED' && order.sevenPurchaseOrderId) return <ArtworkStep {...props} />;
       return (
         <ActionForm action={transitionFilmSupplyOrderAction} submitLabel={action.label} hint={action.hint}>
           <OrderFields order={order} projectCode={projectCode} />
@@ -154,7 +178,7 @@ export function StepPanelView(props: StepPanelProps) {
         >
           <OrderFields order={order} projectCode={projectCode} />
           <input type="hidden" readOnly name="needsReadyTransition" value={action.needsReadyTransition ? 'true' : 'false'} />
-          <TextField name="recipientAddress" label="メーカーの送信先メールアドレス" type="email" required width={360} autoComplete="off" spellCheck={false} placeholder="order@maker.example" />
+          <RecipientChooser choices={props.recipients ?? { kind: 'not_loaded' }} showMakersLink={props.role === 'admin'} />
           {/* Amounts are the representative's (staff never see them): only the representative types one here. */}
           {props.role === 'admin' ? (
             <div className="p1-row">
@@ -170,33 +194,45 @@ export function StepPanelView(props: StepPanelProps) {
         : <p>メーカー発注書を読み込めませんでした。画面を再読み込みしてください。</p>;
     case 'send':
       return (
-        <MakerPoSendEvidenceForm
-          action={recordMakerPoSendEvidenceAction}
-          poId={action.poId}
-          sendEvidenceChoices={[]}
-          recipientAddress={props.maker?.recipientAddress ?? props.maker?.snapshot?.recipient?.address ?? null}
-          ceoApprovedAt={props.maker?.ceoApprovedAt ?? null}
-          orderCode={order.code}
-        />
+        <>
+          <PaperLine maker={props.maker} orderCode={order.code} />
+          <MakerPoSendEvidenceForm
+            action={recordMakerPoSendEvidenceAction}
+            poId={action.poId}
+            sendEvidenceChoices={[]}
+            recipientAddress={props.maker?.recipientAddress ?? props.maker?.snapshot?.recipient?.address ?? null}
+            ceoApprovedAt={props.maker?.ceoApprovedAt ?? null}
+            orderCode={order.code}
+          />
+        </>
       );
     case 'send_verify':
       return (
-        <ActionForm action={verifyMakerPoSendAction} submitLabel="送信の確認を記録する" hint="確認者と日時は自動で記録されます。">
-          <input type="hidden" readOnly name="eventId" value={action.eventId} />
-          <p>送信メールを自動では確かめられませんでした。宛先・送信日時・件名を原本で確認してください。</p>
-          <SelectField name="result" label="確認の結果" required includeBlank blankLabel="（選ぶ）" choices={[{ value: 'confirmed', label: '確認済み（送信された）' }, { value: 'rejected', label: '相違あり（送信として認めない）' }]} />
-          <TextareaField name="reasonNote" label="根拠（何を確かめたか）" required rows={2} />
-        </ActionForm>
+        <>
+          <PaperLine maker={props.maker} orderCode={order.code} />
+          <ActionForm action={verifyMakerPoSendAction} submitLabel="送信の確認を記録する" hint="確認者と日時は自動で記録されます。">
+            <input type="hidden" readOnly name="eventId" value={action.eventId} />
+            <p>送信メールを自動では確かめられませんでした。宛先・送信日時・件名を原本で確認してください。</p>
+            <SelectField name="result" label="確認の結果" required includeBlank blankLabel="（選ぶ）" choices={[{ value: 'confirmed', label: '確認済み（送信された）' }, { value: 'rejected', label: '相違あり（送信として認めない）' }]} />
+            <TextareaField name="reasonNote" label="根拠（何を確かめたか）" required rows={2} />
+          </ActionForm>
+        </>
       );
     case 'send_stuck':
       return (
         <>
+          <PaperLine maker={props.maker} orderCode={order.code} />
           <p>送信未確認のまま止まっています（証跡なしの送信）。証跡をそろえたうえで代表が判断します。</p>
           <p><Link href={`${projectPath(projectCode, 'maker-po')}#maker-order-${order.id}`}>メーカー発注の一覧で確認する</Link></p>
         </>
       );
     case 'accept':
-      return <AcceptStep {...props} poId={action.poId} provisionalRecorded={action.provisionalRecorded} />;
+      return (
+        <>
+          <PaperLine maker={props.maker} orderCode={order.code} />
+          <AcceptStep {...props} poId={action.poId} provisionalRecorded={action.provisionalRecorded} />
+        </>
+      );
     case 'deliver':
       return (
         <ActionForm action={recordDeliveryStepAction} submitLabel="納品を記録する" hint="明細ごとに受け取った数量を確かめます（初期値は発注数量）。">
@@ -284,6 +320,45 @@ function waitDetail(action: OrderFlowView['panel']['action']): string {
     default:
       return '';
   }
+}
+
+/**
+ * P2 R22 (DESIGN §9): 4 デザイン入稿 — the customer's design data, registered as
+ * 「デザイン入稿データ」 bound to this order, then デザイン受領, in one submit.
+ * Without a file, 「ファイルがなく、受領だけを記録する」 records the receipt with
+ * the memo (the P1 way). The file field is not required in the browser for that
+ * reason; the server action asks for the file or the memo.
+ */
+function ArtworkStep({ order, projectCode }: StepPanelProps) {
+  return (
+    <ActionForm
+      action={submitArtworkStepAction}
+      submitLabel="デザイン入稿データを登録して、受領済みにする"
+      hint="入稿ファイルはこの発注に紐付けて保存され、セブン化学発注書はこの発注のものが自動で紐付きます。ファイルがないときは、下のチェックを入れてメモだけで受領を記録します。"
+      successHint="次の手順: 校正の登録"
+    >
+      <OrderFields order={order} projectCode={projectCode} />
+      <StepFileField
+        label="デザイン入稿データ"
+        required={false}
+        hint="顧客から受け取った入稿ファイル（PDF・画像など、5MBまで）。この発注に紐付けて保存されます。"
+      />
+      <TextField
+        name="designKey"
+        label="デザイン名（任意）"
+        width={220}
+        hint="版を分けて管理するときだけ。例 表面A"
+        autoComplete="off"
+      />
+      <TextareaField
+        name={EVIDENCE_NOTE_FIELD}
+        label="メモ（任意・履歴に保存）"
+        rows={2}
+        hint="例: 11/20 に顧客からメールで受領。ファイルがないときは必須です。"
+      />
+      <CheckboxField name="noFile" label="ファイルがなく、受領だけを記録する" />
+    </ActionForm>
+  );
 }
 
 /** 5 校正: one design's proof file → 版 → 校了確認待ち, in one submit. */

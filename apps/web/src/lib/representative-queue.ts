@@ -38,6 +38,8 @@ export interface RepresentativeTask {
   amount?: string | null | undefined;
   waitingSince?: string | null | undefined;
   requestedBy?: string | null | undefined;
+  /** P2 R32: the maker paper's number (MPO-2026-0001) when the queue item carries it. */
+  displayNumber?: string | null | undefined;
   /** Set on a blocked row: why it cannot move, in one sentence. */
   blockedReason?: string | null | undefined;
 }
@@ -103,6 +105,7 @@ export function taskFromServerItem(item: unknown, blocked = false): Representati
     amount: str(amounts.display) ?? (str(amounts.totalAmount) ? formatAmount(str(amounts.currency), str(amounts.totalAmount)) : null),
     waitingSince: str(row.waitingSince),
     requestedBy: str(record(row.requestedBy).displayName),
+    displayNumber: str(paper.displayNumber) ?? undefined,
     blockedReason: blocked ? str(reason.message) : null
   };
 }

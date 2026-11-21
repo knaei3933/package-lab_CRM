@@ -586,14 +586,20 @@ export async function uploadDocumentAction(_prev: ActionState | null, formData: 
     // before anything is persisted.
     contentType: field(formData, 'contentType')
   };
-  const sevenPurchaseOrderId = optionalField(formData, 'sevenPurchaseOrderId');
+  // P2 R22: a design submission belongs to one film order and the server attaches that order's
+  // セブン化学発注書 itself — no order is refused here, and no PO id is ever sent for it.
+  const artworkSubmission = body.documentType === 'artwork_submission';
+  const filmSupplyOrderId = optionalField(formData, 'filmSupplyOrderId');
+  if (artworkSubmission && !filmSupplyOrderId) {
+    return { ok: false, message: 'デザイン入稿データは、フィルム発注を選んで登録してください（セブン化学発注書は発注のものが自動で紐付きます）。' };
+  }
+  const sevenPurchaseOrderId = artworkSubmission ? undefined : optionalField(formData, 'sevenPurchaseOrderId');
   // UI batch E (F-07): the API refuses an official artifact without a verified
   // PO link (SEVEN_PO_REQUIRED); say so on the field before the upload is sent.
   if (!sevenPurchaseOrderId && PO_REQUIRED_DOCUMENT_TYPES.includes(String(body.documentType))) {
     return { ok: false, message: 'セブン化学発注書を選択してください（校正ゲラ・各種証跡では必須です）。' };
   }
   if (sevenPurchaseOrderId) body.sevenPurchaseOrderId = sevenPurchaseOrderId;
-  const filmSupplyOrderId = optionalField(formData, 'filmSupplyOrderId');
   if (filmSupplyOrderId) body.filmSupplyOrderId = filmSupplyOrderId;
   const makerPurchaseOrderId = optionalField(formData, 'makerPurchaseOrderId');
   if (makerPurchaseOrderId) body.makerPurchaseOrderId = makerPurchaseOrderId;

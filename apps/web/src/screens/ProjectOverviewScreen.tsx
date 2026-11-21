@@ -12,9 +12,9 @@ import { ProjectOrderList } from '../components/ProjectOrderList';
 import { loadSessionUser } from '../lib/api';
 import { buildDashboard, OTHERS_TITLE, STALE_AFTER_DAYS, STALE_BASIS, STALLED_TITLE, TODO_SCOPE, TODO_TITLE } from '../lib/dashboard';
 import { loadDashboardData } from '../lib/dashboard-data';
-import { canRoleOperate, normalizeRole } from '../lib/permissions';
+import { canRoleOperate, isAuditorRole, normalizeRole } from '../lib/permissions';
 import { loadSelectableProjectList } from '../lib/project-data';
-import { newOrderPath } from '../lib/project-route';
+import { newOrderPath, projectPath } from '../lib/project-route';
 import { failedRepresentativeQueue, loadRepresentativeQueue } from '../lib/representative-queue';
 import type { ProjectScreenProps } from './screen-props';
 
@@ -61,6 +61,9 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
               <Link className="p1-button p1-button--primary" href={newOrderPath(projectCode)}>新しいフィルム発注</Link>
             ) : null}
           </div>
+          {role !== 'viewer' || isAuditorRole(user.role) ? (
+            <p className="p1-order-links"><Link href={projectPath(projectCode, 'evidence')}>証跡の一覧</Link></p>
+          ) : null}
           <ProjectOrderList workspace={workspace} projectCode={projectCode} loadFailed={Boolean(workspace.error)} />
         </section>
 

@@ -172,6 +172,9 @@ export const ACTION_MESSAGE_FIELDS: readonly ActionMessageField[] = [
   // app/maker-po/actions.ts
   { message: 'フィルム発注を選択してください。', match: 'exact', field: 'orderId', source: 'maker-po-actions' },
   { message: RECIPIENT_EMAIL_INVALID_MESSAGE, match: 'exact', field: 'recipientAddress', source: 'maker-po-actions' },
+  // P2 R33: MAKER_RECIPIENT_ADDRESS_UNAVAILABLE marks the 送信先 radios — the /maker-po wording
+  // (メーカー) and the dictionary sentence the step form shows (製造先) share this suffix.
+  { message: 'の宛先から選び直してください。', match: 'suffix', field: 'recipientChoice', source: 'maker-po-actions' },
   {
     message: 'メーカーの送信先メールアドレスを入力してください。',
     match: 'exact',

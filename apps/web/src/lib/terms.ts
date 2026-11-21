@@ -94,7 +94,7 @@ export const MENU_TERMS: Readonly<Record<string, Term>> = {
   '/home:staff': { ja: '自分の作業', ko: '내 작업' },
   '/home:viewer': { ja: '履歴', ko: '이력' },
   '/home:auditor': { ja: '監査履歴', ko: '감사 이력' },
-  '/makers': { ja: '製造先の宛先', ko: '제조처 수신처' },
+  '/makers': { ja: 'メーカーの宛先', ko: '제조처 수신처' },
   '/evidence': { ja: '証跡の一覧', ko: '증빙 목록' },
   '/dashboard': { ja: 'ダッシュボード', ko: '대시보드(안건 선택)' },
   '/orders': { ja: '発注の一覧', ko: '발주 목록' },

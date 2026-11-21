@@ -4,6 +4,7 @@ import type { MakerPoViewRow } from './maker-po-data';
 import { loadApprovalGate } from './project-data';
 import type { ApprovalGateView, OrganizationApprovalStateView, SevenPurchaseOrderView } from './project-data';
 import { formatAmount, formatQuantityWithUnit } from './number-format';
+import { orderAmountDisplay, orderFactsFromApi } from './order-terms';
 
 /**
  * P1 R24: the representative's approval card (REDESIGN §5-4) — every fact the
@@ -50,7 +51,18 @@ export interface ApprovalCardView {
   amountDisplay: string | null;
   items: Array<{ lineNumber: number; description: string; quantityDisplay: string }>;
   artworkFiles: Array<{ designKey: string; revisionNo: number; sha256: string; filename: string | null; matchesApprovedRevision: boolean | null }>;
-  recipient: { address: string | null; isEmail: boolean };
+  /**
+   * P2 contract v1.1 L2: whether the address is an active master address of the
+   * project's maker (true / false); absent or null when the card did not say.
+   */
+  recipient: { address: string | null; isEmail: boolean; inMakerMaster?: boolean | null | undefined };
+  /**
+   * P2 R30 / P-8: the 希望納期・納品予定日 of the order and the セブン化学発注書
+   * quantity and amount (the card is admin-only). Absent or null on the web
+   * fallback card, which has no such data — the card then shows 「—」.
+   * A date is `YYYY-MM-DD`, null when not recorded, undefined when not answered.
+   */
+  deliveryTerms?: CardDeliveryTerms | null | undefined;
   sevenPo: { poNumber: string | null; officialRegisteredAt: string | null; verificationStatus: string | null } | null;
   designs: CardDesign[];
   dualApproved: boolean;
@@ -61,6 +73,30 @@ export interface ApprovalCardView {
   /** For the approval request: the 支払条件 and (server card) the snapshot hash the card showed. */
   expectedPaymentTerms: string | null;
   expectedSnapshotSha256: string | null;
+}
+
+export interface CardDeliveryTerms {
+  requestedDeliveryDate: string | null | undefined;
+  plannedDeliveryDate: string | null | undefined;
+  /** 'unlinked' = no セブン化学発注書; 'unknown' = the card did not carry its order-facts. */
+  sevenPo: 'unlinked' | 'unknown' | { quantityDisplay: string | null; amountDisplay: string | null };
+}
+
+const CALENDAR_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Pure: the server card's dates and order-facts (contract §3). */
+export function deliveryTermsFromServer(order: Record<string, unknown>, seven: Record<string, unknown> | null): CardDeliveryTerms {
+  const date = (key: string): string | null | undefined => {
+    if (!Object.hasOwn(order, key)) return undefined;
+    const value = order[key];
+    return typeof value === 'string' && CALENDAR_DATE.test(value) ? value : null;
+  };
+  const facts = seven && isRecord(seven.orderFacts) ? orderFactsFromApi(seven.orderFacts, 'admin') : null;
+  return {
+    requestedDeliveryDate: date('requestedDeliveryDate'),
+    plannedDeliveryDate: date('plannedDeliveryDate'),
+    sevenPo: !seven ? 'unlinked' : facts ? { quantityDisplay: facts.quantityDisplay, amountDisplay: orderAmountDisplay(facts.amount) } : 'unknown'
+  };
 }
 
 const EMAIL = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]+$/;
@@ -130,7 +166,12 @@ export function cardFromServer(poId: string, data: unknown): ApprovalCardView | 
       filename: text(file.filename),
       matchesApprovedRevision: typeof file.matchesApprovedRevision === 'boolean' ? file.matchesApprovedRevision : null
     })),
-    recipient: { address: text(recipient.address), isEmail: recipient.isEmail === true },
+    recipient: {
+      address: text(recipient.address),
+      isEmail: recipient.isEmail === true,
+      ...(typeof recipient.inMakerMaster === 'boolean' ? { inMakerMaster: recipient.inMakerMaster } : {})
+    },
+    deliveryTerms: deliveryTermsFromServer(order, seven),
     sevenPo: seven ? { poNumber: text(seven.poNumber), officialRegisteredAt: text(seven.officialRegisteredAt), verificationStatus: text(seven.verificationStatus) } : null,
     designs: list(approvals.designs).map((design) => {
       const organizations = isRecord(design.organizations) ? design.organizations : {};
@@ -209,6 +250,8 @@ export function cardFromWeb(input: {
       };
     }),
     recipient: { address, isEmail: address ? EMAIL.test(address) : false },
+    // P2 R30: the web's own reads carry no dates / order-facts for the card — shown as 「—」.
+    deliveryTerms: null,
     sevenPo: input.sevenPo
       ? {
           poNumber: input.sevenPo.poNumberHidden ? null : input.sevenPo.poNumber,

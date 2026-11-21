@@ -7,7 +7,7 @@ import { standardTerm } from '../lib/terms';
 import { ClearDrafts } from '../components/ClearDrafts';
 import { StatusBadge } from '../components/StatusBadge';
 import { callApi, loadSessionUser } from '../lib/api';
-import { loadMakerPoBoard, loadMakerPoDetail, sendManualVerificationsFromAuditEvents, undisclosedSendDecisionEventIds, MAKER_PO_AUDIT_WINDOW } from '../lib/maker-po-data';
+import { loadMakerPoBoard, loadMakerPoDetail, makerPoName, makerPoNumberOf, sendManualVerificationsFromAuditEvents, undisclosedSendDecisionEventIds, MAKER_PO_AUDIT_WINDOW } from '../lib/maker-po-data';
 import type { MakerPoEventRow } from '../lib/maker-po-data';
 import { buildOrderFlow, currentPaymentTerms, liveMakerPo, nextStepText, ORDER_STEPS, STEP_COUNT } from '../lib/order-flow';
 import { loadApprovalCard } from '../lib/approval-card';
@@ -20,6 +20,9 @@ import { formatTimestamp } from '../lib/vocabulary';
 import { formatQuantityWithUnit } from '../lib/number-format';
 import { orderRecordText } from '../lib/order-records';
 import type { ProjectScreenProps } from './screen-props';
+import { deliveryTermsSummary, OrderTermsSection } from '../components/OrderTermsSection';
+import { deliveryTermsLock, loadOrderFacts } from '../lib/order-terms';
+import { loadMakerRecipients } from '../lib/maker-master';
 
 /** States in which the approval gate (designs, 押印 slots, pending checks) is read. */
 const GATE_STATES = new Set(['ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']);
@@ -76,9 +79,11 @@ export async function OrderDetailScreen({
   const entry = board.boards.find((candidate) => candidate.order.id === order.id) ?? null;
   const makerPos = entry?.makerPurchaseOrders ?? [];
   const maker = liveMakerPo(makerPos);
-  const [gate, makerDetail] = await Promise.all([
+  const [gate, makerDetail, orderFacts] = await Promise.all([
     status && GATE_STATES.has(status) ? loadApprovalGate(order.id) : Promise.resolve<ApprovalGateView | null>(null),
-    maker ? loadMakerPoDetail(maker.id) : Promise.resolve({ purchaseOrder: null, events: [] as MakerPoEventRow[], error: null })
+    maker ? loadMakerPoDetail(maker.id) : Promise.resolve({ purchaseOrder: null, events: [] as MakerPoEventRow[], error: null }),
+    // P2 R30 / P-8: the セブン化学発注書 quantity (and, for admin, amount) of 「発注の条件」.
+    loadOrderFacts(order.sevenPurchaseOrderId, user.role)
   ]);
   const auditRows = makerAudit.ok && makerAudit.data && Array.isArray(makerAudit.data.events) ? makerAudit.data.events : [];
   const settled = new Set<string>([
@@ -112,6 +117,8 @@ export async function OrderDetailScreen({
         sevenPo: po
       })
     : null;
+  // P2 R33: the project maker's recipient addresses, only when this role creates the maker paper now.
+  const recipients = flow.panel.action.kind === 'maker_po_create' && flow.panel.canAct ? await loadMakerRecipients(projectId) : undefined;
   const currentStep = flow.current ? ORDER_STEPS[flow.current - 1] : null;
   const records = (activity.ok && activity.data && Array.isArray(activity.data.events) ? activity.data.events : [])
     .filter((event) => event.entityId === order.id || event.afterState?.filmSupplyOrderId === order.id
@@ -119,6 +126,9 @@ export async function OrderDetailScreen({
     .slice(0, 12);
   // P1 R34: what changes when something is recorded here (the step, its slots, the maker paper).
   const progressKey = JSON.stringify([status, flow.current, flow.panel.action, maker?.status ?? null, records[0]?.id ?? null]);
+  const termsLock = deliveryTermsLock(makerPos);
+  const makerNumber = maker ? makerPoNumberOf(maker.displayNumber) : null;
+  const termsStep = flow.panel.action.kind === 'maker_po_create' || flow.panel.action.kind === 'ceo_approve';
   const lineSummary = order.lines.map((line) => formatQuantityWithUnit(line.orderedQuantity, line.unit)).join('・');
 
   return (
@@ -139,11 +149,17 @@ export async function OrderDetailScreen({
           <span>{lineSummary || '明細なし'}</span>
           <span>案件 <span translate="no">{projectCode}</span></span>
           {po ? <span>セブン化学発注書 <span translate="no">{po.poNumberHidden ? '（閲覧権限なし）' : po.poNumber}</span></span> : null}
+          {maker
+            ? makerNumber
+              ? <span>メーカー発注書 <span translate="no" className="p1-figure">{makerNumber}</span></span>
+              : <span>{makerPoName(maker, order.code)}</span>
+            : null}
           <span>支払条件 {paymentTermsText(order)}</span>
         </p>
         <p className="p1-order-links">
           <Link href={projectPath(projectCode, 'orders') + `#order-${order.id}`}>発注一覧で見る</Link>
           <Link href={projectPath(projectCode, 'maker-po') + `#maker-order-${order.id}`}>メーカー発注の一覧</Link>
+          <a href="#order-terms">発注の条件</a>
         </p>
       </header>
 
@@ -192,11 +208,27 @@ export async function OrderDetailScreen({
             documents={workspace.documents}
             stateLabel={stateLabel}
             approvalCard={approvalCard}
+            recipients={recipients}
           />
           </StepAnnouncer>
           {nextStepText(flow) ? <p className="p1-next">{nextStepText(flow)}</p> : null}
+          {/* P2 DESIGN §1: before the paper is made / approved, the terms it will fix are in sight. */}
+          {termsStep ? (
+            <p className="p1-note">
+              {deliveryTermsSummary(order, orderFacts)}（<a href="#order-terms">発注の条件を見る</a>）
+            </p>
+          ) : null}
         </section>
       </div>
+
+      <OrderTermsSection
+        order={order}
+        role={user.role}
+        facts={orderFacts}
+        lock={termsLock}
+        projectCode={projectCode}
+        cancelled={status === 'CANCELLED'}
+      />
 
       <section className="p1-records" aria-labelledby="records-title">
         <h2 id="records-title" className="p1-section-title">記録（新しい順）</h2>

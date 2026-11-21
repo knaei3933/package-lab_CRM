@@ -29,6 +29,9 @@ interface DocumentUploadFormProps {
 
 const SUBMIT_LABEL = '書類をアップロードする';
 
+/** P2 R22: the design submission belongs to one film order; the server attaches that order's セブン化学発注書. */
+const ARTWORK_SUBMISSION = 'artwork_submission';
+
 /** Filename suffix → the content types the API accepts. */
 const EXTENSION_CONTENT_TYPES: Record<string, string> = {
   pdf: 'application/pdf',
@@ -84,11 +87,16 @@ export function DocumentUploadForm({
   const poDefault = defaultSevenPoId(sevenPurchaseOrderChoices);
   const [sevenPurchaseOrderId, setSevenPurchaseOrderId] = useState(() => (requiresSevenPo(documentType) ? poDefault : ''));
   const poRequired = requiresSevenPo(documentType);
+  const artwork = documentType === ARTWORK_SUBMISSION;
 
   /** A type that needs the PO link fills the one ready PO in, unless one is already chosen. */
   function onDocumentTypeChange(next: string): void {
     setDocumentType(next);
     if (requiresSevenPo(next) && sevenPurchaseOrderId === '') setSevenPurchaseOrderId(poDefault);
+    // P2 R22: the design submission needs its order; the only one is chosen for the person.
+    if (next === ARTWORK_SUBMISSION && filmSupplyOrderId === '' && filmSupplyOrderChoices.length === 1) {
+      setFilmSupplyOrderId(filmSupplyOrderChoices[0]!.value);
+    }
   }
   const showMakerPo = isMakerPoBoundDocumentType(documentType);
   const makerPoOptions = makerPurchaseOrderChoices.filter((choice) => choice.filmSupplyOrderId === filmSupplyOrderId);
@@ -293,6 +301,7 @@ export function DocumentUploadForm({
       </p>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+        {artwork ? null : (
         <FieldFeedback name="sevenPurchaseOrderId" hasHint>
           {(poFeedback) => (
             <div className="field" style={fieldLabel(300)}>
@@ -328,16 +337,21 @@ export function DocumentUploadForm({
             </div>
           )}
         </FieldFeedback>
+        )}
         <label className="field" style={fieldLabel(300)}>
-          <span style={{ fontSize: 13 }}>フィルム発注の紐付け（任意）</span>
-          <select name="filmSupplyOrderId" value={filmSupplyOrderId} onChange={(event) => setFilmSupplyOrderId(event.target.value)} style={wide(300)}>
-            <option value="">紐付けない</option>
+          <span style={{ fontSize: 13 }}>
+            フィルム発注の紐付け
+            {artwork ? <span style={{ color: 'var(--danger)' }}>（必須）</span> : '（任意）'}
+          </span>
+          <select name="filmSupplyOrderId" value={filmSupplyOrderId} required={artwork} onChange={(event) => setFilmSupplyOrderId(event.target.value)} style={wide(300)}>
+            <option value="">{artwork ? '選んでください' : '紐付けない'}</option>
             {filmSupplyOrderChoices.map((choice) => (
               <option key={choice.value} value={choice.value}>
                 {choice.label}
               </option>
             ))}
           </select>
+          {artwork ? <span style={noteStyle}>セブン化学発注書は、選んだ発注のものが自動で紐付きます。</span> : null}
         </label>
         {showMakerPo ? (
           <FieldFeedback name="makerPurchaseOrderId">

@@ -1,1 +1,53 @@
 /* P2 web: p2-makers — owned by one implementation lane (see demo-eml/p2-web/REPORT.md). */
+/* The maker PO 送信先 chooser (DESIGN §4), the メーカーの宛先 page (§5) and the MPO number (§6). Existing tokens only. */
+
+/* A small square tag: 既定 / 使用停止 (text, not colour alone). */
+.p2-maker-tag {
+  display: inline-block;
+  padding: 0 var(--space-2);
+  font-size: var(--t-meta);
+  font-weight: 700;
+  color: var(--primary);
+  background: var(--primary-tint);
+  border-radius: var(--radius-badge);
+  white-space: nowrap;
+}
+.p2-maker-tag--off { color: var(--ink-sub); background: var(--surface); border: 1px solid var(--line); }
+
+/* MPO-2026-0001 is a code: kept on one line. */
+.p2-mpo-number { white-space: nowrap; }
+.p2-paper-name { font-size: var(--t-table); font-weight: 700; }
+.p2-paper-line { margin: 0 0 var(--space-2); }
+
+/* 送信先: each radio is one 44px hit area with its label; the typed input stays below. */
+.p2-recipient { display: grid; gap: var(--space-2); min-width: 0; }
+.p2-recipient-options { display: grid; gap: var(--space-1); }
+.p2-recipient-option { align-items: flex-start; min-height: 44px; padding-top: var(--space-2); cursor: pointer; }
+.p2-recipient-option input { flex: none; margin-top: 3px; }
+.p2-recipient-text { min-width: 0; overflow-wrap: anywhere; }
+.p2-recipient-email { overflow-wrap: anywhere; }
+
+/* /makers */
+.p2-makers .p1-panel { display: grid; gap: var(--space-3); }
+.p2-maker-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-2) var(--space-3); margin: 0; }
+.p2-maker-add { padding-top: var(--space-3); border-top: 1px solid var(--line); }
+.p2-maker-add-title { margin: 0 0 var(--space-2); font-size: var(--t-table); }
+.p2-recipient-list { display: grid; margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.p2-recipient-list > li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--line);
+}
+.p2-recipient-list > li.is-inactive { color: var(--ink-sub); }
+.p2-recipient-facts { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.p2-recipient-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); justify-content: flex-end; }
+
+@media (max-width: 640px) {
+  .p2-recipient-list > li { grid-template-columns: minmax(0, 1fr); }
+  .p2-recipient-actions { justify-content: stretch; }
+  .p2-recipient-actions > form { flex: 1 1 100%; }
+  .p2-makers button[type='submit'] { width: 100%; min-height: 44px; }
+}

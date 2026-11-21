@@ -188,6 +188,19 @@ export function NewOrderForm({
             明細を追加（新しい発注）
           </button>
         </div>
+        {/* P2 R30 (DESIGN §2): the optional 希望納期・納品予定日; an empty field is not sent. */}
+        <div className="p1-check-grid">
+          <DateTextField
+            name="requestedDeliveryDate"
+            label="希望納期（任意）"
+            hint="お客様が希望する納品日。わからなければ空のままで構いません。例 2026/12/01"
+          />
+          <DateTextField
+            name="plannedDeliveryDate"
+            label="納品予定日（任意）"
+            hint="メーカーが約束した納品日。決まってから発注の画面で入れることもできます。"
+          />
+        </div>
         <FieldFeedback name="paymentTerms" hasHint>
           {(feedback) => (
             <div className="field p1-field">

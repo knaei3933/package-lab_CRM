@@ -10,6 +10,7 @@ import { ProjectUnavailable } from '../components/ProjectUnavailable';
 import type { ProjectScreenProps } from './screen-props';
 import { ApprovalSnapshotFields } from '../components/ApprovalSnapshotFields';
 import { DataTable } from '../components/DataTable';
+import { RecipientChooser } from '../components/RecipientChooser';
 import { RoleGate, ViewerPageNotice } from '../components/RoleGate';
 import { StatusBadge } from '../components/StatusBadge';
 import { TechDetails } from '../components/TechDetails';
@@ -35,6 +36,8 @@ import {
   isOrderPastMakerAcceptance,
   loadMakerPoBoard,
   loadMakerPoDetail,
+  makerPoName,
+  makerPoNumberOf,
   loadManualVerificationsForEvents,
   makerPoSendProof,
   MAKER_PO_EVENT_TYPE_LABELS,
@@ -64,6 +67,8 @@ import type {
 import { makerPoStages, paymentGateDecides, stageHeadline, stageLabel, upcomingStagesLine } from '../lib/maker-po-stage';
 import type { MakerPoStageKey, MakerPoStagePaper, MakerPoStageView } from '../lib/maker-po-stage';
 import type { AuditEventView } from '../lib/project-data';
+import { loadMakerRecipients } from '../lib/maker-master';
+import type { RecipientChoices } from '../lib/maker-master';
 import {
   filmOrderChoiceLabel,
   knownStatus,
@@ -224,14 +229,24 @@ export async function MakerPoScreen({ projectId, projectCode }: ProjectScreenPro
     .filter((card) => !acknowledgementBlocksCreation(judged(card.papers)) && !hasLivePaper(card))
     .map((card) => card.entry);
   const alreadyCreatedOrders = readyCards.filter(hasLivePaper).map((card) => card.entry);
-  // UI batch E (F-15): the maker's address of the latest paper on this project, as the default 宛先.
-  const defaultRecipientAddress = cards
+  // UI batch E (F-15) → P2 R33 (DESIGN §4): the latest paper's address on this project is no
+  // longer typed in for the operator (a wrong maker's address would go out); when it is not one
+  // of the master addresses it is shown as a hint of 「直接入力する」 only.
+  const latestRecipientAddress = cards
     .flatMap((card) => card.entry.makerPurchaseOrders)
     // Review L1: a cancelled paper may have been cancelled for its wrong address.
     .filter((po) => po.status !== 'CANCELLED')
     .map((po) => ({ at: po.createdAt ?? '', address: po.snapshot?.recipient?.address ?? po.recipientAddress ?? null }))
     .filter((row): row is { at: string; address: string } => typeof row.address === 'string' && row.address.length > 0)
     .sort((a, b) => (a.at < b.at ? 1 : -1))[0]?.address;
+  // P2 R33: the maker's addresses, read only when this role is offered the create form.
+  const recipients: RecipientChoices = readyOrders.length > 0 && canRoleOperate(role, 'maker_po:create')
+    ? await loadMakerRecipients(projectId)
+    : { kind: 'not_loaded' };
+  const previousTypedRecipient = latestRecipientAddress
+    && !(recipients.kind === 'list' && recipients.addresses.some((address) => address.email.toLowerCase() === latestRecipientAddress.toLowerCase()))
+    ? latestRecipientAddress
+    : null;
   const acknowledgementBlockedOrders = readyCards
     .filter((card) => acknowledgementBlocksCreation(judged(card.papers)))
     .map((card) => card.entry);
@@ -247,8 +262,9 @@ export async function MakerPoScreen({ projectId, projectCode }: ProjectScreenPro
         {board.workspace.project ? (
           <p className="ui-note">
             案件 {board.workspace.project.code}（{board.workspace.project.name}） ／
-            ログイン中の役割: {role === null ? '確認できません' : roleLabel(role)} ／
-            金額は代表者にのみ表示されます。
+            ログイン中の役割: {role === null ? '確認できません' : roleLabel(role)}
+            {/* DESIGN 共通ルール: no amount wording at all on a staff/viewer/auditor screen. */}
+            {isAdmin ? ' ／ 金額は代表者にのみ表示されます。' : null}
           </p>
         ) : null}
         {board.workspace.error ? <div className="ui-info">{board.workspace.error}</div> : null}
@@ -257,7 +273,8 @@ export async function MakerPoScreen({ projectId, projectCode }: ProjectScreenPro
       <MakerPoCreateSection
         readyOrders={readyOrders}
         alreadyCreatedOrders={alreadyCreatedOrders}
-        defaultRecipientAddress={defaultRecipientAddress}
+        recipients={recipients}
+        previousTypedRecipient={previousTypedRecipient}
         acknowledgementBlockedOrders={acknowledgementBlockedOrders}
         boardOrderCount={cards.length}
         isAdmin={isAdmin}
@@ -339,7 +356,8 @@ export async function MakerPoScreen({ projectId, projectCode }: ProjectScreenPro
 function MakerPoCreateSection({
   readyOrders,
   alreadyCreatedOrders,
-  defaultRecipientAddress,
+  recipients,
+  previousTypedRecipient,
   acknowledgementBlockedOrders,
   boardOrderCount,
   isAdmin,
@@ -350,8 +368,10 @@ function MakerPoCreateSection({
   readyOrders: OrderMakerPoBoard[];
   /** UI batch E (F-21): orders at MAKER_PO_READY that already carry a live paper. */
   alreadyCreatedOrders: OrderMakerPoBoard[];
-  /** UI batch E (F-15): the latest paper's maker address on this project (the 宛先 default). */
-  defaultRecipientAddress: string | undefined;
+  /** P2 R33: the project maker's recipient addresses (typed address only when not usable). */
+  recipients: RecipientChoices;
+  /** P2 R33: the latest paper's address when it is not a master address (a hint, never filled in). */
+  previousTypedRecipient: string | null;
   /** Low-7 (f): orders at MAKER_PO_READY whose cancelled, sent paper still owes the 取り消し承認. */
   acknowledgementBlockedOrders: OrderMakerPoBoard[];
   /** Orders on the maker board (MAKER_PO_READY or a later maker/production state). */
@@ -416,40 +436,29 @@ function MakerPoCreateSection({
         <ActionForm
           action={createMakerPoAction}
           submitLabel="メーカー発注書を作成する"
-          hint="送信先メールアドレスは、メーカーへ発注書を送るメールの宛先です（郵便の住所ではありません）。送信の記録では、送ったメールの宛先にこのアドレスが含まれている必要があります。金額は代表者のみ入力できます（担当者の画面には金額欄がありません）。"
+          hint={`送信先メールアドレスは、メーカーへ発注書を送るメールの宛先です（郵便の住所ではありません）。送信の記録では、送ったメールの宛先にこのアドレスが含まれている必要があります。${isAdmin ? '金額は代表者のみ入力できます（担当者の画面には金額欄がありません）。' : ''}`}
           confirm={{
             title: 'メーカー発注書を作成しますか？',
-            body: '宛先と内容（明細・金額）をこの時点の内容で確定します。確定した内容は変えられないため、直すときはこの発注書を取り消して作り直します。',
+            body: `宛先と内容（${isAdmin ? '明細・金額' : '明細'}）をこの時点の内容で確定します。確定した内容は変えられないため、直すときはこの発注書を取り消して作り直します。`,
             tone: 'primary',
             summaryFields: isAdmin
-              ? ['orderId', 'recipientAddress', 'currency', 'totalAmount']
-              : ['orderId', 'recipientAddress']
+              ? ['orderId', 'recipientChoice', 'recipientAddress', 'currency', 'totalAmount']
+              : ['orderId', 'recipientChoice', 'recipientAddress']
           }}
           successHint="次の手順: ② 代表承認（下の発注に表示されます）"
         >
           <div className="form-row">
             <SelectField name="orderId" label="対象のフィルム発注" required choices={orderChoices} width={420} />
-            {/* P0 R10 (H5): an e-mail address, checked as one before the paper is frozen —
-                a postal address here could only be found out at the send record (re-create). */}
-            <TextField
-              name="recipientAddress"
-              label="メーカーの送信先メールアドレス"
-              type="email"
-              required
-              width={320}
-              autoComplete="off"
-              spellCheck={false}
-              autoCapitalize="none"
-              defaultValue={defaultRecipientAddress}
-              hint={defaultRecipientAddress ? 'この案件の前回のメーカー発注書の宛先を入れています。違う場合は書き換えてください。' : undefined}
-            />
-            {isAdmin ? (
-              <>
-                <SelectField name="currency" label="通貨" width={160} defaultValue="JPY" choices={CURRENCY_CHOICES} />
-                <TextField name="totalAmount" label="金額（数字のみ）" width={180} hint="例 480000（¥・カンマは不要です）" />
-              </>
-            ) : null}
           </div>
+          {/* P0 R10 (H5): a typed address is checked as an e-mail before the paper is frozen.
+              P2 R33: or one of the project maker's addresses (the default preselected). */}
+          <RecipientChooser choices={recipients} previousTyped={previousTypedRecipient} showMakersLink={isAdmin} width={320} />
+          {isAdmin ? (
+            <div className="form-row">
+              <SelectField name="currency" label="通貨" width={160} defaultValue="JPY" choices={CURRENCY_CHOICES} />
+              <TextField name="totalAmount" label="金額（数字のみ）" width={180} hint="例 480000（¥・カンマは不要です）" />
+            </div>
+          ) : null}
         </ActionForm>
       </RoleGate>
     </div>
@@ -653,6 +662,32 @@ function unsettledCancelledSendFollowUp(paper: PaperWork, canCancel: boolean): s
     : 'メーカーに届いていたと分かった場合は代表者へ伝えてください。代表者が「メーカー到達の事後確認（記録のみ）」を記録します。';
 }
 
+/**
+ * P2 R32 (DESIGN §6): a paper on this board by its MPO number (code: no
+ * translation) — the short id when the API did not answer a number, so papers of
+ * one order (a cancelled one and its replacement) stay apart.
+ */
+function paperRef(po: MakerPoViewRow): string {
+  return makerPoNumberOf(po.displayNumber) ?? shortId(po.id);
+}
+
+function PaperRef({ po }: { po: MakerPoViewRow }) {
+  const number = makerPoNumberOf(po.displayNumber);
+  return number
+    ? <strong translate="no" className="p1-figure p2-mpo-number">{number}</strong>
+    : <>{shortId(po.id)}</>;
+}
+
+/** The card head's paper name: 「メーカー発注書 MPO-…」, else 「{発注コード} のメーカー発注書」. */
+function PaperName({ po, orderCode }: { po: MakerPoViewRow; orderCode: string }) {
+  const number = makerPoNumberOf(po.displayNumber);
+  return (
+    <span className="p2-paper-name">
+      {number ? <>メーカー発注書 <span translate="no" className="p1-figure p2-mpo-number">{number}</span></> : makerPoName(po, orderCode)}
+    </span>
+  );
+}
+
 function MakerPoOrderSection({
   card,
   isAdmin,
@@ -743,6 +778,7 @@ function MakerPoOrderSection({
             label={MAKER_PO_STATUS_LABELS[primary.po.status] ?? primary.po.status}
           />
         ) : null}
+        {primary ? <PaperName po={primary.po} orderCode={entry.order.code} /> : null}
       </h2>
       {pastAcceptance ? <p className="ui-note">メーカー発注の紙は受入済みです（記録は下の「メーカー発注の履歴」にあります）。</p> : null}
       {closure ? <MakerPoCleanupNotice closure={closure} status={status} stateLabel={stateLabel} canCancel={canCancel} /> : null}
@@ -797,7 +833,7 @@ function MakerPoOrderSection({
         <DataTable caption="この発注のメーカー発注書">
           <thead>
             <tr>
-              <th className="ui-th" scope="col">発注書ID</th>
+              <th className="ui-th" scope="col">発注書</th>
               <th className="ui-th" scope="col">状態</th>
               <th className="ui-th" scope="col">発注コード</th>
               {isAdmin ? <th className="ui-th" scope="col">金額</th> : null}
@@ -811,7 +847,7 @@ function MakerPoOrderSection({
             {list.map((po) => (
               <tr key={po.id} data-record-id={po.id}>
                 <td className="ui-td">
-                  {shortId(po.id)}
+                  <PaperRef po={po} />
                   <TechDetails context="ID">{po.id}</TechDetails>
                 </td>
                 <td className="ui-td">
@@ -853,7 +889,7 @@ function MakerPoOrderSection({
       {/* Medium-1: the sends of a cancelled paper are history, not ③′ work — the API refuses both decisions. */}
       {unsettledCancelledSends.map((paper) => (
         <p key={`unsettled:${paper.po.id}`} className="role-notice">
-          {`取り消し済みの発注書 ${shortId(paper.po.id)} の送信記録（${paper.unsettledCancelledSends
+          {`取り消し済みの発注書 ${paperRef(paper.po)} の送信記録（${paper.unsettledCancelledSends
             .map((event) => shortId(event.id)).join('、')}）は手動確認待ちのまま残っています。`
             + '取り消し済みの発注書の送信は、確認も却下も記録できません（APIが拒否します）。記録は履歴として残ります。'
             + (paper.sendProof === 'unproven' ? 'この取り消しは内部の訂正として扱われたため、取り消し承認も不要です。' : '')
@@ -864,7 +900,7 @@ function MakerPoOrderSection({
       {/* Recheck 9 Medium-3: a decision this screen cannot read is said as such — never 「手動確認待ち」 or 内部の訂正. */}
       {undecidableCancelledSends.map((paper) => (
         <p key={`undecidable:${paper.po.id}`} className="role-notice">
-          {`取り消し済みの発注書 ${shortId(paper.po.id)} の送信記録（${paper.undecidableCancelledSends
+          {`取り消し済みの発注書 ${paperRef(paper.po)} の送信記録（${paper.undecidableCancelledSends
             .map((event) => shortId(event.id)).join('、')}）は、`
             + (canVerifySend || canCancel
               ? '送信の手動確認の記録を読み込めなかったため、'
@@ -881,7 +917,7 @@ function MakerPoOrderSection({
 
       {stuckPapers.map((paper) => (
         <p key={`stuck:${paper.po.id}`} className="role-notice">
-          {`発注書 ${shortId(paper.po.id)} は「${MAKER_PO_STATUS_LABELS[paper.po.status] ?? paper.po.status}」のため、この画面から取り消せません`
+          {`発注書 ${paperRef(paper.po)} は「${MAKER_PO_STATUS_LABELS[paper.po.status] ?? paper.po.status}」のため、この画面から取り消せません`
             + '（APIが取り消しを受け付けない状態です）。メーカーへの連絡と対応は代表者が判断してください。'}
         </p>
       ))}
@@ -1010,7 +1046,7 @@ function MakerPoHistoryBlock({ papers }: { papers: PaperWork[] }) {
         const provisionalEvents = events.filter((event) => event.provisional === true);
         return (
           <div className="sx-72d6c38" key={po.id}>
-            <DataTable caption={`発注書 ${shortId(po.id)} の記録`} captionHidden>
+            <DataTable caption={`発注書 ${paperRef(po)} の記録`} captionHidden>
               <thead>
                 <tr>
                   <th className="ui-th" scope="col">発注書</th>
@@ -1025,7 +1061,7 @@ function MakerPoHistoryBlock({ papers }: { papers: PaperWork[] }) {
               <tbody>
                 <tr>
                   <td className="ui-td">
-                    {shortId(po.id)}
+                    <PaperRef po={po} />
                     <TechDetails context="ID">{po.id}</TechDetails>
                   </td>
                   <td className="ui-td">
@@ -1094,7 +1130,7 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
     <div className="stage-block sx-2468269">
       <h3 className="sx-e6251b7">② 代表承認（代表者のみ）</h3>
       <p className="ui-note">
-        作成したときの内容（宛先・明細・金額）に対して承認します。
+        {canApprove ? '作成したときの内容（宛先・明細・金額）に対して承認します。' : '作成したときの内容（宛先・明細）に対して代表者が承認します。'}
         {blocks.length > 0 ? `承認できない理由: ${blocks.join('。')}。` : '承認の前提はそろっています。'}
       </p>
       {/* P0 R01 (B1): the fix sits where the refusal is — the order's own 支払条件 form. */}
@@ -1130,7 +1166,7 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
             </ActionForm>
           ) : (
             <p className="role-notice">
-              メーカー発注書 {shortId(po.id)} は代表承認待ちです。{operationRefusal(role, 'ceo_approve', '代表承認')}
+              メーカー発注書 {paperRef(po)} は代表承認待ちです。{operationRefusal(role, 'ceo_approve', '代表承認')}
             </p>
           )}
         </div>
@@ -1849,8 +1885,10 @@ function AuditDashboardSection({
       </summary>
       <p className="ui-note">
         監査履歴をメーカー発注の記録だけに絞って表示します。
-        表示内容は API が役割ごとに決めます: 代表者は金額やスナップショットまで、担当者は状態の形だけ、
-        閲覧者は概要だけを見ます。現在の役割: {role === null ? '確認できません' : roleLabel(role)}。
+        {normalizeRole(role) === 'admin'
+          ? '表示内容は API が役割ごとに決めます: 代表者は金額やスナップショットまで、担当者は状態の形だけ、閲覧者は概要だけを見ます。'
+          : '表示内容は API が役割ごとに決めます（この役割には記録の概要だけが表示されます）。'}
+        現在の役割: {role === null ? '確認できません' : roleLabel(role)}。
       </p>
       {error ? <div className="ui-info">{error}</div> : null}
       {events.length === 0 ? (
