@@ -1,10 +1,11 @@
 import type { Hono } from 'hono';
-import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 import {
   accounts,
   documents,
   documentVersions,
   filmSupplyOrders,
+  makerPurchaseOrders,
   makerRecipientAddresses,
   projects,
   sevenPoOrderFacts,
@@ -142,6 +143,22 @@ function parseLabel(value: unknown): { ok: true; value: string | null } | { ok: 
   return trimmed.length <= 100 ? { ok: true, value: trimmed } : { ok: false };
 }
 
+/**
+ * P2 decision: the delivery terms are frozen into the maker PO at the
+ * representative's approval, so once a live (not cancelled) paper is approved
+ * they are the terms the paper was approved against — like 支払条件, a change
+ * is a paper cancellation and a new approval (never a silent drift that would
+ * void the paper at the send).
+ */
+const DELIVERY_TERMS_LOCKED = {
+  error: '代表承認済みのメーカー発注書があるため、納期・セブン化学発注書の数量は変更できません。変更する場合はメーカー発注書を取り消して作り直してください',
+  code: 'DELIVERY_TERMS_LOCKED'
+} as const;
+
+function approvedLivePaper(orderIds: ReturnType<typeof eq>) {
+  return and(orderIds, isNull(makerPurchaseOrders.deletedAt), ne(makerPurchaseOrders.status, 'CANCELLED'), isNotNull(makerPurchaseOrders.ceoApprovedAt));
+}
+
 function postgresCode(error: unknown): string | undefined {
   const own = (error as { code?: unknown } | null)?.code;
   if (typeof own === 'string') return own;
@@ -149,8 +166,8 @@ function postgresCode(error: unknown): string | undefined {
   return typeof cause === 'string' ? cause : undefined;
 }
 
-/** P-2: document types whose file name the auditor does not read (quotes carry prices). */
-const AUDITOR_HIDDEN_FILENAME_TYPES: ReadonlySet<string> = new Set(['film_quote_kanei', 'filling_quote_seven']);
+/** P-2: document types whose file name the auditor does not read (quotes and the seven PO carry prices; review L-5). */
+const AUDITOR_HIDDEN_FILENAME_TYPES: ReadonlySet<string> = new Set(['film_quote_kanei', 'filling_quote_seven', 'seven_po']);
 
 export function registerP2Routes(app: Hono<any>, { db, recordAuditEvent }: P2RouteDeps): void {
   const unauthorized = { error: '認証が必要です', code: 'AUTH_REQUIRED' } as const;
@@ -222,6 +239,9 @@ export function registerP2Routes(app: Hono<any>, { db, recordAuditEvent }: P2Rou
       const [locked] = await tx.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId)).for('update');
       if (!locked || locked.deletedAt) return { kind: 'missing' as const };
       if (String(locked.status) === 'CANCELLED') return { kind: 'cancelled' as const };
+      const [approved] = await tx.select({ id: makerPurchaseOrders.id }).from(makerPurchaseOrders)
+        .where(approvedLivePaper(eq(makerPurchaseOrders.filmSupplyOrderId, orderId))).limit(1);
+      if (approved) return { kind: 'locked' as const, makerPurchaseOrderId: approved.id };
       const before = { requestedDeliveryDate: locked.requestedDeliveryDate, plannedDeliveryDate: locked.plannedDeliveryDate };
       const after = { ...before, ...changes };
       await tx.update(filmSupplyOrders).set({ ...changes, updatedAt: now }).where(eq(filmSupplyOrders.id, orderId));
@@ -241,6 +261,9 @@ export function registerP2Routes(app: Hono<any>, { db, recordAuditEvent }: P2Rou
     if (outcome.kind === 'missing') return context.json({ error: 'フィルム発注が見つかりません', code: 'FILM_SUPPLY_ORDER_NOT_FOUND' }, 404);
     if (outcome.kind === 'cancelled') {
       return context.json({ error: '取消終了した発注の納期は変更できません', code: 'FILM_ORDER_CANCELLED' }, 409);
+    }
+    if (outcome.kind === 'locked') {
+      return context.json({ ...DELIVERY_TERMS_LOCKED, makerPurchaseOrderId: outcome.makerPurchaseOrderId }, 409);
     }
     return context.json(outcome.order);
   });
@@ -287,9 +310,16 @@ export function registerP2Routes(app: Hono<any>, { db, recordAuditEvent }: P2Rou
     const parsed = parseOrderFactsInput(body);
     if (!parsed.ok) return context.json({ error: parsed.message, code: 'SEVEN_PO_ORDER_FACTS_INVALID' }, 422);
     const now = new Date();
-    const row = await db.transaction(async (tx) => {
-      // The seven PO row lock serializes two edits of the same facts.
+    const outcome = await db.transaction(async (tx) => {
+      // The seven PO row lock serializes two edits of the same facts, and the
+      // approval share-locks the same row before it freezes the quantity.
       await tx.select({ id: sevenPurchaseOrders.id }).from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, poId)).for('update');
+      if (parsed.value.quantity !== undefined) {
+        const [approved] = await tx.select({ id: makerPurchaseOrders.id }).from(makerPurchaseOrders)
+          .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, makerPurchaseOrders.filmSupplyOrderId))
+          .where(approvedLivePaper(eq(filmSupplyOrders.sevenPurchaseOrderId, poId))).limit(1);
+        if (approved) return { kind: 'locked' as const, makerPurchaseOrderId: approved.id };
+      }
       const [before] = await tx.select().from(sevenPoOrderFacts).where(eq(sevenPoOrderFacts.sevenPurchaseOrderId, poId)).limit(1);
       const next = {
         orderedQuantity: parsed.value.quantity === undefined ? before?.orderedQuantity ?? null : parsed.value.quantity?.orderedQuantity ?? null,
@@ -322,9 +352,12 @@ export function registerP2Routes(app: Hono<any>, { db, recordAuditEvent }: P2Rou
         occurredAt: now,
         requestMetadata: { operation: touchesAmount ? 'seven_po:update_amount' : 'seven_po:update_order_facts' }
       });
-      return stored!;
+      return { kind: 'stored' as const, row: stored! };
     });
-    return context.json({ poNumber: po.poNumber, ...orderFactsViewForRole(user.role, poId, row) });
+    if (outcome.kind === 'locked') {
+      return context.json({ ...DELIVERY_TERMS_LOCKED, makerPurchaseOrderId: outcome.makerPurchaseOrderId }, 409);
+    }
+    return context.json({ poNumber: po.poNumber, ...orderFactsViewForRole(user.role, poId, outcome.row) });
   });
 
   // --------------------------------------------------------- R33 maker master

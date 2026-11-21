@@ -215,6 +215,21 @@ export interface MakerPoSnapshot {
   specs: { artworkFiles: MakerPoSnapshotArtworkFile[] };
   amounts: { currency: string; totalAmount: string } | null;
   recipient: { address: string };
+  /**
+   * P2 decision (2026-11-21): the 希望納期・納品予定日 and the セブン化学発注書
+   * quantity are frozen at the representative's approval. Absent on papers
+   * frozen before P2 — canonicalJson drops an absent key, so their digest is
+   * exactly what it was.
+   */
+  deliveryTerms?: MakerPoSnapshotDeliveryTerms;
+}
+
+/** P2: the schedule and customer-order quantity an approval certifies. */
+export interface MakerPoSnapshotDeliveryTerms {
+  requestedDeliveryDate: string | null;
+  plannedDeliveryDate: string | null;
+  sevenPoOrderedQuantity: string | null;
+  sevenPoOrderedUnit: string | null;
 }
 
 export interface MakerPoSnapshotInput {
@@ -228,6 +243,8 @@ export interface MakerPoSnapshotInput {
   artworkFiles: MakerPoSnapshotArtworkFile[];
   amounts?: { currency?: unknown; totalAmount?: unknown } | null;
   recipientAddress: string;
+  /** P2: included when given (new papers and every approval); omitted keeps a pre-P2 shape. */
+  deliveryTerms?: MakerPoSnapshotDeliveryTerms;
 }
 
 /**
@@ -261,7 +278,17 @@ export function buildMakerPoSnapshot(input: MakerPoSnapshotInput): MakerPoSnapsh
     })),
     specs: { artworkFiles },
     amounts: currency !== null && totalAmount !== null ? { currency, totalAmount } : null,
-    recipient: { address: input.recipientAddress.trim() }
+    recipient: { address: input.recipientAddress.trim() },
+    ...(input.deliveryTerms
+      ? {
+          deliveryTerms: {
+            requestedDeliveryDate: input.deliveryTerms.requestedDeliveryDate ?? null,
+            plannedDeliveryDate: input.deliveryTerms.plannedDeliveryDate ?? null,
+            sevenPoOrderedQuantity: input.deliveryTerms.sevenPoOrderedQuantity ?? null,
+            sevenPoOrderedUnit: input.deliveryTerms.sevenPoOrderedUnit ?? null
+          }
+        }
+      : {})
   };
 }
 

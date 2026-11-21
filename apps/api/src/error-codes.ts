@@ -321,6 +321,12 @@ export const ERROR_MESSAGES_JA: Readonly<Record<string, string>> = {
   MAKER_RECIPIENT_ADDRESS_UNAVAILABLE: '選んだ送信先は使用できません（この案件の製造先の使用中の宛先ではありません）。送信先を選び直してください',
   DISPLAY_LANGUAGE_INVALID: '表示言語は「日本語」「日本語＋한국어」「한국어」から選んでください',
   ARTWORK_SUBMISSION_ORDER_REQUIRED: 'デザイン入稿データは、セブン化学発注書が紐付いた発注を指定して登録してください',
+
+  // ---- P2 review: idempotency outcomes, delivery-terms lock, read-only roles
+  IDEMPOTENCY_IN_PROGRESS: '同じ送信をまだ処理しています。少し待ってから、同じ画面のままもう一度送信してください',
+  IDEMPOTENCY_OUTCOME_UNKNOWN: '前回の送信の結果を確認できませんでした。画面を再読み込みして、記録されたかどうかを確認してください',
+  DELIVERY_TERMS_LOCKED: '代表承認済みのメーカー発注書があるため、納期・セブン化学発注書の数量は変更できません。変更する場合はメーカー発注書を取り消して作り直してください',
+  READ_ONLY_ROLE: '閲覧・監査の権限では案件を登録できません',
 };
 
 /** HTTP status → the code a refusal falls back to when its handler named none. */

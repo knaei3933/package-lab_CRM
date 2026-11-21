@@ -190,6 +190,9 @@ export function canPerform(
   if (P2_ADMIN_ONLY_OPERATIONS.includes(operation)) return { allowed: false, reason: 'ROLE_FORBIDDEN' };
 
   if (operation === 'project:create') {
+    // P2 conductor decision (2026-11-21): the viewer writes nothing — creating
+    // a project included (until P2 any signed-in role could).
+    if (actor.role === 'viewer') return { allowed: false, reason: 'ROLE_FORBIDDEN' };
     return businessUnit === 'F1' ? { allowed: true } : { allowed: false, reason: 'ROLE_FORBIDDEN' };
   }
 

@@ -173,7 +173,7 @@ const AUDITOR_STATE_KEYS: readonly string[] = [
 const AUDITOR_REQUEST_METADATA_KEYS: readonly string[] = ['operation', 'automatic', 'rule', 'trigger'];
 
 /** Quote file names may carry their price; the auditor does not read them (security review L3). */
-const AUDITOR_HIDDEN_FILENAME_TYPES: readonly string[] = ['film_quote_kanei', 'filling_quote_seven'];
+const AUDITOR_HIDDEN_FILENAME_TYPES: readonly string[] = ['film_quote_kanei', 'filling_quote_seven', 'seven_po'];
 
 function withoutQuoteFilename(state: Record<string, unknown> | null): Record<string, unknown> | null {
   if (!state || !AUDITOR_HIDDEN_FILENAME_TYPES.includes(String(state.documentType))) return state;

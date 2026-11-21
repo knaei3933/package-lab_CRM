@@ -16,6 +16,22 @@ export interface ErrorDictionaryEntry {
 
 export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = {
   // P2 (p2-server API_CONTRACT §8)
+  IDEMPOTENCY_IN_PROGRESS: {
+    ja: '同じ送信をまだ処理しています。少し待ってから、同じ画面のままもう一度送信してください。',
+    ko: '같은 전송을 아직 처리하고 있습니다. 잠시 기다린 뒤 같은 화면에서 다시 전송하세요.'
+  },
+  IDEMPOTENCY_OUTCOME_UNKNOWN: {
+    ja: '前回の送信の結果を確認できませんでした。画面を再読み込みして、記録されたかどうかを確認してください。',
+    ko: '이전 전송의 결과를 확인할 수 없습니다. 화면을 새로 고쳐 기록되었는지 확인하세요.'
+  },
+  DELIVERY_TERMS_LOCKED: {
+    ja: '代表承認済みのメーカー発注書があるため、納期・セブン化学発注書の数量は変更できません。変更する場合はメーカー発注書を取り消して作り直してください。',
+    ko: '대표 승인된 제조처 발주서가 있어 납기·세븐화학 발주서 수량은 바꿀 수 없습니다. 바꾸려면 제조처 발주서를 취소하고 다시 만드세요.'
+  },
+  READ_ONLY_ROLE: {
+    ja: '閲覧・監査の権限では案件を登録できません。',
+    ko: '열람·감사 권한으로는 안건을 등록할 수 없습니다.'
+  },
   DELIVERY_DATE_INVALID: {
     ja: '日付は「年-月-日」（例: 2026-12-01）の実在する日付で入力してください。',
     ko: '날짜는 「연-월-일」(예: 2026-12-01) 형식의 실제 날짜로 입력하세요.'

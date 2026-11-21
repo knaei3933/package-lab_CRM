@@ -79,7 +79,9 @@ const P2_FILES = [
   '0028_p2_maker_po_display_numbers.sql',
   '0029_p2_user_display_language.sql',
   '0030_p2_artwork_submission_document_type.sql',
-  '0031_p2_auditor_role.sql'
+  '0031_p2_auditor_role.sql',
+  // P2 review M-3: the auditor session guard (triggers only).
+  '0032_p2_auditor_session_guard.sql'
 ];
 const P2_TABLES = ['idempotency_keys', 'maker_po_display_numbers', 'maker_recipient_addresses', 'seven_po_order_facts'];
 
@@ -221,10 +223,10 @@ describe('P2 migrations on an empty database', () => {
     await migrate(drizzle(pool), { migrationsFolder: fullFolder });
   });
 
-  it('records all 32 migrations, ending with 0031', async () => {
-    expect(await migrationCount(pool)).toBe(32);
+  it('records all 33 migrations, ending with 0032', async () => {
+    expect(await migrationCount(pool)).toBe(33);
     const last = await pool.query('select created_at::text as created_at from drizzle.__drizzle_migrations order by id desc limit 1');
-    expect(last.rows[0].created_at).toBe('1796682360000');
+    expect(last.rows[0].created_at).toBe('1796768760000');
   });
 
   it('creates the four P2 tables', async () => {
@@ -334,8 +336,8 @@ describe('P2 migrations on a database already at 0024 with real rows', () => {
       await migrate(drizzle(pool), { migrationsFolder: fullFolder });
     });
 
-    it('applies the seven new migrations', async () => {
-      expect(await migrationCount(pool)).toBe(32);
+    it('applies the eight new migrations (0025-0032)', async () => {
+      expect(await migrationCount(pool)).toBe(33);
     });
 
     it('keeps every original column of every existing row unchanged', async () => {
@@ -435,7 +437,7 @@ describe('P2 migrations on a database already at 0024 with real rows', () => {
 
       it('treats a drizzle re-run as a no-op', async () => {
         await migrate(drizzle(pool), { migrationsFolder: fullFolder });
-        expect(await migrationCount(pool)).toBe(32);
+        expect(await migrationCount(pool)).toBe(33);
       });
     });
   });

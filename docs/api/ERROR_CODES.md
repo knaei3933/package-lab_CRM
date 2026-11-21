@@ -1,6 +1,6 @@
 # API エラーコード一覧（P0 サーバー p0/server + P1 サーバー p1/server + P2 サーバー p2/server）
 
-コード数: 274（`ERROR_MESSAGES_JA` の件数。P2 で 10 件追加）
+コード数: 278（`ERROR_MESSAGES_JA` の件数。P2 で 10 件、P2 検収反映で 4 件追加）
 
 API の拒否応答（HTTP 400 以上）は必ず JSON `{ "error": "<日本語の文>", "code": "<CODE>", ...追加項目 }` です（R09）。
 `error` には英語の core メッセージ・enum 値・項目名・内部 URL/ポートを入れません。安全でない文はサーバーがこの表の文に置き換えます。
@@ -9,7 +9,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 - 生成元: `apps/api/src/error-codes.ts` の `ERROR_MESSAGES_JA`（`tests/p0-server.test.ts` が API/core の全 `code` リテラルと本表の一致を検査）
 - HTTP 列は API ソースで見つかった応答ステータス（複数あり得る）。
 - 拒否以外: 遷移応答 `warnings[]`、一覧 `attention[]` にも同じ形式の `{ code, message }` が入ります。
-- 新しい要求ヘッダー: `Idempotency-Key`（8〜128 文字 `[A-Za-z0-9_.:-]`、ログイン中の書き込みだけ有効、**ユーザーごと 24 時間・データベース保存**（P2: API の再起動・別プロセス・再ログイン後も同じ応答を再生）。再生応答にはヘッダー `Idempotent-Replayed: true`。同じキーの最初の送信がまだ処理中なら待ち、待っても終わらないときは 409 `CONFLICT`（書き込みはしない）。
+- 新しい要求ヘッダー: `Idempotency-Key`（8〜128 文字 `[A-Za-z0-9_.:-]`、ログイン中の書き込みだけ有効、**ユーザーごと 24 時間・データベース保存**（P2: API の再起動・別プロセス・再ログイン後も同じ応答を再生）。再生応答にはヘッダー `Idempotent-Replayed: true`。同じキーの最初の送信がまだ処理中なら待ち、待っても終わらないときは 409 `IDEMPOTENCY_IN_PROGRESS`（同じキーで後で再送）、最初の送信の結果が分からないときは 409 `IDEMPOTENCY_OUTCOME_UNKNOWN`（再読み込みして確認）。どちらも書き込みはしない。
 - Web 側だけで作るコード（API は返さない）: `API_UNREACHABLE`（Web→API 接続不可）, `SESSION_EXPIRED`（Web の表示用。API は `AUTH_REQUIRED`）。`PROJECT_CONTEXT_MISMATCH` は Web の R03 に加えて P1 から API も返す（`expectedProjectId` 不一致）。
 
 ## authentication / authorization / generic
@@ -386,3 +386,12 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `MAKER_RECIPIENT_ADDRESS_UNAVAILABLE` | 422 | 選んだ送信先は使用できません（この案件の製造先の使用中の宛先ではありません）。送信先を選び直してください | P2 R33: メーカー発注書作成の `recipientAddressId` が、この案件の製造先の使用中の宛先ではない（または手入力の `recipientAddress` と違う）。候補は GET /api/projects/:projectId/maker-recipient-addresses |
 | `DISPLAY_LANGUAGE_INVALID` | 422 | 表示言語は「日本語」「日本語＋한국어」「한국어」から選んでください | P2 R29: PUT /api/me/preferences の `displayLanguage` は `ja` / `ja-ko` / `ko` / null |
 | `ARTWORK_SUBMISSION_ORDER_REQUIRED` | 422 | デザイン入稿データは、セブン化学発注書が紐付いた発注を指定して登録してください | P2 R22: 書類種類 `artwork_submission` は `filmSupplyOrderId` 必須。セブン化学発注書はその発注のものを自動で使う（違う `sevenPurchaseOrderId` は拒否） |
+
+## P2 review: idempotency outcomes, delivery-terms lock, read-only roles
+
+| code | HTTP | 意味（サーバー既定の日本語文） | 追加項目・画面での扱い |
+|---|---|---|---|
+| `IDEMPOTENCY_IN_PROGRESS` | 409 | 同じ送信をまだ処理しています。少し待ってから、同じ画面のままもう一度送信してください | P2 review M-2: 同じ `Idempotency-Key` の最初の送信が処理中。**キーを保ったまま**少し待って同じ内容を再送する（完了していれば最初の応答が再生される）。新しいキーで送り直さない |
+| `IDEMPOTENCY_OUTCOME_UNKNOWN` | 409 | 前回の送信の結果を確認できませんでした。画面を再読み込みして、記録されたかどうかを確認してください | P2 review M-1/M-2: 同じキーの最初の送信の結果が分からない（処理中のプロセスが止まった・応答を保存できなかった）。書き込みは二度としない。画面を再読み込みして記録を確かめ、必要なら新しいキーで送る（そのキーは 24 時間この応答） |
+| `DELIVERY_TERMS_LOCKED` | 409 | 代表承認済みのメーカー発注書があるため、納期・セブン化学発注書の数量は変更できません。変更する場合はメーカー発注書を取り消して作り直してください | P2 決定: 納期・セブン化学発注書の数量は代表承認でメーカー発注書に固定される。`makerPurchaseOrderId`（承認済みの発注書）。金額は対象外 |
+| `READ_ONLY_ROLE` | 403 | 閲覧・監査の権限では案件を登録できません | P2 決定: 閲覧（viewer）と監査（auditor）は書き込みをしない。POST /api/projects |

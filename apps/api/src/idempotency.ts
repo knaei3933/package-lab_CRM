@@ -323,7 +323,7 @@ export class DbIdempotencyStore implements IdempotencyBackend {
         if (beat) await beat;
         const keep = isKeptResponse(response);
         try {
-          await this.settle(userId, key, fingerprint, lease, keep ? response : null);
+          await this.settle(userId, key, fingerprint, lease, response);
         } finally {
           if (this.local.get(id) === entry) this.local.delete(id);
           resolve(keep ? response : null);
@@ -353,27 +353,51 @@ export class DbIdempotencyStore implements IdempotencyBackend {
     }
   }
 
-  /** Stores the kept answer on our own row, or deletes our own row. Never throws. */
+  /**
+   * Settles our own row. Never throws.
+   * - a refusal or an outage (no 2xx): the row is deleted, so a corrected or
+   *   retried submit really runs (P0 rule);
+   * - a 2xx stored: the row becomes 'completed' and is replayed;
+   * - a 2xx that could not be stored (database error, or a body above the
+   *   replay limit): review M-1 — the write did happen, so the key is never
+   *   reopened. The row stays pending with its lease ended at once, and every
+   *   later request with this key answers 'unknown' (409, no second write).
+   *   If even that update fails, the row stays pending and its lease simply
+   *   runs out (the heartbeat is already stopped) with the same result.
+   */
   private async settle(userId: string, key: string, fingerprint: string, lease: string, response: StoredResponse | null): Promise<void> {
     const ownRow: SQL = sql`user_id = ${userId} and idempotency_key = ${key} and fingerprint = ${fingerprint}
       and state = 'pending' and lease_expires_at = ${lease}::timestamptz`;
-    if (response) {
+    const succeeded = response !== null && response.status >= 200 && response.status < 300;
+    if (!succeeded) {
       try {
-        await this.db.execute(sql`
+        await this.db.execute(sql`delete from idempotency_keys where ${ownRow}`);
+      } catch (error) {
+        console.error(`[idempotency] releasing the key failed: ${errorCode(error)}`);
+      }
+      return;
+    }
+    if (isKeptResponse(response)) {
+      try {
+        const stored = rowsOf<{ ok: number }>(await this.db.execute(sql`
           update idempotency_keys
           set state = 'completed', response_status = ${response.status}, response_body = ${response.body},
               response_content_type = ${response.contentType}, completed_at = now()
           where ${ownRow}
-        `);
+          returning 1 as ok
+        `));
+        if (stored.length === 0) console.error('[idempotency] storing the answer found no own pending row');
         return;
       } catch (error) {
         console.error(`[idempotency] storing the answer failed: ${errorCode(error)}`);
       }
     }
     try {
-      await this.db.execute(sql`delete from idempotency_keys where ${ownRow}`);
+      await this.db.execute(sql`
+        update idempotency_keys set lease_expires_at = now() - interval '1 millisecond' where ${ownRow}
+      `);
     } catch (error) {
-      console.error(`[idempotency] releasing the key failed: ${errorCode(error)}`);
+      console.error(`[idempotency] marking the outcome unknown failed: ${errorCode(error)}`);
     }
   }
 

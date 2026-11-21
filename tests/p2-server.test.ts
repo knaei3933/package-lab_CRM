@@ -11,7 +11,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { and, eq, sql } from 'drizzle-orm';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {
@@ -31,10 +31,12 @@ import {
   users,
   uuidv7
 } from '@kanei/db';
-import { jstYear } from '@kanei/core';
+import { buildMakerPoSnapshot, canonicalJson, computeMakerPoSnapshotSha256, jstYear } from '@kanei/core';
 import { createApp } from '../apps/api/src/app.js';
-import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
+import { issueToken, SESSION_COOKIE, sessionTokenHashForRole } from '../apps/api/src/auth.js';
 import { withApprovalSnapshot } from './helpers/approval-snapshot.js';
+import { hashPassword } from '../apps/api/src/password.js';
+import { checkSchemaPreflight, REQUIRED_MIGRATION } from '../apps/api/src/schema-preflight.js';
 
 const databaseUrl = process.env.DATABASE_URL!;
 if (!/@127\.0\.0\.1:5434\/kanei_crm_mvp_test($|\?)/.test(databaseUrl)) {
@@ -260,7 +262,9 @@ beforeAll(async () => {
   ]);
   for (const role of ALL_ROLES) {
     const { token, tokenHash } = issueToken();
-    await db.insert(sessions).values({ id: uuidv7(), userId: ids[role], tokenHash, expiresAt: new Date(Date.now() + 3600_000) });
+    // Migration 0032: an auditor session is stored in the role-aware form.
+    const storedHash = sessionTokenHashForRole(tokenHash, role.startsWith('auditor') ? 'auditor' : 'staff');
+    await db.insert(sessions).values({ id: uuidv7(), userId: ids[role], tokenHash: storedHash, expiresAt: new Date(Date.now() + 3600_000) });
     tokens[role] = token;
   }
 });
@@ -395,11 +399,14 @@ describe('R30 希望納期・納品予定日', () => {
     const card = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
     expect(card.status).toBe(200);
     expect(card.body.order).toMatchObject({ requestedDeliveryDate: '2027-04-01', plannedDeliveryDate: '2027-04-10' });
-    // Not frozen into the snapshot: a later change is visible and does not drift the hash.
+    expect(card.body.makerPurchaseOrder.snapshotDrifted).toBe(false);
+    // P2 decision (review round): the dates are frozen at approval, so a change
+    // on a draft is visible on the card and moves the hash the approval needs.
     expect((await patch('staff', url(chain.orderId), { plannedDeliveryDate: '2027-04-20' })).status).toBe(200);
     const again = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
     expect(again.body.order.plannedDeliveryDate).toBe('2027-04-20');
-    expect(again.body.makerPurchaseOrder.snapshotDrifted).toBe(false);
+    expect(again.body.makerPurchaseOrder.snapshotDrifted).toBe(true);
+    expect(again.body.makerPurchaseOrder.approvalSnapshotSha256).not.toBe(card.body.makerPurchaseOrder.approvalSnapshotSha256);
   });
 
   it('puts order.updatedAt on the approval card and moves it when a date changes (v1.1)', async () => {
@@ -1159,17 +1166,29 @@ describe('P-2 auditor role and the unchanged viewer answers', () => {
       const auditBefore = await db.select({ id: auditEvents.id }).from(auditEvents).where(eq(auditEvents.actorUserId, ids.auditor));
       const refused = await send('auditor', method, path(), body());
       expect(refused.status, JSON.stringify(refused.body)).toBe(403);
-      expect(['FORBIDDEN', 'CEO_ONLY']).toContain(refused.body.code);
+      expect(['FORBIDDEN', 'CEO_ONLY', 'READ_ONLY_ROLE']).toContain(refused.body.code);
       const auditAfter = await db.select({ id: auditEvents.id }).from(auditEvents).where(eq(auditEvents.actorUserId, ids.auditor));
       expect(auditAfter).toHaveLength(auditBefore.length);
     });
 
-    it.each(['staff', 'viewer'] as const)('still lets %s create a project (P1 behaviour kept)', async (role) => {
-      const created = await post(role, '/api/projects', {
-        route: 'F1', code: `P2-${role.toUpperCase()}-${nextTag()}`, name: `${role}作成`,
+    it('still lets staff create a project', async () => {
+      const created = await post('staff', '/api/projects', {
+        route: 'F1', code: `P2-STAFF-${nextTag()}`, name: 'staff作成',
         endCustomerAccountId: ids.customer, sevenAccountId: ids.seven, makerAccountId: ids.makerA
       });
       expect(created.status, JSON.stringify(created.body)).toBe(201);
+    });
+
+    // P2 conductor decision: the viewer writes nothing (P1 let it create projects).
+    it.each(['viewer', 'auditor', 'auditorOut'] as const)('refuses %s creating a project with 403 READ_ONLY_ROLE and writes nothing', async (role) => {
+      const code = `P2-RO-${role.toUpperCase()}-${nextTag()}`;
+      const refused = await post(role, '/api/projects', {
+        route: 'F1', code, name: `${role}作成`,
+        endCustomerAccountId: ids.customer, sevenAccountId: ids.seven, makerAccountId: ids.makerA
+      });
+      expect(refused.status).toBe(403);
+      expect(refused.body.code).toBe('READ_ONLY_ROLE');
+      expect(await db.select({ id: projects.id }).from(projects).where(eq(projects.code, code))).toHaveLength(0);
     });
   });
 
@@ -1374,5 +1393,162 @@ describe('P-2 auditor role and the unchanged viewer answers', () => {
       expect(read.status).toBe(200);
       expect(read.text).not.toContain('987654');
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P2 independent review (2026-11-21) and the conductor's decisions.
+// ---------------------------------------------------------------------------
+describe('P2 decision: 納期・数量 are frozen into the maker PO at the representative approval', () => {
+  async function paperWithTerms() {
+    const chain = await approvedOrder();
+    expect((await put('staff', `/api/seven-purchase-orders/${chain.sevenPoId}/order-facts`, { orderedQuantity: '1200', orderedUnit: 'meters' })).status).toBe(200);
+    expect((await patch('staff', `/api/film-supply-orders/${chain.orderId}/delivery-dates`, { requestedDeliveryDate: '2027-01-20', plannedDeliveryDate: '2027-01-25' })).status).toBe(200);
+    const paper = await createPaper(chain.orderId);
+    expect(paper.status, JSON.stringify(paper.body)).toBe(201);
+    return { ...chain, paperId: paper.body.id as string };
+  }
+  const storedSnapshot = async (paperId: string) =>
+    (await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, paperId)))[0]!;
+
+  it('a new paper carries the delivery terms in its snapshot', async () => {
+    const world = await paperWithTerms();
+    const row = await storedSnapshot(world.paperId);
+    expect((row.snapshot as any).deliveryTerms).toEqual({
+      requestedDeliveryDate: '2027-01-20', plannedDeliveryDate: '2027-01-25',
+      sevenPoOrderedQuantity: '1200.000', sevenPoOrderedUnit: 'meters'
+    });
+    const card = await get('admin', `/api/maker-purchase-orders/${world.paperId}/approval-card`);
+    expect(card.body.makerPurchaseOrder.snapshotDrifted).toBe(false);
+  });
+
+  it('a draft whose dates change is approved only against the card that shows the new dates', async () => {
+    const world = await paperWithTerms();
+    const before = await withApprovalSnapshot(app, tokens.admin, world.paperId);
+    expect((await patch('staff', `/api/film-supply-orders/${world.orderId}/delivery-dates`, { plannedDeliveryDate: '2027-02-10' })).status).toBe(200);
+    const stale = await post('admin', `/api/maker-purchase-orders/${world.paperId}/ceo-approval`, before);
+    expect(stale.status).toBe(409);
+    expect(stale.body.code).toBe('MAKER_PO_SNAPSHOT_CHANGED');
+    const fresh = await post('admin', `/api/maker-purchase-orders/${world.paperId}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, world.paperId));
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
+    expect((await storedSnapshot(world.paperId)).snapshot).toMatchObject({ deliveryTerms: { plannedDeliveryDate: '2027-02-10' } });
+  });
+
+  it('after the approval the dates and the quantity are locked (409 DELIVERY_TERMS_LOCKED, nothing written); the amount is not', async () => {
+    const world = await paperWithTerms();
+    const approved = await post('admin', `/api/maker-purchase-orders/${world.paperId}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, world.paperId));
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    for (const role of ['staff', 'admin'] as const) {
+      const dates = await patch(role, `/api/film-supply-orders/${world.orderId}/delivery-dates`, { plannedDeliveryDate: '2027-03-01' });
+      expect(dates.status).toBe(409);
+      expect(dates.body).toMatchObject({ code: 'DELIVERY_TERMS_LOCKED', makerPurchaseOrderId: world.paperId });
+      const quantity = await put(role, `/api/seven-purchase-orders/${world.sevenPoId}/order-facts`, { orderedQuantity: '1300', orderedUnit: 'meters' });
+      expect(quantity.status).toBe(409);
+      expect(quantity.body.code).toBe('DELIVERY_TERMS_LOCKED');
+    }
+    const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, world.orderId));
+    expect(order!.plannedDeliveryDate).toBe('2027-01-25');
+    const [facts] = await db.select().from(sevenPoOrderFacts).where(eq(sevenPoOrderFacts.sevenPurchaseOrderId, world.sevenPoId));
+    expect(facts!.orderedQuantity).toBe('1200.000');
+    const amount = await put('admin', `/api/seven-purchase-orders/${world.sevenPoId}/order-facts`, { totalAmount: '555000', currency: 'JPY' });
+    expect(amount.status).toBe(200);
+    expect((await auditRows('FILM_SUPPLY_ORDER_DELIVERY_DATES_UPDATED', world.orderId))).toHaveLength(1);
+  });
+
+  it('a paper frozen before P2 (no deliveryTerms) keeps its digest exactly', () => {
+    const base = {
+      order: { id: 'o-1', code: 'FILM-1', sevenPoNumber: 'SC-1' },
+      items: [{ lineNumber: 1, description: 'フィルム', orderedQuantity: '10.000', unit: 'rolls' }],
+      artworkFiles: [{ designKey: 'A', revisionNo: 1, fileSha256: 'a'.repeat(64) }],
+      amounts: { currency: 'JPY', totalAmount: '1000' },
+      recipientAddress: 'maker@example.com'
+    };
+    const legacy = buildMakerPoSnapshot(base);
+    expect('deliveryTerms' in legacy).toBe(false);
+    // The P1 canonical form had exactly these six keys.
+    expect(Object.keys(JSON.parse(canonicalJson(legacy))).sort()).toEqual(['amounts', 'items', 'order', 'quantities', 'recipient', 'specs']);
+    const withTerms = buildMakerPoSnapshot({ ...base, deliveryTerms: { requestedDeliveryDate: null, plannedDeliveryDate: null, sevenPoOrderedQuantity: null, sevenPoOrderedUnit: null } });
+    expect(computeMakerPoSnapshotSha256(withTerms)).not.toBe(computeMakerPoSnapshotSha256(legacy));
+  });
+});
+
+describe('P2 review M-3: an auditor session exists only through an API that knows the role (0032)', () => {
+  const password = 'p2-review-auditor-pass';
+  async function loginAs(username: string) {
+    const response = await app.request('/api/auth/login', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password })
+    });
+    return { status: response.status, cookie: (response.headers.get('set-cookie') ?? '').split(';')[0]! };
+  }
+  async function newUser(role: 'auditor' | 'staff') {
+    const id = uuidv7();
+    const username = `p2rev_${role}_${nextTag()}`;
+    await db.insert(users).values({ id, username, passwordHash: await hashPassword(password), displayName: `合成${role}`, role });
+    return { id, username };
+  }
+
+  it('the P2 login stores an auditor session in the role-aware form; a bare-hash lookup (P1 build) finds nothing', async () => {
+    const auditor = await newUser('auditor');
+    const login = await loginAs(auditor.username);
+    expect(login.status).toBe(201);
+    const token = login.cookie.slice(`${SESSION_COOKIE}=`.length);
+    const stored = await db.select({ tokenHash: sessions.tokenHash }).from(sessions).where(eq(sessions.userId, auditor.id));
+    expect(stored).toHaveLength(1);
+    expect(stored[0]!.tokenHash.startsWith('p2:')).toBe(true);
+    const { createHash } = await import('node:crypto');
+    const bare = createHash('sha256').update(token, 'utf8').digest('hex');
+    expect(await db.select().from(sessions).where(eq(sessions.tokenHash, bare))).toHaveLength(0);
+    const me = await app.request('/api/me', { headers: { cookie: login.cookie } });
+    expect(me.status).toBe(200);
+    expect(((await me.json()) as any).role).toBe('auditor');
+  });
+
+  it('the database refuses an auditor session written the P1 way (bare hash); staff stay bare', async () => {
+    const auditor = await newUser('auditor');
+    const { tokenHash } = issueToken();
+    const refused = await db.insert(sessions).values({ id: uuidv7(), userId: auditor.id, tokenHash, expiresAt: new Date(Date.now() + 60_000) })
+      .then(() => null, (error: any) => error?.cause?.code ?? error?.code);
+    expect(refused).toBe('42501');
+    await db.insert(sessions).values({ id: uuidv7(), userId: auditor.id, tokenHash: `p2:${tokenHash}`, expiresAt: new Date(Date.now() + 60_000) });
+    const staff = await newUser('staff');
+    const login = await loginAs(staff.username);
+    expect(login.status).toBe(201);
+    const [row] = await db.select({ tokenHash: sessions.tokenHash }).from(sessions).where(eq(sessions.userId, staff.id));
+    expect(row!.tokenHash.startsWith('p2:')).toBe(false);
+  });
+
+  it('making a user an auditor revokes the sessions they already hold', async () => {
+    const user = await newUser('staff');
+    const login = await loginAs(user.username);
+    expect((await app.request('/api/me', { headers: { cookie: login.cookie } })).status).toBe(200);
+    await db.update(users).set({ role: 'auditor' }).where(eq(users.id, user.id));
+    expect((await app.request('/api/me', { headers: { cookie: login.cookie } })).status).toBe(401);
+    const live = await db.select().from(sessions).where(and(eq(sessions.userId, user.id), sql`${sessions.revokedAt} is null`));
+    expect(live).toHaveLength(0);
+    // Logging in again as the auditor works through the P2 API.
+    expect((await loginAs(user.username)).status).toBe(201);
+  });
+});
+
+describe('P2 review M-4: the API refuses to start on a database older than its migrations', () => {
+  it('names the last journal migration', async () => {
+    const journal = JSON.parse(await readFile(path.resolve('packages/db/drizzle/meta/_journal.json'), 'utf8')) as { entries: Array<{ tag: string; when: number }> };
+    expect(REQUIRED_MIGRATION).toEqual({ tag: journal.entries.at(-1)!.tag, createdAt: journal.entries.at(-1)!.when });
+  });
+
+  it('passes on the migrated test database', async () => {
+    expect(await checkSchemaPreflight(db)).toEqual({ ok: true, latestApplied: REQUIRED_MIGRATION.createdAt });
+  });
+
+  it('refuses a database whose ledger stops earlier, or has no ledger', async () => {
+    const answers = (rows: unknown[][]) => {
+      let call = 0;
+      return { execute: async () => ({ rows: rows[call++] ?? [] }) } as any;
+    };
+    const behind = await checkSchemaPreflight(answers([[{ present: true }], [{ latest: '1796077560000' }]]));
+    expect(behind).toMatchObject({ ok: false, reason: 'migrations_behind', latestApplied: 1796077560000 });
+    expect((behind as { message: string }).message).toContain('npm run db:migrate');
+    expect(await checkSchemaPreflight(answers([[{ present: false }]]))).toMatchObject({ ok: false, reason: 'migrations_table_missing' });
+    expect(await checkSchemaPreflight(answers([[{ present: true }], [{ latest: null }]]))).toMatchObject({ ok: false, reason: 'migrations_behind' });
   });
 });

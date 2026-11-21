@@ -22,7 +22,7 @@ import {
 } from '@kanei/db';
 import { createApp } from '../apps/api/src/app.js';
 import { issueToken, SESSION_COOKIE, type AppDatabase } from '../apps/api/src/auth.js';
-import { DbIdempotencyStore, sha256Hex, type StoredResponse } from '../apps/api/src/idempotency.js';
+import { DbIdempotencyStore, sha256Hex, type IdempotencyBackend, type StoredResponse } from '../apps/api/src/idempotency.js';
 
 const databaseUrl = process.env.DATABASE_URL!;
 if (!/@127\.0\.0\.1:5434\/kanei_crm_mvp_test($|\?)/.test(databaseUrl)) {
@@ -283,7 +283,7 @@ describe('P2 R05 Idempotency-Key answers are kept in idempotency_keys', () => {
     expect(await keyRows(staffId, live)).toHaveLength(1);
   });
 
-  it('(h) a pending row whose holder died (lease over, no heartbeat) is never run again: 409 CONFLICT, no write', async () => {
+  it('(h) a pending row whose holder died (lease over, no heartbeat) is never run again: 409 IDEMPOTENCY_OUTCOME_UNKNOWN, no write', async () => {
     const poNumber = `SEVEN-P2I-H-${nextTag()}`;
     const key = `p2h-${nextTag()}-0001`;
     await db.execute(sql`
@@ -296,7 +296,7 @@ describe('P2 R05 Idempotency-Key answers are kept in idempotency_keys', () => {
       expect(result.status).toBe(409);
       expect(result.body).toEqual({
         error: '前回の送信の結果を確認できませんでした。画面を再読み込みして、記録されたかどうかを確認してください',
-        code: 'CONFLICT'
+        code: 'IDEMPOTENCY_OUTCOME_UNKNOWN'
       });
       expect(result.replayed).toBeNull();
     }
@@ -483,5 +483,90 @@ describe('P2 R05 Idempotency-Key answers are kept in idempotency_keys', () => {
     } finally {
       errors.mockRestore();
     }
+  });
+});
+
+// P2 independent review M-1 / M-2 (2026-11-21).
+describe('P2 review: a written answer that could not be stored never reopens its key; the two 409s are distinct', () => {
+  it('M-1: only the answer store fails (the follow-up succeeds) → the same key answers 409 IDEMPOTENCY_OUTCOME_UNKNOWN, one write', async () => {
+    let calls = 0;
+    // Call 1 is the sweep, call 2 the claim, call 3 the answer store (fails
+    // once), call 4 the "outcome unknown" mark (succeeds) — the reviewer's case
+    // where the old code deleted the row and reopened the key.
+    const flaky = {
+      execute: (query: Parameters<AppDatabase['execute']>[0]) => {
+        calls += 1;
+        if (calls === 3) return Promise.reject(Object.assign(new Error('Connection terminated unexpectedly'), { code: '08006' }));
+        return db.execute(query);
+      }
+    } as unknown as Pick<AppDatabase, 'execute'>;
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const writer = createApp({ db, idempotencyStore: new DbIdempotencyStore(flaky) });
+      const poNumber = `SEVEN-P2R-M1-${nextTag()}`;
+      const key = `p2rm1-${nextTag()}-0001`;
+      const first = await post(writer, 'staff', { poNumber }, key);
+      expect(first.status).toBe(201);
+      expect(calls).toBe(4);
+      expect(await keyRows(staffId, key)).toEqual([expect.objectContaining({ state: 'pending' })]);
+      expect(await leaseOver(staffId, key)).toBe(true);
+      // A retry (the client never saw the 201) on this process and on another.
+      for (const app of [writer, createApp({ db })]) {
+        const retry = await post(app, 'staff', { poNumber }, key);
+        expect(retry.status).toBe(409);
+        expect(retry.body.code).toBe('IDEMPOTENCY_OUTCOME_UNKNOWN');
+      }
+      expect(await poCount(poNumber)).toBe(1);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('M-1: a 2xx answer above the replay limit keeps the key closed (unknown), never deleted', async () => {
+    const store = new DbIdempotencyStore(db, { pollIntervalMs: 50 });
+    const key = `p2rbig-${nextTag()}-0001`;
+    const claim = await store.begin(staffId, key, 'f');
+    expect(claim.kind).toBe('execute');
+    if (claim.kind === 'execute') await claim.complete({ status: 201, body: 'x'.repeat(300 * 1024), contentType: 'application/json' });
+    expect(await keyRows(staffId, key)).toEqual([expect.objectContaining({ state: 'pending' })]);
+    expect(await new DbIdempotencyStore(db).begin(staffId, key, 'f')).toEqual({ kind: 'unknown' });
+  });
+
+  it('M-1: a refusal still releases the key so a corrected submit runs (P0 rule kept)', async () => {
+    const store = new DbIdempotencyStore(db);
+    const key = `p2rref-${nextTag()}-0001`;
+    const claim = await store.begin(staffId, key, 'f');
+    if (claim.kind === 'execute') await claim.complete({ status: 422, body: '{}', contentType: 'application/json' });
+    expect(await keyRows(staffId, key)).toEqual([]);
+    const again = await store.begin(staffId, key, 'g');
+    expect(again.kind).toBe('execute');
+    if (again.kind === 'execute') await again.complete(null);
+  });
+
+  it('M-2: a first request still running after the waits answers 409 IDEMPOTENCY_IN_PROGRESS and writes nothing', async () => {
+    let begins = 0;
+    const busy: IdempotencyBackend = {
+      begin: () => {
+        begins += 1;
+        return { kind: 'wait', pending: Promise.resolve(null) };
+      }
+    };
+    const app = createApp({ db, idempotencyStore: busy });
+    const poNumber = `SEVEN-P2R-M2-${nextTag()}`;
+    const result = await post(app, 'staff', { poNumber }, `p2rm2-${nextTag()}-0001`);
+    expect(result.status).toBe(409);
+    expect(result.body).toEqual({
+      error: '同じ送信をまだ処理しています。少し待ってから、同じ画面のままもう一度送信してください',
+      code: 'IDEMPOTENCY_IN_PROGRESS'
+    });
+    expect(begins).toBe(4);
+    expect(await poCount(poNumber)).toBe(0);
+  });
+
+  it('M-2: the two outcomes are different codes, and neither is the generic CONFLICT', async () => {
+    const { ERROR_MESSAGES_JA } = await import('../apps/api/src/error-codes.js');
+    expect(ERROR_MESSAGES_JA.IDEMPOTENCY_IN_PROGRESS).toBeTruthy();
+    expect(ERROR_MESSAGES_JA.IDEMPOTENCY_OUTCOME_UNKNOWN).toBeTruthy();
+    expect(ERROR_MESSAGES_JA.IDEMPOTENCY_IN_PROGRESS).not.toBe(ERROR_MESSAGES_JA.IDEMPOTENCY_OUTCOME_UNKNOWN);
   });
 });

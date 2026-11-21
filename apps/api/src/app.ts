@@ -80,6 +80,7 @@ import {
   type MakerPoEvidenceDocument,
   type MakerPoSnapshot,
   type MakerPoSnapshotArtworkFile,
+  type MakerPoSnapshotDeliveryTerms,
   type MeasureUnit,
   type NormalFilmSupplyOrderState,
   type PaymentTerms,
@@ -130,7 +131,7 @@ import {
   users
 } from '@kanei/db/schema';
 import { uuidv7 } from '@kanei/db';
-import { getSessionUser, issueToken, readSessionToken, toActor, type AppDatabase } from './auth.js';
+import { getSessionUser, issueToken, readSessionToken, sessionTokenHashForRole, toActor, type AppDatabase } from './auth.js';
 import {
   computeSha256,
   documentMaxBytes,
@@ -793,20 +794,23 @@ export function createApp({
       }, 422);
     }
     if (lookup.kind === 'replay') return replay(lookup.response);
-    // Review M1: the first request stopped renewing its lease mid-write, so
-    // whether it was recorded is unknown — never run it a second time.
+    // Review M1 / P2 review M-1: whether the first request was recorded is
+    // unknown (its process stopped, or its answer could not be stored) — never
+    // run it a second time. P2 review M-2: its own code, because the client
+    // must reload and check (a new key), unlike IDEMPOTENCY_IN_PROGRESS.
     if (lookup.kind === 'unknown') {
       return context.json({
         error: '前回の送信の結果を確認できませんでした。画面を再読み込みして、記録されたかどうかを確認してください',
-        code: 'CONFLICT'
+        code: 'IDEMPOTENCY_OUTCOME_UNKNOWN'
       }, 409);
     }
     // Still running elsewhere after the waits: never run the write a second
-    // time without the key (fail closed); the retry replays once it completes.
+    // time without the key (fail closed). P2 review M-2: the client keeps the
+    // SAME key and retries later — the retry replays once the first completes.
     if (lookup.kind !== 'execute') {
       return context.json({
-        error: '同じ送信をまだ処理しています。少し待ってから画面を再読み込みしてください',
-        code: 'CONFLICT'
+        error: '同じ送信をまだ処理しています。少し待ってから、同じ画面のままもう一度送信してください',
+        code: 'IDEMPOTENCY_IN_PROGRESS'
       }, 409);
     }
     try {
@@ -1046,7 +1050,12 @@ export function createApp({
     if (deadline.passed) return context.json({ error: ERROR_MESSAGES_JA.LOGIN_TIMEOUT!, code: 'LOGIN_TIMEOUT' }, 503);
     const { token, tokenHash } = issueToken();
     const expiresAt = new Date(Date.now() + SESSION_TTL_MS);
-    await db.insert(sessions).values({ id: uuidv7(), userId: outcome.userId, tokenHash, expiresAt });
+    await db.insert(sessions).values({
+      id: uuidv7(),
+      userId: outcome.userId,
+      tokenHash: sessionTokenHashForRole(tokenHash, outcome.role),
+      expiresAt
+    });
     setCookie(context, 'kanei_mvp_session', token, {
       httpOnly: true,
       sameSite: 'Lax',
@@ -1089,7 +1098,12 @@ export function createApp({
     if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
 
     const decision = canPerform(toActor(user), 'project:create', 'F1');
-    if (!decision.allowed) return context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
+    if (!decision.allowed) {
+      // P2 decision: read-only roles (viewer, auditor) never create a project.
+      return user.role === 'viewer' || user.role === 'auditor'
+        ? context.json({ error: '閲覧・監査の権限では案件を登録できません', code: 'READ_ONLY_ROLE' }, 403)
+        : context.json({ error: '権限がありません', code: 'FORBIDDEN' }, 403);
+    }
 
     const body = await context.req.json().catch(() => null) as any;
     const routeCheck = validateProjectRoute(body?.route);
@@ -6255,6 +6269,7 @@ export function createApp({
     lines: Array<{ lineNumber: number; description: string; orderedQuantity: string; unit: string }>;
     artworkFiles: MakerPoSnapshotArtworkFile[];
     sevenPoNumber: string | null;
+    deliveryTerms: MakerPoSnapshotDeliveryTerms;
   }> {
     const [order] = await executor.select().from(filmSupplyOrders)
       .where(eq(filmSupplyOrders.id, orderId)).limit(1);
@@ -6292,12 +6307,24 @@ export function createApp({
     }
 
     let sevenPoNumber: string | null = null;
+    let sevenPoFacts: { orderedQuantity: string | null; orderedUnit: string | null } | undefined;
     if (order.sevenPurchaseOrderId) {
       const [po] = await executor.select({ poNumber: sevenPurchaseOrders.poNumber })
         .from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).limit(1);
       sevenPoNumber = po?.poNumber ?? null;
+      [sevenPoFacts] = await executor.select({
+        orderedQuantity: sevenPoOrderFacts.orderedQuantity,
+        orderedUnit: sevenPoOrderFacts.orderedUnit
+      }).from(sevenPoOrderFacts).where(eq(sevenPoOrderFacts.sevenPurchaseOrderId, order.sevenPurchaseOrderId)).limit(1);
     }
-    return { order, lines, artworkFiles, sevenPoNumber };
+    // P2 decision: what an approval freezes about the schedule and quantity.
+    const deliveryTerms: MakerPoSnapshotDeliveryTerms = {
+      requestedDeliveryDate: order.requestedDeliveryDate ?? null,
+      plannedDeliveryDate: order.plannedDeliveryDate ?? null,
+      sevenPoOrderedQuantity: sevenPoFacts?.orderedQuantity ?? null,
+      sevenPoOrderedUnit: sevenPoFacts?.orderedUnit ?? null
+    };
+    return { order, lines, artworkFiles, sevenPoNumber, deliveryTerms };
   }
 
   /**
@@ -6308,14 +6335,22 @@ export function createApp({
    */
   function rebuildMakerPoSnapshot(
     parts: Awaited<ReturnType<typeof loadMakerPoSnapshotParts>>,
-    storedSnapshot: MakerPoSnapshot
+    storedSnapshot: MakerPoSnapshot,
+    mode: 'stored_shape' | 'freeze' = 'stored_shape'
   ): MakerPoSnapshot {
+    // P2 decision: an approval ('freeze': the approval itself, the card that
+    // previews it, the representative's amount entry) always freezes the
+    // delivery terms. The identity check of an approved paper ('stored_shape')
+    // compares like with like: a paper frozen before P2 has no delivery terms
+    // and keeps the digest it was approved with.
+    const withTerms = mode === 'freeze' || storedSnapshot.deliveryTerms !== undefined;
     return buildMakerPoSnapshot({
       order: { id: parts.order.id, code: parts.order.code, sevenPoNumber: parts.sevenPoNumber },
       items: parts.lines,
       artworkFiles: parts.artworkFiles,
       amounts: storedSnapshot.amounts ?? null,
-      recipientAddress: storedSnapshot.recipient.address
+      recipientAddress: storedSnapshot.recipient.address,
+      ...(withTerms ? { deliveryTerms: parts.deliveryTerms } : {})
     });
   }
 
@@ -6881,7 +6916,8 @@ export function createApp({
           items: parts.lines,
           artworkFiles: parts.artworkFiles,
           amounts,
-          recipientAddress: recipientCheck.address
+          recipientAddress: recipientCheck.address,
+          deliveryTerms: parts.deliveryTerms
         });
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         // P1 R32: the display number MPO-{year}-{n} is the rank by (created_at,
@@ -7013,10 +7049,10 @@ export function createApp({
         const [po] = await tx.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).for('update');
         if (!po || po.status !== 'DRAFT') throw new MakerPoStateConflict();
         const parts = await loadMakerPoSnapshotParts(tx, po.filmSupplyOrderId);
-        const shown = computeMakerPoSnapshotSha256(rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot));
+        const shown = computeMakerPoSnapshotSha256(rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot, 'freeze'));
         if (shown !== expected) throw new MakerPoSnapshotChangedUnderLock(expected, shown);
         const stored = po.snapshot as MakerPoSnapshot;
-        const snapshot = rebuildMakerPoSnapshot(parts, { ...stored, amounts });
+        const snapshot = rebuildMakerPoSnapshot(parts, { ...stored, amounts }, 'freeze');
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         await tx.update(makerPurchaseOrders).set({ snapshot, snapshotSha256, updatedAt: now }).where(eq(makerPurchaseOrders.id, poId));
         await recordAuditEvent(tx, {
@@ -7190,8 +7226,15 @@ export function createApp({
 
         // The approval re-freezes current order data and stamps the digest it
         // approved: a voided snapshot can only come back through this door.
+        // P2 decision: the seven PO row is share-locked before its quantity is
+        // frozen, so an order-facts write (which takes it FOR UPDATE and then
+        // checks for an approved paper) cannot slip in between.
+        if (order.sevenPurchaseOrderId) {
+          await tx.select({ id: sevenPurchaseOrders.id }).from(sevenPurchaseOrders)
+            .where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).for('share');
+        }
         const parts = await loadMakerPoSnapshotParts(tx, po.filmSupplyOrderId);
-        const snapshot = rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot);
+        const snapshot = rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot, 'freeze');
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         if (expectedSnapshotSha256 !== null && expectedSnapshotSha256 !== snapshotSha256) {
           throw new MakerPoSnapshotChangedUnderLock(expectedSnapshotSha256, snapshotSha256);
@@ -7353,7 +7396,7 @@ export function createApp({
       .from(projects).where(eq(projects.id, order.projectId)).limit(1);
     const stored = po.snapshot as MakerPoSnapshot;
     const parts = await loadMakerPoSnapshotParts(db, order.id);
-    const preview = rebuildMakerPoSnapshot(parts, stored);
+    const preview = rebuildMakerPoSnapshot(parts, stored, 'freeze');
     const approvalSnapshotSha256 = computeMakerPoSnapshotSha256(preview);
     const numbers = await loadMakerPoDisplayNumbers(db, [po.id]);
 
@@ -7463,9 +7506,14 @@ export function createApp({
     const [masterRecipient] = typeof preview.recipient.address === 'string'
       ? await db.select({ id: makerRecipientAddresses.id }).from(makerRecipientAddresses)
         .innerJoin(projects, eq(projects.makerAccountId, makerRecipientAddresses.accountId))
+        .innerJoin(accounts, eq(accounts.id, makerRecipientAddresses.accountId))
         .where(and(
+          // Review L-7: the same conditions as the create path (loadUsableMakerRecipientAddress).
           eq(projects.id, order.projectId),
           eq(makerRecipientAddresses.isActive, true),
+          eq(accounts.role, 'maker'),
+          eq(accounts.isActive, true),
+          isNull(accounts.deletedAt),
           eq(makerRecipientAddresses.email, preview.recipient.address.trim().toLowerCase())
         )).limit(1)
       : [];
