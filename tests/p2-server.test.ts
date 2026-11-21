@@ -36,7 +36,7 @@ import { createApp } from '../apps/api/src/app.js';
 import { issueToken, SESSION_COOKIE, sessionTokenHashForRole } from '../apps/api/src/auth.js';
 import { withApprovalSnapshot } from './helpers/approval-snapshot.js';
 import { hashPassword } from '../apps/api/src/password.js';
-import { checkSchemaPreflight, REQUIRED_MIGRATION } from '../apps/api/src/schema-preflight.js';
+import { checkSchemaPreflight, requiredMigrations } from '../apps/api/src/schema-preflight.js';
 
 const databaseUrl = process.env.DATABASE_URL!;
 if (!/@127\.0\.0\.1:5434\/kanei_crm_mvp_test($|\?)/.test(databaseUrl)) {
@@ -1569,25 +1569,170 @@ describe('P2 review M-3: an auditor session exists only through an API that know
   });
 });
 
-describe('P2 review M-4: the API refuses to start on a database older than its migrations', () => {
-  it('names the last journal migration', async () => {
+describe('P2 review M-4 / re-review N-4: the API refuses to start unless every migration it needs is applied', () => {
+  const ledgerOf = (rows: Array<{ createdAt: string; hash: string }>) => {
+    let call = 0;
+    return { execute: async () => ({ rows: call++ === 0 ? [{ present: true }] : rows }) } as any;
+  };
+  const required = requiredMigrations();
+  const fullLedger = () => required.map((entry) => ({ createdAt: String(entry.createdAt), hash: entry.hash ?? 'applied-before-p2' }));
+
+  it('reads its needs from this build\'s journal: every entry by timestamp, P2 entries also by content hash', async () => {
     const journal = JSON.parse(await readFile(path.resolve('packages/db/drizzle/meta/_journal.json'), 'utf8')) as { entries: Array<{ tag: string; when: number }> };
-    expect(REQUIRED_MIGRATION).toEqual({ tag: journal.entries.at(-1)!.tag, createdAt: journal.entries.at(-1)!.when });
+    expect(required.map((entry) => entry.tag)).toEqual(journal.entries.map((entry) => entry.tag));
+    expect(required.filter((entry) => entry.hash !== null).map((entry) => entry.tag)).toEqual(
+      journal.entries.filter((entry) => entry.tag >= '0025').map((entry) => entry.tag)
+    );
   });
 
   it('passes on the migrated test database', async () => {
-    expect(await checkSchemaPreflight(db)).toEqual({ ok: true, latestApplied: REQUIRED_MIGRATION.createdAt });
+    expect(await checkSchemaPreflight(db)).toEqual({ ok: true, applied: required.length, required: required.length });
   });
 
-  it('refuses a database whose ledger stops earlier, or has no ledger', async () => {
-    const answers = (rows: unknown[][]) => {
-      let call = 0;
-      return { execute: async () => ({ rows: rows[call++] ?? [] }) } as any;
-    };
-    const behind = await checkSchemaPreflight(answers([[{ present: true }], [{ latest: '1796077560000' }]]));
-    expect(behind).toMatchObject({ ok: false, reason: 'migrations_behind', latestApplied: 1796077560000 });
-    expect((behind as { message: string }).message).toContain('npm run db:migrate');
-    expect(await checkSchemaPreflight(answers([[{ present: false }]]))).toMatchObject({ ok: false, reason: 'migrations_table_missing' });
-    expect(await checkSchemaPreflight(answers([[{ present: true }], [{ latest: null }]]))).toMatchObject({ ok: false, reason: 'migrations_behind' });
+  it('refuses a ledger that lacks a migration in the middle, not only an old latest one', async () => {
+    const rows = fullLedger().filter((row) => row.createdAt !== String(required.find((entry) => entry.tag.startsWith('0027'))!.createdAt));
+    const answer = await checkSchemaPreflight(ledgerOf(rows), required);
+    expect(answer).toMatchObject({ ok: false, reason: 'migrations_missing', missing: ['0027_p2_idempotency_keys'] });
+    expect((answer as { message: string }).message).toContain('npm run db:migrate');
+    const behind = await checkSchemaPreflight(ledgerOf(fullLedger().slice(0, 25)), required);
+    expect(behind).toMatchObject({ ok: false, reason: 'migrations_missing' });
+    expect((behind as { missing: string[] }).missing[0]).toBe('0025_p2_delivery_dates_and_seven_po_facts');
+  });
+
+  it('refuses a P2 migration applied with other content; pre-P2 hashes are not compared', async () => {
+    const tampered = fullLedger().map((row, index) => (required[index]!.tag.startsWith('0033') ? { ...row, hash: 'f'.repeat(64) } : row));
+    expect(await checkSchemaPreflight(ledgerOf(tampered), required)).toMatchObject({
+      ok: false, reason: 'migration_content_mismatch', mismatched: ['0033_p2_auditor_session_guard_lock']
+    });
+    const oldEdited = fullLedger().map((row, index) => (required[index]!.tag.startsWith('0015') ? { ...row, hash: '0'.repeat(64) } : row));
+    expect(await checkSchemaPreflight(ledgerOf(oldEdited), required)).toMatchObject({ ok: true });
+  });
+
+  it('refuses a database without a ledger', async () => {
+    const none = { execute: async () => ({ rows: [{ present: false }] }) } as any;
+    expect(await checkSchemaPreflight(none, required)).toMatchObject({ ok: false, reason: 'migrations_table_missing' });
+  });
+});
+
+describe('P2 re-review: recovery path, fail-closed session form, and the approval/quantity race', () => {
+  async function approvedPaperWithTerms() {
+    const chain = await approvedOrder();
+    expect((await put('staff', `/api/seven-purchase-orders/${chain.sevenPoId}/order-facts`, { orderedQuantity: '1200', orderedUnit: 'meters' })).status).toBe(200);
+    expect((await patch('staff', `/api/film-supply-orders/${chain.orderId}/delivery-dates`, { requestedDeliveryDate: '2027-06-01' })).status).toBe(200);
+    const paper = await createPaper(chain.orderId);
+    expect(paper.status, JSON.stringify(paper.body)).toBe(201);
+    return { ...chain, paperId: paper.body.id as string };
+  }
+
+  it('M-5: cancelling the approved paper is the way back — the dates and the quantity can be changed again', async () => {
+    const world = await approvedPaperWithTerms();
+    const approved = await post('admin', `/api/maker-purchase-orders/${world.paperId}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, world.paperId));
+    expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+    expect((await patch('staff', `/api/film-supply-orders/${world.orderId}/delivery-dates`, { plannedDeliveryDate: '2027-06-10' })).status).toBe(409);
+    const cancelled = await post('admin', `/api/maker-purchase-orders/${world.paperId}/cancel`, { note: '納期変更のため作り直し' });
+    expect(cancelled.status, JSON.stringify(cancelled.body)).toBe(200);
+    const dates = await patch('staff', `/api/film-supply-orders/${world.orderId}/delivery-dates`, { plannedDeliveryDate: '2027-06-10' });
+    expect(dates.status, JSON.stringify(dates.body)).toBe(200);
+    expect(dates.body.plannedDeliveryDate).toBe('2027-06-10');
+    const quantity = await put('staff', `/api/seven-purchase-orders/${world.sevenPoId}/order-facts`, { orderedQuantity: '1300', orderedUnit: 'meters' });
+    expect(quantity.status, JSON.stringify(quantity.body)).toBe(200);
+    expect(quantity.body.orderedQuantity).toBe('1300.000');
+  });
+
+  it('N-3 (MUT-G): a session whose stored form does not match the role is refused — a p2: session left after auditor → staff', async () => {
+    const id = uuidv7();
+    const username = `p2rr_${nextTag()}`;
+    await db.insert(users).values({ id, username, passwordHash: await hashPassword('p2-rereview-pass'), displayName: '合成監査→担当', role: 'auditor' });
+    const login = await app.request('/api/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ username, password: 'p2-rereview-pass' }) });
+    expect(login.status).toBe(201);
+    const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0]!;
+    expect((await app.request('/api/me', { headers: { cookie } })).status).toBe(200);
+    // auditor → staff does not fire the revoke trigger: the p2: session stays live in the table…
+    await db.update(users).set({ role: 'staff' }).where(eq(users.id, id));
+    const live = await db.select().from(sessions).where(and(eq(sessions.userId, id), sql`${sessions.revokedAt} is null`));
+    expect(live).toHaveLength(1);
+    expect(live[0]!.tokenHash.startsWith('p2:')).toBe(true);
+    // …but the API refuses it (fail closed) — the user logs in again for a staff session.
+    expect((await app.request('/api/me', { headers: { cookie } })).status).toBe(401);
+  });
+
+  it('N-3 (MUT-J): an approval waits for an in-flight quantity change of the seven PO and freezes the committed quantity', async () => {
+    const world = await approvedPaperWithTerms();
+    const body = await withApprovalSnapshot(app, tokens.admin, world.paperId);
+    const holder = await pool.connect();
+    let approval: Promise<Awaited<ReturnType<typeof post>>> | undefined;
+    try {
+      await holder.query('begin');
+      // What PUT …/order-facts does first: the seven PO row FOR UPDATE, then the change.
+      await holder.query('select id from seven_purchase_orders where id = $1 for update', [world.sevenPoId]);
+      await holder.query(`update seven_po_order_facts set ordered_quantity = '1500' where seven_purchase_order_id = $1`, [world.sevenPoId]);
+      let settled = false;
+      approval = post('admin', `/api/maker-purchase-orders/${world.paperId}/ceo-approval`, body).finally(() => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(settled).toBe(false); // the approval waits on the seven PO share lock
+      await holder.query('commit');
+    } finally {
+      holder.release();
+    }
+    const answer = await approval!;
+    // The card the representative saw showed 1200; the quantity moved under it,
+    // so the approval refuses instead of freezing a quantity nobody saw.
+    expect(answer.status).toBe(409);
+    expect(answer.body.code).toBe('MAKER_PO_SNAPSHOT_CHANGED');
+    const fresh = await post('admin', `/api/maker-purchase-orders/${world.paperId}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, world.paperId));
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(200);
+    const [row] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, world.paperId));
+    expect((row!.snapshot as any).deliveryTerms.sevenPoOrderedQuantity).toBe('1500.000');
+  });
+});
+
+describe('P2 re-review N-1 (0033): the session guard and a concurrent role change serialize', () => {
+  async function staffUser() {
+    const id = uuidv7();
+    await db.insert(users).values({ id, username: `p2race_${nextTag()}`, passwordHash: 'not-a-login-hash', displayName: '合成競合', role: 'staff' });
+    return id;
+  }
+  const bareSession = (userId: string) => ({ id: uuidv7(), userId, tokenHash: issueToken().tokenHash, expiresAt: new Date(Date.now() + 60_000) });
+
+  it('role change first (uncommitted): a P1-style login of that user waits, then is refused', async () => {
+    const userId = await staffUser();
+    const changer = await pool.connect();
+    try {
+      await changer.query('begin');
+      await changer.query(`update users set role = 'auditor' where id = $1`, [userId]);
+      let settled = false;
+      const login = db.insert(sessions).values(bareSession(userId))
+        .then(() => 'inserted', (error: any) => error?.cause?.code ?? error?.code)
+        .finally(() => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(settled).toBe(false); // the guard's FOR SHARE waits for the role change
+      await changer.query('commit');
+      expect(await login).toBe('42501');
+    } finally {
+      changer.release();
+    }
+    const live = await db.select().from(sessions).where(and(eq(sessions.userId, userId), sql`${sessions.revokedAt} is null`));
+    expect(live).toHaveLength(0);
+  });
+
+  it('login first (uncommitted): the role change waits for it, then revokes that session', async () => {
+    const userId = await staffUser();
+    const login = await pool.connect();
+    const session = bareSession(userId);
+    let roleChange: Promise<unknown> | undefined;
+    try {
+      await login.query('begin');
+      await login.query('insert into sessions (id, user_id, token_hash, expires_at) values ($1, $2, $3, $4)', [session.id, userId, session.tokenHash, session.expiresAt]);
+      let settled = false;
+      roleChange = db.update(users).set({ role: 'auditor' }).where(eq(users.id, userId)).finally(() => { settled = true; });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      expect(settled).toBe(false); // the role UPDATE waits for the guard's FOR SHARE
+      await login.query('commit');
+    } finally {
+      login.release();
+    }
+    await roleChange;
+    const [row] = await db.select().from(sessions).where(eq(sessions.id, session.id));
+    expect(row!.revokedAt).not.toBeNull();
   });
 });

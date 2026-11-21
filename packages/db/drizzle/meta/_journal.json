@@ -232,6 +232,13 @@
       "when": 1796768760000,
       "tag": "0032_p2_auditor_session_guard",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1796855160000,
+      "tag": "0033_p2_auditor_session_guard_lock",
+      "breakpoints": true
     }
   ]
 }

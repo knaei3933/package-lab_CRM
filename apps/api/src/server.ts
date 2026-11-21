@@ -15,7 +15,7 @@ const { db, pool } = createDatabase(env.databaseUrl);
 // this build (deployment order: migrations first, then the API).
 const schema = await checkSchemaPreflight(db);
 if (!schema.ok) {
-  console.error(`[api] refusing to start: ${schema.message} (latest applied migration: ${schema.latestApplied ?? 'none'})`);
+  console.error(`[api] refusing to start: ${schema.message}`);
   await pool.end();
   process.exit(1);
 }
