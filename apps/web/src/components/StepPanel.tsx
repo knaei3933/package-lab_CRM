@@ -149,16 +149,19 @@ export function StepPanelView(props: StepPanelProps) {
       return (
         <ActionForm
           action={createMakerPoStepAction}
-          submitLabel={`${order.code} のメーカー発注書を作る`}
-          hint="明細・校了した版・支払条件はこの発注から写されます（スナップショット）。作成のあとに代表承認をします。"
+          submitLabel={`${order.code} のメーカー発注書（下書き）を作る`}
+          hint="明細・校了した版・支払条件はこの発注から写されます（スナップショット）。作成のあと、代表が内容を見て承認します。"
         >
           <OrderFields order={order} projectCode={projectCode} />
           <input type="hidden" readOnly name="needsReadyTransition" value={action.needsReadyTransition ? 'true' : 'false'} />
           <TextField name="recipientAddress" label="メーカーの送信先メールアドレス" type="email" required width={360} autoComplete="off" spellCheck={false} placeholder="order@maker.example" />
-          <div className="p1-row">
-            <SelectField name="currency" label="通貨" choices={CURRENCY_CHOICES} defaultValue="JPY" width={200} />
-            <TextField name="totalAmount" label="金額（税込）" required width={200} placeholder="480000" autoComplete="off" />
-          </div>
+          {/* Amounts are the representative's (staff never see them): only the representative types one here. */}
+          {props.role === 'admin' ? (
+            <div className="p1-row">
+              <SelectField name="currency" label="通貨" choices={CURRENCY_CHOICES} defaultValue="JPY" width={200} />
+              <TextField name="totalAmount" label="金額（数字のみ・任意）" width={200} placeholder="480000" autoComplete="off" />
+            </div>
+          ) : null}
         </ActionForm>
       );
     case 'ceo_approve':

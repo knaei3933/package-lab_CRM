@@ -60,7 +60,8 @@ export type AuthorizationDecision =
  * acceptance; the viewer reads a non-sensitive status only.
  */
 const MAKER_PO_ADMIN_ONLY_OPERATIONS: readonly Operation[] = [
-  'maker_po:create',
+  // P1 integration (policy P-6, decided 11-21): the DRAFT paper is drawn up by
+  // staff (or the system); approving it (ceo-approval) stays the representative's.
   'maker_po:accept_evidence',
   // M8-HARDEN FIX B2: cancelling live paper frees the order for replacement
   // paper, so it is the representative's decision exactly like freezing it.
@@ -73,6 +74,7 @@ const MAKER_PO_ADMIN_ONLY_OPERATIONS: readonly Operation[] = [
 /** Maker PO operations an assigned staff user may run (admin may always). */
 const MAKER_PO_STAFF_OPERATIONS: readonly Operation[] = [
   'maker_po:read',
+  'maker_po:create',
   'maker_po:send_evidence',
   'maker_po:accept_provisional'
 ];

@@ -22,6 +22,7 @@ import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
 import { plausibleTestSentAt, sendMakerPoEmlEvidence } from '../helpers/maker-po-evidence.js';
+import { withApprovalSnapshot } from '../helpers/approval-snapshot.js';
 
 /**
  * M8-OPERATOR: maker purchase-order role matrix and response separation.
@@ -553,7 +554,7 @@ describe('M8 FIX 1: maker PO responses are shaped by the reader role', () => {
 });
 
 describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
-  it('creating the paper is admin-only; staff and viewer get 403 and nothing is written', async () => {
+  it('amounts are admin-only (P-6: staff draft without them); staff with amounts, viewer and outsiders get 403 and nothing is written', async () => {
     const ready = await reachMakerPoReady({ projectId, tag: `CREATE-${nextTag()}` });
 
     const staffAttempt = await postAs(staffToken, `/api/film-supply-orders/${ready.orderId}/maker-purchase-orders`, {
@@ -561,6 +562,7 @@ describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
       amounts: { currency: 'JPY', totalAmount: '480000' }
     });
     expect(staffAttempt.status).toBe(403);
+    expect((staffAttempt.body as { code?: string }).code).toBe('MAKER_PO_AMOUNTS_ADMIN_ONLY');
 
     const viewerAttempt = await postAs(viewerToken, `/api/film-supply-orders/${ready.orderId}/maker-purchase-orders`, {
       recipientAddress: 'maker-po@example.com'
@@ -589,7 +591,7 @@ describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
       recipientAddress: 'maker-po@example.com'
     });
     const poId = (created.body as { id: string }).id;
-    const approved = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {});
+    const approved = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, poId));
     expect(approved.status).toBe(200);
 
     const evidence = await uploadDocument({
@@ -642,7 +644,7 @@ describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
       recipientAddress: 'maker-po@example.com'
     });
     const poId = (created.body as { id: string }).id;
-    await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {});
+    await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, poId));
     const sent = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       poId,
@@ -692,7 +694,7 @@ describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
       recipientAddress: 'maker-po@example.com'
     });
     const poId = (created.body as { id: string }).id;
-    await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {});
+    await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, poId));
     const sendEvidence = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       poId,
@@ -763,7 +765,7 @@ describe('M8 FIX 2: the maker PO role matrix at every endpoint', () => {
       recipientAddress: 'maker-po@example.com'
     });
     const poId = (created.body as { id: string }).id;
-    await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {});
+    await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, poId));
     const sendAttempt = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),
       poId,

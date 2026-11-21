@@ -445,7 +445,7 @@ function MakerPoCreateSection({
             {isAdmin ? (
               <>
                 <SelectField name="currency" label="通貨" width={160} defaultValue="JPY" choices={CURRENCY_CHOICES} />
-                <TextField name="totalAmount" label="金額（税込・数字のみ）" width={180} hint="例 480000（¥・カンマは不要です）" />
+                <TextField name="totalAmount" label="金額（数字のみ）" width={180} hint="例 480000（¥・カンマは不要です）" />
               </>
             ) : null}
           </div>

@@ -138,12 +138,18 @@ describe('StepPanelView', () => {
     expect(html).toContain(`name="${RENDERED_PROJECT_FIELD}" value="proj-RENDERED"`);
   });
 
-  it('shows staff the waiting text, not a form, for the representative step', () => {
-    const html = panelFor('DUAL_APPROVED', 'staff');
+  it('shows staff the waiting text, not a form, for the representative step (代表承認)', () => {
+    const maker = { id: 'mpo-1', status: 'DRAFT', snapshot: { amounts: null, items: [], specs: { artworkFiles: [] } } };
+    const html = panelFor('MAKER_PO_READY', 'staff', { makerPos: [maker] });
     expect(html).toContain('代表の確認・承認を待っています');
-    expect(html).toContain('代表がメーカー発注書を作ります');
     expect(html).not.toContain('<form');
-    expect(html).not.toContain('recipientAddress');
+  });
+
+  it('P-6: staff draw up the maker paper themselves — without an amount field (amounts are the representative’s)', () => {
+    const html = panelFor('DUAL_APPROVED', 'staff');
+    expect(html).toContain('name="recipientAddress"');
+    expect(html).not.toContain('name="totalAmount"');
+    expect(panelFor('DUAL_APPROVED', 'admin')).toContain('name="totalAmount"');
   });
 
   it('shows a viewer the waiting text and no form on a staff step', () => {

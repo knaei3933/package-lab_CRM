@@ -302,6 +302,8 @@ export const ERROR_MESSAGES_JA: Readonly<Record<string, string>> = {
   MAKER_PO_RETURN_ONLY_DRAFT: '差し戻しできるのは代表承認前のメーカー発注書だけです。承認済みの発注書は取消の手順を使ってください',
   MAKER_PO_SNAPSHOT_CHANGED: '承認画面を開いた後に発注書の内容（明細・版）が変わりました。最新の内容を確認してから、もう一度承認してください',
   EXPECTED_SNAPSHOT_SHA256_INVALID: '承認する発注書の確認値が正しくありません。画面を再読み込みしてください',
+  MAKER_PO_AMOUNTS_ADMIN_ONLY: '金額は代表者だけが入力できます。金額なしで下書きを作成してください',
+  EXPECTED_SNAPSHOT_SHA256_REQUIRED: '承認する発注書の確認値がありません。承認カードを開き直してから承認してください',
   MAKER_PO_AMOUNT_MISSING: 'メーカー発注書に金額が記載されていません。担当者に金額の入力を依頼してください',
   MAKER_PO_SNAPSHOT_DRIFTED: '発注書の作成後に明細または版が変わりました。承認すると最新の内容で確定します',
 

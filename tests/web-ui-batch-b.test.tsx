@@ -496,12 +496,12 @@ describe('① 次にやること: the step, the owner and the reason a role cann
 
   it.each([
     ['admin', null],
-    ['staff', 'この操作は代表者が行います。'],
+    ['staff', null],
     ['viewer', '閲覧権限のため操作できません。']
-  ] as const)('MAKER_PO_READY (%s): the representative creates and approves the maker PO', (role, refusal) => {
+  ] as const)('MAKER_PO_READY (%s): P-6 — staff (or the representative) draft the maker PO; the representative approves it', (role, refusal) => {
     const action = nextActionForOrder(order('MAKER_PO_READY'), workspace(), role);
-    expect(action).toMatchObject({ owner: '代表者', screens: ['/maker-po'], operation: 'maker_po:create', refusal });
-    expect(action.text).toBe('メーカー発注書を作成し、代表承認を記録する。');
+    expect(action).toMatchObject({ owner: '担当者・代表者', screens: ['/maker-po'], operation: 'maker_po:create', refusal });
+    expect(action.text).toBe('メーカー発注書（下書き）を作成する。作成後に代表が承認します。');
   });
 
   it.each([
@@ -878,11 +878,12 @@ describe('④ canRoleOperate mirrors the core canPerform matrix', () => {
   });
 
   it('representative-only work, staff work and the read-only viewer (independent expectations)', () => {
-    for (const operation of ['ceo_approve', 'maker_po:create', 'maker_po:cancel', 'maker_po:accept_evidence', 'maker_po:verify_send', 'artwork_approval:verify_evidence'] as Operation[]) {
+    // P-6 (P1 integration): maker_po:create (the DRAFT paper) is staff work now; approving it is not.
+    for (const operation of ['ceo_approve', 'maker_po:cancel', 'maker_po:accept_evidence', 'maker_po:verify_send', 'artwork_approval:verify_evidence'] as Operation[]) {
       expect(canRoleOperate('admin', operation), operation).toBe(true);
       expect(canRoleOperate('staff', operation), operation).toBe(false);
     }
-    for (const operation of ['maker_po:send_evidence', 'maker_po:accept_provisional', 'film_order:transition', 'document:verify'] as Operation[]) {
+    for (const operation of ['maker_po:create', 'maker_po:send_evidence', 'maker_po:accept_provisional', 'film_order:transition', 'document:verify'] as Operation[]) {
       expect(canRoleOperate('staff', operation), operation).toBe(true);
     }
     for (const operation of OPERATIONS) expect(canRoleOperate('viewer', operation), operation).toBe(false);
@@ -901,9 +902,10 @@ describe('④ canRoleOperate mirrors the core canPerform matrix', () => {
   });
 
   it('the refusal wording per role', () => {
-    expect(operationRefusal('admin', 'maker_po:create')).toBeNull();
-    expect(operationRefusal('staff', 'maker_po:create')).toBe('この操作は代表者が行います。');
-    expect(operationRefusal('staff', 'maker_po:create', 'メーカー発注書の作成')).toBe('メーカー発注書の作成は代表者が行います。');
+    expect(operationRefusal('admin', 'ceo_approve')).toBeNull();
+    expect(operationRefusal('staff', 'maker_po:create')).toBeNull();
+    expect(operationRefusal('staff', 'ceo_approve')).toBe('この操作は代表者が行います。');
+    expect(operationRefusal('staff', 'ceo_approve', '代表承認')).toBe('代表承認は代表者が行います。');
     expect(operationRefusal('viewer', 'seven_po:create')).toBe('閲覧権限のため操作できません。');
   });
 });
@@ -939,7 +941,8 @@ describe('⑥ shortId', () => {
 const FORM_MARKERS = {
   // 支払条件 (FSO-DRAFT, P0 R01: label 「支払条件を変更する」) and 受領確認 (FSO-DELIV): both staff work, gated per role.
   orders: ['発注書を登録する', '状態を進める', '発注を作成する', '支払条件を変更する', '受領確認を記録する'],
-  documents: ['書類をアップロードする', '確認を記録する'],
+  // P1 P-4: the fixture's documents were uploaded by this staff member — their 確認 is not offered (see below).
+  documents: ['書類をアップロードする'],
   approvals: ['版を登録する'],
   'maker-po': ['手動送信を記録する', '発注を作成する'],
   deliveries: ['準備状態を再評価する', '納品を記録する', '納品を確認する']
@@ -951,7 +954,7 @@ const FORM_MARKERS = {
  * dedicated staff test below; it is not listed here.
  */
 const ADMIN_ONLY_FORMS = {
-  'maker-po': ['メーカー発注書を作成する', '発注書を取り消す'],
+  'maker-po': ['発注書を取り消す'],
   approvals: ['手動確認を記録する']
 } as const;
 
@@ -977,6 +980,8 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
       serveAs('staff');
       const html = await renderPage(PAGES[page]);
       for (const marker of FORM_MARKERS[page]) expect(html, marker).toContain(`>${marker}</button>`);
+      if (page === 'documents') expect(html).toContain('自分で登録した証跡は自分で確認できません');
+      if (page === 'documents') expect(html).toContain('自分で登録した証跡は自分で確認できません');
       for (const marker of (ADMIN_ONLY_FORMS as Record<string, readonly string[]>)[page] ?? []) {
         expect(html, marker).not.toContain(`>${marker}</button>`);
       }
@@ -989,6 +994,8 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
       serveAs('admin');
       const html = await renderPage(PAGES[page]);
       for (const marker of FORM_MARKERS[page]) expect(html, marker).toContain(`>${marker}</button>`);
+      // P-4: the representative may confirm any evidence, their own included.
+      if (page === 'documents') expect(html).toContain('>確認を記録する</button>');
       for (const marker of (ADMIN_ONLY_FORMS as Record<string, readonly string[]>)[page] ?? []) {
         expect(html, marker).toContain(`>${marker}</button>`);
       }
@@ -1054,9 +1061,10 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
   it('staff on maker-po: 次にやること names who does the representative step', async () => {
     serveAs('staff');
     const html = await renderPage(MakerPoPage);
-    expect(html).toContain('メーカー発注書を作成し、代表承認を記録する。');
+    expect(html).toContain('メーカー発注書（下書き）を作成する。作成後に代表が承認します。');
     expect(html).toContain('この操作は代表者が行います。');
-    expect(html).toContain('メーカー発注書の作成は代表者が行います。');
+    // P-6: staff may draft the paper themselves — no 「作成は代表者」 refusal any more.
+    expect(html).not.toContain('メーカー発注書の作成は代表者が行います。');
     expect(html).toContain('この画面の下にあります');
   });
 

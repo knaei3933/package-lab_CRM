@@ -6,7 +6,8 @@ import { offsetDateTimeField } from '../../lib/datetime';
 import type { ActionState } from '../../lib/types';
 import { KEY_REUSED_CODE, recordIdOf, refusalState } from '../../lib/action-result';
 import { EXPECTED_TERMS_MISSING_MESSAGE, PAYMENT_TERMS_REQUIRED_MESSAGE, RECIPIENT_EMAIL_INVALID_MESSAGE } from '../../lib/form-messages';
-import { refuseIfProjectSwitched } from '../../lib/project-guard';
+import { refuseIfProjectSwitched, writeProjectOf } from '../../lib/project-guard';
+import { AMOUNT_MISSING_CONFIRM_MESSAGE, approvalCardFacts, SNAPSHOT_UNREADABLE_MESSAGE } from '../../lib/approval-snapshot';
 import { idempotencyKeyOf } from '../../lib/project-context';
 import { revalidatePath } from 'next/cache';
 
@@ -31,7 +32,7 @@ function refresh(): void {
 }
 
 async function send(formData: FormData, method: 'POST' | 'PATCH', path: string, body: unknown): Promise<ActionState> {
-  const result = await callApi(path, { method, body, idempotencyKey: idempotencyKeyOf(formData) });
+  const result = await callApi(path, { method, body, idempotencyKey: idempotencyKeyOf(formData), expectedProjectId: writeProjectOf(formData) });
   if (result.ok) {
     refresh();
     return { ok: true, message: '記録しました。', changedId: recordIdOf(result.data) };
@@ -93,7 +94,13 @@ export async function approveMakerPoAction(_prev: ActionState | null, formData: 
   if (!['prepaid', 'on_delivery', 'undetermined'].includes(expectedPaymentTerms)) {
     return { ok: false, message: EXPECTED_TERMS_MISSING_MESSAGE };
   }
-  return post(formData, `/api/maker-purchase-orders/${encodeURIComponent(poId)}/ceo-approval`, { expectedPaymentTerms });
+  // P1 integration: the approval always carries the snapshot hash of the paper (read from its approval card).
+  const facts = await approvalCardFacts(poId);
+  const expectedSnapshotSha256 = facts.hash;
+  if (!expectedSnapshotSha256) return { ok: false, message: SNAPSHOT_UNREADABLE_MESSAGE };
+  // A paper without an amount is approved only with the card's explicit confirmation.
+  if (facts.amountMissing && formData.get('acknowledgeMissingAmount') !== 'on') return { ok: false, message: AMOUNT_MISSING_CONFIRM_MESSAGE };
+  return post(formData, `/api/maker-purchase-orders/${encodeURIComponent(poId)}/ceo-approval`, { expectedPaymentTerms, expectedSnapshotSha256 });
 }
 
 /** Screen 2 support: record the G6 transaction terms while the order is a draft. */
@@ -229,7 +236,7 @@ export async function acknowledgeMakerPoCancellationAction(
   if (evidenceDocumentVersionId.length > 0) body.evidenceDocumentVersionId = evidenceDocumentVersionId;
   const result = await callApi<{ acknowledgementKind?: unknown; replacementPaperLive?: unknown }>(
     `/api/maker-purchase-orders/${encodeURIComponent(poId)}/cancellation-acknowledgement`,
-    { method: 'POST', body, idempotencyKey: idempotencyKeyOf(formData) }
+    { method: 'POST', body, idempotencyKey: idempotencyKeyOf(formData), expectedProjectId: writeProjectOf(formData) }
   );
   if (!result.ok) {
     // Review NM1: the earlier submit with this key may be stored — show the list as it is now.

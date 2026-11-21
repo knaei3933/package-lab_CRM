@@ -32,6 +32,7 @@ import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { ERROR_MESSAGES_JA, isSafeUserMessage, normalizeRefusalBody } from '../apps/api/src/error-codes.js';
 import { IdempotencyStore } from '../apps/api/src/idempotency.js';
 import { buildMakerPoEml, sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
+import { withApprovalSnapshot } from './helpers/approval-snapshot.js';
 
 const databaseUrl = process.env.DATABASE_URL!;
 if (!/@127\.0\.0\.1:5434\/kanei_crm_mvp_test($|\?)/.test(databaseUrl)) {
@@ -339,7 +340,7 @@ describe('R01 payment terms: required choice, editable until the CEO approval, s
     expect(paper.status).toBe(201);
     // The CEO approval gate still re-reads the term: back to undetermined before approval.
     expect((await send('staff', 'PATCH', `/api/film-supply-orders/${chain.orderId}/payment-terms`, { paymentTerms: 'undetermined' })).status).toBe(200);
-    const refused = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`);
+    const refused = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id));
     expect(refused.status).toBe(422);
     expect(refused.body.code).toBe('PAYMENT_GATE_UNSATISFIED');
     expect(refused.body.error).not.toMatch(/paymentTerms|prepaid|on_delivery|G6/);
@@ -347,7 +348,7 @@ describe('R01 payment terms: required choice, editable until the CEO approval, s
     // The fix the old system had no way to make: change the term at MAKER_PO_READY.
     const fixed = await send('staff', 'PATCH', `/api/film-supply-orders/${chain.orderId}/payment-terms`, { paymentTerms: 'prepaid' });
     expect(fixed.status).toBe(200);
-    const approved = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`);
+    const approved = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id));
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
 
     const locked = await send('admin', 'PATCH', `/api/film-supply-orders/${chain.orderId}/payment-terms`, { paymentTerms: 'on_delivery' });
@@ -380,7 +381,7 @@ describe('R01 payment terms: required choice, editable until the CEO approval, s
       return original(fn, config);
     };
     try {
-      const raced = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`);
+      const raced = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id));
       expect(raced.status).toBe(422);
       expect(raced.body.code).toBe('PAYMENT_GATE_UNSATISFIED');
     } finally {
@@ -547,7 +548,7 @@ describe('R11 manual verification: the verifier and the time are the session use
   it('does the same for the send manual verification (no verifier fields needed)', async () => {
     const chain = await readyOrder();
     const paper = await createPaper(chain.orderId);
-    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`)).status).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id))).status).toBe(200);
     const pending = await sendMakerPoEmlEvidence((url, body) => post('staff', url, body), paper.body.id, { orderCode: chain.code });
     expect((pending.body as any).verificationStatus).toBe('PENDING_MANUAL_VERIFICATION');
     const eventId = (pending.body as any).event.id as string;
@@ -572,7 +573,8 @@ describe('R10 maker recipient is a mail address, checked when the paper is writt
       expect(refused.body.code).toBe('RECIPIENT_ADDRESS_INVALID');
     }
     expect((await createPaper(chain.orderId, '  ')).body.code).toBe('RECIPIENT_ADDRESS_REQUIRED');
-    expect((await post('staff', `/api/film-supply-orders/${chain.orderId}/maker-purchase-orders`, { recipientAddress: 'order@maker.example.jp' })).status).toBe(403);
+    // P-6 (P1 integration): staff may draft the paper now; a viewer still may not (and nothing is written).
+    expect((await post('viewer', `/api/film-supply-orders/${chain.orderId}/maker-purchase-orders`, { recipientAddress: 'order@maker.example.jp' })).status).toBe(403);
     expect(await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.filmSupplyOrderId, chain.orderId))).toHaveLength(0);
     const created = await createPaper(chain.orderId, '  order@maker.example.jp ');
     expect(created.status).toBe(201);
@@ -587,7 +589,7 @@ describe('R10 maker recipient is a mail address, checked when the paper is writt
     await db.update(makerPurchaseOrders)
       .set({ snapshot: { ...(row!.snapshot as object), recipient: { address: '大阪府 合成メーカー' } } })
       .where(eq(makerPurchaseOrders.id, created.body.id));
-    const refused = await post('admin', `/api/maker-purchase-orders/${created.body.id}/ceo-approval`);
+    const refused = await post('admin', `/api/maker-purchase-orders/${created.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, created.body.id));
     expect(refused.status).toBe(422);
     expect(refused.body.code).toBe('RECIPIENT_ADDRESS_INVALID');
     const [after] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, created.body.id));
@@ -617,7 +619,7 @@ describe('R12 the evidence-gap reason is kept; a cancelled paper\'s send mail is
   it('excludes and refuses the send mail of a cancelled paper for the replacement paper', async () => {
     const chain = await readyOrder();
     const first = await createPaper(chain.orderId, 'maker-po@example.com');
-    expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/ceo-approval`)).status).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, first.body.id))).status).toBe(200);
     const firstSend = await sendMakerPoEmlEvidence((url, body) => post('staff', url, body), first.body.id, { orderCode: chain.code });
     expect(firstSend.status).toBe(200);
     const firstVersionId = (firstSend.body as any).event.evidenceDocumentVersionId as string;
@@ -632,7 +634,7 @@ describe('R12 the evidence-gap reason is kept; a cancelled paper\'s send mail is
 
     const second = await createPaper(chain.orderId, 'maker-po@example.com');
     expect(second.status, JSON.stringify(second.body)).toBe(201);
-    expect((await post('admin', `/api/maker-purchase-orders/${second.body.id}/ceo-approval`)).status).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${second.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, second.body.id))).status).toBe(200);
     const fresh = buildMakerPoEml({ orderCode: chain.code, messageId: `<p0-r12-fresh-${nextTag()}@kanei.example>` });
     await upload(chain.sevenPoId, chain.orderId, {
       documentType: 'send_evidence', issuerEntity: 'kanei', contentType: 'message/rfc822',
@@ -870,7 +872,7 @@ describe('P0 follow-up coverage (test-engineer review)', () => {
   it('R01 list marks an approved order as not editable', async () => {
     const chain = await readyOrder('prepaid');
     const paper = await createPaper(chain.orderId);
-    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`)).status).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id))).status).toBe(200);
     const list = await send('staff', 'GET', `/api/projects/${projectId}/film-supply-orders`);
     expect(list.body.orders.find((order: any) => order.id === chain.orderId)).toMatchObject({ paymentTermsEditable: false });
   });
@@ -1136,15 +1138,15 @@ describe('P0 review fixes (REVIEW_REPORT H1, M1-M9)', () => {
   it('M2: the CEO approval pins the term it was shown (expectedPaymentTerms)', async () => {
     const chain = await readyOrder('prepaid');
     const paper = await createPaper(chain.orderId);
-    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, { expectedPaymentTerms: 'cash' })).body.code).toBe('UNKNOWN_PAYMENT_TERMS');
+    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id, { expectedPaymentTerms: 'cash' }))).body.code).toBe('UNKNOWN_PAYMENT_TERMS');
     // Changed after the screen was opened.
     expect((await send('staff', 'PATCH', `/api/film-supply-orders/${chain.orderId}/payment-terms`, { paymentTerms: 'on_delivery' })).status).toBe(200);
-    const stale = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, { expectedPaymentTerms: 'prepaid' });
+    const stale = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id, { expectedPaymentTerms: 'prepaid' }));
     expect(stale.status).toBe(409);
     expect(stale.body).toMatchObject({ code: 'PAYMENT_TERMS_CHANGED', expectedPaymentTerms: 'prepaid', paymentTerms: 'on_delivery' });
     const [draft] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, paper.body.id));
     expect(draft!.status).toBe('DRAFT');
-    const approved = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, { expectedPaymentTerms: 'on_delivery' });
+    const approved = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id, { expectedPaymentTerms: 'on_delivery' }));
     expect(approved.status, JSON.stringify(approved.body)).toBe(200);
     expect(approved.body.approvedPaymentTerms).toBe('on_delivery');
     const [audit] = await db.select().from(auditEvents).where(and(
@@ -1202,7 +1204,7 @@ describe('P0 review fixes (REVIEW_REPORT H1, M1-M9)', () => {
   it('M6: a cancelled paper\'s mail re-uploaded (inline, new document, or same Message-ID) is refused for the replacement', async () => {
     const chain = await readyOrder();
     const first = await createPaper(chain.orderId);
-    expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/ceo-approval`)).status).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, first.body.id))).status).toBe(200);
     const messageId = `<p0-m6-${nextTag()}@kanei.example>`;
     const original = buildMakerPoEml({ orderCode: chain.code, messageId });
     const firstSend = await post('staff', `/api/maker-purchase-orders/${first.body.id}/send-evidence`, {
@@ -1211,7 +1213,7 @@ describe('P0 review fixes (REVIEW_REPORT H1, M1-M9)', () => {
     expect(firstSend.status, JSON.stringify(firstSend.body)).toBe(200);
     expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/cancel`, { note: '再作成' })).status).toBe(200);
     const second = await createPaper(chain.orderId);
-    expect((await post('admin', `/api/maker-purchase-orders/${second.body.id}/ceo-approval`)).status).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${second.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, second.body.id))).status).toBe(200);
 
     const inline = await post('staff', `/api/maker-purchase-orders/${second.body.id}/send-evidence`, {
       contentBase64: original.contentBase64, senderAddress: original.senderAddress, recipients: [original.recipientAddress], sentAt: new Date().toISOString()
@@ -1246,7 +1248,7 @@ describe('P0 review fixes (REVIEW_REPORT H1, M1-M9)', () => {
   it('M6: a cancelled paper\'s mail without a Message-ID is still recognized by its bytes', async () => {
     const chain = await readyOrder();
     const first = await createPaper(chain.orderId);
-    expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/ceo-approval`)).status).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, first.body.id))).status).toBe(200);
     const noId = buildMakerPoEml({ orderCode: chain.code, headers: { 'Message-ID': null } });
     expect(Buffer.from(noId.contentBase64, 'base64').toString('utf8')).not.toMatch(/^Message-ID:/im);
     const firstSend = await post('staff', `/api/maker-purchase-orders/${first.body.id}/send-evidence`, {
@@ -1255,7 +1257,7 @@ describe('P0 review fixes (REVIEW_REPORT H1, M1-M9)', () => {
     expect(firstSend.status, JSON.stringify(firstSend.body)).toBe(200);
     expect((await post('admin', `/api/maker-purchase-orders/${first.body.id}/cancel`, { note: '再作成' })).status).toBe(200);
     const second = await createPaper(chain.orderId);
-    expect((await post('admin', `/api/maker-purchase-orders/${second.body.id}/ceo-approval`)).status).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${second.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, second.body.id))).status).toBe(200);
     const renamed = await upload(chain.sevenPoId, chain.orderId, {
       documentType: 'send_evidence', issuerEntity: 'kanei', contentType: 'message/rfc822', filename: `noid-${nextTag()}.eml`, contentBase64: noId.contentBase64
     });

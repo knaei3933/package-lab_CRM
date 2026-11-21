@@ -372,18 +372,22 @@ export function buildDashboard(input: DashboardInput): DashboardView {
           : order.hold && status === 'ON_HOLD'
             ? holdSummaryText(order.hold)
             : status === 'CHANGE_REVIEW' ? CHANGE_REVIEW_NOTE : gapText,
-        owner: action.owner,
+        // P-6: drafting the paper is staff work, but a paper waiting for the 代表承認 is the representative's.
+        owner: approvalPaper ? OWNER_ADMIN : action.owner,
         href: itemHref(approvalPaper ? '/maker-po' : screen, order.id),
         linkLabel: linkLabelFor(approvalPaper ? '/maker-po' : screen),
         paymentTerms: terms,
         amount: approvalPaper ? dashboardAmount(role, approvalPaper) : null,
         step
       };
-      const representativeStep = isRepresentativeStep(status) || action.owner === OWNER_ADMIN;
+      // P-6: before the paper exists, 製造先発注準備完了 / 校了 are staff work (drafting it).
+      const draftingStep = status === 'MAKER_PO_READY' || status === 'DUAL_APPROVED';
+      const representativeStep = approvalPaper !== undefined || action.owner === OWNER_ADMIN
+        || (isRepresentativeStep(status) && !draftingStep);
       const mine = effective === 'admin'
         ? representativeStep
         : effective === 'staff'
-          ? action.owner !== OWNER_ADMIN && action.refusal === null
+          ? !representativeStep && action.refusal === null
           : false;
       if (mine) {
         todo.push(item);

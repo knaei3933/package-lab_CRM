@@ -347,7 +347,7 @@ describe('input validation: nothing reaches the API', () => {
     it.each(['', 'not-an-email', 'a@b', 'a b@c.example', '<a@b.example>', 'a@b.example,c@d.example'])('refuses recipient %j', async (recipientAddress) => {
       await refuse(run, makerForm({ recipientAddress }), RECIPIENT_EMAIL_INVALID_MESSAGE);
     });
-    it.each(['', '  ', 'abc', '-5', '480000円', '1,2,3', '1e5'])('refuses amount %j', async (totalAmount) => {
+    it.each(['abc', '-5', '480000円', '1,2,3', '1e5'])('refuses amount %j', async (totalAmount) => {
       await refuse(run, makerForm({ totalAmount }), '金額');
     });
     it('refuses a missing order', async () => { await refuse(run, makerForm({ orderId: '' })); });

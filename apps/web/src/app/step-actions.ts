@@ -366,7 +366,9 @@ export async function createMakerPoStepAction(_prev: ActionState | null, formDat
   if (orderId.length === 0) return missing('フィルム発注が見つかりません。');
   if (!isEmail(recipientAddress)) return missing(RECIPIENT_EMAIL_INVALID_MESSAGE);
   // R24: the amount is required — the representative never approves a paper without one.
-  if (totalAmount.length === 0 || !isPlainAmount(totalAmount)) return missing('金額を数字で入力してください（例 480000）。');
+  // The amount is optional (the API only warns; the approval card asks the representative to
+  // confirm a paper without one). When typed it must be a plain number.
+  if (totalAmount.length > 0 && !isPlainAmount(totalAmount)) return missing('金額は数字で入力してください（例 480000）。');
   const needsReady = field(formData, 'needsReadyTransition') === 'true';
   const steps: ChainStep[] = [
     {
@@ -381,12 +383,12 @@ export async function createMakerPoStepAction(_prev: ActionState | null, formDat
       label: 'メーカー発注書の作成',
       request: () => ({
         path: `/api/film-supply-orders/${id(orderId)}/maker-purchase-orders`,
-        body: { recipientAddress, amounts: { currency, totalAmount } }
+        body: totalAmount.length > 0 ? { recipientAddress, amounts: { currency, totalAmount } } : { recipientAddress }
       })
     }
   ];
   return runChain(formData, steps, {
-    success: 'メーカー発注書を作成しました。内容を確かめて代表承認してください。',
+    success: 'メーカー発注書（下書き）を作成しました。代表の承認を待ちます。',
     refusal: STEP_REFUSALS
   });
 }

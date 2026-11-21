@@ -127,7 +127,7 @@ async function post(
   refusal?: (code: string | null, data: unknown) => ActionState | null,
   success?: (data: unknown) => ActionState | null
 ): Promise<ActionState> {
-  const result = await callApi(path, { method: 'POST', body, idempotencyKey: idempotencyKeyOf(formData) });
+  const result = await callApi(path, { method: 'POST', body, idempotencyKey: idempotencyKeyOf(formData), expectedProjectId: writeProjectOf(formData) });
   if (result.ok) {
     // P0 R06 (H1): every successful write re-renders the screen, so the list the
     // operator is looking at shows the new record — post() never did this before.
@@ -161,7 +161,7 @@ async function postCreate(
   body: unknown,
   duplicate: { projectId: string; kind: DuplicateKind; value: string }
 ): Promise<ActionState> {
-  const result = await callApi(path, { method: 'POST', body, idempotencyKey: idempotencyKeyOf(formData) });
+  const result = await callApi(path, { method: 'POST', body, idempotencyKey: idempotencyKeyOf(formData), expectedProjectId: writeProjectOf(formData) });
   if (result.ok) {
     refresh();
     return { ok: true, message: '記録しました。', changedId: recordIdOf(result.data) };
@@ -359,7 +359,7 @@ export async function updateFilmPaymentTermsAction(_prev: ActionState | null, fo
   const result = await callApi(`/api/film-supply-orders/${encodeURIComponent(orderId)}/payment-terms`, {
     method: 'PATCH',
     body: reason ? { paymentTerms, reason } : { paymentTerms },
-    idempotencyKey: idempotencyKeyOf(formData)
+    idempotencyKey: idempotencyKeyOf(formData), expectedProjectId: writeProjectOf(formData)
   });
   if (result.ok) {
     refresh();
@@ -918,7 +918,7 @@ export async function evaluateCommissionReadinessAction(_prev: ActionState | nul
     isReady: boolean;
     blocking: string[];
     commissionCalculationAllowed: boolean;
-  }>(`/api/projects/${encodeURIComponent(projectId)}/commission-readiness`, { method: 'POST', body: {} });
+  }>(`/api/projects/${encodeURIComponent(projectId)}/commission-readiness`, { method: 'POST', body: {}, expectedProjectId: projectId });
   if (!result.ok || !result.data) return refusalState(result);
   refresh();
   return {

@@ -19,6 +19,7 @@ import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
 import { projectScreen } from './helpers/project-screen.js';
+import { withApprovalSnapshot } from './helpers/approval-snapshot.js';
 
 /**
  * UI batch E (demo-eml/ui-batch-e/REPORT.md) against the REAL API on the
@@ -337,7 +338,7 @@ describe('F-10, F-22: the provisional acceptance and what the final one waits fo
     const chain = await reachMakerPoReady();
     const created = await call(adminToken, `/api/film-supply-orders/${chain.orderId}/maker-purchase-orders`, { recipientAddress: 'maker-po@example.com' });
     const poId = created.body.id as string;
-    expect((await call(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {})).status).toBe(200);
+    expect((await call(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, poId))).status).toBe(200);
     const sent = await sendMakerPoEmlEvidence((url, body) => call(staffToken, url, body), poId, {
       orderCode: chain.orderCode, attachmentBytes: chain.artworkBytes
     });

@@ -200,6 +200,8 @@ export interface DocumentVersionView {
   sha256Hidden: boolean;
   originalFilename: string;
   createdAt: string;
+  /** P1 P-4: who uploaded this version (the upload audit row's actor). */
+  uploadedByUserId?: string | null | undefined;
 }
 
 export interface DocumentView {
@@ -215,6 +217,8 @@ export interface DocumentView {
   designKey: string | null;
   /** The maker PO the document was uploaded for (admin answer only; null when unbound or withheld). */
   makerPurchaseOrderId: string | null;
+  /** P1 P-4: who registered it (the creation audit row's actor) — staff never confirm their own evidence. */
+  uploadedByUserId?: string | null | undefined;
   /** Issuer and links were withheld from the role (viewer; staff reads them since db4bd88). */
   detailsHidden: boolean;
   /** The document type was withheld (viewer; staff sees it since 62d9305). */
@@ -748,6 +752,7 @@ export async function loadWorkspace(
         filmSupplyOrderId: text(after, 'filmSupplyOrderId'),
         designKey: text(after, 'designKey'),
         makerPurchaseOrderId: text(after, 'makerPurchaseOrderId'),
+        uploadedByUserId: event.actor?.id ?? null,
         // issuerEntity is on every full answer. Since db4bd88 staff reads it
         // (with the file name and the PO / film order links), so only the
         // viewer answer, which carries no document identity, is hidden here.
@@ -789,7 +794,8 @@ export async function loadWorkspace(
       sha256: text(after, 'sha256'),
       sha256Hidden: isFieldHiddenByRole(event, 'sha256'),
       originalFilename: requiredText(after, 'originalFilename', current.filename),
-      createdAt: event.occurredAt
+      createdAt: event.occurredAt,
+      uploadedByUserId: event.actor?.id ?? null
     });
   }
   for (const document of documents.values()) {
@@ -1446,7 +1452,8 @@ export function nextActionForOrder(
     case 'DUAL_APPROVED':
       return nextAction(`${advance('MAKER_PO_READY')}。`, both, ['/orders'], 'film_order:transition', role);
     case 'MAKER_PO_READY':
-      return nextAction('メーカー発注書を作成し、代表承認を記録する。', OWNER_ADMIN, ['/maker-po'], 'maker_po:create', role);
+      // P-6 (P1 integration): staff (or the representative) draft the paper; the 代表承認 stays the representative's.
+      return nextAction('メーカー発注書（下書き）を作成する。作成後に代表が承認します。', OWNER_STAFF_AND_ADMIN, ['/maker-po'], 'maker_po:create', role);
     case 'APPROVED_FOR_MANUAL_SEND':
       return nextAction(
         'メーカーへの送信を記録する（送信済みメールの原本EMLを使います）。',

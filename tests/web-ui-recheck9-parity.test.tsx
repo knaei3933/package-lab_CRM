@@ -19,6 +19,7 @@ import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
 import { projectScreen } from './helpers/project-screen.js';
+import { withApprovalSnapshot } from './helpers/approval-snapshot.js';
 
 /**
  * Recheck 9 (demo-eml/server-rules-recheck9/RECHECK_REPORT.md) Medium-3, against
@@ -199,7 +200,7 @@ async function approvedPaper(orderId: string) {
   });
   expect(created.status).toBe(201);
   const poId = created.body.id as string;
-  expect((await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {})).status).toBe(200);
+  expect((await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, poId))).status).toBe(200);
   return poId;
 }
 

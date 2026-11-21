@@ -1,5 +1,5 @@
 import { ActionForm } from './ActionForm';
-import { TextareaField } from './fields';
+import { CheckboxField, TextareaField } from './fields';
 import { Bilingual } from './Bilingual';
 import { approveFromCardAction, returnMakerPoAction } from '../app/approval-actions';
 import type { ApprovalCardView, CardOrganization, SealState } from '../lib/approval-card';
@@ -65,7 +65,7 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
       </h3>
       <dl className="p1-facts">
         <dt><Bilingual ja="金額" ko="금액" /></dt>
-        <dd className="p1-figure">{card.amountDisplay ?? '未記録'}{card.amountDisplay ? '（税込）' : ''}</dd>
+        <dd className="p1-figure">{card.amountDisplay ?? '未入力'}</dd>
         <dt><Bilingual ja="支払条件" ko="결제 조건" /></dt>
         <dd>{terms}<span className="p1-muted-inline"> ・ 入金確認は別の手順です</span></dd>
         <dt><Bilingual ja="希望納期" ko="희망 납기" /></dt>
@@ -155,6 +155,13 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
             <input type="hidden" readOnly name="poId" value={card.poId} />
             <input type="hidden" readOnly name="expectedPaymentTerms" value={card.expectedPaymentTerms} />
             {card.expectedSnapshotSha256 ? <input type="hidden" readOnly name="expectedSnapshotSha256" value={card.expectedSnapshotSha256} /> : null}
+            {/* The API only warns about a paper without an amount; approving one is a deliberate, recorded choice. */}
+            {card.amountDisplay ? null : (
+              <>
+                <input type="hidden" readOnly name="amountMissing" value="true" />
+                <CheckboxField name="acknowledgeMissingAmount" label="金額未入力のまま承認する" required />
+              </>
+            )}
           </ActionForm>
         ) : null}
         {card.canReturn ? (

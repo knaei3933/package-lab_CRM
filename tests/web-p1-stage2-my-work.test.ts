@@ -69,8 +69,10 @@ describe('workGroupOf', () => {
   });
 
   it('a representative step is waiting for staff and now for the representative', () => {
-    expect(workGroupOf(flowOf('DUAL_APPROVED', 'staff'))).toBe('waiting');
-    expect(workGroupOf(flowOf('DUAL_APPROVED', 'admin'))).toBe('now');
+    // 代表承認 is the representative's; P-6: the draft paper (DUAL_APPROVED) is staff's now.
+    expect(workGroupOf(flowOf('MAKER_PO_READY', 'staff', { makerPos: [{ id: 'mpo-1', status: 'DRAFT' }] }))).toBe('waiting');
+    expect(workGroupOf(flowOf('MAKER_PO_READY', 'admin', { makerPos: [{ id: 'mpo-1', status: 'DRAFT' }] }))).toBe('now');
+    expect(workGroupOf(flowOf('DUAL_APPROVED', 'staff'))).toBe('now');
   });
 
   it('a viewer only ever waits (never now)', () => {
@@ -89,7 +91,7 @@ describe('workText', () => {
   });
 
   it('says who is waited for in the waiting group', () => {
-    expect(workText(flowOf('DUAL_APPROVED', 'staff'), 'waiting', labelOf)).toBe('代表の確認・承認待ち');
+    expect(workText(flowOf('MAKER_PO_READY', 'staff', { makerPos: [{ id: 'mpo-1', status: 'DRAFT' }] }), 'waiting', labelOf)).toBe('代表の確認・承認待ち');
     expect(workText(flowOf('ARTWORK_RECEIVED', 'viewer'), 'waiting', labelOf)).toBe('担当者の記録待ち');
   });
 
@@ -141,7 +143,7 @@ describe('loadMyWork', () => {
   it('groups by who holds the ball', async () => {
     loadMakerPoBoard.mockResolvedValue(board([order('ARTWORK_RECEIVED'), order('DUAL_APPROVED'), order('ON_HOLD', { lastNormalStatus: 'ARTWORK_RECEIVED' })]));
     const work = await loadMyWork([proj(1)], 'staff');
-    expect(Object.fromEntries(work.rows.map((row) => [row.status, row.group]))).toEqual({ ARTWORK_RECEIVED: 'now', DUAL_APPROVED: 'waiting', ON_HOLD: 'stuck' });
+    expect(Object.fromEntries(work.rows.map((row) => [row.status, row.group]))).toEqual({ ARTWORK_RECEIVED: 'now', DUAL_APPROVED: 'now', ON_HOLD: 'stuck' });
   });
 
   it('lists a project whose read failed with no orders as unread', async () => {

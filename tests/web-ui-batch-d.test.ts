@@ -195,8 +195,8 @@ describe('hold / cancellation review actions: required reason, dedicated endpoin
     await transitionFilmSupplyOrderAction(null, form({ orderId: 'o', to: 'ON_HOLD', holdReason: '確認待ち' }));
     await transitionFilmSupplyOrderAction(null, form({ orderId: 'o', to: 'CHANGE_REVIEW', holdReason: 'ignored' }));
     expect(callApi.mock.calls).toEqual([
-      ['/api/film-supply-orders/o/transitions', { method: 'POST', body: { to: 'ON_HOLD', holdReason: '確認待ち' } }],
-      ['/api/film-supply-orders/o/transitions', { method: 'POST', body: { to: 'CHANGE_REVIEW' } }]
+      ['/api/film-supply-orders/o/transitions', { method: 'POST', body: { to: 'ON_HOLD', holdReason: '確認待ち' }, expectedProjectId: 'project' }],
+      ['/api/film-supply-orders/o/transitions', { method: 'POST', body: { to: 'CHANGE_REVIEW' }, expectedProjectId: 'project' }]
     ]);
   });
 
@@ -214,11 +214,11 @@ describe('hold / cancellation review actions: required reason, dedicated endpoin
     expect(await resolveCancellationReviewAction(null, form({ orderId: 'o', outcome: 'resume', reason: '' })))
       .toEqual({ ok: false, message: '取消確認の処理理由は必須です。' });
     expect(callApi.mock.calls).toEqual([
-      ['/api/film-supply-orders/o/hold-release', { method: 'POST', body: { reason: longReason } }],
+      ['/api/film-supply-orders/o/hold-release', { method: 'POST', body: { reason: longReason }, expectedProjectId: 'project' }],
       // cancel never carries a resume target
-      ['/api/film-supply-orders/o/cancellation-review-resolve', { method: 'POST', body: { outcome: 'cancel', reason: '顧客都合' } }],
-      ['/api/film-supply-orders/o2/hold-release', { method: 'POST', body: { reason: '古い保留', resumeStatus: 'PROOF_READY' } }],
-      ['/api/film-supply-orders/o2/cancellation-review-resolve', { method: 'POST', body: { outcome: 'resume', reason: '再開', resumeStatus: 'PROOF_READY' } }]
+      ['/api/film-supply-orders/o/cancellation-review-resolve', { method: 'POST', body: { outcome: 'cancel', reason: '顧客都合' }, expectedProjectId: 'project' }],
+      ['/api/film-supply-orders/o2/hold-release', { method: 'POST', body: { reason: '古い保留', resumeStatus: 'PROOF_READY' }, expectedProjectId: 'project' }],
+      ['/api/film-supply-orders/o2/cancellation-review-resolve', { method: 'POST', body: { outcome: 'resume', reason: '再開', resumeStatus: 'PROOF_READY' }, expectedProjectId: 'project' }]
     ]);
   });
 

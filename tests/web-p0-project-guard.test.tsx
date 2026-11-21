@@ -185,9 +185,15 @@ describe('every write action refuses before the API (runtime)', () => {
   });
 
   it('a matching form reaches the API (approveMakerPoAction)', async () => {
+    // P1 integration: the approval first reads the card's snapshot hash, then approves with it.
+    callApi.mockImplementation(async (path: string) => (String(path).endsWith('/approval-card')
+      ? { ok: true, status: 200, data: { makerPurchaseOrder: { approvalSnapshotSha256: 'ab'.repeat(32) }, snapshot: { amounts: { currency: 'JPY', totalAmount: '1' } } }, error: null }
+      : { ok: true, status: 201, data: { id: 'new-id' }, error: null }));
     const result = await makerActions.approveMakerPoAction(null, formWith('project-a', { poId: 'po1', expectedPaymentTerms: 'prepaid' }));
     expect(result.ok).toBe(true);
-    expect(callApi).toHaveBeenCalledTimes(1);
+    expect(callApi).toHaveBeenCalledTimes(2);
+    expect(callApi.mock.calls[1]![0]).toBe('/api/maker-purchase-orders/po1/ceo-approval');
+    expect(callApi.mock.calls[1]![1]).toMatchObject({ body: { expectedSnapshotSha256: 'ab'.repeat(32) }, expectedProjectId: 'project-a' });
   });
 
   it('B3 in the URL model: a tab drawn for project-a still creates in project-a after another tab opened project-b', async () => {

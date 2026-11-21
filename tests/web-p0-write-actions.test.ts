@@ -191,7 +191,7 @@ describe('R06: a success refreshes the screen and reports the changed id', () =>
 
   it('maker-po send(): refresh and changedId', async () => {
     callApi.mockResolvedValue(ok({ id: 'mpo-1' }));
-    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid' }));
+    const result = await makerActions.cancelMakerPoAction(null, form({ poId: 'mpo-1', note: '訂正のため' }));
     expect(result).toMatchObject({ ok: true, changedId: 'mpo-1' });
     expect(revalidatePath).toHaveBeenCalledTimes(1);
     expect(revalidatePath).toHaveBeenCalledWith('/', 'layout');
@@ -217,7 +217,7 @@ describe('R06: a success refreshes the screen and reports the changed id', () =>
 
   it('maker-po send(): a refusal does not refresh', async () => {
     callApi.mockResolvedValue(refused(409, 'x', null, 'MAKER_PO_NOT_APPROVABLE'));
-    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid' }));
+    const result = await makerActions.cancelMakerPoAction(null, form({ poId: 'mpo-1', note: '訂正のため' }));
     expect(result.ok).toBe(false);
     expect(revalidatePath).not.toHaveBeenCalled();
   });
@@ -259,7 +259,7 @@ describe('R09: the refusal text is the dictionary text, with its code and Korean
 
   it('maker-po send() returns the same shape', async () => {
     callApi.mockResolvedValue({ ok: false, status: 401, data: null, error: 'ログイン切れ', errorKo: null, code: 'SESSION_EXPIRED' });
-    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'p', expectedPaymentTerms: 'prepaid' }));
+    const result = await makerActions.cancelMakerPoAction(null, form({ poId: 'p', note: '訂正のため' }));
     expect(result).toEqual({ ok: false, message: 'ログイン切れ', messageKo: null, code: 'SESSION_EXPIRED', settled: true });
   });
 });
@@ -341,7 +341,7 @@ describe('R05: idempotency key', () => {
 
   it('maker-po send() forwards it too', async () => {
     callApi.mockResolvedValue(ok());
-    await makerActions.approveMakerPoAction(null, form({ poId: 'p', expectedPaymentTerms: 'prepaid', [IDEMPOTENCY_FIELD]: 'maker-key-0001' }));
+    await makerActions.cancelMakerPoAction(null, form({ poId: 'p', note: '訂正のため', [IDEMPOTENCY_FIELD]: 'maker-key-0001' }));
     expect(callApi.mock.calls[0]![1].idempotencyKey).toBe('maker-key-0001');
   });
 });

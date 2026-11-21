@@ -15,6 +15,19 @@ export interface ErrorDictionaryEntry {
 }
 
 export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = {
+  // P1 (p1-server API_CONTRACT §7, v3)
+  MAKER_PO_AMOUNTS_ADMIN_ONLY: {
+    ja: '金額は代表者だけが入力できます。金額なしで下書きを作成してください。',
+    ko: '금액은 대표만 입력할 수 있습니다. 금액 없이 초안을 작성하세요.'
+  },
+  EXPECTED_SNAPSHOT_SHA256_REQUIRED: {
+    ja: '承認する発注書の確認値がありません。承認カードを開き直してから承認してください。',
+    ko: '승인할 발주서의 확인 값이 없습니다. 승인 카드를 다시 연 뒤 승인하세요.'
+  },
+  SELF_VERIFICATION_FORBIDDEN: {
+    ja: '自分で登録した証跡は自分で確認できません。代表者または別の担当者に確認を依頼してください。',
+    ko: '직접 등록한 증빙은 본인이 확인할 수 없습니다. 대표 또는 다른 담당자에게 확인을 요청하세요.'
+  },
   // P1 (p1-server API_CONTRACT §7)
   MAKER_PO_SNAPSHOT_DRIFTED: {
     ja: '発注書の作成後に明細または版が変わりました。承認すると最新の内容で確定します。',

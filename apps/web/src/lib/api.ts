@@ -65,7 +65,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export async function callApi<T>(
   path: string,
-  options: { method?: string; body?: unknown; sessionToken?: string | null; idempotencyKey?: string | undefined } = {}
+  options: { method?: string; body?: unknown; sessionToken?: string | null; idempotencyKey?: string | undefined; expectedProjectId?: string | null | undefined } = {}
 ): Promise<ApiResult<T>> {
   const token = options.sessionToken !== undefined
     ? options.sessionToken
@@ -75,6 +75,8 @@ export async function callApi<T>(
   if (options.body !== undefined) headers['content-type'] = 'application/json';
   // P0 R05: a write's per-submit key (the API replays the first answer to a repeat).
   if (options.idempotencyKey) headers['idempotency-key'] = options.idempotencyKey;
+  // P1 integration (M2): the project the screen was drawn for; the API refuses a write to another project.
+  if (options.expectedProjectId) headers['x-kanei-expected-project'] = options.expectedProjectId;
 
   let response: Response;
   let raw: string;

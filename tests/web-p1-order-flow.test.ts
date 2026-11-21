@@ -292,13 +292,20 @@ describe('buildOrderFlow: maker paper steps 7-10', () => {
 describe('buildOrderFlow: permissions by role', () => {
   const makerReady = { makerPos: [maker('DRAFT')] };
   const adminOnly: Array<[string, string, Record<string, unknown>]> = [
-    ['maker_po_create', 'DUAL_APPROVED', {}],
     ['ceo_approve', 'MAKER_PO_READY', makerReady],
     ['send_verify', 'MAKER_PO_SENT_MANUALLY', { makerPos: [maker('MAKER_PO_SENT_MANUALLY')], makerEvents: [{ id: 'e', eventType: 'SEND_EVIDENCE_REGISTERED', verificationStatus: 'PENDING_MANUAL_VERIFICATION' }] }],
     ['send_stuck', 'APPROVED_FOR_MANUAL_SEND', { makerPos: [maker('SEND_UNVERIFIED')] }],
     ['hold', 'ON_HOLD', {}],
     ['cancellation_review', 'CANCELLATION_REVIEW', {}]
   ];
+
+  it('P-6: maker_po_create (DUAL_APPROVED) is staff_or_admin — staff draft, the representative approves', () => {
+    const flow = (role: string) => build('DUAL_APPROVED', role);
+    expect(flow('staff').panel.action.kind).toBe('maker_po_create');
+    expect(flow('staff').panel.canAct).toBe(true);
+    expect(flow('admin').panel.canAct).toBe(true);
+    expect(flow('viewer').panel.canAct).toBe(false);
+  });
 
   it.each(adminOnly)('%s (%s): staff cannot act, admin can', (kind, status, over) => {
     const staff = build(status, 'staff', over);

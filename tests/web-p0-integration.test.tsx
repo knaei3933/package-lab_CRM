@@ -142,10 +142,13 @@ describe('R12 + R01: transitions', () => {
   });
 });
 
+const SNAP = 'ef56'.repeat(16);
 describe('p0-server review contract (aac8634)', () => {
-  it('the CEO approval sends the 支払条件 the screen showed (expectedPaymentTerms)', async () => {
+  it('the CEO approval sends the 支払条件 the screen showed (expectedPaymentTerms) and the card\'s snapshot hash (P1 integration)', async () => {
+    const card = { ok: true, status: 200, data: { makerPurchaseOrder: { approvalSnapshotSha256: SNAP }, snapshot: { amounts: { currency: 'JPY', totalAmount: '1' } } }, error: null, code: null };
+    callApi.mockImplementation(async (path: string) => (String(path).endsWith('/approval-card') ? card : { ok: true, status: 200, data: {}, error: null, code: null }));
     await makerActions.approveMakerPoAction(null, form({ poId: 'po-1', expectedPaymentTerms: 'prepaid' }));
-    expect(lastBody()).toEqual({ expectedPaymentTerms: 'prepaid' });
+    expect(lastBody()).toEqual({ expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SNAP });
   });
 
   it('review M1: without a readable expectedPaymentTerms the approval is held — the API is not asked', async () => {
@@ -159,8 +162,17 @@ describe('p0-server review contract (aac8634)', () => {
     }
   });
 
+  it('P1 integration: without a readable approval card the approval is held — never sent without the snapshot hash', async () => {
+    callApi.mockImplementation(async () => ({ ok: false, status: 404, data: { code: 'MAKER_PO_NOT_FOUND' }, error: 'x', errorKo: null, code: 'MAKER_PO_NOT_FOUND' }));
+    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'po-1', expectedPaymentTerms: 'prepaid' }));
+    expect(result.ok).toBe(false);
+    expect(callApi.mock.calls.some((call) => String(call[0]).endsWith('/ceo-approval'))).toBe(false);
+  });
+
   it('PAYMENT_TERMS_CHANGED reads as the dictionary sentence', async () => {
-    callApi.mockResolvedValue({ ok: false, status: 409, data: { code: 'PAYMENT_TERMS_CHANGED' }, error: '承認画面を開いた後に支払条件が変更されました。画面を再読み込みして最新の支払条件を確認してから、もう一度承認してください。', errorKo: null, code: 'PAYMENT_TERMS_CHANGED' });
+    const card = { ok: true, status: 200, data: { makerPurchaseOrder: { approvalSnapshotSha256: SNAP }, snapshot: { amounts: { currency: 'JPY', totalAmount: '1' } } }, error: null, code: null };
+    const refusal = ({ ok: false, status: 409, data: { code: 'PAYMENT_TERMS_CHANGED' }, error: '承認画面を開いた後に支払条件が変更されました。画面を再読み込みして最新の支払条件を確認してから、もう一度承認してください。', errorKo: null, code: 'PAYMENT_TERMS_CHANGED' });
+    callApi.mockImplementation(async (path: string) => (String(path).endsWith('/approval-card') ? card : refusal));
     const result = await makerActions.approveMakerPoAction(null, form({ poId: 'po-1', expectedPaymentTerms: 'prepaid' }));
     expect(result.ok).toBe(false);
     expect(result.code).toBe('PAYMENT_TERMS_CHANGED');

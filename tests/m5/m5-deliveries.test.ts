@@ -20,6 +20,7 @@ import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from '../helpers/maker-po-evidence.js';
+import { withApprovalSnapshot } from '../helpers/approval-snapshot.js';
 
 
 const databaseUrl = process.env.DATABASE_URL!;
@@ -276,7 +277,7 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
   });
   expect(makerPoCreated.status).toBe(201);
   const makerPoId = (makerPoCreated.body as { id: string }).id;
-  const approved = await postAs(adminToken, `/api/maker-purchase-orders/${makerPoId}/ceo-approval`, {});
+  const approved = await postAs(adminToken, `/api/maker-purchase-orders/${makerPoId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, makerPoId));
   expect(approved.status).toBe(200);
 
   const sent = await sendMakerPoEmlEvidence(

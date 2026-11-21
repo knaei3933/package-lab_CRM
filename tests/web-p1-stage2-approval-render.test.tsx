@@ -88,14 +88,20 @@ describe('ApprovalCard: forms', () => {
 });
 
 describe('ApprovalCard: facts', () => {
-  it('shows the amount as given with 税込', () => {
-    expect(render(card({ amountDisplay: '¥312,000' }))).toContain('¥312,000（税込）');
+  it('shows the amount as given: number and currency only, no 税込/税抜 label (the stored meaning is not asserted)', () => {
+    const html = render(card({ amountDisplay: '¥312,000' }));
+    expect(html).toContain('¥312,000');
+    expect(html).not.toMatch(/税込|税抜/);
   });
 
-  it('shows 未記録 and no 税込 when there is no amount', () => {
+  it('shows 未入力 and the explicit 「金額未入力のまま承認する」 check when there is no amount', () => {
     const html = render(card({ amountDisplay: null, canApprove: false }));
-    expect(html).toContain('未記録');
-    expect(html).not.toContain('（税込）');
+    expect(html).toContain('未入力');
+    expect(html).not.toMatch(/税込|税抜/);
+    const approvable = render(card({ amountDisplay: null, canApprove: true, expectedPaymentTerms: 'prepaid' }));
+    expect(approvable).toContain('金額未入力のまま承認する');
+    expect(approvable).toMatch(/name="acknowledgeMissingAmount"[^>]*required|required[^>]*name="acknowledgeMissingAmount"/);
+    expect(approvable).toContain('name="amountMissing" value="true"');
   });
 
   it('shows lines, payment terms label, the recipient and the seven PO', () => {
@@ -228,7 +234,7 @@ describe('Korean glosses (R29)', () => {
   it('keeps every Japanese text when Korean is on', () => {
     const html = render(card(), true);
     expect(html).toContain('金額');
-    expect(html).toContain('¥312,000（税込）');
+    expect(html).toContain('¥312,000');
   });
 
   it('shows the Korean text of a blocker only in the bilingual mode', () => {

@@ -22,6 +22,7 @@ import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
 import { plausibleTestSentAt, sendMakerPoEmlEvidence } from '../helpers/maker-po-evidence.js';
+import { withApprovalSnapshot } from '../helpers/approval-snapshot.js';
 
 /**
  * M8-OPER2 regression tests over the real endpoints:
@@ -279,7 +280,7 @@ async function reachProduction(tag: string) {
   expect(created.status).toBe(201);
   const poId = (created.body as { id: string }).id;
 
-  expect((await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {})).status).toBe(200);
+  expect((await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, poId))).status).toBe(200);
 
   // M8-HARDEN FIX C1: the send evidence is the original .eml of the mail, with
   // the approved artwork attached (M8-HARDEN2 FIX 1) so it verifies.
@@ -656,7 +657,7 @@ describe('M8-OPER2 FIX 3: maker-PO history past MAKER_PO_ACCEPTED', () => {
     // The finished paper has no further recording step to reach for: the
     // approval / send / acceptance endpoints refuse a paper that is already
     // accepted, so the history the screen shows stays the history that happened.
-    const reApproval = await postAs(adminToken, `/api/maker-purchase-orders/${chain.poId}/ceo-approval`, {});
+    const reApproval = await postAs(adminToken, `/api/maker-purchase-orders/${chain.poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, chain.poId));
     expect(reApproval.status).toBe(422);
     expect((reApproval.body as { code: string }).code).toBe('MAKER_PO_TRANSITION_BLOCKED');
     const reSend = await postAs(staffToken, `/api/maker-purchase-orders/${chain.poId}/send-evidence`, {

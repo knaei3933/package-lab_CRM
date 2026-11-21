@@ -327,6 +327,7 @@ describe('dashboard: 「いま自分がやること」 by role (B)', () => {
 
   it('staff: the records staff makes; the representative’s steps are listed as waiting, never as staff work', () => {
     const view = buildDashboard(input('staff', MIXED));
+    // P-6: drafting the paper is staff work, but order-ready's paper already waits for the 代表承認 (representative).
     expect(view.todo.map((item) => item.key)).toEqual(['order-approval']);
     expect(view.todo[0]!.href).toBe('/approvals');
     expect(view.others.map((item) => item.key)).toEqual(['order-ready', 'order-hold']);

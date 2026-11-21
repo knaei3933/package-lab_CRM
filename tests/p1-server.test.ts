@@ -39,6 +39,7 @@ import { createApp } from '../apps/api/src/app.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { ERROR_MESSAGES_JA, isSafeUserMessage } from '../apps/api/src/error-codes.js';
 import { sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
+import { withApprovalSnapshot } from './helpers/approval-snapshot.js';
 
 const databaseUrl = process.env.DATABASE_URL!;
 if (!/@127\.0\.0\.1:5434\/kanei_crm_mvp_test($|\?)/.test(databaseUrl)) {
@@ -573,7 +574,7 @@ describe('R24 representative approval card and 差し戻し', () => {
     const blocked = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
     expect(blocked.body.blockers.map((blocker: { code: string }) => blocker.code)).toEqual(['PAYMENT_GATE_UNSATISFIED']);
     expect(blocked.body.canApprove).toBe(false);
-    const refused = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`);
+    const refused = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id));
     expect(refused.body.code).toBe('PAYMENT_GATE_UNSATISFIED');
     await post('staff', `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'ON_HOLD', holdReason: '確認待ち' });
     const held = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
@@ -585,6 +586,11 @@ describe('R24 representative approval card and 差し戻し', () => {
     const paper = await createPaper(chain.orderId);
     const card = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
     const shown = card.body.makerPurchaseOrder.approvalSnapshotSha256 as string;
+    // P1 integration: the hash is required — no hash, no approval (and nothing recorded).
+    const missing = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, { expectedPaymentTerms: 'prepaid' });
+    expect(missing.status).toBe(422);
+    expect(missing.body.code).toBe('EXPECTED_SNAPSHOT_SHA256_REQUIRED');
+    expect((await get('admin', `/api/maker-purchase-orders/${paper.body.id}`)).body.purchaseOrder.status).toBe('DRAFT');
     const invalid = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, { expectedSnapshotSha256: 'ABC' });
     expect(invalid.status).toBe(422);
     expect(invalid.body.code).toBe('EXPECTED_SNAPSHOT_SHA256_INVALID');
@@ -631,7 +637,7 @@ describe('R24 representative approval card and 差し戻し', () => {
     expect((await post('admin', url, { reason: 'もう一度' })).body.code).toBe('MAKER_PO_RETURN_ONLY_DRAFT');
     const replacement = await createPaper(chain.orderId);
     expect(replacement.status).toBe(201);
-    expect((await post('admin', `/api/maker-purchase-orders/${replacement.body.id}/ceo-approval`)).status).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${replacement.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, replacement.body.id))).status).toBe(200);
     const approvedReturn = await post('admin', `/api/maker-purchase-orders/${replacement.body.id}/return`, { reason: '承認後' });
     expect(approvedReturn.status).toBe(422);
     expect(approvedReturn.body).toMatchObject({ code: 'MAKER_PO_RETURN_ONLY_DRAFT', from: 'APPROVED_FOR_MANUAL_SEND' });
@@ -732,7 +738,7 @@ describe('R25 representative queue (one admin-only source with deep links)', () 
     expect([...waits].sort((a, b) => a - b)).toEqual(waits);
 
     // Done work leaves the queue.
-    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`)).status).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id))).status).toBe(200);
     const after = await get('admin', '/api/representative-queue');
     expect(itemFor(after.body, `maker_po_ceo_approval:${paper.body.id}`)).toBeUndefined();
     await db.update(filmSupplyOrders).set({ status: 'CANCELLED' as any }).where(eq(filmSupplyOrders.id, heldOrder.orderId));
@@ -743,7 +749,7 @@ describe('R25 representative queue (one admin-only source with deep links)', () 
   it('follows a paper through send verification, final acceptance and the cancellation acknowledgement', async () => {
     const chain = await approvedOrder('prepaid');
     const paper = await createPaper(chain.orderId);
-    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`)).status).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id))).status).toBe(200);
     const sent = await sendMakerPoEmlEvidence((url, body) => post('staff', url, body), paper.body.id, { orderCode: chain.code });
     expect((sent.body as any).verificationStatus).toBe('PENDING_MANUAL_VERIFICATION');
     const eventId = (sent.body as any).event.id as string;
@@ -813,7 +819,7 @@ describe('P-4 the representative may confirm their own evidence; who and when ar
 
     const chain = await approvedOrder('prepaid');
     const paper = await createPaper(chain.orderId);
-    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`)).status).toBe(200);
+    expect((await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id))).status).toBe(200);
     const sent = await sendMakerPoEmlEvidence((url, body) => post('admin', url, body), paper.body.id, { orderCode: chain.code });
     const eventId = (sent.body as any).event.id as string;
     const confirmed = await post('admin', `/api/maker-po-events/${eventId}/send-manual-verification`, { result: 'confirmed', reasonNote: '自分で送ったメールを確認' });
@@ -1065,7 +1071,7 @@ describe('P1 review additions', () => {
 
     const raced = await createPaper(chain.orderId);
     const outcomes = await Promise.all([
-      post('admin', `/api/maker-purchase-orders/${raced.body.id}/ceo-approval`),
+      post('admin', `/api/maker-purchase-orders/${raced.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, raced.body.id)),
       post('admin', `/api/maker-purchase-orders/${raced.body.id}/return`, { reason: '同時操作' })
     ]);
     expect(outcomes.filter((result) => result.status === 200)).toHaveLength(1);

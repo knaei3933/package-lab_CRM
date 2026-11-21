@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray, sql } from 'drizzle-orm';
+import { expectedProjectMiddleware } from './project-context.js';
 import {
   buildMakerPoSnapshot,
   canPerform,
@@ -853,6 +854,8 @@ export function createApp({
       if (timer) clearTimeout(timer);
     }
   }
+  // P1 integration (M2): every write is checked against the project its screen was drawn for.
+  app.use('/api/*', expectedProjectMiddleware(db as unknown as Parameters<typeof expectedProjectMiddleware>[0]));
   app.get('/api/health', async (context) => {
     if (healthProbe && Date.now() - healthProbe.at < 5_000) {
       return context.json({ status: 'ok', app: 'api', port, db: healthProbe.state });
@@ -6620,6 +6623,12 @@ export function createApp({
     }
 
     const body = await context.req.json().catch(() => null) as any;
+    // P1 integration (P-6): staff draw up the paper, but amounts stay the representative's —
+    // staff never read them, so they never write them either (the representative adds or
+    // approves the amount on the approval card).
+    if (user.role !== 'admin' && body && typeof body === 'object' && body.amounts !== undefined && body.amounts !== null) {
+      return context.json({ error: '金額は代表者だけが入力できます。金額なしで下書きを作成してください', code: 'MAKER_PO_AMOUNTS_ADMIN_ONLY' }, 403);
+    }
     // P0 R10: the recipient is the maker's mail address and is checked as one
     // here, when the paper is written — not first at the send.
     const recipientCheck = validateMakerPoRecipientAddress(body?.recipientAddress);
@@ -6903,6 +6912,14 @@ export function createApp({
     // (approvalSnapshotSha256). Sending it back pins the approval to exactly
     // that content; a line or artwork change in between is refused, never
     // approved over. Omitting it keeps the earlier behaviour.
+    // P1 integration (API_CONTRACT v3 decision): the snapshot hash is REQUIRED — the representative
+    // approves exactly the content the approval card showed (GET …/approval-card approvalSnapshotSha256).
+    if (approvalBody?.expectedSnapshotSha256 === undefined || approvalBody?.expectedSnapshotSha256 === null) {
+      return context.json({
+        error: '承認する発注書の確認値がありません。承認カードを開き直してから承認してください',
+        code: 'EXPECTED_SNAPSHOT_SHA256_REQUIRED'
+      }, 422);
+    }
     let expectedSnapshotSha256: string | null = null;
     if (approvalBody?.expectedSnapshotSha256 !== undefined && approvalBody?.expectedSnapshotSha256 !== null) {
       if (typeof approvalBody.expectedSnapshotSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(approvalBody.expectedSnapshotSha256)) {

@@ -125,7 +125,10 @@ export const READINESS_BLOCKING_LABELS: Readonly<Record<string, string>> = {
   FILLING_DELIVERY_NOT_RECORDED: '充填製品納品がまだ記録されていません',
   SEVEN_PO_NOT_OFFICIALLY_REGISTERED: 'セブン化学発注書の本登録がありません',
   FILM_DELIVERY_PENDING_CONFIRMATION: 'フィルム納品の確認（受領証跡の確認）が未完了です',
-  FILLING_DELIVERY_PENDING_CONFIRMATION: '充填製品納品の確認（受領証跡の確認）が未完了です'
+  FILLING_DELIVERY_PENDING_CONFIRMATION: '充填製品納品の確認（受領証跡の確認）が未完了です',
+  // P1 P-3 (API_CONTRACT §5-1): film-only projects are judged on every order's delivered quantity.
+  FILM_ORDER_NOT_DELIVERED: '納品が記録されていないフィルム発注があります',
+  FILM_DELIVERY_QUANTITY_INCOMPLETE: '発注数量に届いていない（一部だけ納品の）フィルム発注があります'
 };
 
 export function unitLabel(unit: string): string {

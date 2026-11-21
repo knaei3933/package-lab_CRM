@@ -92,7 +92,7 @@ describe('E2: DELIVERY_UNIT_MISMATCH reaches the screen in Japanese', () => {
     });
     expect(state.message).not.toContain('sheets');
     expect(callApi).toHaveBeenCalledWith('/api/film-supply-orders/o1/deliveries', {
-      method: 'POST', body: { filmSupplyOrderLineId: 'l1', unit: 'rolls', deliveredQuantity: 10 }
+      method: 'POST', body: { filmSupplyOrderLineId: 'l1', unit: 'rolls', deliveredQuantity: 10 }, expectedProjectId: 'project'
     });
   });
 

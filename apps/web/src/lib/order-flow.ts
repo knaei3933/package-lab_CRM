@@ -342,8 +342,8 @@ function activePanel(input: OrderFlowInput, status: string, step: number, maker:
         );
       }
       if (maker?.status === 'DRAFT') return panel({ kind: 'ceo_approve', poId: maker.id }, 'admin', role);
-      // The maker paper is drawn up by the representative (P-6 unchanged: admin only).
-      return panel({ kind: 'maker_po_create', needsReadyTransition: status === 'DUAL_APPROVED' }, 'admin', role);
+      // P-6 (decided): the draft paper is drawn up by staff (or the representative); approval stays the representative's.
+      return panel({ kind: 'maker_po_create', needsReadyTransition: status === 'DUAL_APPROVED' }, 'staff_or_admin', role);
     }
     case 'APPROVED_FOR_MANUAL_SEND': {
       if (!maker) return panel({ kind: 'unreadable', reason: 'メーカー発注書を読み込めませんでした。' }, null, role);

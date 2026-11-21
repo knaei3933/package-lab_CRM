@@ -22,6 +22,7 @@ import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from '../helpers/maker-po-evidence.js';
+import { withApprovalSnapshot } from '../helpers/approval-snapshot.js';
 
 
 const databaseUrl = process.env.DATABASE_URL!;
@@ -296,7 +297,7 @@ async function createMakerPo(orderId: string) {
 }
 
 async function approveMakerPo(poId: string) {
-  return await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {});
+  return await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, poId));
 }
 
 async function sendMakerPoEvidence(poId: string, evidenceDocumentVersionId: string) {

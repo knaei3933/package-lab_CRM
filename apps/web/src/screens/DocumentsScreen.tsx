@@ -4,6 +4,7 @@ import { DocumentUploadForm } from '../components/DocumentUploadForm';
 import { ProjectProgress } from '../components/ProjectProgress';
 import { ProjectUnavailable } from '../components/ProjectUnavailable';
 import type { ProjectScreenProps } from './screen-props';
+import { isOwnDocumentOfStaff, SELF_VERIFICATION_NOTICE } from '../lib/self-verification';
 import { RoleGate, ViewerPageNotice } from '../components/RoleGate';
 import { DataTable } from '../components/DataTable';
 import { StatusBadge } from '../components/StatusBadge';
@@ -247,6 +248,11 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                   <td className="ui-td">{formatTimestamp(document.createdAt)}</td>
                   {showVerifyColumn ? (
                     <td className="ui-td sx-c2faf0d">
+                      {/* P1 P-4: staff never confirm the evidence they registered themselves (the API refuses
+                          SELF_VERIFICATION_FORBIDDEN); the representative may (recorded as a self-verification). */}
+                      {isOwnDocumentOfStaff(role, user?.id ?? null, document) ? (
+                        <p className="ui-note">{SELF_VERIFICATION_NOTICE}</p>
+                      ) : (
                       <ActionForm
                         action={verifyDocumentAction}
                         submitLabel="確認を記録する"
@@ -261,6 +267,7 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                         <SelectField name="verificationStatus" label="確認結果" required choices={verificationChoices} width={180} />
                         <TextField name="verificationNote" label="確認メモ" width={220} />
                       </ActionForm>
+                      )}
                     </td>
                   ) : null}
                 </tr>

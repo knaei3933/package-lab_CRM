@@ -360,6 +360,8 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `MAKER_PO_RETURN_ONLY_DRAFT` | 422 | 差し戻しできるのは代表承認前のメーカー発注書だけです。承認済みの発注書は取消の手順を使ってください | `from`（発注書の状態） |
 | `MAKER_PO_SNAPSHOT_CHANGED` | 409 | 承認画面を開いた後に発注書の内容（明細・版）が変わりました。最新の内容を確認してから、もう一度承認してください | `expectedSnapshotSha256`, `snapshotSha256`。承認カード（GET …/approval-card）を読み直す |
 | `EXPECTED_SNAPSHOT_SHA256_INVALID` | 422 | 承認する発注書の確認値が正しくありません。画面を再読み込みしてください | `expectedSnapshotSha256` は 64 文字の小文字 16 進 |
+| `EXPECTED_SNAPSHOT_SHA256_REQUIRED` | 422 | 承認する発注書の確認値がありません。承認カードを開き直してから承認してください | P1 integration: the 代表承認 always carries the approval card's `approvalSnapshotSha256` (required since p1/integration). Checked after the existing refusals (state, payment gate, dual approval) |
+| `MAKER_PO_AMOUNTS_ADMIN_ONLY` | 403 | 金額は代表者だけが入力できます。金額なしで下書きを作成してください | P1 integration (P-6): staff may create the DRAFT paper, without `amounts` (amounts are admin-only to read and to write) |
 | `MAKER_PO_AMOUNT_MISSING` | 200 (warnings) | メーカー発注書に金額が記載されていません。担当者に金額の入力を依頼してください | 拒否ではない。承認カードの `warnings[]`（現時点でサーバーは金額なしの承認を拒否しない） |
 | `MAKER_PO_SNAPSHOT_DRIFTED` | 200 (warnings) | 発注書の作成後に明細または版が変わりました。承認すると最新の内容で確定します | 拒否ではない。承認カードの `warnings[]` |
 

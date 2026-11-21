@@ -25,6 +25,7 @@ import {
   sendMakerPoEmlEvidence,
   type MakerPoEmlInput
 } from '../helpers/maker-po-evidence.js';
+import { withApprovalSnapshot } from '../helpers/approval-snapshot.js';
 
 /**
  * M8-HARDEN regression tests: the four CEO-directed failure scenarios, pinned
@@ -256,7 +257,7 @@ function createMakerPo(orderId: string) {
 }
 
 async function approveMakerPo(poId: string) {
-  return await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {});
+  return await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, poId));
 }
 
 /** Cancels a maker PO as the representative: the explicit replacement step. */

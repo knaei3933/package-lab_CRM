@@ -183,7 +183,8 @@ export function cardFromWeb(input: {
     blockers.push({ code: 'PAYMENT_GATE_UNSATISFIED', message: '支払条件が「未定」のため代表承認できません。' });
   }
   if (gate && !gate.dualApproved) blockers.push({ code: 'DUAL_APPROVAL_REQUIRED', message: '顧客とセブン化学の承認がそろっていません。' });
-  if (!amountDisplay) blockers.push({ code: 'MAKER_PO_AMOUNT_MISSING', message: 'メーカー発注書に金額が記載されていません。金額を入れて作り直してください。' });
+  // A missing amount is a warning (the API only warns): the card asks for an explicit confirmation instead.
+  const warnings = amountDisplay ? [] : [{ code: 'MAKER_PO_AMOUNT_MISSING', message: '' }];
   return {
     source: 'web',
     poId: paper.id,
@@ -223,8 +224,7 @@ export function cardFromWeb(input: {
     })),
     dualApproved: gate?.dualApproved ?? false,
     blockers,
-    warnings: [],
-    // Amount required (R24): the web holds the approval without one; the API decides the rest.
+    warnings,
     canApprove: blockers.length === 0,
     canReturn: paper.status === 'DRAFT',
     expectedPaymentTerms: input.paymentTerms,
@@ -243,11 +243,6 @@ export async function loadApprovalCard(input: {
   if (server.ok) {
     const card = cardFromServer(input.paper.id, server.data);
     if (card) {
-      // R24: the amount is required on the web side too (the server only warns, contract §2-1).
-      if (!card.amountDisplay && !card.blockers.some((blocker) => blocker.code === 'MAKER_PO_AMOUNT_MISSING')) {
-        card.blockers.push({ code: 'MAKER_PO_AMOUNT_MISSING', message: 'メーカー発注書に金額が記載されていません。金額を入れて作り直してください。' });
-        card.canApprove = false;
-      }
       return card;
     }
   }

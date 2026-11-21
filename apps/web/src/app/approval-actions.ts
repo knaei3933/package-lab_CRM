@@ -1,6 +1,7 @@
 'use server';
 
 import { refuseIfProjectSwitched, writeProjectOf } from '../lib/project-guard';
+import { approvalSnapshotFor, SNAPSHOT_UNREADABLE_MESSAGE } from '../lib/approval-snapshot';
 import { isMissingRoute } from '../lib/approval-card';
 import { callApi } from '../lib/api';
 import { isSettledRefusal, refusalState } from '../lib/action-result';
@@ -37,12 +38,19 @@ export async function approveFromCardAction(_prev: ActionState | null, formData:
   if (!TERMS.includes(expectedPaymentTerms)) {
     return { ok: false, message: '支払条件を読み取れなかったため、承認を止めました。画面を再読み込みしてください。' };
   }
-  const body: Record<string, unknown> = { expectedPaymentTerms };
-  if (/^[0-9a-f]{64}$/.test(expectedSnapshotSha256)) body.expectedSnapshotSha256 = expectedSnapshotSha256;
+  // A paper without an amount is approved only with the explicit confirmation on the card.
+  const ack = formData.get('acknowledgeMissingAmount');
+  if (field(formData, 'amountMissing') === 'true' && ack !== 'on' && ack !== 'true') {
+    return { ok: false, message: '金額が入力されていません。このまま承認する場合は「金額未入力のまま承認する」にチェックを入れてください。' };
+  }
+  // P1 integration: always with the snapshot hash (the card's, else read again from the API).
+  const hash = /^[0-9a-f]{64}$/.test(expectedSnapshotSha256) ? expectedSnapshotSha256 : await approvalSnapshotFor(poId);
+  if (!hash) return { ok: false, message: SNAPSHOT_UNREADABLE_MESSAGE };
+  const body: Record<string, unknown> = { expectedPaymentTerms, expectedSnapshotSha256: hash };
   const result = await callApi(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/ceo-approval`, {
     method: 'POST',
     body,
-    idempotencyKey: idempotencyKeyOf(formData)
+    idempotencyKey: idempotencyKeyOf(formData), expectedProjectId: writeProjectOf(formData)
   });
   if (!result.ok) return refusalState(result);
   revalidatePath('/', 'layout');
@@ -61,7 +69,8 @@ export async function returnMakerPoAction(_prev: ActionState | null, formData: F
   const returned = await callApi(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/return`, {
     method: 'POST',
     body: projectId ? { reason, expectedProjectId: projectId } : { reason },
-    idempotencyKey: key
+    idempotencyKey: key,
+    expectedProjectId: projectId
   });
   if (returned.ok) {
     revalidatePath('/', 'layout');
@@ -72,7 +81,8 @@ export async function returnMakerPoAction(_prev: ActionState | null, formData: F
   const cancelled = await callApi(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/cancel`, {
     method: 'POST',
     body: { note: `差し戻し: ${reason}` },
-    idempotencyKey: key ? `${key}.cancel` : undefined
+    idempotencyKey: key ? `${key}.cancel` : undefined,
+    expectedProjectId: projectId
   });
   if (!cancelled.ok) return { ...refusalState(cancelled), settled: isSettledRefusal(cancelled) };
   revalidatePath('/', 'layout');

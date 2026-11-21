@@ -14,6 +14,7 @@ import { loadSessionUser } from '../lib/api';
 import { canRoleOperate } from '../lib/permissions';
 import { labelLookup, loadWorkspace, NO_PROJECT_SELECTED_MESSAGE } from '../lib/project-data';
 import { formatQuantityWithUnit } from '../lib/number-format';
+import { isOwnEvidenceOfStaff } from '../lib/self-verification';
 import { shortId } from '../lib/short-id';
 import type { DeliveryView } from '../lib/project-data';
 import { HIDDEN_BY_ROLE_LABEL } from '../lib/redaction';
@@ -60,7 +61,8 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
         && document.verificationStatus === 'verified'
         && (delivery.kind === 'filling'
           || (delivery.orderId !== null && document.filmSupplyOrderId === delivery.orderId)))
-      .flatMap((document) => document.versions.map((version) => ({
+      // P1 P-4: staff never confirm a delivery on a 受領証跡 version they uploaded (SELF_VERIFICATION_FORBIDDEN).
+      .flatMap((document) => document.versions.filter((version) => !isOwnEvidenceOfStaff(role, user?.id ?? null, version.uploadedByUserId)).map((version) => ({
         value: version.id,
         label: `${document.filename}（版${version.versionNumber}／${
           VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus

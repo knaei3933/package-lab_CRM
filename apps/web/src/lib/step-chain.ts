@@ -2,6 +2,7 @@ import { revalidatePath } from 'next/cache';
 import { callApi } from './api';
 import { isSettledRefusal, KEY_REUSED_CODE, recordIdOf, refusalState } from './action-result';
 import { idempotencyKeyOf } from './project-context';
+import { writeProjectOf } from './project-guard';
 import type { ActionState } from './types';
 
 /**
@@ -96,7 +97,8 @@ export async function runChain(formData: FormData, steps: readonly ChainStep[], 
     let result = await callApi(request.path, {
       method: request.method ?? 'POST',
       body: request.body,
-      idempotencyKey: chainKey(formKey, index)
+      idempotencyKey: chainKey(formKey, index),
+      expectedProjectId: writeProjectOf(formData)
     });
     const alternative = !result.ok && step.fallback && step.fallback.codes.includes(codeOf(result.data) ?? '')
       ? step.fallback.request(answers)
@@ -105,7 +107,8 @@ export async function runChain(formData: FormData, steps: readonly ChainStep[], 
       result = await callApi(alternative.path, {
         method: alternative.method ?? 'POST',
         body: alternative.body,
-        idempotencyKey: chainKey(formKey, index) ? `${chainKey(formKey, index)}a` : undefined
+        idempotencyKey: chainKey(formKey, index) ? `${chainKey(formKey, index)}a` : undefined,
+        expectedProjectId: writeProjectOf(formData)
       });
     }
     if (!result.ok) {

@@ -20,6 +20,7 @@ import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
 import { plausibleTestSentAt, sendMakerPoEmlEvidence } from '../helpers/maker-po-evidence.js';
+import { withApprovalSnapshot } from '../helpers/approval-snapshot.js';
 
 /**
  * M8-OPER3 regression tests: the real-time dual-approval re-verification at the
@@ -395,7 +396,7 @@ describe('M8-OPER3: a withdrawal closes the maker-PO boundary in real time', () 
     ]);
 
     // (b) certifying the existing paper is refused.
-    const approvalAttempt = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {});
+    const approvalAttempt = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, poId));
     expect(approvalAttempt.status).toBe(422);
     expect((approvalAttempt.body as { code: string }).code).toBe('DUAL_APPROVAL_NO_LONGER_VALID');
 
@@ -500,7 +501,7 @@ describe('M8-OPER3: a valid dual approval still carries the full maker chain', (
     const poId = (created.body as { id: string }).id;
     expect((created.body as { status: string }).status).toBe('DRAFT');
 
-    const approved = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {});
+    const approved = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, poId));
     expect(approved.status).toBe(200);
     expect((approved.body as { purchaseOrder: { status: string } }).purchaseOrder.status)
       .toBe('APPROVED_FOR_MANUAL_SEND');
@@ -579,7 +580,7 @@ describe('M8-OPER3: paper whose send is already proven is never retroactively bl
     const created = await createMakerPo(chain.orderId);
     expect(created.status).toBe(201);
     const poId = (created.body as { id: string }).id;
-    expect((await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, {})).status).toBe(200);
+    expect((await postAs(adminToken, `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, adminToken, poId))).status).toBe(200);
 
     const sent = await sendMakerPoEmlEvidence(
       (url, body) => postAs(staffToken, url, body),

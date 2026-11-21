@@ -235,11 +235,12 @@ describe('cardFromWeb', () => {
   it.each([
     ['no snapshot amounts', { snapshot: { items: [], specs: { artworkFiles: [] } } }],
     ['an empty totalAmount', { snapshot: { amounts: { currency: 'JPY', totalAmount: '' } } }]
-  ])('an amount missing (%s) blocks with MAKER_PO_AMOUNT_MISSING and canApprove false', (_name, over) => {
+  ])('an amount missing (%s) is a warning, not a blocker: approvable with the explicit confirmation on the card', (_name, over) => {
     const card = build({ paper: paper(over) });
-    expect(codes(card)).toEqual(['MAKER_PO_AMOUNT_MISSING']);
+    expect(codes(card)).toEqual([]);
+    expect(card.warnings.map((warning) => warning.code)).toEqual(['MAKER_PO_AMOUNT_MISSING']);
     expect(card.amountDisplay).toBeNull();
-    expect(card.canApprove).toBe(false);
+    expect(card.canApprove).toBe(true);
   });
 
   it('marks an artwork file as matching only when revision number and hash both equal the gate', () => {
@@ -328,14 +329,14 @@ describe('loadApprovalCard', () => {
     expect((await loadApprovalCard(input())).source).toBe('web');
   });
 
-  it('adds the MAKER_PO_AMOUNT_MISSING blocker and clears canApprove when a server card has no amount', async () => {
+  it('keeps the server decision for a card without an amount (the API only warns; the card asks for the confirmation)', async () => {
     const body = serverBody();
     (body.snapshot as Record<string, unknown>).amounts = null;
     callApi.mockResolvedValue(ok(body));
     const card = await loadApprovalCard(input());
     expect(card.source).toBe('server');
-    expect(card.blockers.map((blocker) => blocker.code)).toContain('MAKER_PO_AMOUNT_MISSING');
-    expect(card.canApprove).toBe(false);
+    expect(card.amountDisplay).toBeNull();
+    expect(card.blockers.map((blocker) => blocker.code)).not.toContain('MAKER_PO_AMOUNT_MISSING');
   });
 
   it('does not duplicate an amount blocker the server already sent', async () => {
