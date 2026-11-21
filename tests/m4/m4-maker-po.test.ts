@@ -289,6 +289,7 @@ async function createMakerPoReadyOrder(projectId: string, tag: string): Promise<
 
   const ready = await postJson(`/api/film-supply-orders/${order.id}/auto-advance`, {});
   expect(ready.status).toBe(200);
+  expect((ready.body as { status: string }).status).toBe('MAKER_PO_READY');
   return supplyOrder;
 }
 

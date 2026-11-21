@@ -636,6 +636,14 @@ describe('M3 proof revisions and dual approval', () => {
     expect(preview.status).toBe(200);
     expect(preview.body.nextAutomatic.target).toBe('MAKER_PO_READY');
     expect(preview.body.nextAutomatic.blockers.map((blocker) => blocker.code)).toContain('DUAL_APPROVAL_REQUIRED');
+    // With the term decided, only the closed gate can stop the step.
+    const decided = await app.request(`/api/film-supply-orders/${order.orderId}/payment-terms`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', cookie: `${SESSION_COOKIE}=${staffToken}` },
+      body: JSON.stringify({ paymentTerms: 'prepaid' })
+    });
+    expect(decided.status).toBe(200);
+    expect(await decided.json()).toMatchObject({ status: 'DUAL_APPROVED', autoAdvanced: [] });
     const applied = await postJson<{ steps: unknown[]; status: string }>(`/api/film-supply-orders/${order.orderId}/auto-advance`, {});
     expect(applied.status).toBe(200);
     expect(applied.body.steps).toEqual([]);

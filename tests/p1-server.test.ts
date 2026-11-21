@@ -465,6 +465,22 @@ describe('R23 automatic steps (policy P-9)', () => {
     expect(again.body).toMatchObject({ status: 'APPROVAL_PENDING', steps: [] });
   });
 
+  it('applies the automatic steps exactly once when two re-evaluations race (order row lock)', async () => {
+    const sevenPoId = await sevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
+    await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ON_HOLD', holdReason: '確認待ち' });
+    expect((await registerRevision(sevenPoId, orderId)).body.status).toBe('ON_HOLD');
+    expect((await post('admin', `/api/film-supply-orders/${orderId}/hold-release`, { reason: '再開' })).status).toBe(200);
+    const results = await Promise.all([1, 2, 3].map(() => post('staff', `/api/film-supply-orders/${orderId}/auto-advance`)));
+    for (const result of results) expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect(results.flatMap((result) => result.body.steps).map((step: { to: string }) => step.to).sort())
+      .toEqual(['APPROVAL_PENDING', 'PROOF_READY']);
+    const statuses = (await transitionRows(orderId)).map((row) => (row.afterState as { status: string }).status);
+    expect(statuses.filter((status) => status === 'PROOF_READY')).toHaveLength(1);
+    expect(await orderStatus(orderId)).toBe('APPROVAL_PENDING');
+  });
+
   it('guards the auto-advance endpoints: roles, assignment, project context, cancelled orders, ids, idempotency', async () => {
     const { orderId } = await createOrder(await sevenPo(projectId, false));
     expect((await get('viewer', `/api/film-supply-orders/${orderId}/auto-advance`)).status).toBe(403);
@@ -867,5 +883,254 @@ describe('R31 unit vocabulary on the status labels', () => {
     expect(labels.status).toBe(200);
     expect(labels.body.units).toMatchObject({ meters: { symbol: 'm', label: 'メートル' }, sheets: { symbol: '枚' }, rolls: { symbol: 'ロール' } });
     expect(labels.body.filmSupplyOrderStates).toHaveLength(18);
+  });
+});
+
+// ----------------------------------------------- review additions (test-engineer, security review M1)
+describe('P1 review additions', () => {
+  const revoke = async (sevenPoId: string, orderId: string, revisionId: string, organization: 'customer' | 'seven') => {
+    const identifier = `MEMO-P1-R-${nextTag()}`;
+    const memo = await evidence(sevenPoId, orderId, 'kanei', identifier);
+    const revoked = await post('staff', `/api/artwork-revisions/${revisionId}/approvals`, {
+      organization, decision: 'REVOKE', evidenceSource: 'email', eventTime: '2026-11-16T10:00:00.000Z',
+      evidenceIdentifier: identifier, evidenceDocumentVersionId: memo.version.id
+    });
+    expect(revoked.status, JSON.stringify(revoked.body)).toBe(201);
+  };
+
+  it('M1: a change-review restart into デザインデータ受領 waits for a new proof; the old proof no longer counts', async () => {
+    const sevenPoId = await sevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
+    expect((await registerRevision(sevenPoId, orderId)).body.status).toBe('APPROVAL_PENDING');
+    expect((await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'CHANGE_REVIEW' })).status).toBe(200);
+    const restarted = await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
+    expect(restarted.body).toMatchObject({ status: 'ARTWORK_RECEIVED', autoAdvanced: [] });
+    const preview = await get('staff', `/api/film-supply-orders/${orderId}/auto-advance`);
+    expect(preview.body).toMatchObject({ plannedSteps: [], nextAutomatic: { target: 'PROOF_READY', blockers: [{ code: 'ARTWORK_REVISION_REQUIRED' }] } });
+    expect((await post('staff', `/api/film-supply-orders/${orderId}/auto-advance`)).body.steps).toEqual([]);
+    const fresh = await registerRevision(sevenPoId, orderId, 'label-front');
+    expect(fresh.status, JSON.stringify(fresh.body)).toBe(201);
+    expect(fresh.body).toMatchObject({ status: 'APPROVAL_PENDING' });
+  });
+
+  it('a change-review exit lands exactly where it was sent even when a proof exists (no chaining)', async () => {
+    const sevenPoId = await sevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
+    expect((await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'CHANGE_REVIEW' })).status).toBe(200);
+    expect((await registerRevision(sevenPoId, orderId)).body.status).toBe('CHANGE_REVIEW');
+    const resumed = await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'PROOF_READY' });
+    expect(resumed.body).toMatchObject({ status: 'PROOF_READY', autoAdvanced: [] });
+    expect(await orderStatus(orderId)).toBe('PROOF_READY');
+    const manual = await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'APPROVAL_PENDING' });
+    expect(manual.body).toMatchObject({ code: 'AUTO_TRANSITION_ONLY', from: 'PROOF_READY' });
+    expect((await post('staff', `/api/film-supply-orders/${orderId}/auto-advance`)).body.status).toBe('APPROVAL_PENDING');
+  });
+
+  it('a cancellation-review resume lands on its origin; auto-advance catches up afterwards', async () => {
+    const sevenPoId = await sevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
+    await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'CANCELLATION_REVIEW' });
+    expect((await registerRevision(sevenPoId, orderId)).body.status).toBe('CANCELLATION_REVIEW');
+    const fromHold = await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'PROOF_READY' });
+    expect(fromHold.body.code).not.toBe('AUTO_TRANSITION_ONLY');
+    const resumed = await post('admin', `/api/film-supply-orders/${orderId}/cancellation-review-resolve`, { outcome: 'resume', reason: '取消しない' });
+    expect(resumed.status, JSON.stringify(resumed.body)).toBe(200);
+    expect(await orderStatus(orderId)).toBe('ARTWORK_RECEIVED');
+    expect((await post('staff', `/api/film-supply-orders/${orderId}/auto-advance`)).body).toMatchObject({ status: 'APPROVAL_PENDING' });
+  });
+
+  it('the payment-term trigger still needs the live gate; a racing re-evaluation takes the step once', async () => {
+    const closed = await approvedOrder('undetermined');
+    await revoke(closed.sevenPoId, closed.orderId, closed.revisionId, 'customer');
+    const chosen = await patchTerms('staff', closed.orderId, 'prepaid');
+    expect(chosen.body).toMatchObject({ status: 'DUAL_APPROVED', autoAdvanced: [] });
+    expect((await get('staff', `/api/film-supply-orders/${closed.orderId}/auto-advance`)).body.nextAutomatic.blockers
+      .map((blocker: { code: string }) => blocker.code)).toEqual(['DUAL_APPROVAL_REQUIRED']);
+
+    const open = await approvedOrder('undetermined');
+    const [patched, ...applied] = await Promise.all([
+      patchTerms('staff', open.orderId, 'on_delivery'),
+      post('staff', `/api/film-supply-orders/${open.orderId}/auto-advance`),
+      post('staff', `/api/film-supply-orders/${open.orderId}/auto-advance`)
+    ]);
+    expect(patched.status).toBe(200);
+    for (const result of applied) expect(result.status).toBe(200);
+    // Whichever request came second, the step is written exactly once.
+    await post('staff', `/api/film-supply-orders/${open.orderId}/auto-advance`);
+    const rows = (await transitionRows(open.orderId)).filter((row) => (row.afterState as { status: string }).status === 'MAKER_PO_READY');
+    expect(rows).toHaveLength(1);
+    expect(await orderStatus(open.orderId)).toBe('MAKER_PO_READY');
+  });
+
+  it('replays an applying auto-advance for the same Idempotency-Key without writing again; preview guards', async () => {
+    const sevenPoId = await sevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
+    await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ON_HOLD', holdReason: '確認' });
+    await registerRevision(sevenPoId, orderId);
+    await post('admin', `/api/film-supply-orders/${orderId}/hold-release`, { reason: '再開' });
+    const key = { 'Idempotency-Key': `p1-apply-${nextTag()}` };
+    const first = await post('staff', `/api/film-supply-orders/${orderId}/auto-advance`, {}, key);
+    expect(first.body.steps).toHaveLength(2);
+    const count = (await transitionRows(orderId)).length;
+    const again = await post('staff', `/api/film-supply-orders/${orderId}/auto-advance`, {}, key);
+    expect(again.headers.get('idempotent-replayed')).toBe('true');
+    expect(again.body.steps).toHaveLength(2);
+    expect(await transitionRows(orderId)).toHaveLength(count);
+    expect((await get('outsider', `/api/film-supply-orders/${orderId}/auto-advance`)).status).toBe(403);
+    expect((await app.request(`/api/film-supply-orders/${orderId}/auto-advance`)).status).toBe(401);
+    // An order without any seven PO names that blocker; checking a PO later lets auto-advance take the step.
+    const bare = await post('staff', `/api/projects/${projectId}/film-supply-orders`, { code: `FSO-P1-BARE-${nextTag()}`, paymentTerms: 'prepaid' });
+    expect(bare.body.status).toBe('DRAFT');
+    expect((await get('staff', `/api/film-supply-orders/${bare.body.id}/auto-advance`)).body.nextAutomatic.blockers[0].code).toBe('SEVEN_PO_REQUIRED');
+    const late = await sevenPo(projectId, false);
+    const lateOrder = await createOrder(late);
+    expect(lateOrder.body.status).toBe('DRAFT');
+    expect((await post('staff', `/api/seven-purchase-orders/${late}/verification-checklist`, fullChecklist())).status).toBe(200);
+    const caught = await post('staff', `/api/film-supply-orders/${lateOrder.orderId}/auto-advance`);
+    expect(caught.body.steps).toMatchObject([{ to: 'SEVEN_PO_VERIFIED', rule: 'seven_po_gate_open' }]);
+  });
+
+  it('approval pin: refusal order and formats', async () => {
+    const chain = await approvedOrder('prepaid');
+    const paper = await createPaper(chain.orderId);
+    const url = `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`;
+    const card = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
+    expect((await post('staff', url, { expectedSnapshotSha256: card.body.makerPurchaseOrder.approvalSnapshotSha256 })).body.code).toBe('CEO_ONLY');
+    expect((await post('admin', url, { expectedSnapshotSha256: 'A'.repeat(64) })).body.code).toBe('EXPECTED_SNAPSHOT_SHA256_INVALID');
+    expect((await post('admin', url, { expectedSnapshotSha256: 123 })).body.code).toBe('EXPECTED_SNAPSHOT_SHA256_INVALID');
+    const wrong = await post('admin', url, { expectedSnapshotSha256: '0'.repeat(64) });
+    expect(wrong.status).toBe(409);
+    expect(wrong.body).toMatchObject({ code: 'MAKER_PO_SNAPSHOT_CHANGED', snapshotSha256: card.body.makerPurchaseOrder.approvalSnapshotSha256 });
+    expect((await post('admin', url, card.body.approveRequest.body)).status).toBe(200);
+    const stale = await post('admin', url, { expectedSnapshotSha256: '0'.repeat(64) });
+    expect(stale.body.code).toBe('MAKER_PO_TRANSITION_BLOCKED');
+  });
+
+  it('card states revoked approvals, a non-mail recipient and a cancelled order as blockers', async () => {
+    const chain = await approvedOrder('prepaid');
+    const paper = await createPaper(chain.orderId);
+    await revoke(chain.sevenPoId, chain.orderId, chain.revisionId, 'seven');
+    const revoked = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
+    expect(revoked.body.approvals.designs[0].organizations.seven.state).toBe('revoked');
+    expect(revoked.body.blockers.map((blocker: { code: string }) => blocker.code)).toContain('DUAL_APPROVAL_REQUIRED');
+    const [row] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, paper.body.id));
+    await db.update(makerPurchaseOrders).set({ snapshot: { ...(row!.snapshot as object), recipient: { address: '大阪府 合成工場' } } })
+      .where(eq(makerPurchaseOrders.id, paper.body.id));
+    const postal = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
+    expect(postal.body.blockers.map((blocker: { code: string }) => blocker.code)).toContain('RECIPIENT_ADDRESS_INVALID');
+    expect(postal.body.snapshot.recipient.isEmail).toBe(false);
+    await db.update(filmSupplyOrders).set({ status: 'CANCELLED' as any }).where(eq(filmSupplyOrders.id, chain.orderId));
+    const cancelled = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
+    expect(cancelled.body.blockers.map((blocker: { code: string }) => blocker.code)).toContain('FILM_ORDER_CANCELLED_MAKER_PO_ACTION_BLOCKED');
+    expect(cancelled.body.canApprove).toBe(false);
+  });
+
+  it('return: boundaries, races with the approval, and its effect on the queue and the numbers', async () => {
+    expect((await post('admin', `/api/maker-purchase-orders/${uuidv7()}/return`, { reason: 'x' })).status).toBe(404);
+    expect((await post('admin', `/api/maker-purchase-orders/x/return`, { reason: 'x' })).body.code).toBe('INVALID_PATH_PARAMETER');
+    const chain = await approvedOrder('prepaid');
+    const paper = await createPaper(chain.orderId);
+    const queued = await get('admin', '/api/representative-queue');
+    expect(queued.body.items.some((item: { key: string }) => item.key === `maker_po_ceo_approval:${paper.body.id}`)).toBe(true);
+    const longest = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/return`, { reason: 'あ'.repeat(1000) });
+    expect(longest.status).toBe(200);
+    const after = await get('admin', '/api/representative-queue');
+    expect(after.body.items.some((item: { key: string }) => item.key === `maker_po_ceo_approval:${paper.body.id}`)).toBe(false);
+    expect(after.body.items.some((item: { key: string }) => item.key === `maker_po_creation:${chain.orderId}`)).toBe(true);
+    const list = await get('admin', `/api/film-supply-orders/${chain.orderId}/maker-purchase-orders`);
+    expect(list.body.displayNumbers[paper.body.id]).toBe(paper.body.displayNumber);
+
+    const raced = await createPaper(chain.orderId);
+    const outcomes = await Promise.all([
+      post('admin', `/api/maker-purchase-orders/${raced.body.id}/ceo-approval`),
+      post('admin', `/api/maker-purchase-orders/${raced.body.id}/return`, { reason: '同時操作' })
+    ]);
+    expect(outcomes.filter((result) => result.status === 200)).toHaveLength(1);
+    const loser = outcomes.find((result) => result.status !== 200)!;
+    expect(['MAKER_PO_STATE_CHANGED', 'MAKER_PO_RETURN_ONLY_DRAFT', 'MAKER_PO_TRANSITION_BLOCKED']).toContain(loser.body.code);
+  });
+
+  it('queue: limit, unique keys, done evidence and chosen terms leave, refusal carries no amount', async () => {
+    const undecided = await approvedOrder('undetermined');
+    const sevenPoId = await sevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
+    const revision = await registerRevision(sevenPoId, orderId);
+    const pdfId = `SIG-P1-QL-${nextTag()}`;
+    const pending = await approve(revision.body.id, 'customer', (await evidence(sevenPoId, orderId, 'customer_generated', pdfId, 'application/pdf')).version.id, pdfId);
+    const before = await get('admin', '/api/representative-queue');
+    const keys = before.body.items.map((item: { key: string }) => item.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(before.body.items.some((item: { key: string }) => item.key === `approval_evidence_verification:${pending.body.approvalEvent.id}`)).toBe(true);
+    const limited = await get('admin', '/api/representative-queue?limit=1');
+    expect(limited.body.truncated).toBe(true);
+    for (const value of ['0', 'abc', '501']) expect((await get('admin', `/api/representative-queue?limit=${value}`)).status).toBe(200);
+    expect((await post('admin', `/api/artwork-approval-events/${pending.body.approvalEvent.id}/verification`, { result: 'rejected', reasonNote: '署名なし' })).status).toBe(201);
+    expect((await patchTerms('staff', undecided.orderId, 'prepaid')).body.status).toBe('MAKER_PO_READY');
+    const after = await get('admin', '/api/representative-queue');
+    expect(after.body.items.some((item: { key: string }) => item.key === `approval_evidence_verification:${pending.body.approvalEvent.id}`)).toBe(false);
+    expect(after.body.blocked.some((item: { key: string }) => item.key === `payment_terms_undetermined:${undecided.orderId}`)).toBe(false);
+    const refused = await get('staff', '/api/representative-queue');
+    expect(JSON.stringify(refused.body)).not.toMatch(/480000|totalAmount/);
+  });
+
+  it('P-4: admin self document verification, independent admin verification, rejected self, viewer refused, staff audit row', async () => {
+    const sevenPoId = await sevenPo();
+    const { orderId } = await createOrder(sevenPoId);
+    const own = await upload(sevenPoId, orderId, { documentType: 'acceptance_evidence', designKey: undefined }, 'admin');
+    expect((await post('admin', `/api/documents/${own.document.id}/verify`, { verificationStatus: 'verified' })).body)
+      .toMatchObject({ selfVerification: true, selfVerificationBasis: 'admin_self_verification_p4' });
+    const staffDoc = await upload(sevenPoId, orderId, { documentType: 'acceptance_evidence', designKey: undefined });
+    await post('staff', `/api/documents/${staffDoc.document.id}/verify`, { verificationStatus: 'mismatch' });
+    const [audit] = await db.select().from(auditEvents).where(and(eq(auditEvents.action, 'DOCUMENT_VERIFICATION_RECORDED'), eq(auditEvents.entityId, staffDoc.document.id)));
+    expect(audit!.afterState).toMatchObject({ selfVerification: true, selfVerificationBasis: 'existing_staff_rule' });
+
+    await post('staff', `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' });
+    const revision = await registerRevision(sevenPoId, orderId);
+    const staffPdfId = `SIG-P1-IND-${nextTag()}`;
+    const staffPending = await approve(revision.body.id, 'customer', (await evidence(sevenPoId, orderId, 'customer_generated', staffPdfId, 'application/pdf')).version.id, staffPdfId);
+    expect((await post('viewer', `/api/artwork-approval-events/${staffPending.body.approvalEvent.id}/verification`, { result: 'confirmed', reasonNote: 'x' })).status).toBe(403);
+    const independent = await post('admin', `/api/artwork-approval-events/${staffPending.body.approvalEvent.id}/verification`, { result: 'confirmed', reasonNote: '原本で確認' });
+    expect(independent.body).toMatchObject({ selfVerification: false, selfVerificationBasis: 'independent_verifier' });
+    const adminPdfId = `SIG-P1-REJ-${nextTag()}`;
+    const adminPending = await approve(revision.body.id, 'seven', (await evidence(sevenPoId, orderId, 'seven', adminPdfId, 'application/pdf', 'admin')).version.id, adminPdfId, 'admin');
+    const rejected = await post('admin', `/api/artwork-approval-events/${adminPending.body.approvalEvent.id}/verification`, { result: 'rejected', reasonNote: '署名欄が空' });
+    expect(rejected.body).toMatchObject({ selfVerification: true, selfVerificationBasis: 'admin_self_verification_p4' });
+  });
+
+  it('P-3 / R36: permissions, partial confirmation, and the later delivery stages', async () => {
+    const sevenPoId = await sevenPo(filmOnlyProjectId);
+    const order = await createOrder(sevenPoId, 'prepaid', filmOnlyProjectId);
+    expect((await post('viewer', `/api/projects/${filmOnlyProjectId}/commission-readiness`)).status).toBe(403);
+    expect((await post('outsider', `/api/projects/${filmOnlyProjectId}/commission-readiness`)).status).toBe(403);
+    const first = await post('staff', `/api/film-supply-orders/${order.orderId}/deliveries`, { filmSupplyOrderLineId: order.lineId, deliveredQuantity: 600, unit: 'sheets' });
+    const second = await post('staff', `/api/film-supply-orders/${order.orderId}/deliveries`, { filmSupplyOrderLineId: order.lineId, deliveredQuantity: 400, unit: 'sheets' });
+    const doc = await upload(sevenPoId, order.orderId, { documentType: 'acceptance_evidence', designKey: undefined }, 'staff', filmOnlyProjectId);
+    await post('admin', `/api/documents/${doc.document.id}/verify`, { verificationStatus: 'verified' });
+    expect((await post('admin', `/api/film-deliveries/${first.body.id}/confirmation`, { evidenceDocumentVersionId: doc.version.id })).body.selfVerification).toBe(false);
+    const partial = await post('staff', `/api/projects/${filmOnlyProjectId}/commission-readiness`);
+    expect(partial.body).toMatchObject({ readinessState: 'PENDING_VERIFICATION', blocking: ['FILM_DELIVERY_PENDING_CONFIRMATION'] });
+    const status = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
+    expect(status.body.lines[0]).toMatchObject({ deliveredDisplay: '1,000 枚', confirmedDisplay: '600 枚' });
+    expect(status.body.nextAction).toMatchObject({ action: 'CONFIRM_DELIVERY', deliveryIds: [second.body.id] });
+    const doc2 = await upload(sevenPoId, order.orderId, { documentType: 'acceptance_evidence', designKey: undefined }, 'staff', filmOnlyProjectId);
+    await post('admin', `/api/documents/${doc2.document.id}/verify`, { verificationStatus: 'verified' });
+    await post('staff', `/api/film-deliveries/${second.body.id}/confirmation`, { evidenceDocumentVersionId: doc2.version.id });
+    await db.update(filmSupplyOrders).set({ status: 'FILM_SHIPPED' as any }).where(eq(filmSupplyOrders.id, order.orderId));
+    expect((await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`)).body.nextAction.action).toBe('RECORD_FILM_DELIVERED');
+    await db.update(filmSupplyOrders).set({ status: 'FILM_DELIVERED' as any }).where(eq(filmSupplyOrders.id, order.orderId));
+    expect((await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`)).body.nextAction.action).toBe('CLOSE_ORDER');
+    const closed = await post('staff', `/api/film-supply-orders/${order.orderId}/receipt-assumption`, { note: '受領問題なし（合成）', acknowledgeNoEvidence: true });
+    expect(closed.status, JSON.stringify(closed.body)).toBe(200);
+    const done = await get('viewer', `/api/film-supply-orders/${order.orderId}/delivery-status`);
+    expect(done.body).toMatchObject({ stage: 'completed', nextAction: null, receiptAssumption: { assumedBy: { id: staffId }, note: '受領問題なし（合成）' } });
+    const units = (await get('viewer', '/api/status-labels')).body.units;
+    expect(Object.keys(units).sort()).toEqual(['meters', 'pieces', 'pods', 'rolls', 'sheets']);
+    expect(units.pods.symbol).toBe('ポッド');
+    expect(units.pieces.symbol).toBe('個');
   });
 });

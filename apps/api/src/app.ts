@@ -4601,14 +4601,42 @@ export function createApp({
     let sevenPoGateRefusal: { code: string; message: string } | null = null;
     let sevenPoGateOpen = false;
     if (String(order.status) === 'DRAFT') {
+      // Security review L3: the PO row is share-locked (order row first, then
+      // the PO) so a concurrent date overwrite or verification change cannot
+      // slip between this gate decision and the automatic step.
+      if (order.sevenPurchaseOrderId) {
+        await (executor as unknown as AppDatabase).select({ id: sevenPurchaseOrders.id }).from(sevenPurchaseOrders)
+          .where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).limit(1).for('share');
+      }
       sevenPoGateRefusal = await sevenPoPrecedenceRefusal(order, executor);
       sevenPoGateOpen = sevenPoGateRefusal === null;
     }
+    // Security review M1: a change review restarts the artwork cycle. Only a
+    // proof registered since the order last entered CHANGE_REVIEW (the revision
+    // that caused it included) can take the proof steps again, so a restart
+    // into デザインデータ受領 waits for new artwork instead of re-running on
+    // the old proof and its old approvals.
+    const [lastReview] = await executor.select({ occurredAt: auditEvents.occurredAt }).from(auditEvents)
+      .where(and(
+        eq(auditEvents.entityType, 'film_supply_order'),
+        eq(auditEvents.entityId, order.id),
+        eq(auditEvents.action, 'FILM_SUPPLY_ORDER_TRANSITIONED'),
+        sql`${auditEvents.afterState} ->> 'status' = 'CHANGE_REVIEW'`
+      ))
+      .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id))
+      .limit(1);
     const [revision] = await executor.select({ id: artworkRevisions.id }).from(artworkRevisions)
-      .where(eq(artworkRevisions.filmSupplyOrderId, order.id)).limit(1);
+      .where(and(
+        eq(artworkRevisions.filmSupplyOrderId, order.id),
+        lastReview ? sql`${artworkRevisions.createdAt} >= ${lastReview.occurredAt}` : undefined
+      )).limit(1);
     const hasArtworkRevision = revision !== undefined;
+    // The dual-approval gate is derived from the current revisions themselves
+    // (never transferred across revisions), so it is read whenever any exists.
+    const [anyRevision] = hasArtworkRevision ? [revision] : await executor.select({ id: artworkRevisions.id })
+      .from(artworkRevisions).where(eq(artworkRevisions.filmSupplyOrderId, order.id)).limit(1);
     let dualApproved = false;
-    if (hasArtworkRevision) {
+    if (anyRevision) {
       const approvalContext = await loadApprovalContext(order.id, executor);
       dualApproved = deriveOrderApprovalGate(
         approvalContext.revisions,

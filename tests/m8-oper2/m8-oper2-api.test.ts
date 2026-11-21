@@ -271,7 +271,7 @@ async function reachProduction(tag: string) {
   const chain = await reachApprovalPending(tag);
   expect((await recordTextApproval({ chain, organization: 'customer' })).countsTowardDualApproval).toBe(true);
   expect((await recordTextApproval({ chain, organization: 'seven' })).dualApproved).toBe(true);
-  expect((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/auto-advance`, {})).status).toBe(200);
+  expect(((await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/auto-advance`, {})).body as { status: string }).status).toBe('MAKER_PO_READY');
 
   const created = await postAs(adminToken, `/api/film-supply-orders/${chain.orderId}/maker-purchase-orders`, {
     recipientAddress: 'maker-po@example.com'
@@ -449,7 +449,9 @@ describe('M8-OPER2 FIX 1: the G6 terms are enterable end to end', () => {
     // editable until the CEO approves a maker PO (lock covered in
     // tests/p0-server.test.ts).
     // P1 R23: SEVEN_PO_VERIFIED came automatically with the verified PO.
-    expect((await getAs(staffToken, `/api/film-supply-orders/${order.id}/payment-gate`)).status).toBe(200);
+    const [movedRow] = await db.select({ status: filmSupplyOrders.status }).from(filmSupplyOrders)
+      .where(eq(filmSupplyOrders.id, order.id)).limit(1);
+    expect(movedRow?.status).toBe('SEVEN_PO_VERIFIED');
     const stillOpen = await patchAs(adminToken, `/api/film-supply-orders/${order.id}/payment-terms`, {
       paymentTerms: 'prepaid'
     });

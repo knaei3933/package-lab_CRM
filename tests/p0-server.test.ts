@@ -184,6 +184,8 @@ async function readyOrder(paymentTerms = 'prepaid') {
   }
   const ready = await post('staff', `/api/film-supply-orders/${orderId}/auto-advance`, {});
   expect(ready.status, JSON.stringify(ready.body)).toBe(200);
+  // P1 R23: an undetermined term stops at 校了 (DUAL_APPROVED).
+  expect((ready.body as { status: string }).status).toBe(paymentTerms === 'undetermined' ? 'DUAL_APPROVED' : 'MAKER_PO_READY');
   return { sevenPoId, orderId, code, artworkBytes };
 }
 

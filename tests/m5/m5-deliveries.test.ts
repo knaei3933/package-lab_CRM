@@ -206,11 +206,6 @@ async function createChainOrderAt(projectIdValue: string, tag: string, targetSta
   for (const to of ['ARTWORK_RECEIVED']) {
     const transition = await postJson(`/api/film-supply-orders/${order.id}/transitions`, { to });
     expect(transition.status).toBe(200);
-    if (to === targetStatus) {
-      const [row] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.id)).limit(1);
-      expect(row?.status).toBe(targetStatus);
-      return { poId: po.id, orderId: order.id, firstLineId: order.lines[0]!.id, artworkBytes: '' };
-    }
   }
 
   const proof = await postJson(`/api/projects/${projectIdValue}/documents`, {

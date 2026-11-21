@@ -379,6 +379,7 @@ async function reachMakerPoReady(input: {
 
   const ready = await postAs(staffToken, `/api/film-supply-orders/${chain.orderId}/auto-advance`, {});
   expect(ready.status).toBe(200);
+  expect((ready.body as { status: string }).status).toBe('MAKER_PO_READY');
   return { ...chain, customerEvidence: customer.evidence, sevenEvidence: seven.evidence };
 }
 

@@ -192,7 +192,7 @@ async function reachMakerPoReady() {
       evidenceIdentifier: identifier, evidenceDocumentVersionId: evidence.version.id
     })).status).toBe(201);
   }
-  expect((await call(staffToken, `/api/film-supply-orders/${orderId}/auto-advance`, {})).status).toBe(200);
+  expect((await call(staffToken, `/api/film-supply-orders/${orderId}/auto-advance`, {})).body.status).toBe('MAKER_PO_READY');
   return { orderId, orderCode, artworkBytes, sevenPoId };
 }
 
