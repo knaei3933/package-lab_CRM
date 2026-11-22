@@ -1,0 +1,86 @@
+/*
+ * P3 polish (review Medium leftovers M-2 / M-3 / RM1 / RM2). Loaded last and
+ * unlayered so it wins over the layered base without touching their rules.
+ * Only sizes, wrapping and focus — no new colours, no wording.
+ */
+
+/* ---- M-2: every button and link an operator presses is a 44px target ------ */
+.form-shell button,
+.form-shell button[type='submit'],
+.form-shell .form-result-action,
+.confirm-dialog-actions button,
+.p1-button,
+.project-picker-submit,
+.app-menu-toggle,
+.app-sidebar-close,
+.app-help-link,
+.app-logout,
+.dash-next-link,
+.app-nav a,
+.next-card .next-links a {
+  min-height: 44px;
+}
+
+.app-help-link,
+.app-nav a,
+.next-card .next-links a {
+  box-sizing: border-box;
+}
+
+/* Only the 「詳細」 disclosures inside forms and the project picker: a global
+   summary rule also grew the dense tables and cards (review M-3). */
+.form-shell summary,
+.project-picker-details > summary {
+  display: list-item;
+  min-height: 44px;
+  padding-block: 10px;
+  box-sizing: border-box;
+}
+
+/* Focus ring: the same visible ring on every control, also inside the dialog. */
+.form-shell button:focus-visible,
+.form-result-action:focus-visible,
+.confirm-dialog-actions button:focus-visible,
+.app-nav a:focus-visible,
+.app-help-link:focus-visible,
+.next-links a:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* ---- M-3 / RM1 / RM2: the lock-confirm buttons wrap by words, never by letter.
+   The button was inline-flex with a row direction, so its Japanese label and the
+   Korean line became two flex items side by side and the label shrank to one
+   character per line. A column keeps them stacked at the full width. ------- */
+.form-result-remedy {
+  align-self: stretch;
+  width: 100%;
+  min-width: 0;
+}
+
+.form-result--error > span:not(.form-result-mark) {
+  min-width: 0;
+  flex: 1 1 8em;
+}
+
+.form-result-action {
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  box-sizing: border-box;
+  max-width: 100%;
+  padding-block: 8px;
+  white-space: normal;
+  overflow-wrap: break-word;
+  word-break: normal;
+  line-break: strict;
+}
+
+.form-result-action > .form-result-ko {
+  flex: 0 0 auto;
+  width: 100%;
+  font-weight: 400;
+  text-align: left;
+}

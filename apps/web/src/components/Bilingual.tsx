@@ -15,7 +15,7 @@ export function Bilingual({ ja, ko }: { ja: string; ko: string }) {
     return (
       <>
         <span lang="ko">{ko}</span>
-        <span className="p1-ja">{ja}</span>
+        <span className="p1-ja" lang="ja">{ja}</span>
       </>
     );
   }

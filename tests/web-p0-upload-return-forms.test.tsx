@@ -219,10 +219,22 @@ describe('R08/R05/R03/R09: FormResult remedies and the Korean line', () => {
     expect(html).toMatch(/<a [^>]*class="form-result-action"[^>]*href="\/"[^>]*target="_blank"[^>]*rel="noopener"|<a [^>]*href="\/"[^>]*target="_blank"/);
   });
 
+  it('P-7: the login link has no Korean line in Japanese-only mode and has it in ja-ko mode', () => {
+    const state = { ok: false, message: 'ログインの有効期限が切れました。', code: 'SESSION_EXPIRED' } as const;
+    expect(render(state, false)).not.toMatch(/[\uAC00-\uD7A3]/);
+    expect(render(state, true)).toContain('<span class="form-result-ko" lang="ko">다른 탭에서 로그인(입력 내용은 이 화면에 남습니다)</span>');
+  });
+
   it('PROJECT_CONTEXT_MISMATCH offers a reload button (a button, not a link)', () => {
     const html = render({ ok: false, message: '別のタブで案件が切り替わりました。', code: 'PROJECT_CONTEXT_MISMATCH' });
     expect(html).toContain('<button type="button" class="form-result-action">画面を再読み込みする</button>');
     expect(html).not.toContain('別のタブでログインする');
+  });
+
+  it('P-7: the reload button gets its Korean line only in ja-ko mode', () => {
+    const state = { ok: false, message: '別のタブで案件が切り替わりました。', code: 'PROJECT_CONTEXT_MISMATCH' } as const;
+    expect(render(state, false)).not.toMatch(/[\uAC00-\uD7A3]/);
+    expect(render(state, true)).toContain('画面を再読み込みする<span class="form-result-ko" lang="ko">화면 새로고침</span></button>');
   });
 
   it('DUPLICATE with a link offers that link', () => {

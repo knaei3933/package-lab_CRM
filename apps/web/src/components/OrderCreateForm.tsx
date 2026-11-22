@@ -308,6 +308,7 @@ export function OrderCreateForm({
               <button
                 type="button"
                 style={subtleButtonStyle}
+                aria-label={`明細${index + 1}を削除`}
                 onClick={() => setLines(lines.filter((_, i) => i !== index))}
               >
                 削除

@@ -30,6 +30,7 @@ import './screens.css';
 import './p2-terms.css';
 import './p2-makers.css';
 import './p2-audit.css';
+import './p3-polish.css';
 
 // UI batch A: each screen sets its own title (tabs stay distinguishable); the
 // template adds the product name.

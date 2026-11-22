@@ -24,7 +24,7 @@ import { createSubmitInFlight, SAVED_RECORD_EVENT } from '../lib/saved-record';
 import type { SavedRecordDetail } from '../lib/saved-record';
 import { awaitsOutcomeCheck, IDEMPOTENCY_FIELD, isKeyReuseLocked, locksForKeyReuse, newIdempotencyKey, PROJECT_CONTEXT_MISMATCH, shouldRenewSubmitKey } from '../lib/project-context';
 import { IN_PROGRESS_CODE, KEY_REUSED_CODE, OUTCOME_UNKNOWN_CODE } from '../lib/action-result';
-import { IN_PROGRESS_HINT, OUTCOME_UNKNOWN_CHECKED_LABEL, OUTCOME_UNKNOWN_LINE } from '../lib/idempotency-notice';
+import { IN_PROGRESS_HINT, KEY_REUSED_CHECKED_KO, KEY_REUSED_CHECKED_LABEL, LOGIN_OTHER_TAB_KO, LOGIN_OTHER_TAB_LABEL, OUTCOME_UNKNOWN_CHECKED_KO, OUTCOME_UNKNOWN_CHECKED_LABEL, OUTCOME_UNKNOWN_LINE, RELOAD_KO, RELOAD_LABEL } from '../lib/idempotency-notice';
 import { loginHrefFor } from '../lib/return-path';
 import { forget as forgetUnsaved, markDirty } from '../lib/unsaved-guard';
 import { installUnsavedGuard } from './unsaved-guard-dom';
@@ -406,6 +406,9 @@ export function FormResult({ state, successHint }: { state: ActionState | null; 
  */
 function ResultRemedy({ state }: { state: ActionState }) {
   const feedback = useContext(FormFeedbackContext);
+  // P-7: the Korean line follows the user's display setting. Only the two idempotency
+  // buttons (KEY_REUSED / OUTCOME_UNKNOWN) keep the NM1 always-bilingual exception.
+  const showKorean = useRenderedContext()?.showKorean === true;
   // P2 R05: the result of the earlier submit is unknown — the key stays fixed until the
   // operator checked the list; 「一覧を確認しました」 then allows a new submit (new key).
   if (state.code === OUTCOME_UNKNOWN_CODE) {
@@ -415,7 +418,7 @@ function ResultRemedy({ state }: { state: ActionState }) {
         {feedback?.outcomeCheckPending && feedback.startNewIntent ? (
           <button type="button" className="form-result-action" onClick={feedback.startNewIntent}>
             {OUTCOME_UNKNOWN_CHECKED_LABEL}
-            <span className="form-result-ko" lang="ko">목록을 확인했습니다(새 입력으로 보낼 수 있게 하기)</span>
+            <span className="form-result-ko" lang="ko">{OUTCOME_UNKNOWN_CHECKED_KO}</span>
           </button>
         ) : null}
       </span>
@@ -429,15 +432,16 @@ function ResultRemedy({ state }: { state: ActionState }) {
     const startNewIntent = feedback.startNewIntent;
     return (
       <button type="button" className="form-result-action" onClick={startNewIntent}>
-        一覧を確認しました（新しい入力として送信できるようにする）
-        <span className="form-result-ko" lang="ko">목록을 확인했습니다(새 입력으로 보낼 수 있게 하기)</span>
+        {KEY_REUSED_CHECKED_LABEL}
+        <span className="form-result-ko" lang="ko">{KEY_REUSED_CHECKED_KO}</span>
       </button>
     );
   }
   if (state.code === PROJECT_CONTEXT_MISMATCH) {
     return (
       <button type="button" className="form-result-action" onClick={() => window.location.reload()}>
-        画面を再読み込みする
+        {RELOAD_LABEL}
+        {showKorean ? <span className="form-result-ko" lang="ko">{RELOAD_KO}</span> : null}
       </button>
     );
   }
@@ -449,7 +453,8 @@ function ResultRemedy({ state }: { state: ActionState }) {
         target="_blank"
         rel="noopener"
       >
-        別のタブでログインする（入力内容はこの画面に残ります）
+        {LOGIN_OTHER_TAB_LABEL}
+        {showKorean ? <span className="form-result-ko" lang="ko">{LOGIN_OTHER_TAB_KO}</span> : null}
       </a>
     );
   }

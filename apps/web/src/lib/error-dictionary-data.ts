@@ -1032,7 +1032,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
   },
   SESSION_EXPIRED: {
     ja: 'ログインの有効期限が切れました。もう一度ログインしてください。',
-    ko: '로그인 유효 기간이 지났습니다. 다시 로그인하세요.'
+    ko: '로그인이 만료되었습니다. 다시 로그인하세요.'
   },
   SEVEN_PO_NOT_FOUND: {
     ja: 'セブン化学発注書が見つかりません。文書画面で登録を確認してください。',

@@ -12,3 +12,12 @@ export const OUTCOME_UNKNOWN_CHECKED_LABEL = '一覧を確認しました（記�
 
 /** IDEMPOTENCY_IN_PROGRESS — keep the input as it is and send it again a little later. */
 export const IN_PROGRESS_HINT = '入力はそのままにして、少し待ってから同じボタンをもう一度押してください（二重に記録されることはありません）。';
+
+/** P3: the Korean line under every remedy button (read together with the Japanese label). */
+export const OUTCOME_UNKNOWN_CHECKED_KO = '목록을 확인했습니다(기록되지 않았다면 새 입력으로 보낼 수 있게 하기)';
+export const KEY_REUSED_CHECKED_LABEL = '一覧を確認しました（新しい入力として送信できるようにする）';
+export const KEY_REUSED_CHECKED_KO = '목록을 확인했습니다(새 입력으로 보낼 수 있게 하기)';
+export const RELOAD_LABEL = '画面を再読み込みする';
+export const RELOAD_KO = '화면 새로고침';
+export const LOGIN_OTHER_TAB_LABEL = '別のタブでログインする（入力内容はこの画面に残ります）';
+export const LOGIN_OTHER_TAB_KO = '다른 탭에서 로그인(입력 내용은 이 화면에 남습니다)';

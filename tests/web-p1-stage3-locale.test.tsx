@@ -122,7 +122,7 @@ describe('Bilingual and KoGloss per mode', () => {
   });
   it('ko: Korean first, the Japanese business term kept next to it', () => {
     const html = bilingual('ko');
-    expect(html).toBe('<span lang="ko">금액</span><span class="p1-ja">金額</span>');
+    expect(html).toBe('<span lang="ko">금액</span><span class="p1-ja" lang="ja">金額</span>');
     expect(html.indexOf('금액')).toBeLessThan(html.indexOf('金額'));
   });
   it('KoGloss shows the gloss in ja-ko and ko, never in ja', () => {
