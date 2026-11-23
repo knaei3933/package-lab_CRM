@@ -145,6 +145,8 @@ async function createFilmOrder(poId: string, tag: string, paymentTerms: 'prepaid
     // the G6 transaction terms default to a settled term; tests that need the
     // gate closed pass 'undetermined' explicitly.
     paymentTerms,
+    // P4 H4①: the representative's approval requires a 希望納期.
+    requestedDeliveryDate: '2027-03-31',
     lines: [{ lineNumber: 1, description: '合成フィルム本体M7', orderedQuantity: 100000, unit: 'sheets' }]
   });
   expect(created.status).toBe(201);

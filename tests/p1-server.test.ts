@@ -117,6 +117,8 @@ async function createOrder(sevenPoId: string, paymentTerms = 'prepaid', project 
   const code = `FSO-P1-${nextTag()}`;
   const created = await post('staff', `/api/projects/${project}/film-supply-orders`, {
     code, sevenPurchaseOrderId: sevenPoId, paymentTerms,
+    // P4 H4①: the representative's approval requires a 希望納期.
+    requestedDeliveryDate: '2027-03-31',
     lines: [{ lineNumber: 1, description: '合成フィルムP1', orderedQuantity: 1000, unit: 'sheets' }]
   });
   expect(created.status, JSON.stringify(created.body)).toBe(201);
@@ -569,10 +571,13 @@ describe('R24 representative approval card and 差し戻し', () => {
     const first = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
     expect(first.body.warnings.map((warning: { code: string }) => warning.code)).toEqual(['MAKER_PO_AMOUNT_MISSING']);
     expect(first.body.snapshot.amounts).toBeNull();
-    expect(first.body.canApprove).toBe(true);
+    // P4 H4① (conductor decision): a missing amount now blocks the approval too
+    // (the warning stays for older readers); the date is on this fixture.
+    expect(first.body.blockers.map((blocker: { code: string }) => blocker.code)).toEqual(['AMOUNT_REQUIRED']);
+    expect(first.body.canApprove).toBe(false);
     expect((await patchTerms('staff', chain.orderId, 'undetermined')).status).toBe(200);
     const blocked = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
-    expect(blocked.body.blockers.map((blocker: { code: string }) => blocker.code)).toEqual(['PAYMENT_GATE_UNSATISFIED']);
+    expect(blocked.body.blockers.map((blocker: { code: string }) => blocker.code)).toEqual(['PAYMENT_GATE_UNSATISFIED', 'AMOUNT_REQUIRED']);
     expect(blocked.body.canApprove).toBe(false);
     const refused = await post('admin', `/api/maker-purchase-orders/${paper.body.id}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, paper.body.id));
     expect(refused.body.code).toBe('PAYMENT_GATE_UNSATISFIED');

@@ -29,7 +29,7 @@ import { createApp } from '../../apps/api/src/app.js';
 import { hashPassword } from '../../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence, plausibleTestSentAt } from '../helpers/maker-po-evidence.js';
-import { withApprovalSnapshot } from '../helpers/approval-snapshot.js';
+import { completeApprovalFacts, withApprovalSnapshot } from '../helpers/approval-snapshot.js';
 
 /**
  * M8-HARDEN2 regression tests: the three CEO-approved follow-up fixes.
@@ -180,6 +180,14 @@ async function reachApprovalPending(tag: string) {
   expect(createdOrder.status).toBe(201);
   const order = createdOrder.body as { id: string; status: string };
   // P1 R23: created against a verified PO, the order is SEVEN_PO_VERIFIED at once.
+  // P4 H4①: the representative's approval requires a 希望納期; the chain
+  // fixture records one right after creation (before any paper is drawn).
+  const dated = await app.request(`/api/film-supply-orders/${order.id}/delivery-dates`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie: `kanei_mvp_session=${adminToken}` },
+    body: JSON.stringify({ requestedDeliveryDate: '2027-03-31' })
+  });
+  expect(dated.status).toBe(200);
   expect(order.status).toBe('SEVEN_PO_VERIFIED');
 
   // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
@@ -789,6 +797,9 @@ describe('M8-HARDEN2 FIX 2 recovery: explicit reverse reopen is atomic and gated
     const created = await createMakerPo(chain.orderId);
     expect(created.status).toBe(201);
     const poId = (created.body as { id: string }).id;
+    // P4 H4①: complete 金額 before the race is armed, so the injected freeze
+    // hits the approval's own transaction (not the fixture's amount write).
+    await completeApprovalFacts(app, adminToken, poId);
 
     const originalTransaction = db.transaction.bind(db);
     let injectFreeze = true;

@@ -175,6 +175,14 @@ async function reachApprovalPending(tag: string) {
   const order = createdOrder.body as { id: string; status: string };
   // P1 R23: created against a verified PO, the order is SEVEN_PO_VERIFIED at once.
   expect(order.status).toBe('SEVEN_PO_VERIFIED');
+  // P4 H4①: the representative's approval requires a 希望納期; the chain
+  // fixture records one right after creation (before any paper is drawn).
+  const dated = await app.request(`/api/film-supply-orders/${order.id}/delivery-dates`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', cookie: `kanei_mvp_session=${adminToken}` },
+    body: JSON.stringify({ requestedDeliveryDate: '2027-03-31' })
+  });
+  expect(dated.status).toBe(200);
 
   // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
   for (const to of ['ARTWORK_RECEIVED']) {
