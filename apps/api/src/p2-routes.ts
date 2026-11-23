@@ -687,7 +687,7 @@ export function registerP2Routes(app: Hono<any>, { db, recordAuditEvent }: P2Rou
    */
   async function sendVerificationByVersion(versionIds: string[]): Promise<Map<string, SendVerificationState>> {
     const out = new Map<string, SendVerificationState>();
-    if (versionIds.length === 0) return out;
+    // drizzle answers inArray([]) with `false`: an empty page reads nothing.
     const events = await db.select({
       id: makerPoEvents.id,
       versionId: makerPoEvents.evidenceDocumentVersionId,
@@ -697,7 +697,7 @@ export function registerP2Routes(app: Hono<any>, { db, recordAuditEvent }: P2Rou
       .orderBy(asc(makerPoEvents.recordedAt), asc(makerPoEvents.id));
     // A manual check is only ever recorded on a send that was not VERIFIED.
     const eventIds = events.map((event) => event.id);
-    const checks = eventIds.length === 0 ? [] : await db.select({
+    const checks = await db.select({
       eventId: makerPoSendManualVerifications.makerPoEventId,
       result: makerPoSendManualVerifications.result
     }).from(makerPoSendManualVerifications)
