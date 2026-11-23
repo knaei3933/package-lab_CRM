@@ -1,6 +1,6 @@
 # API エラーコード一覧（P0 サーバー p0/server + P1 サーバー p1/server + P2 サーバー p2/server + P4 サーバー p4/server）
 
-コード数: 288（`ERROR_MESSAGES_JA` の件数。P2 で 10 件、P2 検収反映で 4 件、P4 で 9 件、P4 検収反映で 1 件追加）
+コード数: 289（`ERROR_MESSAGES_JA` の件数。P2 で 10 件、P2 検収反映で 4 件、P4 で 9 件、P4 検収反映で 1 件、P4 server2 再検収3 反映で 1 件（`DELIVERY_EVIDENCE_MAKER_PO_BOUND`）追加）
 
 API の拒否応答（HTTP 400 以上）は必ず JSON `{ "error": "<日本語の文>", "code": "<CODE>", ...追加項目 }` です（R09）。
 `error` には英語の core メッセージ・enum 値・項目名・内部 URL/ポートを入れません。安全でない文はサーバーがこの表の文に置き換えます。
@@ -328,7 +328,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `DELIVERY_EVIDENCE_REQUIRED` | 422 | 納品の証跡（受領証跡）を選んでください |  |
 | `DELIVERY_EVIDENCE_DOCUMENT_VERSION_NOT_FOUND` | 422 | 納品の証跡が見つかりません |  |
 | `DELIVERY_EVIDENCE_DOCUMENT_TYPE_INVALID` | 422 | 納品の証跡には「受領証跡」の種類の書類を選んでください |  |
-| `DELIVERY_EVIDENCE_MAKER_PO_BOUND` | 422 | メーカーの受領書（メーカー発注書に紐付いた受領証跡）は納品確認の証跡にできません。お客様の納品受領の証跡を選んでください | P4 server2 review3 M-1（指揮者決定）: POST /api/film-deliveries/:deliveryId/confirmation・/api/filling-deliveries/:deliveryId/confirmation で、`maker_purchase_order_id` のある acceptance_evidence（メーカー発注書の受入証跡＝10段階）を引用した。検証済みでも拒否し（検証より先に判定）、何も書かない。お客様の納品受領の証跡（メーカー発注書に紐付かない acceptance_evidence）だけが根拠になる |
+| `DELIVERY_EVIDENCE_MAKER_PO_BOUND` | 422 | メーカーの受領書（メーカー発注書に紐付いた受領証跡）は納品確認の証跡にできません。お客様の納品受領の証跡を選んでください | P4 server2 review3 M-1（指揮者決定）: POST /api/film-deliveries/:deliveryId/confirmation・/api/filling-deliveries/:deliveryId/confirmation で、`maker_purchase_order_id` のある acceptance_evidence（メーカー発注書の受入証跡＝10段階）を引用した。検証済みでも拒否し（検証より先に判定）、何も書かない。お客様の納品受領の証跡（メーカー発注書に紐付かない acceptance_evidence）だけが根拠になる。再検収4 M-1（指揮者決定）: 紐付きのない証跡でも、内容（SHA-256）が同じ案件のメーカー発注書紐付き文書のどれかの版（取り下げ・差し替え前の版、取消済み発注書の版を含む）と同じなら同じコードで拒否する。範囲は同じ案件だけ（別案件の文書・別発注で使う同じお客様受領書は対象外） |
 | `DELIVERY_EVIDENCE_NOT_VERIFIED` | 422 | 納品の証跡を先に文書画面で確認済みにしてください |  |
 | `DELIVERY_EVIDENCE_PROJECT_MISMATCH` | 422 | 納品の証跡がこの案件に見つかりません |  |
 | `DELIVERY_EVIDENCE_ORDER_MISMATCH` | 422 | 納品の証跡は別の発注に紐付いています |  |

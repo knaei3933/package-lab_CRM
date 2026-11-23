@@ -140,6 +140,12 @@ export interface DeliveryEvidenceDocument {
    * the paper (step 10), never the customer's 受領 of the delivered film.
    */
   makerPurchaseOrderId?: string | null;
+  /**
+   * P4 server2 (review4 M-1, conductor decision): the cited bytes (SHA-256) are
+   * the same as a version of a maker-PO-bound document of the same project —
+   * the maker's acceptance re-uploaded without its binding (another file name).
+   */
+  contentMatchesMakerPoDocument?: boolean;
 }
 
 export interface DeliveryEvidenceContext {
@@ -218,7 +224,8 @@ export function evaluateDeliveryEvidence(
   // P4 server2 (review3 M-1, conductor decision): only the customer's receipt
   // evidence confirms a delivery. Checked before the verification so the
   // reason is the specific one even for a maker document nobody verified.
-  if (evidence.makerPurchaseOrderId !== undefined && evidence.makerPurchaseOrderId !== null) {
+  if ((evidence.makerPurchaseOrderId !== undefined && evidence.makerPurchaseOrderId !== null)
+    || evidence.contentMatchesMakerPoDocument === true) {
     return {
       ok: false,
       code: 'DELIVERY_EVIDENCE_MAKER_PO_BOUND',
