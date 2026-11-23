@@ -14,7 +14,7 @@ import type { EvidenceRef } from '../lib/audit-history';
 import { loadEvidenceMetadata } from '../lib/evidence-data';
 import { roleLabel } from '../lib/session-display';
 import { isRouteCode, orderPath, projectPath } from '../lib/project-route';
-import { loadRepresentativeQueue, opensPaymentTerms, PAYMENT_TERMS_ANCHOR, queueRowKey, queueRowSuffixKo, queueRowTitle, taskWorkKo } from '../lib/representative-queue';
+import { loadRepresentativeQueue, opensPaymentTerms, PAYMENT_TERMS_ANCHOR, PAYMENT_TERMS_LOCK_KO, queueRowKey, queueRowSuffixKo, queueRowTitle, taskWorkKo } from '../lib/representative-queue';
 import { QueueRowExtras } from '../components/QueueRowExtras';
 import { AssignmentRequest } from '../components/AssignmentRequest';
 import { requesterOf } from '../lib/requester';
@@ -115,6 +115,7 @@ function BlockedRowAction({ task, href }: { task: RepresentativeTask; href: stri
       <>
         <p className="p1-inbox-facts p4w3-lock" data-lock={task.paymentTermsLock?.reason ?? 'locked'}>
           いまは変更できません: {task.paymentTermsLock?.message ?? '支払条件は変更できない状態です。'}
+          <KoGloss ko={task.paymentTermsLock?.reason ? PAYMENT_TERMS_LOCK_KO[task.paymentTermsLock.reason] : null} />
         </p>
         <Link className="p1-button p1-button--quiet p1-inbox-go" href={href}><Bilingual ja="発注を開く" ko="발주 열기" /><span className="visually-hidden">（{task.orderCode}）</span></Link>
       </>

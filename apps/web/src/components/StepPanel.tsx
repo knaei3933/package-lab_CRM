@@ -439,6 +439,17 @@ const SLOT_TEXT: Record<ApprovalSlotState, string> = {
   open: '未承認'
 };
 
+/**
+ * p4/web3 review L-1 / p4/web4: the representative's check of this slot's evidence is offered once every approval of the
+ * order is recorded (the 手動確認 form is the panel of its own) — so a slot that waits for the check says WHAT it waits for,
+ * instead of pointing at a 「証跡を確認する」 that is not on this screen yet.
+ */
+function pendingCheckText(design: ApprovalSlotDesign, organization: 'customer' | 'seven'): string {
+  const other = organization === 'customer' ? 'seven' : 'customer';
+  const waitsFor = design[other] === 'open' ? `${other === 'customer' ? '顧客' : 'セブン化学'}の承認` : 'ほかの承認';
+  return `証跡の確認が必要です。${waitsFor}が記録されると、この画面で確認できます`;
+}
+
 /** 6 校了: the 押印 slots — each organization's own approval, on its own evidence (B2). */
 function ApprovalSlots({ order, projectCode, po, designs, role }: StepPanelProps & { designs: ApprovalSlotDesign[] }) {
   if (designs.length === 0) return <p>承認する版がまだありません（校正の登録が先です）。</p>;
@@ -458,7 +469,7 @@ function ApprovalSlots({ order, projectCode, po, designs, role }: StepPanelProps
                   {state === 'approved' ? (
                     <p className="p1-seal"><span className="p1-seal-mark" aria-hidden="true">承認</span><span className="visually-hidden">{name}の承認済み</span></p>
                   ) : state === 'pending_check' ? (
-                    <Waiting text={role === 'admin' ? '証跡の確認が必要です（上の「証跡を確認する」）' : '代表の確認を待っています'} />
+                    <Waiting text={role === 'admin' ? pendingCheckText(design, organization) : '代表の確認を待っています'} />
                   ) : (
                     <ActionForm action={recordApprovalStepAction} submitLabel={`${name}の承認を記録する`} submitContext={`${order.code}・デザイン ${design.designKey}・${name}`}>
                       <OrderFields order={order} projectCode={projectCode} />

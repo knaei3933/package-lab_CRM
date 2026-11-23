@@ -1,6 +1,6 @@
 import { revalidatePath } from 'next/cache';
 import { callApi } from './api';
-import { isSettledRefusal, recordIdOf, refreshesListOn, refusalState } from './action-result';
+import { isSettledRefusal, RENEWS_KEY_AFTER_PARTIAL_CODES, recordIdOf, refreshesListOn, refusalState } from './action-result';
 import { idempotencyKeyOf } from './project-context';
 import { writeProjectOf } from './project-guard';
 import type { ActionState } from './types';
@@ -127,8 +127,11 @@ export async function runChain(formData: FormData, steps: readonly ChainStep[], 
         ...base,
         message: `${prefix}${base.message}`,
         code: base.code ?? result.code ?? null,
-        // A partly stored chain is never settled: the same key replays what was stored.
-        settled: written > 0 ? false : (specific ? isSettledRefusal(result) : base.settled),
+        // A partly stored chain is never settled: the same key replays what was stored —
+        // except an answer that ends it for good (RENEWS_KEY_AFTER_PARTIAL_CODES, p4/web4).
+        settled: written > 0
+          ? isSettledRefusal(result) && RENEWS_KEY_AFTER_PARTIAL_CODES.includes(result.code ?? codeOf(result.data) ?? '')
+          : (specific ? isSettledRefusal(result) : base.settled),
         ...(options.partialId && written > 0 ? { partialPoId: options.partialId(answers) } : {})
       };
     }

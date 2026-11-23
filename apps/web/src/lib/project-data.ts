@@ -9,6 +9,8 @@ import { cache } from 'react';
 import { callApi } from './api';
 import { standardTerm } from './terms';
 import { operationRefusal } from './permissions';
+import { evidenceLineFrom, senderStatusOf, senderWarningsOf } from './sender-check';
+import type { EvidenceLine, SenderCheckStatus, SenderWarning } from './sender-check';
 import { shortId } from './short-id';
 import { codeWithStatus, displayText, HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT, isFieldHiddenByRole, isStateWithheld } from './redaction';
 import { formatDateOrTimestamp } from './vocabulary';
@@ -407,6 +409,17 @@ export interface PendingManualVerificationView {
    * on that organization's own evidence (EVIDENCE_REQUIRES_REPLACEMENT).
    */
   recordedAsPending: boolean;
+  /**
+   * p4/web4 (server2 §13, round 7): the sender facts of the evidence, decided by the server and shared
+   * with the approval card — the mail's From, the sender check status, the sender verdict and the line for
+   * 「発行元（登録時の申告）」, and the warnings. Absent on an older API (the form then says the sender was
+   * not compared, never 「申告どおり」).
+   */
+  fromAddress?: string | null | undefined;
+  senderStatus?: SenderCheckStatus | null | undefined;
+  senderVerdict?: EvidenceLine | null | undefined;
+  declarationLine?: EvidenceLine | null | undefined;
+  warnings?: SenderWarning[] | undefined;
 }
 
 export interface DesignApprovalGateView {
@@ -1122,7 +1135,12 @@ export async function loadApprovalGate(orderId: string): Promise<ApprovalGateVie
             // An older API without the field: 「確認」 stays offered and the API decides.
             confirmable: entry.confirmable !== false,
             sameContentUsedByOtherOrganization: entry.sameContentUsedByOtherOrganization === true,
-            recordedAsPending: entry.recordedAsPending !== false
+            recordedAsPending: entry.recordedAsPending !== false,
+            fromAddress: text(entry, 'fromAddress'),
+            senderStatus: senderStatusOf(entry.senderDomainCheck),
+            senderVerdict: evidenceLineFrom(entry.senderVerdict),
+            declarationLine: evidenceLineFrom(entry.declarationLine),
+            warnings: senderWarningsOf(entry.warnings)
           }))
       : []
   };

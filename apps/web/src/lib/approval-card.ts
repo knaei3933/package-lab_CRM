@@ -5,8 +5,8 @@ import { loadApprovalGate } from './project-data';
 import type { ApprovalGateView, OrganizationApprovalStateView, SevenPurchaseOrderView } from './project-data';
 import { formatAmount, formatQuantityWithUnit } from './number-format';
 import { orderAmountDisplay, orderFactsFromApi } from './order-terms';
-import { senderStatusOf, senderWarningsOf } from './sender-check';
-import type { SenderCheckStatus, SenderWarning } from './sender-check';
+import { evidenceLineFrom, senderStatusOf, senderWarningsOf } from './sender-check';
+import type { EvidenceLine, SenderCheckStatus, SenderWarning } from './sender-check';
 
 /**
  * P1 R24: the representative's approval card (REDESIGN §5-4) — every fact the
@@ -23,14 +23,7 @@ import type { SenderCheckStatus, SenderWarning } from './sender-check';
  */
 export type SealState = 'approved' | 'pending_manual_verification' | 'rejected' | 'revoked' | 'missing';
 
-export type EvidenceTone = 'ok' | 'warning' | 'neutral';
-
-/** P4 server2 §1(4): one line the server decided (code, tone, Japanese label) — drawn as given. */
-export interface EvidenceLine {
-  code: string;
-  tone: EvidenceTone;
-  label: string;
-}
+export type { EvidenceLine, EvidenceTone } from './sender-check';
 
 export interface CardOrganization {
   state: SealState;
@@ -178,36 +171,7 @@ export function isMissingRoute(result: { ok: boolean; status: number; data: unkn
   return !result.ok && result.status === 404 && !(isRecord(result.data) && typeof result.data.code === 'string');
 }
 
-const TONES: readonly string[] = ['ok', 'warning', 'neutral'];
-/** A server label is plain text of bounded length (never markup; drawn as a React text node). */
-const LINE_LABEL_MAX = 200;
-
-/** Pure: a server-decided line ({ code, tone, label }), or null when it is missing or malformed. */
-export function evidenceLineFrom(value: unknown): EvidenceLine | null {
-  if (!isRecord(value)) return null;
-  const code = text(value.code);
-  const tone = text(value.tone);
-  const label = text(value.label);
-  if (!code || !tone || !TONES.includes(tone) || !label) return null;
-  return { code, tone: tone as EvidenceTone, label: label.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, LINE_LABEL_MAX) };
-}
-
-/**
- * p4/web3: the line drawn beside 「発行元（登録時の申告）」. The server's own line when the card carries it
- * (server2 §1(4)); on an older API only what the declaration itself says — never 「申告どおり」, which the
- * server says only when the mail's From domain was compared too (web2b review M-1).
- */
-export function declarationLineOf(evidence: CardOrganization['evidence']): EvidenceLine | null {
-  if (!evidence) return null;
-  if (evidence.declarationLine) return evidence.declarationLine;
-  if (evidence.issuerMatchesOrganization === false) {
-    return { code: 'issuer_differs', tone: 'warning', label: '申告された発行元が承認組織と異なります' };
-  }
-  if (evidence.issuerMatchesOrganization === true) {
-    return { code: 'declared_only', tone: 'neutral', label: '申告は承認組織と一致（差出人は照合していません）' };
-  }
-  return null;
-}
+export { declarationLineOf, evidenceLineFrom } from './sender-check';
 
 function organizationFromServer(value: unknown): CardOrganization {
   const record = isRecord(value) ? value : {};

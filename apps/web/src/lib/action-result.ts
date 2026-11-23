@@ -51,6 +51,15 @@ export const SESSION_EXPIRED_CODE = 'SESSION_EXPIRED';
  */
 export const KEY_KEEPING_CODES: readonly string[] = [KEY_REUSED_CODE, IN_PROGRESS_CODE, OUTCOME_UNKNOWN_CODE, SESSION_EXPIRED_CODE];
 
+/**
+ * p4/web4: answers of a chained submit that end it even after an earlier write of the chain was stored.
+ * 422 DELIVERY_EVIDENCE_MAKER_PO_BOUND is the API's final word on the cited evidence: the same key could only
+ * replay the stored writes and be refused again — and the next input (the customer's own receipt, a different
+ * file) would meet IDEMPOTENCY_KEY_REUSED. The stored writes (the evidence's registration / check) are
+ * complete records of their own; the next submit is a new request with a new key.
+ */
+export const RENEWS_KEY_AFTER_PARTIAL_CODES: readonly string[] = ['DELIVERY_EVIDENCE_MAKER_PO_BOUND'];
+
 export function keepsSubmitKey(code: string | null | undefined): boolean {
   return typeof code === 'string' && KEY_KEEPING_CODES.includes(code);
 }

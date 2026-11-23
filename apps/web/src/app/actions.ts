@@ -18,6 +18,7 @@ import type { ActionState } from '../lib/types';
 import { unitLabel } from '../lib/vocabulary';
 import { deliveryDatesFromForm } from '../lib/delivery-dates';
 import { EVIDENCE_NOTE_FIELD } from '../lib/transition-evidence';
+import { DELIVERY_EVIDENCE_BOUND_CODE, deliveryEvidenceBoundState } from '../lib/step-messages';
 import { PAYMENT_TERMS_DISPLAY, PAYMENT_TERMS_LOCKED_MESSAGES, PAYMENT_TERMS_REQUIRED_MESSAGE, SHARED_EVIDENCE_REASON_MESSAGE } from '../lib/form-messages';
 
 /**
@@ -934,7 +935,7 @@ export async function confirmDeliveryAction(_prev: ActionState | null, formData:
   const path = kind === 'film'
     ? `/api/film-deliveries/${encodeURIComponent(deliveryId)}/confirmation`
     : `/api/filling-deliveries/${encodeURIComponent(deliveryId)}/confirmation`;
-  return post(formData, path, body);
+  return post(formData, path, body, (code) => code === DELIVERY_EVIDENCE_BOUND_CODE ? deliveryEvidenceBoundState({ alternativeBelow: false }) : null);
 }
 
 export async function evaluateCommissionReadinessAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {

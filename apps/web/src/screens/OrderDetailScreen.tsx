@@ -24,7 +24,7 @@ import { orderRecordText } from '../lib/order-records';
 import type { ProjectScreenProps } from './screen-props';
 import { deliveryTermsSummary, OrderTermsSection } from '../components/OrderTermsSection';
 import { readApprovalNotice } from '../lib/approval-notice-server';
-import { loadReceiptClosure } from '../lib/receipt-closure';
+import { loadDeliveryStatus } from '../lib/receipt-closure';
 import { deliveryTermsLock, loadOrderFacts } from '../lib/order-terms';
 import { loadMakerRecipients, previousTypedRecipientOf } from '../lib/maker-master';
 import { SecondaryMenu } from '../components/SecondaryMenu';
@@ -147,14 +147,20 @@ export async function OrderDetailScreen({
   // P4 M6: the representative's maker paper work (取り消し・取り消し承認) — judged like the old list.
   const makerWork = entry ? await loadOrderMakerPaperWork(projectId, entry, user.role, workspace.documents) : null;
   // P4 H14: step 12 reads the deliveries of this order, the readiness and who uploaded what.
+  const orderDeliveries = workspace.deliveries.filter((delivery) => delivery.kind === 'film' && delivery.orderId === order.id);
+  // p4/web3 (e) + p4/web4: delivery-status says what the completion rests on and what each confirmation rests on —
+  // one read for both, only where step 12 draws the deliveries' confirmations (納品済み and the closed order).
+  const completionStage = status === 'FILM_DELIVERED' || status === 'FILM_RECEIPT_ASSUMED_NO_ISSUE';
+  const deliveryStatus = completionStage ? await loadDeliveryStatus(order.id) : null;
   const deliveryContext = {
-    deliveries: workspace.deliveries.filter((delivery) => delivery.kind === 'film' && delivery.orderId === order.id),
+    deliveries: orderDeliveries,
     userId: user.id ?? null,
     filmOnly: workspace.fillingOrders.length === 0,
     readiness: workspace.readiness ?? null,
     readinessLabel: labelLookup(workspace.labels, 'commissionReadinessStates'),
     // p4/web3 (e): what the completion rests on (server-decided), read only around the completion.
-    closure: status === 'FILM_DELIVERED' || status === 'FILM_RECEIPT_ASSUMED_NO_ISSUE' ? await loadReceiptClosure(order.id) : null
+    closure: deliveryStatus?.closure ?? null,
+    evidenceKinds: deliveryStatus?.evidenceKinds ?? {}
   };
   // P4 §0: the cancellation review warns about the maker paper left on the order (the board's workspace skips that read).
   const makerCleanup = status === 'CANCELLATION_REVIEW' || status === 'ON_HOLD' || status === 'CHANGE_REVIEW' || status === 'CANCELLED'

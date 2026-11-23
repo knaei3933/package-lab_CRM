@@ -49,6 +49,8 @@ export interface RepresentativeTask {
    * organization and designKey), 「明細1／500 m」 for a delivery; null when the item has none.
    */
   target?: string | null | undefined;
+  /** p4/web4 (web3 review L-4): the Korean twin of `target` (「명세1／500 m」), for a row that names no organization / design. */
+  targetKo?: string | null | undefined;
   /** P4 M18: the order's 希望納期 / 納品予定日 (`YYYY-MM-DD`), when the queue item carries them. */
   requestedDeliveryDate?: string | null | undefined;
   plannedDeliveryDate?: string | null | undefined;
@@ -180,10 +182,14 @@ export function queueRowKey(task: Pick<RepresentativeTask, 'kind' | 'status' | '
   return `${prefix}${task.kind ?? task.status}-${task.projectId}-${task.orderId}-${task.organization ?? ''}-${task.designKey ?? ''}-${task.target ?? ''}`;
 }
 
-/** The Korean twin of the suffix (the organization only; a design name is never translated). */
-export function queueRowSuffixKo(task: Pick<RepresentativeTask, 'organization' | 'designKey'>): string | null {
+/**
+ * The Korean twin of the suffix (the organization only; a design name is never translated). A row that names
+ * neither (a delivery line) takes its target 「명세1／500 m」 — the Japanese title carries it, so the Korean line must too.
+ */
+export function queueRowSuffixKo(task: Pick<RepresentativeTask, 'organization' | 'designKey'> & Partial<Pick<RepresentativeTask, 'targetKo'>>): string | null {
   const parts = [task.organization ? ORGANIZATION_KO[task.organization] : null, task.designKey ?? null].filter((part): part is string => Boolean(part));
-  return parts.length > 0 ? `(${parts.join('／')})` : null;
+  if (parts.length > 0) return `(${parts.join('／')})`;
+  return task.targetKo ? `(${task.targetKo})` : null;
 }
 
 /**
@@ -234,6 +240,7 @@ export function taskFromServerItem(item: unknown, blocked = false): Representati
     displayNumber: str(paper.displayNumber) ?? undefined,
     blockedReason: blocked ? str(reason.message) : null,
     target: queueTarget(row) ?? undefined,
+    targetKo: queueTarget(row, 'ko') ?? undefined,
     requestedDeliveryDate: calendarDate(order.requestedDeliveryDate),
     plannedDeliveryDate: calendarDate(order.plannedDeliveryDate),
     organization: organization === 'customer' || organization === 'seven' ? organization : null,
@@ -255,6 +262,15 @@ export function taskFromServerItem(item: unknown, blocked = false): Representati
   };
 }
 
+/**
+ * p4/web4 (web3 review L-6): the Korean line of the server's lock message, by the lock's reason (the server answers the
+ * Japanese message only). An unknown reason gets no Korean line (never a guess).
+ */
+export const PAYMENT_TERMS_LOCK_KO: Readonly<Record<string, string>> = {
+  order_frozen: '보류·재검토 중이거나 취소 종료된 발주는 결제 조건을 바꿀 수 없습니다. 상태를 해결한 뒤 바꾸세요.',
+  ceo_approved: '대표 승인이 끝난 메이커 발주서가 있어 결제 조건을 바꿀 수 없습니다. 바꾸려면 메이커 발주서를 취소하고 다시 만드세요.'
+};
+
 /** Pure: the blocked row's `paymentTermsLock` (server2 §1(2)), or null. The message is the server's plain text. */
 function paymentTermsLockOf(value: unknown): { code: string; reason: string | null; message: string } | null {
   const lock = record(value);
@@ -263,19 +279,18 @@ function paymentTermsLockOf(value: unknown): { code: string; reason: string | nu
   return code && message ? { code, reason: str(lock.reason), message: message.slice(0, 200) } : null;
 }
 
-const QUEUE_ORGANIZATION_LABELS: Readonly<Record<string, string>> = { customer: '顧客', seven: 'セブン化学' };
-
-/** P4 M13 / N11: 「顧客／表面A」 from organization + designKey; 「明細1・500 m」 for a delivery item. */
-export function queueTarget(item: unknown): string | null {
+/** P4 M13 / N11: 「顧客／表面A」 from organization + designKey; 「明細1・500 m」 for a delivery item (`'ko'`: 「명세1／500 m」). */
+export function queueTarget(item: unknown, language: 'ja' | 'ko' = 'ja'): string | null {
   const row = record(item);
   const organization = str(row.organization);
   const designKey = str(row.designKey);
   const delivery = record(record(row.detail).delivery);
   const line = record(delivery.line);
+  const ko = language === 'ko';
   const parts = [
-    organization ? QUEUE_ORGANIZATION_LABELS[organization] ?? organization : null,
-    designKey ? `デザイン ${designKey}` : null,
-    typeof line.lineNumber === 'number' ? `明細${line.lineNumber}` : null,
+    organization ? (ko ? ORGANIZATION_KO : ORGANIZATION_JA)[organization] ?? organization : null,
+    designKey ? `${ko ? '디자인' : 'デザイン'} ${designKey}` : null,
+    typeof line.lineNumber === 'number' ? `${ko ? '명세' : '明細'}${line.lineNumber}` : null,
     str(delivery.display)
   ].filter((part): part is string => part !== null);
   return parts.length > 0 ? parts.join('／') : null;
