@@ -62,6 +62,7 @@ export function ActionForm({ action, submitLabel, children, hint, hintKo, submit
       pending={pending}
       confirm={resolverFromOptions(confirm, submitLabel)}
       dialogDefaults={confirm ? { options: confirm, confirmLabel: confirm.confirmLabel ?? submitLabel } : undefined}
+      intentLabel={submitLabel}
       style={{ display: 'grid', gap: 10 }}
     >
       {draft ? <DraftAutosave name={`step:${submitLabel}${submitContext ? `:${submitContext}` : ''}`} orderScreenOnly pending={pending} refusal={state !== null && state.ok === false ? state : null} /> : null}

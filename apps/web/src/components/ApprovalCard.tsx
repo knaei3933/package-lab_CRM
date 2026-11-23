@@ -310,7 +310,8 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
         </div>
       ) : null}
       {card.warnings.filter((warning) => warning.code !== 'MAKER_PO_AMOUNT_MISSING').map((warning) => (
-        <p key={warning.code} className="field-warning p5-card-needs"><span aria-hidden="true">⚠</span> {noteText(warning.code, warning.message)}</p>
+        // p6 R2: a notice (e.g. 「発注書の作成後に明細または版が変わりました」), not a missing input — on a phone it follows the approve button.
+        <p key={warning.code} className="field-warning p6-card-notice" data-card-notice={warning.code}><span aria-hidden="true">⚠</span> {noteText(warning.code, warning.message)}</p>
       ))}
 
       <p className="p1-note p5-card-confirm-note">

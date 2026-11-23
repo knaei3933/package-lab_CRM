@@ -38,6 +38,7 @@ import './p4-web2b.css';
 import './p4-web3.css';
 import './p4-web4.css';
 import './p5-web.css';
+import './p6-web.css';
 
 // UI batch A: each screen sets its own title (tabs stay distinguishable); the
 // template adds the product name.

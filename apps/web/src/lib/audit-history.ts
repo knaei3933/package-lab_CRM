@@ -20,7 +20,11 @@ export type EvidenceCell =
   | { kind: 'unreadable' }
   | { kind: 'found'; evidence: EvidenceRef }
   /** P5 R3: the 代表承認 of a maker paper rests on the paper itself (its content snapshot), not on a file. */
-  | { kind: 'paper'; displayNumber: string | null };
+  | { kind: 'paper'; displayNumber: string | null }
+  /** p6 R3: a 完了 (FILM_RECEIPT_ASSUMPTION_RECORDED) rests on confirmed deliveries, or on nothing but the operator's consent. */
+  | { kind: 'closure'; basis: ReceiptClosureBasis };
+
+export type ReceiptClosureBasis = 'delivery_confirmations' | 'evidence_free_acknowledgment';
 
 /** P5 R3: the feed's `basis` of one row (server: auditBasisFor) — the cited version, the result, the reason, the paper. */
 export interface AuditBasis {
@@ -60,6 +64,35 @@ export function decisionOf(event: Pick<AuditEventView, 'basis'>): { result: stri
   return { result: DECISION_RESULT_LABELS[basis.result] ?? basis.result };
 }
 
+const RECEIPT_CLOSURE_ACTION = 'FILM_RECEIPT_ASSUMPTION_RECORDED';
+
+/** Operations the server stamps on the audit row (requestMetadata.operation — the one key every role's feed carries). */
+const CLOSURE_OPERATIONS: Readonly<Record<string, ReceiptClosureBasis>> = {
+  'film_order:close_receipt_on_confirmed_deliveries': 'delivery_confirmations',
+  'film_order:assume_receipt': 'evidence_free_acknowledgment'
+};
+
+/**
+ * p6 R3: what a 完了 row rests on. The representative's feed carries `afterState.closureBasis`; the auditor's does not (its key
+ * list has neither that nor the ids of the confirmed deliveries), but both feeds carry `requestMetadata.operation`, which the
+ * server sets from the same decision. A row that says neither is a closure from before P4 — all of those were evidence-free
+ * (lib/receipt-closure). Null for any other action.
+ */
+export function receiptClosureOf(event: Pick<AuditEventView, 'action' | 'afterState' | 'requestMetadata'>): { basis: ReceiptClosureBasis } | null {
+  if (event.action !== RECEIPT_CLOSURE_ACTION) return null;
+  const stated = event.afterState?.closureBasis;
+  const operation = text(event.requestMetadata?.operation);
+  const basis: ReceiptClosureBasis = stated === 'delivery_confirmations' || stated === 'evidence_free_acknowledgment'
+    ? stated
+    : (operation ? CLOSURE_OPERATIONS[operation] : undefined) ?? 'evidence_free_acknowledgment';
+  return { basis };
+}
+
+/** p6 R3: the row's name by what the completion rests on (the shared 「問題なしで完了を記録」 said nothing about it). */
+export function receiptClosureActionLabel(basis: ReceiptClosureBasis): string {
+  return basis === 'delivery_confirmations' ? '確認済みの納品で完了を記録' : '証跡なしで完了を記録';
+}
+
 /** P5 R3: the 監査履歴 asks for 納品の確認 too; its words (the shared ACTION_LABELS has none). */
 export const AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
   FILM_DELIVERY_CONFIRMED: '納品の確認を記録',
@@ -96,11 +129,20 @@ function text(value: unknown): string | null {
  * manual checks); a 代表承認 rests on its paper.
  */
 export function evidenceCell(event: AuditEventView, index: Map<string, EvidenceRef> | null): EvidenceCell {
+  const closure = receiptClosureOf(event);
+  if (closure) return { kind: 'closure', ...closure };
   const basis = auditBasisOf(event);
   const versionId = basis?.evidenceDocumentVersionId ?? text(event.afterState?.evidenceDocumentVersionId);
   if (!versionId) return basis?.makerPurchaseOrder ? { kind: 'paper', displayNumber: basis.makerPurchaseOrder.displayNumber } : { kind: 'none' };
   const found = index?.get(versionId);
   return found ? { kind: 'found', evidence: found } : { kind: 'unreadable' };
+}
+
+/** The 何を column's words for a row: the shared label, except a 完了 which says what it rests on (p6 R3). */
+export function auditActionLabel(event: Pick<AuditEventView, 'action' | 'afterState' | 'requestMetadata'>, fallback: string | undefined): string {
+  const closure = receiptClosureOf(event);
+  if (closure) return receiptClosureActionLabel(closure.basis);
+  return AUDIT_ACTION_LABELS[event.action] ?? fallback ?? '記録';
 }
 
 /** Round 2 (M-2): 「連絡先: 前 → 後」 of a PARTNER_CONTACT_EMAIL_UPDATED row (null for any other row). */

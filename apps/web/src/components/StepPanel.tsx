@@ -25,11 +25,11 @@ import type { MakerPoEventRow, MakerPoViewRow } from '../lib/maker-po-data';
 import { REJECTION_REASON_WITHHELD, waitingText } from '../lib/order-flow';
 import type { ApprovalSlotDesign, ApprovalSlotState, OrderFlowView, SlotRejection } from '../lib/order-flow';
 import type { ApprovalGateView, DocumentView, FilmSupplyOrderView, SevenPurchaseOrderView } from '../lib/project-data';
-import { projectPath } from '../lib/project-route';
+import { PAYMENT_TERMS_ANCHOR, projectPath } from '../lib/project-route';
 import { formatTimestamp, formatTimestampSeconds, sendApprovalGapText, unitLabel } from '../lib/vocabulary';
 import { formatQuantity } from '../lib/number-format';
 import { SevenPoChecklistForm, SevenPoRegisterForm } from './SevenPoForms';
-import { PendingVerificationSection } from './EvidenceVerificationSection';
+import { MANUAL_CHECK_KINDS, PendingVerificationSection } from './EvidenceVerificationSection';
 import { CancellationReviewForm, ChangeReviewResumeForm, HoldReleaseForm } from './OrderExceptionForms';
 import { DeliveryReceiptStep, RECEIPT_ISSUER_CHOICES } from './DeliveryReceiptStep';
 import type { DeliveryContext } from './DeliveryReceiptStep';
@@ -123,6 +123,9 @@ export function StepPanelView(props: StepPanelProps) {
         <p id="blocked-title" className="p1-blocked-title"><span aria-hidden="true">✕ </span>進められません</p>
         <p>{blocked.reason}</p>
         {blocked.fix === 'payment_terms' && canAct ? (
+          // p6 X1: the home 「支払条件を決める」 link opens #payment-terms. The 「発注の条件」 form that used to carry the id is hidden
+          // while this one is on screen (OrderDetailScreen, R13), so the id lives here — exactly one element per page.
+          <div id={PAYMENT_TERMS_ANCHOR} className="p4w3-anchor p6-terms-anchor">
           <ActionForm
             action={updateFilmPaymentTermsAction}
             submitLabel="支払条件を記録する"
@@ -132,6 +135,7 @@ export function StepPanelView(props: StepPanelProps) {
             <SelectField name="paymentTerms" label="支払条件" required includeBlank blankLabel="（選ぶ）" choices={TERMS_CHOICES.filter((choice) => choice.value !== 'undetermined')} />
             <TextField name="reason" label="変更の理由（任意）" width={360} />
           </ActionForm>
+          </div>
         ) : (
           <Waiting text="支払条件は担当者か代表が記録します。" />
         )}
@@ -181,7 +185,7 @@ export function StepPanelView(props: StepPanelProps) {
       // P4 §0: the representative's check is recorded here (it used to open the old 承認 screen).
       return (
         <>
-          <p><Bilingual ja={`承認証跡が ${action.count} 件、代表の確認を待っています（PDF・画像、または差出人のドメインが登録先と違うメール）。発行元と識別子を確かめて記録します。`} ko={`승인 증빙 ${action.count}건이 대표 확인을 기다립니다(PDF·이미지, 또는 발신 도메인이 등록처와 다른 메일). 발행처와 식별자를 확인해 기록합니다.`} /></p>
+          <p><Bilingual ja={`承認証跡が ${action.count} 件、代表の確認を待っています（${MANUAL_CHECK_KINDS.ja}）。発行元と識別子を確かめて記録します。`} ko={`승인 증빙 ${action.count}건이 대표 확인을 기다립니다(${MANUAL_CHECK_KINDS.ko}). 발행처와 식별자를 확인해 기록합니다.`} /></p>
           <PendingVerificationSection
             pending={props.gate?.pendingManualVerifications ?? []}
             role={props.role}

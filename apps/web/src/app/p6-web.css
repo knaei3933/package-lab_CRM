@@ -1,0 +1,29 @@
+/*
+ * p6/web. Loaded last, unlayered, like p5-web.css. Existing tokens only (no new colours).
+ */
+
+/* X1: the order screen's own 「支払条件」 form (step panel, 「未定」 at step 7) is where the home link #payment-terms lands. */
+.p6-terms-anchor { scroll-margin-top: var(--space-4); }
+.p6-terms-anchor:target {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+}
+
+@media (max-width: 640px) {
+  /* X4: the links inside a 監査履歴 card (the project code, 「証跡の一覧で見る」) are touch targets (WIG 44px), not 16px lines. */
+  .p6-audit-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    box-sizing: border-box;
+  }
+}
+
+@media (max-width: 600px) {
+  /*
+   * R2 (P06 path): a notice that says the paper's lines or version changed since it was made is information, not a gate — the
+   * approve button has no 「取り消せません」-type dependency on it. On a phone it sits right under the approve button (the first
+   * thing the representative reads is the inputs and the button), in the markup order it keeps on a wide screen.
+   */
+  .p1-card > .p6-card-notice { order: 44; }
+}

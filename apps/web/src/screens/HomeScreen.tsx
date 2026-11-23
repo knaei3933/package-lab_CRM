@@ -9,7 +9,7 @@ import type { WorkGroup, WorkRow } from '../lib/my-work';
 import { isAuditorRole, normalizeRole } from '../lib/permissions';
 import { loadSelectableProjectList } from '../lib/project-data';
 import type { AuditEventView, ProjectSummary } from '../lib/project-data';
-import { AUDIT_ACTION_LABELS, auditBasisOf, contactChangeOf, decisionOf, evidenceCell, evidenceIndex, eventTargets } from '../lib/audit-history';
+import { AUDIT_ACTION_LABELS, auditActionLabel, auditBasisOf, contactChangeOf, decisionOf, evidenceCell, evidenceIndex, eventTargets } from '../lib/audit-history';
 import type { EvidenceRef } from '../lib/audit-history';
 import { loadEvidenceMetadata } from '../lib/evidence-data';
 import { roleLabel } from '../lib/session-display';
@@ -291,6 +291,12 @@ function EvidenceCellView({ cell, decision }: { cell: ReturnType<typeof evidence
     </span>
   ) : null;
   if (cell.kind === 'none') return <>記録のみ（証跡なし）{decided}</>;
+  // p6 R3: a 完了 says what it rests on — confirmed deliveries (each has its own 納品の確認 row above), or the operator's consent alone.
+  if (cell.kind === 'closure') {
+    return cell.basis === 'delivery_confirmations'
+      ? <span data-closure-basis={cell.basis}>確認済みの納品にもとづく完了</span>
+      : <span data-closure-basis={cell.basis}>証跡なし（同意）</span>;
+  }
   if (cell.kind === 'unreadable') return <>証跡の情報を読み込めませんでした{decided}</>;
   if (cell.kind === 'paper') {
     return (
@@ -369,9 +375,9 @@ async function AuditorHistory({ projects }: { projects: ProjectSummary[] }) {
                     </td>
                     <td role="cell" data-label="いつ" className="p1-figure">{formatTimestamp(event.occurredAt)}</td>
                     <td role="cell" data-label="何を">
-                      <span>{AUDIT_ACTION_LABELS[event.action] ?? ACTION_LABELS[event.action] ?? '記録'}</span>
+                      <span>{auditActionLabel(event, ACTION_LABELS[event.action])}</span>
                       <span className="p2-audit-sub p1-muted-inline">
-                        <Link href={projectPath(project.code)} translate="no">{project.code}</Link>
+                        <Link href={projectPath(project.code)} translate="no" className="p6-audit-link">{project.code}</Link>
                         {targets.orderCode ? <> ・ <span translate="no">{targets.orderCode}</span></> : null}
                         {targets.displayNumber ? <> ・ <span translate="no" className="p1-figure">{targets.displayNumber}</span></> : null}
                       </span>
@@ -384,7 +390,7 @@ async function AuditorHistory({ projects }: { projects: ProjectSummary[] }) {
                       )}
                       {evidenceDocumentId ? (
                         <span className="p2-audit-sub">
-                          <Link href={`${projectPath(project.code, 'evidence')}#doc-${encodeURIComponent(evidenceDocumentId)}`}>証跡の一覧で見る</Link>
+                          <Link href={`${projectPath(project.code, 'evidence')}#doc-${encodeURIComponent(evidenceDocumentId)}`} className="p6-audit-link">証跡の一覧で見る</Link>
                         </span>
                       ) : null}
                     </td>
