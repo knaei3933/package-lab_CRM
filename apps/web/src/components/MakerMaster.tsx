@@ -19,7 +19,7 @@ const LEAD = 'メーカー発注書の送信先に選べるメールアドレス
 function Header() {
   return (
     <header>
-      <h1 id="makers-title" className="p1-title"><Bilingual ja={MAKERS_TITLE} ko="제조처의 수신처" /></h1>
+      <h1 id="makers-title" className="p1-title"><Bilingual ja={MAKERS_TITLE} ko="제조사의 수신처" /></h1>
       <p className="p1-lead">{LEAD}</p>
     </header>
   );

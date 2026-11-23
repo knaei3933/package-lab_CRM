@@ -487,7 +487,9 @@ describe('dashboard: 막힌 건 (blocked)', () => {
     expect(view.stalled[0]!.detail).toMatch(/^待っているもの: 顧客・セブン化学の校了／最後の記録: /);
     expect(view.stalled.map((item) => item.title).join()).not.toMatch(/遅延|遅れ/);
     expect(STALE_BASIS).toContain(`最後の記録から${STALE_AFTER_DAYS}日以上`);
-    expect(STALE_BASIS).toContain('納期は記録されていないため、遅れかどうかは判定していません');
+    // P4 N12: the basis no longer says delivery dates are unrecorded — a recorded 希望納期 is judged (lib/dashboard daysPastDate).
+    expect(STALE_BASIS).toContain('希望納期が記録された発注は、その日を過ぎると');
+    expect(STALE_BASIS).not.toContain('納期は記録されていないため');
   });
 
   it('work recorded on a linked record (an approval, a document) keeps the order from looking stalled (review M)', () => {

@@ -289,7 +289,7 @@ describe('dashboard by role on the real API', () => {
     // 変更確認 is resumed by 担当者・代表者 (server: film_order:transition) — not the representative's own list (review R-1).
     expect(todo).not.toContain(chain.reviewCode);
     expect(staffWork).toContain(chain.reviewCode);
-    expect(todo).toContain('代表者だけが行う作業: メーカー発注書の作成・代表承認、最終受入、保留の解除、取消確認の処理');
+    expect(todo).toContain('代表者だけが行う作業: 代表承認、送信の確認、最終受入、保留の解除、取消確認の処理');
     expect(staffWork).toContain('証跡が未登録: この発注に紐付いた書類（デザイン入稿データ）が、文書画面にまだ登録されていません。');
     const blocked = panel(html, '止まっている発注');
     expect(blocked).toContain('「保留中」で止まっています。');
@@ -297,7 +297,7 @@ describe('dashboard by role on the real API', () => {
     // A moving order's next evidence is not a block; fresh orders are not listed as quiet.
     expect(blocked).not.toContain('証跡が未登録');
     const stalled = panel(html, '更新が止まっている発注（確認用）');
-    expect(stalled).toContain('納期は記録されていないため、遅れかどうかは判定していません');
+    expect(stalled).toContain('希望納期が記録された発注は、その日を過ぎると');
     expect(stalled).toContain('7日以上更新が止まっている発注はありません。');
     const activity = panel(html, '最近の記録');
     expect(activity).toContain(`${chain.reviewCode} 発注の状態を変更（→「変更確認中」）`);

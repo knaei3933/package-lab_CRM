@@ -21,7 +21,7 @@ import {
   utf8TextToBase64
 } from '../lib/eml-form';
 import type { Choice } from '../lib/types';
-import { buttonStyle, infoBoxStyle, inputStyle, monoStyle, noteStyle, subtleButtonStyle } from '../lib/ui';
+import { infoBoxStyle, inputStyle, monoStyle, noteStyle } from '../lib/ui';
 
 interface MakerPoSendEvidenceFormProps {
   action: FormAction;
@@ -34,7 +34,7 @@ interface MakerPoSendEvidenceFormProps {
   ceoApprovedAt?: string | null;
   /** G3: the frozen CRM order code inserted at the front of the mail subject. */
   orderCode?: string | null;
-  /** UI batch C: replaces the built-in 「手動送信を記録しますか？」 confirmation. */
+  /** UI batch C: replaces the built-in 「送信を記録しますか？」 confirmation. */
   confirm?: ConfirmOptions | undefined;
   /** Appended after 「記録しました。」. */
   successHint?: string | undefined;
@@ -59,7 +59,7 @@ interface FileNotice {
 }
 
 /**
- * M8-UI2: 手動送信の記録フォーム。送信証跡は2つの入口のどちらかで渡す。
+ * M8-UI2: 送信の記録フォーム。送信証跡は2つの入口のどちらかで渡す。
  *
  * 1. このフォームから原本（.eml／message/rfc822）を直接アップロードする
  *    （contentBase64）。API が send_evidence 書類として保存し、メール本文と
@@ -273,7 +273,7 @@ export function MakerPoSendEvidenceForm({
         {contentBase64 ? (
           <>
             <span style={noteStyle}>読み込み済み: {emlFilename}</span>
-            <button type="button" style={subtleButtonStyle} onClick={clearFile}>
+            <button type="button" className="ui-button--subtle" onClick={clearFile}>
               ファイルを外す
             </button>
           </>
@@ -369,7 +369,7 @@ export function MakerPoSendEvidenceForm({
               type="submit"
               aria-disabled={pending || undefined}
               disabled={locked || undefined}
-              style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
+              className="ui-button"
             >
               {pending ? '送信中…' : SUBMIT_LABEL}
             </button>

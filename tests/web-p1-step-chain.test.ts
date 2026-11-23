@@ -146,7 +146,7 @@ describe('runChain: first write fails', () => {
     const refusal = vi.fn(() => null);
     callApi.mockResolvedValueOnce(ok()).mockResolvedValueOnce(refused(400, 'X'));
     await runChain(form(), [fixed('/a'), fixed('/b')], { success: 's', refusal });
-    expect(refusal).toHaveBeenCalledWith('X', 1);
+    expect(refusal.mock.calls[0]!.slice(0, 2)).toEqual(['X', 1]);
   });
 });
 

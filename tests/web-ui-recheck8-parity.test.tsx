@@ -418,7 +418,7 @@ describe('Medium-B (W1): a never-sent paper is never shown as 送信ずみ', () 
       const card = orderCard(await render(MakerPoPage), chain.orderCode);
       expect(card).toContain('メーカー到達の事後確認（記録のみ）: 記録済み');
       expect(card).not.toContain('送信ずみの発注書の取消に対する取り消し承認は記録済みです');
-      expect(card).not.toContain('次のアクション: 訂正後の発注書を新しく作成してください（①の作成フォームから）');
+      expect(card).not.toContain('次のアクション: 訂正後の発注書を新しく作成してください（「手順1: 発注書の作成」のフォームから）');
     } else {
       expect(direct.status).toBe(422);
     }

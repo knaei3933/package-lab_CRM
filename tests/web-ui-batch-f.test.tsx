@@ -19,13 +19,15 @@ import { hasApprovalHistoryForDesign, type ApprovalEventView, type ArtworkRevisi
 const captured = vi.hoisted(() => ({
   bodies: [] as Array<{ path: string; body: unknown }>,
   answer: null as null | { ok: boolean; status: number; data: unknown; error: string | null },
-  token: 'tok-f' as string | null
+  token: 'tok-f' as string | null,
+  timeoutMs: 10_000
 }));
 
 vi.mock('../apps/web/src/lib/api.js', () => ({
   SESSION_COOKIE: 'kanei_mvp_session',
   PROJECT_COOKIE: 'kanei_web_project',
   apiBaseUrl: 'http://api.test',
+  apiTimeoutMs: () => captured.timeoutMs,
   readSessionToken: async () => captured.token,
   readSelectedProjectId: async () => null,
   loadSessionUser: async () => null,
@@ -587,6 +589,26 @@ describe('document download relay', () => {
 
   beforeEach(() => {
     captured.token = 'tok-f';
+  });
+
+  it('N15: an API that never answers ends in the 「unavailable」 notice (the relay used to wait for ever)', async () => {
+    captured.timeoutMs = 20;
+    try {
+      const calls: RequestInit[] = [];
+      globalThis.fetch = ((_url: string, request: RequestInit) => new Promise((_resolve, reject) => {
+        calls.push(request);
+        request.signal?.addEventListener('abort', () => reject(request.signal!.reason));
+      })) as typeof fetch;
+      const { GET } = await import('../apps/web/src/app/api/document-versions/[versionId]/download/route.js');
+      const started = Date.now();
+      const response = await GET(new Request(`http://web/api/document-versions/${VERSION}/download`), { params: Promise.resolve({ versionId: VERSION }) });
+      expect(Date.now() - started).toBeLessThan(2000);
+      expect(response.status).toBe(303);
+      expect(response.headers.get('location')).toContain('download=unavailable');
+      expect(calls[0]?.signal).toBeDefined();
+    } finally {
+      captured.timeoutMs = 10_000;
+    }
   });
 
   it('streams the file as a private attachment with only the session cookie sent up', async () => {

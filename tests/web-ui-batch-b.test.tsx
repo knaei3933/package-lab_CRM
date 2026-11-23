@@ -543,11 +543,11 @@ describe('① 次にやること: the step, the owner and the reason a role cann
 
   it('ARTWORK_RECEIVED: asks for the proof revision, but never claims it missing when revisions are withheld (L8)', () => {
     expect(nextActionForOrder(order('ARTWORK_RECEIVED'), workspace(), 'admin')).toMatchObject({
-      text: `校正ゲラの版を承認画面で登録し、状態を「${label('PROOF_READY')}」へ進める。`,
+      text: '校正ゲラを承認画面で登録します。登録すると自動で進みます。',
       operation: 'artwork_revision:create', screens: ['/approvals', '/orders']
     });
     expect(nextActionForOrder(order('ARTWORK_RECEIVED'), workspace([po], 2), 'staff')).toMatchObject({
-      text: `校正ゲラの版が承認画面に登録されていることを確かめて、状態を「${label('PROOF_READY')}」へ進める。`,
+      text: '校正ゲラの版が承認画面に登録されていることを確かめます。校正ゲラを登録すると自動で進みます。進んでいないときは、発注の画面で理由を確認してください。',
       operation: 'film_order:transition', refusal: null
     });
   });
@@ -666,10 +666,11 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
   const EXPECTED_CHOICES: Record<FilmSupplyOrderState, string[]> = {
     DRAFT: ['SEVEN_PO_VERIFIED', ...EX],
     SEVEN_PO_VERIFIED: ['ARTWORK_RECEIVED', ...EX],
-    ARTWORK_RECEIVED: ['PROOF_READY', ...EX],
-    PROOF_READY: ['APPROVAL_PENDING', ...EX],
+    // P4 M5: PROOF_READY / APPROVAL_PENDING / MAKER_PO_READY are the system's own steps (AUTO_TRANSITION_ONLY) — not offered.
+    ARTWORK_RECEIVED: EX,
+    PROOF_READY: EX,
     APPROVAL_PENDING: ['DUAL_APPROVED', ...EX],
-    DUAL_APPROVED: ['MAKER_PO_READY', ...EX],
+    DUAL_APPROVED: EX,
     MAKER_PO_READY: EX,
     APPROVED_FOR_MANUAL_SEND: EX,
     MAKER_PO_SENT_MANUALLY: EX,
@@ -713,16 +714,17 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
       // B-M2: leaving at APPROVAL_PENDING, the jumps past the maker acceptance are held back too.
       ? ['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED', 'FILM_RECEIPT_ASSUMED_NO_ISSUE',
         'FILM_IN_PRODUCTION', 'FILM_SHIPPED', 'FILM_DELIVERED']
-      : ['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED', 'FILM_RECEIPT_ASSUMED_NO_ISSUE'];
+      : ['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED', 'FILM_RECEIPT_ASSUMED_NO_ISSUE',
+        'PROOF_READY', 'APPROVAL_PENDING', 'MAKER_PO_READY'];
     for (const to of leftOut) {
       expect(leftOutAllowed, `${state}→${to}`).toContain(to);
     }
   });
 
   it('normal targets first; the exceptions grouped under 例外（保留・見直し）', () => {
-    const set = transitionChoicesFor('PROOF_READY', label);
+    const set = transitionChoicesFor('MAKER_PO_ACCEPTED', label);
     expect(set.choices.map((choice) => [choice.value, choice.group ?? null])).toEqual([
-      ['APPROVAL_PENDING', null],
+      ['FILM_IN_PRODUCTION', null],
       ['ON_HOLD', EXCEPTION_GROUP_LABEL],
       ['CHANGE_REVIEW', EXCEPTION_GROUP_LABEL],
       ['CANCELLATION_REVIEW', EXCEPTION_GROUP_LABEL]
@@ -844,7 +846,7 @@ describe('③ transitionChoicesFor: only targets the generic transition endpoint
     expect(pending.hint).toBe(`「${label('DUAL_APPROVED')}」へは、通常は承認の記録で自動的に進みます。`);
     const delivered = transitionChoicesFor('FILM_DELIVERED', label);
     expect(delivered.choices.map((choice) => choice.value)).toEqual(['ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW']);
-    expect(delivered.hint).toBe('受領確認は下の「受領確認（問題なしとみなす）」で記録します。');
+    expect(delivered.hint).toBe('「問題なしで完了」は下の操作で記録します。');
   });
 
   it('the terminal state and an unknown status offer nothing, with a reason', () => {
@@ -944,7 +946,7 @@ const FORM_MARKERS = {
   // P1 P-4: the fixture's documents were uploaded by this staff member — their 確認 is not offered (see below).
   documents: ['書類をアップロードする'],
   approvals: ['版を登録する'],
-  'maker-po': ['手動送信を記録する', '発注を作成する'],
+  'maker-po': ['送信を記録する', '発注を作成する'],
   deliveries: ['準備状態を再評価する', '納品を記録する', '納品を確認する']
 } as const;
 
@@ -1086,7 +1088,7 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
       expect(inner).toMatch(/^<option value="">（進める先を選ぶ）<\/option>/);
       expect(inner).not.toMatch(/selected/);
     }
-    expect(html).toContain('受領確認は下の「受領確認（問題なしとみなす）」で記録します。');
+    expect(html).toContain('「問題なしで完了」は下の操作で記録します。');
     expect(html).not.toContain(`<optgroup label="${RESUME_GROUP_LABEL}">`);
     expect(html).toContain(HOLD_RELEASE_NOTICE);
     expect(html).toContain('保留を解除する（代表者のみ）');
@@ -1123,23 +1125,29 @@ describe('maker-po: the 代表承認 form is the representative\'s (M11)', () =>
       return base(apiPath, ...rest);
     });
   }
+  // P4 N5: this list no longer records the approval; it links the order screen's card (step 8).
   const APPROVE_BUTTON = '>代表承認を記録する</button>';
+  const CARD_LINK = '内容を見て代表承認する';
   const WAITING = 'メーカー発注書 …0000cc02 は代表承認待ちです。';
 
   it('admin: the approval form for that paper, no refusal', async () => {
     serveDraftPo('admin');
     const html = await renderPage(MakerPoPage);
-    expect(html).toContain('② 代表承認（代表者のみ）');
-    expect(html).toContain(APPROVE_BUTTON);
-    expect(html).toMatch(new RegExp(`name="poId"[^>]*value="${DRAFT_PO}"|value="${DRAFT_PO}"[^>]*name="poId"`));
+    expect(html).toContain('手順2: 代表承認（代表者のみ）');
+    expect(html).not.toContain(APPROVE_BUTTON);
+    // The approval's own fields (the terms the representative saw) are gone from this list.
+    expect(html).not.toContain('name="expectedPaymentTerms"');
+    expect(html).toContain(CARD_LINK);
+    expect(html).toMatch(/href="\/p\/TEST-P\/o\/FSO-READY\?step=8"/);
     expect(html).not.toContain(WAITING);
   });
 
   it('staff: no approval form; the refusal says the representative approves', async () => {
     serveDraftPo('staff');
     const html = await renderPage(MakerPoPage);
-    expect(html).toContain('② 代表承認（代表者のみ）');
+    expect(html).toContain('手順2: 代表承認（代表者のみ）');
     expect(html).not.toContain(APPROVE_BUTTON);
+    expect(html).not.toContain(CARD_LINK);
     expect(html).toContain(`${WAITING}代表承認は代表者が行います。`);
   });
 

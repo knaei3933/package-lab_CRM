@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { EvidenceScreen } from '../../../../screens/EvidenceScreen';
 import { resolveRouteProject } from '../../../../lib/project-route-server';
+import { RouteGate } from '../../../../components/RouteGate';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,6 +16,6 @@ export default async function Page({
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   const route = await resolveRouteProject((await params).project);
-  if (route.kind !== 'open') return null;
+  if (route.kind !== 'open') return <RouteGate route={route} />;
   return <EvidenceScreen projectId={route.project.id} projectCode={route.project.code} searchParams={searchParams} />;
 }

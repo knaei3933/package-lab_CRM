@@ -173,7 +173,7 @@ async function postCreate(
     return refusalState(result);
   }
   const code = apiCode(result.data);
-  const dup = await duplicateRefusal({ ...duplicate, status: result.status, code, data: result.data });
+  const dup = await duplicateRefusal({ ...duplicate, status: result.status, code, data: result.data, projectCode: field(formData, 'projectCode') });
   if (dup) {
     // The registered record may be one this screen does not show yet.
     refresh();
@@ -277,7 +277,7 @@ export async function registerSevenPurchaseOrderAction(_prev: ActionState | null
   if (switched) return switched;
   const poId = field(formData, 'poId');
   const registeredAt = field(formData, 'officialRegisteredAt');
-  if (poId.length === 0) return { ok: false, message: 'セブン発注書が選択されていません。' };
+  if (poId.length === 0) return { ok: false, message: 'セブン化学発注書が選択されていません。' };
   if (registeredAt.length === 0) return { ok: false, message: '本登録日を入力してください。' };
   return post(formData, `/api/seven-purchase-orders/${encodeURIComponent(poId)}/register-official`, {
     officialRegisteredAt: registeredAt
@@ -288,7 +288,7 @@ export async function verifySevenPurchaseOrderAction(_prev: ActionState | null, 
   const switched = await refuseIfProjectSwitched(formData);
   if (switched) return switched;
   const poId = field(formData, 'poId');
-  if (poId.length === 0) return { ok: false, message: 'セブン発注書が選択されていません。' };
+  if (poId.length === 0) return { ok: false, message: 'セブン化学発注書が選択されていません。' };
   const body: Record<string, unknown> = {
     issuerNameRecorded: flag(formData, 'issuerNameRecorded'),
     issuerName: optionalField(formData, 'issuerName'),

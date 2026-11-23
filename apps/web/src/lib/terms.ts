@@ -6,6 +6,8 @@
  * changes. An unknown key falls back to the API's own label (never an enum).
  * Client-safe and pure.
  */
+import { NAV_GROUPS } from './navigation';
+
 export interface Term {
   ja: string;
   ko: string;
@@ -85,24 +87,34 @@ export const LEGACY_TERMS: ReadonlyArray<readonly [string, string]> = [
   ['製造先', 'メーカー'],
   ['フィルム製造中', '製造中'],
   ['フィルム発送済み', '出荷済み'],
-  ['フィルム納品完了', '納品済み']
+  ['フィルム納品完了', '納品済み'],
+  // P4 M16: the words the old screens still said (audit44 r17/r18/r22).
+  ['セブン発注書', 'セブン化学発注書'],
+  ['真性確認', '発注書の照合'],
+  ['ダブル承認', '顧客の承認とセブン化学の承認（両組織の承認）'],
+  ['二重承認', '顧客の承認とセブン化学の承認（両組織の承認）'],
+  ['手動送信', '送信の記録'],
+  ['受領確認（問題なしとみなす）', '問題なしで完了']
 ];
 
-/** Menu and screen names (REDESIGN §2-3, §9) with their Korean gloss. */
-export const MENU_TERMS: Readonly<Record<string, Term>> = {
-  '/home:admin': { ja: '承認箱', ko: '승인함' },
-  '/home:staff': { ja: '自分の作業', ko: '내 작업' },
-  '/home:viewer': { ja: '履歴', ko: '이력' },
-  '/home:auditor': { ja: '監査履歴', ko: '감사 이력' },
-  '/makers': { ja: 'メーカーの宛先', ko: '제조처 수신처' },
-  '/evidence': { ja: '証跡の一覧', ko: '증빙 목록' },
-  '/dashboard': { ja: 'ダッシュボード', ko: '대시보드(안건 선택)' },
-  '/orders': { ja: '発注の一覧', ko: '발주 목록' },
-  '/documents': { ja: '書類', ko: '서류' },
-  '/approvals': { ja: '校了の承認', ko: '교정 확정 승인' },
-  '/maker-po': { ja: 'メーカー発注書', ko: '제조사 발주서' },
-  '/deliveries': { ja: '納品確認・手数料計算の準備', ko: '납품 확인·수수료 계산 준비' },
-  '/guide': { ja: '使い方ガイド', ko: '사용 안내' },
-  '/status': { ja: '状態の一覧', ko: '상태 목록' },
-  '/settings': { ja: '表示言語', ko: '표시 언어' }
-};
+/** P4 M16: Korean words that split from the standard (§9 uses 제조사 for メーカー, never 제조처). */
+export const KO_LEGACY_TERMS: ReadonlyArray<readonly [string, string]> = [['제조처', '제조사']];
+
+/**
+ * Menu and screen names (REDESIGN §2-3, §9) with their Korean gloss. P4 N15: the menu entries are
+ * READ from lib/navigation (one source for the label and its gloss); only the screens that are not
+ * in the menu are written here. Keys: the href, `/home:{role}` for the role's home, and
+ * `/approvals:auditor` for the auditor's read-only entry.
+ */
+export const MENU_TERMS: Readonly<Record<string, Term>> = (() => {
+  const terms: Record<string, Term> = { '/settings': { ja: '表示言語', ko: '표시 언어' } };
+  for (const group of NAV_GROUPS) {
+    for (const item of group.items) {
+      for (const role of item.roles) {
+        const key = item.href === '/home' ? `/home:${role}` : role === 'auditor' && item.href !== '/home' && item.roles.length === 1 ? `${item.href}:auditor` : item.href;
+        if (!(key in terms)) terms[key] = { ja: item.label, ko: item.ko };
+      }
+    }
+  }
+  return terms;
+})();

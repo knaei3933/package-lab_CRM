@@ -46,8 +46,10 @@ export interface ChainStep {
 export interface ChainOptions {
   success: string;
   link?: ActionState['link'];
+  /** P4 N3: the id of the record the chain had already written when it stopped (from the answers so far). */
+  partialId?: ((answers: readonly unknown[]) => string | null) | undefined;
   /** Maps a refusal of one step to the operator's words (else the dictionary text). */
-  refusal?: (code: string | null, stepIndex: number) => ActionState | null;
+  refusal?: (code: string | null, stepIndex: number, data?: unknown) => ActionState | null;
 }
 
 export const CHAIN_KEY_SEPARATOR = '.';
@@ -113,7 +115,7 @@ export async function runChain(formData: FormData, steps: readonly ChainStep[], 
     }
     if (!result.ok) {
       if (written > 0 || refreshesListOn(result.code)) revalidatePath('/', 'layout');
-      const specific = options.refusal?.(codeOf(result.data), index) ?? null;
+      const specific = options.refusal?.(codeOf(result.data), index, result.data) ?? null;
       const base = specific ?? refusalState(result);
       const prefix = written > 0
         ? `「${step.label}」で止まりました（その前の手順は記録済みです）。`
@@ -123,7 +125,8 @@ export async function runChain(formData: FormData, steps: readonly ChainStep[], 
         message: `${prefix}${base.message}`,
         code: base.code ?? result.code ?? null,
         // A partly stored chain is never settled: the same key replays what was stored.
-        settled: written > 0 ? false : (specific ? isSettledRefusal(result) : base.settled)
+        settled: written > 0 ? false : (specific ? isSettledRefusal(result) : base.settled),
+        ...(options.partialId && written > 0 ? { partialPoId: options.partialId(answers) } : {})
       };
     }
     answers.push(result.data);

@@ -2,11 +2,11 @@
 
 import { useActionState } from 'react';
 import type { ReactNode } from 'react';
-import { dangerButtonStyle } from './ConfirmDialog';
+import { KoGloss } from './RenderedContext';
 import { FeedbackForm, FormErrorSummary, FormResult, resolverFromOptions, SubmitLock } from './form-feedback';
 import type { ConfirmOptions, FormTone } from './form-feedback';
 import type { ActionState } from '../lib/types';
-import { buttonStyle, noteStyle } from '../lib/ui';
+import { noteStyle } from '../lib/ui';
 
 export type FormAction = (state: ActionState | null, formData: FormData) => Promise<ActionState>;
 export type { ConfirmOptions, FormTone } from './form-feedback';
@@ -19,6 +19,10 @@ interface ActionFormProps {
   hint?: string | undefined;
   /** UI batch C (1-③): ask before the action runs (serializable; passed from server pages). */
   confirm?: ConfirmOptions | undefined;
+  /** P4 H11: the Korean line of `hint` (shown in the bilingual / Korean modes, P-7). */
+  hintKo?: string | undefined;
+  /** P4 H11: the Korean line under the button's label (the representative's actions). */
+  submitLabelKo?: string | undefined;
   /** The submit button's colour: danger for cancellations and similar. */
   tone?: FormTone | undefined;
   /** Appended after 「記録しました。」, e.g. 「次の手順: …」. */
@@ -39,9 +43,10 @@ interface ActionFormProps {
  * after a success, so a refused submit keeps its values (review H1); with a
  * confirm dialog the button stays disabled until hydration (review M1).
  */
-export function ActionForm({ action, submitLabel, children, hint, confirm, tone, successHint, submitContext }: ActionFormProps) {
+export function ActionForm({ action, submitLabel, children, hint, hintKo, submitLabelKo, confirm, tone, successHint, submitContext }: ActionFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
-  const style = tone === 'danger' ? dangerButtonStyle : buttonStyle;
+  // P4 H13: a class, not an inline style — an inline style beat the 44px target and the hover of p3-polish.
+  const buttonClass = tone === 'danger' ? 'ui-button--danger' : 'ui-button';
   return (
     <FeedbackForm
       action={formAction}
@@ -52,7 +57,7 @@ export function ActionForm({ action, submitLabel, children, hint, confirm, tone,
       style={{ display: 'grid', gap: 10 }}
     >
       {children}
-      {hint ? <p style={noteStyle}>{hint}</p> : null}
+      {hint ? <p style={noteStyle}>{hint}<KoGloss ko={hintKo} /></p> : null}
       <div className="form-actions">
         {/* aria-disabled (not disabled) while pending: focus stays on the button after a confirm.
             disabled only before hydration when a confirm dialog guards the form (review M1). */}
@@ -62,9 +67,10 @@ export function ActionForm({ action, submitLabel, children, hint, confirm, tone,
               type="submit"
               aria-disabled={pending || undefined}
               disabled={locked || undefined}
-              style={{ ...style, opacity: pending || locked ? 0.6 : 1 }}
+              className={buttonClass}
             >
               {pending ? '送信中…' : submitLabel}
+              {pending ? null : <KoGloss ko={submitLabelKo} />}
               {submitContext ? <span className="visually-hidden">（{submitContext}）</span> : null}
             </button>
           )}

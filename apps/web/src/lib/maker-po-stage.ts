@@ -90,20 +90,20 @@ const ORDER_STATES_WITH_MAKER_PAPER: readonly string[] = [
 ];
 
 const STAGE_NAMES: Readonly<Record<MakerPoStageKey, { number: string; name: string }>> = {
-  create: { number: '①', name: '発注書の作成' },
-  approve: { number: '②', name: '代表承認' },
-  send: { number: '③', name: '送信の記録' },
-  verify: { number: '③′', name: '送信の手動確認' },
-  accept: { number: '④', name: '受入' },
+  create: { number: '手順1', name: '発注書の作成' },
+  approve: { number: '手順2', name: '代表承認' },
+  send: { number: '手順3', name: '送信の記録' },
+  verify: { number: '手順3の確認', name: '送信の手動確認' },
+  accept: { number: '手順4', name: '受入' },
   complete: { number: '', name: '完了' }
 };
 
-/** 「① 発注書の作成」, 「完了」. */
+/** P4 L6: 「手順1: 発注書の作成」, 「完了」 (no circled glyphs). */
 export function stageLabel(stage: Pick<MakerPoStage, 'number' | 'name'>): string {
-  return stage.number ? `${stage.number} ${stage.name}` : stage.name;
+  return stage.number ? `${stage.number}: ${stage.name}` : stage.name;
 }
 
-/** 「このあと: ③ 送信の記録 → ④ 受入 → 完了」, or null when nothing follows (or the stages are unknown). */
+/** 「このあと: 手順3: 送信の記録 → 手順4: 受入 → 完了」, or null when nothing follows (or the stages are unknown). */
 export function upcomingStagesLine(view: MakerPoStageView): string | null {
   if (view.unknown) return null;
   const upcoming = view.stages.filter((stage) => stage.state === 'upcoming');
@@ -228,7 +228,7 @@ export function makerPoStages(input: MakerPoStageInput): MakerPoStageView {
     return view(build(allDone, withVerify, lines), 'complete');
   }
   // Review M4: without a readable list (or with a list that cannot be right)
-  // no stage is marked — never 「① 作成してください」 for a paper that exists.
+  // no stage is marked — never 「手順1: 作成してください」 for a paper that exists.
   if (input.listFailed) {
     return view(build({}, false, null), 'attention', 'list-error');
   }

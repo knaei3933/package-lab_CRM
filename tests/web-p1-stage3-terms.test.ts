@@ -12,7 +12,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
 }));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
 
-const { STANDARD_LABELS, LEGACY_TERMS, MENU_TERMS, standardTerm } = await import('../apps/web/src/lib/terms.js');
+const { STANDARD_LABELS, LEGACY_TERMS, KO_LEGACY_TERMS, MENU_TERMS, standardTerm } = await import('../apps/web/src/lib/terms.js');
 const { labelLookup } = await import('../apps/web/src/lib/project-data.js');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../apps/web/src');
@@ -63,10 +63,27 @@ describe('labelLookup precedence: standard, then the API label, then the key', (
 });
 
 describe('no legacy word on a screen', () => {
-  const files = ['screens', 'components', 'app'].flatMap((dir) => sources(path.join(root, dir)));
+  // P4 M16: lib/ is scanned too (the error dictionary, guide and labels are screen text). Not scanned:
+  // terms.ts (it defines the legacy list) and eml-form.ts (the subject of the mail that goes OUT to the
+  // maker keeps 「製造先発注書」, §4-4).
+  const OUTBOUND_OR_DEFINITION = new Set(['terms.ts', 'eml-form.ts']);
+  const files = ['screens', 'components', 'app', 'lib']
+    .flatMap((dir) => sources(path.join(root, dir)))
+    .filter((file) => !OUTBOUND_OR_DEFINITION.has(path.basename(file)));
 
   it('scans the screen sources', () => {
     expect(files.length).toBeGreaterThan(30);
+    expect(files.some((file) => file.endsWith(`${path.sep}lib${path.sep}error-dictionary-data.ts`))).toBe(true);
+  });
+
+  it('covers the words the audit found on the old screens', () => {
+    const legacy = LEGACY_TERMS.map(([word]) => word);
+    for (const word of ['セブン発注書', '真性確認', 'ダブル承認', '二重承認', '手動送信', '受領確認（問題なしとみなす）']) expect(legacy).toContain(word);
+  });
+
+  it.each(KO_LEGACY_TERMS.map(([legacy]) => legacy))('%s (Korean) appears in no source — メーカー is 제조사', (legacy) => {
+    const offenders = files.filter((file) => readFileSync(file, 'utf8').includes(legacy)).map((file) => path.relative(root, file));
+    expect(offenders).toEqual([]);
   });
 
   it.each(LEGACY_TERMS.map(([legacy]) => legacy))('%s appears in no screen, component or route source', (legacy) => {

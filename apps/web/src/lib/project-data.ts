@@ -122,6 +122,14 @@ export interface FilmSupplyOrderView {
   requestedDeliveryDate?: string | null | undefined;
   plannedDeliveryDate?: string | null | undefined;
   deliveryDatesRead?: boolean | undefined;
+  /**
+   * P4 B1①: the API's own verdict that the 支払条件 is still 「未定」 (the list row's
+   * `attention` holds PAYMENT_TERMS_UNDETERMINED, from creation on). true/false once
+   * the list was read; undefined when it was not (an older API, an outage).
+   */
+  paymentTermsUndetermined?: boolean | undefined;
+  /** P4 B1②: the list's `paymentTermsEditable` (the API's own answer); undefined when not read. */
+  paymentTermsEditable?: boolean | undefined;
   /** P2: when the order row last changed (the list's updatedAt), when read. */
   rowUpdatedAt?: string | null | undefined;
   createdAt: string;
@@ -136,6 +144,9 @@ export interface FilmOrderListRow {
   requestedDeliveryDate?: string | null;
   plannedDeliveryDate?: string | null;
   updatedAt?: string;
+  paymentTerms?: string | null;
+  paymentTermsEditable?: unknown;
+  attention?: Array<{ code?: unknown }> | null;
 }
 
 /** P2 R30: the list's dates, by order id; null when the list could not be read. */
@@ -152,6 +163,8 @@ export function mergeDeliveryDates(orders: FilmSupplyOrderView[], list: Readonly
   for (const order of orders) {
     if (!list) {
       order.deliveryDatesRead = false;
+      order.paymentTermsUndetermined = undefined;
+      order.paymentTermsEditable = undefined;
       continue;
     }
     const row = list.get(order.id);
@@ -160,6 +173,11 @@ export function mergeDeliveryDates(orders: FilmSupplyOrderView[], list: Readonly
     order.requestedDeliveryDate = row ? date(row.requestedDeliveryDate) : null;
     order.plannedDeliveryDate = row ? date(row.plannedDeliveryDate) : null;
     order.rowUpdatedAt = row && typeof row.updatedAt === 'string' ? row.updatedAt : null;
+    order.paymentTermsEditable = row && typeof row.paymentTermsEditable === 'boolean' ? row.paymentTermsEditable : undefined;
+    // P4 B1①: read the API's attention, whatever the order's status.
+    order.paymentTermsUndetermined = row === undefined
+      ? undefined
+      : Array.isArray(row.attention) && row.attention.some((entry) => entry?.code === 'PAYMENT_TERMS_UNDETERMINED');
   }
 }
 
@@ -1451,6 +1469,9 @@ function draftNextAction(
   return general;
 }
 
+/** P4 M5: the proof registration moves the order on by itself — never 「状態を「校正準備完了」へ進める」. */
+const AUTO_PROOF_TEXT = '校正ゲラを登録すると自動で進みます。進んでいないときは、発注の画面で理由を確認してください。';
+
 /** 「次にやること」 of one film order for the signed-in role. */
 export function nextActionForOrder(
   order: FilmSupplyOrderView,
@@ -1480,28 +1501,28 @@ export function nextActionForOrder(
       );
     case 'ARTWORK_RECEIVED':
       if (workspace.revisions.some((revision) => revision.filmSupplyOrderId === order.id)) {
-        return nextAction(`${advance('PROOF_READY')}。`, both, ['/orders'], 'film_order:transition', role);
+        return nextAction(AUTO_PROOF_TEXT, both, ['/orders'], 'film_order:transition', role);
       }
       // Revisions exist whose order link the role may not read: one of them may
       // be this order's, so never claim the proof is still missing.
       return (workspace.revisionsWithheld ?? 0) > 0
         ? nextAction(
-          `校正ゲラの版が承認画面に登録されていることを確かめて、${advance('PROOF_READY')}。`,
+          `校正ゲラの版が承認画面に登録されていることを確かめます。${AUTO_PROOF_TEXT}`,
           both, ['/approvals', '/orders'], 'film_order:transition', role
         )
         : nextAction(
-          `校正ゲラの版を承認画面で登録し、${advance('PROOF_READY')}。`,
+          `校正ゲラを承認画面で登録します。登録すると自動で進みます。`,
           both, ['/approvals', '/orders'], 'artwork_revision:create', role
         );
     case 'PROOF_READY':
-      return nextAction(`${advance('APPROVAL_PENDING')}。`, both, ['/orders'], 'film_order:transition', role);
+      return nextAction(`校正ゲラの登録で自動で進みます。進んでいないときは、発注の画面で理由を確認してください。`, both, ['/orders'], 'film_order:transition', role);
     case 'APPROVAL_PENDING':
       return nextAction(
         `顧客とセブン化学の承認（校了）を承認画面で記録する。両方そろうと自動で「${label('DUAL_APPROVED')}」になります。`,
         both, ['/approvals'], 'artwork_approval:record', role
       );
     case 'DUAL_APPROVED':
-      return nextAction(`${advance('MAKER_PO_READY')}。`, both, ['/orders'], 'film_order:transition', role);
+      return nextAction(`「${label('MAKER_PO_READY')}」へは自動で進みます（支払条件が決まっていること）。進んでいないときは、発注の画面で理由を確認してください。`, both, ['/orders'], 'film_order:transition', role);
     case 'MAKER_PO_READY':
       // P-6 (P1 integration): staff (or the representative) draft the paper; the 代表承認 stays the representative's.
       return nextAction('メーカー発注書（下書き）を作成する。作成後に代表が承認します。', OWNER_STAFF_AND_ADMIN, ['/maker-po'], 'maker_po:create', role);
@@ -1528,7 +1549,7 @@ export function nextActionForOrder(
       );
     case 'FILM_DELIVERED':
       return nextAction(
-        '受領確認（問題なしとみなす）を記録するか、受領証跡を引用して納品を確認する。',
+        '問題なしで完了を記録するか、受領証跡を引用して納品を確認する。',
         both, ['/orders', '/deliveries'], 'film_order:assume_receipt', role
       );
     case FILM_SUPPLY_ORDER_TERMINAL_STATE:

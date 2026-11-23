@@ -12,7 +12,8 @@ import { SelectField, TextField } from '../components/fields';
 import { confirmDeliveryAction, evaluateCommissionReadinessAction, recordDeliveryAction } from '../app/actions';
 import { loadSessionUser } from '../lib/api';
 import { canRoleOperate } from '../lib/permissions';
-import { labelLookup, loadWorkspace, NO_PROJECT_SELECTED_MESSAGE } from '../lib/project-data';
+import { knownStatus, labelLookup, loadWorkspace, NO_PROJECT_SELECTED_MESSAGE } from '../lib/project-data';
+import { isFilmDeliveryCandidate, NO_FILM_DELIVERY_CANDIDATE_NOTE } from '../lib/delivery-candidates';
 import { formatQuantityWithUnit } from '../lib/number-format';
 import { isOwnEvidenceOfStaff } from '../lib/self-verification';
 import { shortId } from '../lib/short-id';
@@ -69,7 +70,8 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
         }／ID ${shortId(version.id)}）`
       })));
 
-  const filmOrderOptions = workspace.filmOrders.map((order) => ({
+  // P4 M11: only shipped / delivered film orders are offered (the unshipped first order used to be the default).
+  const filmOrderOptions = workspace.filmOrders.filter((order) => isFilmDeliveryCandidate(knownStatus(order))).map((order) => ({
     id: order.id,
     code: order.code,
     lines: order.lines.map((line) => ({
@@ -108,7 +110,7 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
         <ViewerPageNotice role={role} />
         <p className="ui-note">
           納品行の受領を、確認済みの受領証跡を引用して確認します。すべての納品が確認できて
-          セブン発注書の本登録がそろったとき、手数料計算の準備が整います（{readinessStateLabel('READY')}）。
+          セブン化学発注書の本登録がそろったとき、手数料計算の準備が整います（{readinessStateLabel('READY')}）。
         </p>
         {workspace.error ? <div className="ui-info">{workspace.error}</div> : null}
       </header>
@@ -290,6 +292,7 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
             action={recordDeliveryAction}
             kind="film"
             orders={filmOrderOptions}
+            emptyText={workspace.filmOrders.length > 0 ? NO_FILM_DELIVERY_CANDIDATE_NOTE : undefined}
             unitChoices={unitChoices('film')}
           />
         </RoleGate>

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { RenderedContextProvider } from '../../../components/RenderedContext';
+import { RouteGate } from '../../../components/RouteGate';
 import { ProjectNotFound } from '../../../components/ProjectNotFound';
 import { loadSessionUser } from '../../../lib/api';
 import { displayLanguage } from '../../../lib/locale-server';
@@ -22,7 +23,7 @@ export default async function ProjectLayout({
 }) {
   const route = await resolveRouteProject((await params).project);
   // Without a usable session the root layout shows its notice instead of this tree.
-  if (route.kind === 'no-session') return null;
+  if (route.kind === 'no-session') return <RouteGate route={route} />;
   if (route.kind === 'list-failed') return <ProjectNotFound code={null} projects={[]} listError={route.error} />;
   if (route.kind === 'not-found') return <ProjectNotFound code={route.code} projects={route.projects} listError={null} />;
   const user = await loadSessionUser();

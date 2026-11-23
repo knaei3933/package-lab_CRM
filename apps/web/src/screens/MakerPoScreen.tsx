@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { webErrorText } from '../lib/error-dictionary';
 import { EXPECTED_TERMS_MISSING_MESSAGE } from '../lib/form-messages';
 import { ActionForm } from '../components/ActionForm';
@@ -8,7 +9,6 @@ import { OffsetDateTimeField } from '../components/OffsetDateTimeField';
 import { ProjectProgress } from '../components/ProjectProgress';
 import { ProjectUnavailable } from '../components/ProjectUnavailable';
 import type { ProjectScreenProps } from './screen-props';
-import { ApprovalSnapshotFields } from '../components/ApprovalSnapshotFields';
 import { DataTable } from '../components/DataTable';
 import { RecipientChooser } from '../components/RecipientChooser';
 import { RoleGate, ViewerPageNotice } from '../components/RoleGate';
@@ -78,10 +78,10 @@ import {
   STATUS_HIDDEN_NOTICE
 } from '../lib/project-data';
 import { canRoleOperate, normalizeRole, operationRefusal } from '../lib/permissions';
-import { ceoApprovalFacts } from '../lib/decision-facts';
 import { shortId } from '../lib/short-id';
 import { roleLabel } from '../lib/session-display';
 import { cardStyle, infoBoxStyle, monoStyle, noteStyle, tdStyle, thStyle } from '../lib/ui';
+import { orderPath, projectPath } from '../lib/project-route';
 import {
   DOCUMENT_TYPE_LABELS,
   formatMoney,
@@ -96,7 +96,6 @@ import type { Choice } from '../lib/types';
 import { createFilmSupplyOrderAction } from '../app/actions';
 import {
   acknowledgeMakerPoCancellationAction,
-  approveMakerPoAction,
   cancelMakerPoAction,
   createMakerPoAction,
   recordFinalAcceptanceAction,
@@ -120,14 +119,14 @@ function paymentGateBlockText(code: string | null | undefined): string {
  * M8-OPERATOR S5: メーカー発注オペレーション画面.
  *
  * Screens over the real API: (1) 発注書の作成と一覧, (2) 代表承認 with the
- * G6 payment-gate state, (3) 手動送信記録（原本のEMLをその場で登録できる）, (3′)
+ * G6 payment-gate state, (3) 送信の記録（原本のEMLをその場で登録できる）, (3′)
  * 送信の手動確認（PENDING_MANUAL_VERIFICATION の代表者確認）, (4) メーカー受入記録
  * split into the provisional staff record and the admin final confirmation, and
  * (5) the role-aware audit dashboard behind the S3 filter. M8-UI2 adds the
  * cancellation work: 発注書の取り消し for live paper — with the sent／unsent
  * distinction the API itself re-derives — and 取り消し承認 for a cancelled paper
  * whose send was proven. Every block shows the NEXT action and the reason the
- * paper is blocked (G6未満・二重承認不足・送信証跡なし・取り消し承認待ち), and
+ * paper is blocked (G6未満・両組織の承認不足・送信証跡なし・取り消し承認待ち), and
  * the amounts are rendered only for the representative — the API already
  * answers staff and viewer with the filtered view, so a role that cannot see an
  * amount never receives one to render.
@@ -287,6 +286,7 @@ export async function MakerPoScreen({ projectId, projectCode }: ProjectScreenPro
         <MakerPoOrderSection
           key={card.entry.order.id}
           card={card}
+          projectCode={projectCode}
           isAdmin={isAdmin}
           role={role}
           stateLabel={stateLabel}
@@ -307,7 +307,7 @@ export async function MakerPoScreen({ projectId, projectCode }: ProjectScreenPro
       {cards.length === 0 && statusHiddenOrders === 0 ? (
         <div className="ui-card">
           <p className="ui-note">
-            メーカー発注の作業対象の発注はまだありません。フィルム発注が「{stateLabel(MAKER_PO_READY)}」（校正のダブル承認が完了）に
+            メーカー発注の作業対象の発注はまだありません。フィルム発注が「{stateLabel(MAKER_PO_READY)}」（校正の両組織の承認が完了）に
             なると、この画面に表示されます。製造中・出荷済み・納品済みに進んだ発注も、発注書と承認・送信・受入の
             履歴が読めるままこの画面に表示されます。次のアクション:
             「発注の一覧」画面で承認を進めてください。
@@ -385,7 +385,7 @@ function MakerPoCreateSection({
     value: entry.order.id,
     label: filmOrderChoiceLabel(entry.order, stateLabel)
   }));
-  const title = <h2 className="sx-c5c15d8">① 発注書の作成（メーカー発注書の作成）</h2>;
+  const title = <h2 className="sx-c5c15d8">手順1: 発注書の作成（メーカー発注書の作成）</h2>;
   const createdNote = alreadyCreatedOrders.length > 0 ? (
     <p className="ui-note">
       {`${alreadyCreatedOrders.map((entry) => entry.order.code).join('、')}: メーカー発注書は作成済みです。`
@@ -401,7 +401,7 @@ function MakerPoCreateSection({
   ) : null;
 
   // UI batch C (2-④): nothing to create → one line. Orders already past ① are
-  // not 「二重承認不足」; that guidance stays for a board with no order at all.
+  // not 「両組織の承認不足」; that guidance stays for a board with no order at all.
   if (readyOrders.length === 0) {
     return (
       <div className="ui-card">
@@ -414,9 +414,9 @@ function MakerPoCreateSection({
           <p className="ui-note">作成待ちの発注はありません。作成済みの発注書は下の各発注に表示されます。</p>
         ) : (
           <p className="ui-note">
-            作成できる発注（{stateLabel(MAKER_PO_READY)}）はまだありません。ブロック理由: 二重承認不足（顧客とセブン化学の
-            ダブル承認が未完了）、または発注自体がまだありません。次のアクション:
-            「承認」画面でダブル承認を完了させてください。
+            作成できる発注（{stateLabel(MAKER_PO_READY)}）はまだありません。ブロック理由: 両組織の承認不足（顧客とセブン化学の
+            両組織の承認が未完了）、または発注自体がまだありません。次のアクション:
+            「承認」画面で両組織の承認を完了させてください。
           </p>
         )}
       </div>
@@ -427,7 +427,7 @@ function MakerPoCreateSection({
     <div className="ui-card">
       {title}
       <p className="ui-note">
-        校正のダブル承認が完了して「{stateLabel(MAKER_PO_READY)}」になった発注の紙を凍結し、メーカー発注書を作ります。
+        校正の両組織の承認が完了して「{stateLabel(MAKER_PO_READY)}」になった発注の紙を凍結し、メーカー発注書を作ります。
         作成は代表者だけです（担当者・閲覧者は作成できません）。
       </p>
       {createdNote}
@@ -445,7 +445,7 @@ function MakerPoCreateSection({
               ? ['orderId', 'recipientChoice', 'recipientAddress', 'currency', 'totalAmount']
               : ['orderId', 'recipientChoice', 'recipientAddress']
           }}
-          successHint="次の手順: ② 代表承認（下の発注に表示されます）"
+          successHint="次の手順: 手順2: 代表承認（下の発注に表示されます）"
         >
           <div className="form-row">
             <SelectField name="orderId" label="対象のフィルム発注" required choices={orderChoices} width={420} />
@@ -456,7 +456,7 @@ function MakerPoCreateSection({
           {isAdmin ? (
             <div className="form-row">
               <SelectField name="currency" label="通貨" width={160} defaultValue="JPY" choices={CURRENCY_CHOICES} />
-              <TextField name="totalAmount" label="金額（数字のみ）" width={180} hint="例 480000（¥・カンマは不要です）" />
+              <TextField name="totalAmount" label="金額（数字のみ）" width={180} hint="例 480000（¥・カンマは不要です）" inputMode="decimal" />
             </div>
           ) : null}
         </ActionForm>
@@ -690,6 +690,7 @@ function PaperName({ po, orderCode }: { po: MakerPoViewRow; orderCode: string })
 
 function MakerPoOrderSection({
   card,
+  projectCode,
   isAdmin,
   role,
   stateLabel,
@@ -698,6 +699,7 @@ function MakerPoOrderSection({
   acknowledgementEvidenceChoices
 }: {
   card: OrderCard;
+  projectCode: string;
   isAdmin: boolean;
   role: string | null;
   stateLabel: (key: string) => string;
@@ -758,7 +760,7 @@ function MakerPoOrderSection({
       ? 'この発注はメーカー発注書の作成より先の状態ですが、メーカー発注書が見つかりません。画面を再読み込みし、表示が変わらない場合は記録の状態を確認してください。'
       : list.length === 0
         ? `この発注のメーカー発注書はまだありません。次のアクション: ${canRoleOperate(role, 'maker_po:create')
-          ? '上の「① 発注書の作成」で作成してください。'
+          ? '上の「手順1: 発注書の作成」で作成してください。'
           : '代表者による発注書の作成を待ちます。'}`
         : current?.key === 'verify' && !canVerifySend
           ? '送信記録は代表者の手動確認待ちです。代表者が原本のEMLと発注内容を見比べて記録します。'
@@ -858,7 +860,8 @@ function MakerPoOrderSection({
                       : nextActionForStatus(po.status, role ?? 'viewer')}
                   </div>
                 </td>
-                <td className="ui-td">{po.orderCode ?? po.snapshot?.order?.code ?? '—'}</td>
+                {/* P4 L5: an order code is one token — it never breaks across lines, and the browser never translates it. */}
+                <td className="ui-td p4-nowrap" translate="no">{po.orderCode ?? po.snapshot?.order?.code ?? '—'}</td>
                 {isAdmin ? (
                   <td className="ui-td sx-b6f5052">
                     {po.snapshot?.amounts
@@ -932,7 +935,7 @@ function MakerPoOrderSection({
           {fallback ? <p className="ui-note">{fallback}</p> : null}
 
           {/* Screen 2: 代表承認 */}
-          <MakerPoApprovalBlock entry={entry} role={role} />
+          <MakerPoApprovalBlock entry={entry} role={role} projectCode={projectCode} />
 
           {/* Screens 3′, 3 and 4 */}
           {papers.map((paper) => (
@@ -1113,7 +1116,7 @@ function MakerPoHistoryBlock({ papers }: { papers: PaperWork[] }) {
   );
 }
 
-function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role: string | null }) {
+export function MakerPoApprovalBlock({ entry, role, projectCode }: { entry: OrderMakerPoBoard; role: string | null; projectCode: string }) {
   const canApprove = canRoleOperate(role, 'ceo_approve');
   const pending = entry.makerPurchaseOrders
     .filter((po) => po.status === 'DRAFT' || po.status === 'SNAPSHOT_VOIDED');
@@ -1122,13 +1125,13 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
   const gateBlocks = gate !== null && !gate.gate.satisfied;
   const voided = pending.some((po) => po.status === 'SNAPSHOT_VOIDED');
   const blocks = [
-    gateBlocks ? '支払条件が「未定」です（下の「発注一覧で支払条件を選ぶ」から決めてください）' : null,
+    gateBlocks ? '支払条件が「未定」です（下の「発注の画面で支払条件を選ぶ」から決めてください）' : null,
     voided ? '作成時の内容が無効になっています（もう一度承認が必要です）' : null
   ].filter((part): part is string => part !== null);
 
   return (
     <div className="stage-block sx-2468269">
-      <h3 className="sx-e6251b7">② 代表承認（代表者のみ）</h3>
+      <h3 className="sx-e6251b7">手順2: 代表承認（代表者のみ）</h3>
       <p className="ui-note">
         {canApprove ? '作成したときの内容（宛先・明細・金額）に対して承認します。' : '作成したときの内容（宛先・明細）に対して代表者が承認します。'}
         {blocks.length > 0 ? `承認できない理由: ${blocks.join('。')}。` : '承認の前提はそろっています。'}
@@ -1136,8 +1139,9 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
       {/* P0 R01 (B1): the fix sits where the refusal is — the order's own 支払条件 form. */}
       {gateBlocks ? (
         <p className="sx-e40c8fc">
-          <a className="dash-next-link" href={`/orders#order-${entry.order.id}`}>
-            発注一覧で支払条件を選ぶ（{entry.order.code}）
+          {/* P4 B1③ / N6: the order's own screen of THIS project, never the remembered-project address. */}
+          <a className="dash-next-link" href={orderPath(projectCode, entry.order.code)}>
+            発注の画面で支払条件を選ぶ（{entry.order.code}）
           </a>
         </p>
       ) : null}
@@ -1148,22 +1152,15 @@ function MakerPoApprovalBlock({ entry, role }: { entry: OrderMakerPoBoard; role:
             // (expectedPaymentTerms). When it cannot be read, the approval waits.
             <p className="role-notice" role="status">{APPROVAL_HELD_NO_TERMS}</p>
           ) : canApprove ? (
-            <ActionForm
-              action={approveMakerPoAction}
-              submitLabel="代表承認を記録する"
-              hint="支払条件が「未定」のときは、承認は記録されず、理由がここに表示されます。"
-              confirm={{
-                title: '代表承認を記録しますか？',
-                body: `メーカー発注書（${po.snapshot?.order?.code ?? po.orderCode ?? entry.order.code}）を、下の内容で承認します。承認すると送信の記録へ進み、承認は取り消せません。内容を直すときは、承認せずにこの発注書を取り消して作り直します。`,
-                tone: 'primary',
-                facts: ceoApprovalFacts(po, entry.order.code, gate?.paymentTerms ?? null)
-              }}
-              successHint="次の手順: ③ 送信の記録（送信済みメールの原本 .eml を登録します）"
-            >
-              <input type="hidden" readOnly name="expectedPaymentTerms" value={gate?.paymentTerms ?? ''} />
-              <input type="hidden" readOnly name="poId" value={po.id} />
-              <ApprovalSnapshotFields poId={po.id} />
-            </ActionForm>
+            // P4 N5 / H4②: the approval is recorded on the order screen's card only — the card carries the
+            // terms stamp (expectedTermsStamp), the snapshot hash and the amount/date checks. This list no
+            // longer records one (it sent neither the stamp nor the card's four facts).
+            <p className="ui-note">
+              <Link className="p1-button p1-button--primary" href={orderPath(projectCode, entry.order.code, 8)}>
+                内容を見て代表承認する<span className="visually-hidden">（{entry.order.code}・{paperRef(po)}）</span>
+              </Link>
+              <span className="p1-muted-inline"> 承認カード（宛先・明細・金額・支払条件・納期）は発注の画面にあります。</span>
+            </p>
           ) : (
             <p className="role-notice">
               メーカー発注書 {paperRef(po)} は代表承認待ちです。{operationRefusal(role, 'ceo_approve', '代表承認')}
@@ -1259,7 +1256,7 @@ function MakerPoWorkBlocks({
 
       {po.status === 'APPROVED_FOR_MANUAL_SEND' ? (
         <div className="stage-block sx-2468269">
-          <h3 className="sx-e6251b7">③ 手動送信記録（担当者・代表者が記録）</h3>
+          <h3 className="sx-e6251b7">手順3: 送信の記録（担当者・代表者が記録）</h3>
           <RoleGate role={role} operation="maker_po:send_evidence" label="送信の記録">
             <p className="ui-note">
               送信はシステムの外（メール）で行うので、ここでは証跡を記録します。宛先には発注書の送信先メールアドレスが含まれている必要があります。
@@ -1339,8 +1336,8 @@ function MakerPoAcknowledgementRecordedNote({
   const nextPaper = closure === 'cancelled'
     ? 'この発注は取消で終了しているため、新しい発注書は作成しません。'
     : closure === 'frozen'
-      ? '新しい発注書は、保留・見直しが解除されてから①の作成フォームで作成します。'
-      : '次のアクション: 訂正後の発注書を新しく作成してください（①の作成フォームから）。';
+      ? '新しい発注書は、保留・見直しが解除されてから「手順1: 発注書の作成」のフォームで作成します。'
+      : '次のアクション: 訂正後の発注書を新しく作成してください（「手順1: 発注書の作成」のフォームから）。';
   return (
     <div className="sx-2468269">
       <h3 className="sx-e6251b7">{cancellationAcknowledgementLabel(kind)}: 記録済み</h3>
@@ -1371,7 +1368,7 @@ function MakerPoManualVerificationBlock({ poId, events }: { poId: string; events
 
   return (
     <div className="stage-block sx-2468269">
-      <h3 className="sx-e6251b7">③′ 送信の手動確認（代表者のみ）</h3>
+      <h3 className="sx-e6251b7">手順3の確認: 送信の手動確認（代表者のみ）</h3>
       <p className="ui-note">
         メールの自動検証が断定できなかった送信記録です。原本のEMLと発注内容を見比べて、
         送信を確定する（確認）か、確定しない（却下）かを代表者が記録します。確認の
@@ -1690,7 +1687,7 @@ function MakerPoAcceptanceBlock({
 
   return (
     <div className="stage-block sx-2468269">
-      <h3 className="sx-e6251b7">④ メーカー受入記録</h3>
+      <h3 className="sx-e6251b7">手順4: メーカー受入記録</h3>
       <p className="ui-note">
         受入は二段階です。まず担当者が「受入記録（仮）」を書き、そのあと代表者が受領証跡を検証して
         「最終受入確認」を記録します。仮の記録だけでは発注書は受入済みになりません。
@@ -1819,7 +1816,7 @@ const AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
   MAKER_PO_CREATED: 'メーカー発注書の作成',
   MAKER_PO_CEO_APPROVED: '代表承認',
   MAKER_PO_STATUS_CHANGED: '状態の変更',
-  MAKER_PO_DUAL_APPROVAL_RECHECK: 'ダブル承認の再確認',
+  MAKER_PO_DUAL_APPROVAL_RECHECK: '両組織の承認の再確認',
   MAKER_PO_SEND_EVIDENCE_REGISTERED: '送信証跡の記録（確認済み）',
   MAKER_PO_SEND_PENDING_MANUAL_VERIFICATION: '送信証跡の記録（手動確認待ち）',
   MAKER_PO_SEND_RECORDED_UNVERIFIED: '送信証跡の記録（未確認）',
@@ -1880,7 +1877,7 @@ function AuditDashboardSection({
     <details className="collapsed-card ui-card">
       <summary>
         <h2 className="sx-51ef381">
-          ⑤ 監査ダッシュボード（役割に応じた表示）— {events.length}件
+          監査ダッシュボード（役割に応じた表示）— {events.length}件
         </h2>
       </summary>
       <p className="ui-note">

@@ -498,8 +498,8 @@ describe('M4: maker-po stages — normal / list error / mismatch', () => {
     const view = makerPoStages({ orderStatus: 'MAKER_PO_READY', papers: [], listFailed: false });
     expect(view.current?.key).toBe('create');
     expect(view).toMatchObject({ condition: 'normal', unknown: null });
-    expect(stageHeadline(view)).toBe('① 発注書の作成');
-    expect(upcomingStagesLine(view)).toBe('このあと: ② 代表承認 → ③ 送信の記録 → ④ 受入 → 完了');
+    expect(stageHeadline(view)).toBe('手順1: 発注書の作成');
+    expect(upcomingStagesLine(view)).toBe('このあと: 手順2: 代表承認 → 手順3: 送信の記録 → 手順4: 受入 → 完了');
     expect(paymentGateDecides(view)).toBe(true);
   });
 
@@ -584,9 +584,9 @@ describe('M4: the /maker-po card on screen', () => {
   it('normal (MAKER_PO_READY, empty list): ① stays current with the create fallback', async () => {
     serve([...SEVEN_PO_ROWS, ...filmOrder(ORDER_READY, 'FSO-READY', TO_READY)]);
     const html = await renderPage(MakerPoPage);
-    expect(html).toContain('<strong>① 発注書の作成</strong>');
+    expect(html).toContain('<strong>手順1: 発注書の作成</strong>');
     expect(makerStages(html).match(/aria-current="step"/g)).toHaveLength(1);
-    expect(html).toContain('上の「① 発注書の作成」で作成してください。');
+    expect(html).toContain('上の「手順1: 発注書の作成」で作成してください。');
   });
 });
 

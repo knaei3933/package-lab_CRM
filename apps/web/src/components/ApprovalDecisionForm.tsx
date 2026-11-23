@@ -1,13 +1,14 @@
 'use client';
 
 import { useActionState, useId, useState } from 'react';
+import { DraftAutosave } from './DraftAutosave';
 import type { FormAction } from './ActionForm';
 import { FeedbackForm, FieldError, FieldFeedback, FormErrorSummary, FormResult, resolverFromOptions, SubmitLock, summaryFromFields } from './form-feedback';
 import type { ConfirmOptions, ConfirmResolver } from './form-feedback';
 import { OffsetDateTimeField } from './OffsetDateTimeField';
 import { approvalConfirmSpec } from '../lib/confirm-summary';
 import type { Choice } from '../lib/types';
-import { buttonStyle, inputStyle, noteStyle } from '../lib/ui';
+import { inputStyle, noteStyle } from '../lib/ui';
 
 type ApprovalOrganization = 'customer' | 'seven';
 
@@ -121,6 +122,8 @@ export function ApprovalDecisionForm({
       style={{ display: 'grid', gap: 10 }}
     >
       <input type="hidden" readOnly name="revisionId" value={revisionId} />
+      {/* P4 M9: the approval record keeps a draft while it is typed (per design and revision). */}
+      <DraftAutosave name={`approval-${designKey}-${revisionId}`} />
       <fieldset className="approval-organization" aria-describedby={organizationGroupId}>
         <legend style={{ fontSize: 13 }}>承認する組織<span style={{ color: 'var(--danger)' }}>（必須）</span></legend>
         {(['customer', 'seven'] as const).map((value) => (
@@ -284,7 +287,7 @@ export function ApprovalDecisionForm({
                 hidden={organization !== 'customer' || undefined}
                 aria-disabled={pending || undefined}
                 disabled={locked || undefined}
-                style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
+                className="ui-button"
               >
                 顧客として承認する
               </button>
@@ -295,14 +298,14 @@ export function ApprovalDecisionForm({
                 hidden={organization !== 'seven' || undefined}
                 aria-disabled={pending || undefined}
                 disabled={locked || undefined}
-                style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
+                className="ui-button"
               >
                 セブン化学として承認する
               </button>
             </>
           )}
         </SubmitLock>
-        <span style={noteStyle}>どちらの組織が先でも構いません。両組織の承認がそろうとダブル承認（校了）になります。</span>
+        <span style={noteStyle}>どちらの組織が先でも構いません。両組織の承認がそろうと校了になります。</span>
         <FormErrorSummary />
         <FormResult state={state} successHint={successHint} />
       </div>

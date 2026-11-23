@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useId, useRef } from 'react';
-import { buttonStyle, subtleButtonStyle } from '../lib/ui';
 
 export interface ConfirmSummaryItem {
   label: string;
@@ -19,12 +18,6 @@ interface ConfirmDialogProps {
   /** Esc, the キャンセル button, or any other close. */
   onCancel: () => void;
 }
-
-export const dangerButtonStyle = {
-  ...buttonStyle,
-  border: '1px solid var(--danger)',
-  background: 'var(--danger)'
-} as const;
 
 /**
  * UI batch C (1-③): the confirmation before a consequential record. A native
@@ -76,10 +69,10 @@ export function ConfirmDialog({ open, title, body, summary, confirmLabel, tone =
           </dl>
         ) : null}
         <div className="confirm-dialog-actions">
-          <button ref={cancelRef} type="button" style={subtleButtonStyle} onClick={onCancel}>
+          <button ref={cancelRef} type="button" className="ui-button--subtle" onClick={onCancel}>
             キャンセル
           </button>
-          <button type="button" style={tone === 'danger' ? dangerButtonStyle : buttonStyle} onClick={onConfirm}>
+          <button type="button" className={tone === 'danger' ? 'ui-button--danger' : 'ui-button'} onClick={onConfirm}>
             {confirmLabel}
           </button>
         </div>

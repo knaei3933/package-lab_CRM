@@ -200,7 +200,7 @@ describe('Medium-3: cleanup of a cancelled or frozen order', () => {
     }
     // A pending send on a closed order: ③′ cannot be recorded first (the API refuses it there).
     expect(cancelSendStateCopy('unproven', true, 'frozen').status).toContain('送信の手動確認を記録できず');
-    expect(cancelSendStateCopy('unproven', true, 'frozen').status).not.toContain('先に「③′ 送信の手動確認」を記録');
+    expect(cancelSendStateCopy('unproven', true, 'frozen').status).not.toContain('先に「手順3の確認: 送信の手動確認」を記録');
     // Unchanged on a live order.
     expect(cancelSendStateCopy('unproven', false).status).toContain('すぐに発注書の作成ステップが再度開きます');
   });
@@ -259,8 +259,9 @@ describe('Low-7', () => {
       submitLabel: '処理する', confirm: { title: 't', body: 'b' },
       children: createElement('select', { name: 'outcome' })
     }));
-    expect(html).toContain('background:var(--primary)');
-    expect(html).not.toContain('background:var(--danger)');
+    // P4 H13: the tone is a class now (an inline style beat the stylesheet).
+    expect(html).toContain('class="ui-button"');
+    expect(html).not.toContain('ui-button--danger');
   });
 
   it('(f) every paper cancelled and a 取り消し承認 owed: the headline asks for it, not for a new paper', () => {

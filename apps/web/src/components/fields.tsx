@@ -86,9 +86,12 @@ export function TextField({
   onChange,
   autoComplete,
   spellCheck,
-  autoCapitalize
+  autoCapitalize,
+  inputMode
 }: FieldProps & {
   type?: 'text' | 'password' | 'datetime-local' | 'date' | 'number' | 'email';
+  /** P4 N15: the on-screen keyboard of a figure field (an amount: decimal). */
+  inputMode?: 'numeric' | 'decimal' | 'text' | 'email' | undefined;
   defaultValue?: string | undefined;
   placeholder?: string | undefined;
   /** Maximum control width in px (UI batch C: no longer a fixed width). */
@@ -115,6 +118,7 @@ export function TextField({
         autoComplete={autoComplete}
         spellCheck={spellCheck}
         autoCapitalize={autoCapitalize}
+        inputMode={inputMode}
         aria-describedby={feedback.describedBy}
         aria-invalid={feedback.invalid}
         data-feedback-label={label}

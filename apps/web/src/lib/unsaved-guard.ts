@@ -10,22 +10,63 @@ export const LEAVE_CONFIRM_MESSAGE = '入力中の内容があります。移動
 
 const dirtyForms = new Set<object>();
 
+/** The page's address (null outside a browser). lib/ is also type-checked without the DOM lib. */
+function currentHref(): string | null {
+  const browser = (globalThis as { window?: { location?: { href?: unknown } } }).window;
+  return typeof browser?.location?.href === 'string' ? browser.location.href : null;
+}
+/** P4 M9: the address the input was typed at — where a refused 「戻る」 puts the operator back. */
+let heldHref: string | null = null;
+
 export function hasUnsavedInput(): boolean {
   return dirtyForms.size > 0;
 }
 
 export function markDirty(form: object, dirty: boolean): void {
-  if (dirty) dirtyForms.add(form);
-  else dirtyForms.delete(form);
+  if (dirty) {
+    if (dirtyForms.size === 0) heldHref = currentHref();
+    dirtyForms.add(form);
+  } else {
+    dirtyForms.delete(form);
+    if (dirtyForms.size === 0) heldHref = null;
+  }
 }
 
 /** After the operator chose to leave anyway, nothing is held any more. */
 export function forgetAll(): void {
   dirtyForms.clear();
+  heldHref = null;
 }
 
 export function forget(form: object): void {
   dirtyForms.delete(form);
+  if (dirtyForms.size === 0) heldHref = null;
+}
+
+/** The address the unsaved input belongs to (null when nothing is held). */
+export function heldAddress(): string | null {
+  return heldHref;
+}
+
+/**
+ * P4 M9: the browser's 「戻る」 / 「進む」 (popstate). The address has already changed
+ * when it fires, so a refusal puts the held address back (`restore`, a pushState)
+ * and tells the caller to stop the event. With nothing typed it never asks.
+ */
+export function handlePopstate(deps: {
+  hasUnsaved: () => boolean;
+  confirm: (message: string) => boolean;
+  restore: (href: string) => void;
+  forget: () => void;
+  held: string | null;
+}): 'allow' | 'blocked' {
+  if (!deps.hasUnsaved()) return 'allow';
+  if (deps.confirm(LEAVE_CONFIRM_MESSAGE)) {
+    deps.forget();
+    return 'allow';
+  }
+  if (deps.held) deps.restore(deps.held);
+  return 'blocked';
 }
 
 /** Whether a click on this anchor leaves the page in the same tab (and so may lose input). */

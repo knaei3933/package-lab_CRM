@@ -72,3 +72,6 @@ export function loginRefusal(status: number, payload: unknown, retryAfterHeader:
   if (status === 403 && code === 'CSRF_ORIGIN_REJECTED') return { error: CROSS_SITE_REFUSAL, code };
   return { error: LOGIN_UNAVAILABLE_MESSAGE };
 }
+
+/** P4 L2: what only the representative does on the login screen's note — listed exactly (the old line said 「承認・納品確認・手数料準備」). */
+export const LOGIN_ADMIN_ONLY_NOTE = '代表者だけが行う操作: 代表承認・保留の解除・取消確認・送信の確認・最終受入・証跡の確認。';

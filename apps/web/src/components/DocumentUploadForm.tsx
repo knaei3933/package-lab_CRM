@@ -11,7 +11,7 @@ import type { MakerPoChoice, SevenPoChoice } from '../lib/document-maker-po';
 import { FILE_FIELD } from '../lib/form-messages';
 import { FILE_READ_FAILED_MESSAGE, FILE_READING_MESSAGE, FILE_TOO_LARGE_MESSAGE, fileReadIssue, isUploadTooLarge, megabytesText } from '../lib/form-validation';
 import type { FileReadState } from '../lib/form-validation';
-import { buttonStyle, inputStyle, noteStyle, subtleButtonStyle } from '../lib/ui';
+import { inputStyle, noteStyle } from '../lib/ui';
 
 interface DocumentUploadFormProps {
   action: FormAction;
@@ -289,7 +289,7 @@ export function DocumentUploadForm({
           )}
         </FieldFeedback>
         {contentBase64 ? (
-          <button type="button" style={subtleButtonStyle} onClick={clearFile}>
+          <button type="button" className="ui-button--subtle" onClick={clearFile}>
             ファイルを外す
           </button>
         ) : null}
@@ -416,7 +416,7 @@ export function DocumentUploadForm({
               type="submit"
               aria-disabled={pending || undefined}
               disabled={locked || undefined}
-              style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
+              className="ui-button"
             >
               {pending ? 'アップロード中…' : SUBMIT_LABEL}
             </button>

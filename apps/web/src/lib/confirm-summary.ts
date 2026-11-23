@@ -102,7 +102,7 @@ export function approvalConfirmSpec(
   return {
     options: {
       title: `${orgLabel}の承認を記録しますか？`,
-      body: `選んだ承認証跡を根拠に、${orgLabel}の承認を記録します。記録は履歴に残ります。もう一方の組織の承認もそろうとダブル承認（校了）になります。`
+      body: `選んだ承認証跡を根拠に、${orgLabel}の承認を記録します。記録は履歴に残ります。もう一方の組織の承認もそろうと校了になります。`
     },
     confirmLabel: `${orgLabel}として承認する`,
     summary: [
@@ -113,8 +113,8 @@ export function approvalConfirmSpec(
   };
 }
 
-export const MAKER_PO_SEND_SUBMIT_LABEL = '手動送信を記録する';
-export const MAKER_PO_SEND_CONFIRM_TITLE = '手動送信を記録しますか？';
+export const MAKER_PO_SEND_SUBMIT_LABEL = '送信を記録する';
+export const MAKER_PO_SEND_CONFIRM_TITLE = '送信を記録しますか？';
 
 /**
  * MakerPoSendEvidenceForm: what will be recorded. The EML row names the file

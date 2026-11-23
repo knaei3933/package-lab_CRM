@@ -51,6 +51,7 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   SESSION_COOKIE: 'kanei_mvp_session',
   PROJECT_COOKIE: 'kanei_web_project',
   apiBaseUrl: 'http://in-process',
+  apiTimeoutMs: () => 10_000,
   readSessionToken: async () => signedIn.token,
   readSelectedProjectId: async () => signedIn.projectId,
   loadSessionUser: async () => ({ id: signedIn.userId, role: signedIn.role, displayName: '合成' }),

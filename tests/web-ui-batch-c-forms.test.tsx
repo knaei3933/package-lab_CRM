@@ -512,9 +512,10 @@ describe('ActionForm shell (1-①, 1-③)', () => {
     expect(html).toContain(`<h2 id="${dialog![1]}">代表承認を記録しますか？</h2>`);
     expect(html).toContain(`id="${dialog![2]}" class="confirm-dialog-text">承認は取り消せません。</p>`);
     expect(html).toMatch(/<button type="button"[^>]*>キャンセル<\/button>/);
-    expect(html).toMatch(/<button type="button"[^>]*background:var\(--danger\)[^>]*>代表承認を記録する<\/button>/);
+    // P4 H13: the tone is a class (an inline style beat the stylesheet's size and hover).
+    expect(html).toMatch(/<button type="button" class="ui-button--danger">代表承認を記録する<\/button>/);
     // tone: the submit button is danger too.
-    expect(html).toMatch(/<button type="submit"[^>]*background:var\(--danger\)[^>]*>代表承認を記録する<\/button>/);
+    expect(html).toMatch(/<button type="submit"[^>]*class="ui-button--danger"[^>]*>代表承認を記録する<\/button>/);
   });
 
   it('result line: refusal in the alert region (display wording), success + hint in the status region', () => {
@@ -532,10 +533,10 @@ describe('ConfirmDialog markup (1-③)', () => {
     const html = render(
       <ConfirmDialog
         open={false}
-        title="手動送信を記録しますか？"
+        title="送信を記録しますか？"
         body="記録は履歴に残ります。"
         summary={[{ label: '送信元', value: 'kanei@example.jp' }, { label: '送信日時', value: '日本時間 2026/11/18（水）14:30' }]}
-        confirmLabel="手動送信を記録する"
+        confirmLabel="送信を記録する"
         onConfirm={() => undefined}
         onCancel={() => undefined}
       />
@@ -544,7 +545,7 @@ describe('ConfirmDialog markup (1-③)', () => {
     expect(html).toContain('<dl class="confirm-dialog-summary"><div><dt>送信元</dt><dd>kanei@example.jp</dd></div>');
     expect(html).toContain('<dt>送信日時</dt><dd>日本時間 2026/11/18（水）14:30</dd>');
     // キャンセル comes first; both are plain buttons that never submit the form themselves.
-    expect(html.indexOf('キャンセル')).toBeLessThan(html.indexOf('>手動送信を記録する<'));
+    expect(html.indexOf('キャンセル')).toBeLessThan(html.indexOf('>送信を記録する<'));
     expect(html.match(/<button type="button"/g)).toHaveLength(2);
   });
 });
@@ -597,7 +598,7 @@ describe('locale-free datetime fields keep the submitted fields (1-②)', () => 
     expect(html).toContain('name="recipients"');
     expect(html).toContain('data-feedback-name="sentAt"');
     expect(html).toContain('data-feedback-name="file"');
-    expect(html).toMatch(/<dialog class="confirm-dialog"[^>]*>[\s\S]*<h2 id="[^"]+">手動送信を記録しますか？<\/h2>/);
+    expect(html).toMatch(/<dialog class="confirm-dialog"[^>]*>[\s\S]*<h2 id="[^"]+">送信を記録しますか？<\/h2>/);
     expect(html).toMatch(/<span role="alert" class="form-result form-result--error"><\/span>/);
     expect(html).toMatch(/<span role="status" class="form-result form-result--ok"><\/span>/);
   });

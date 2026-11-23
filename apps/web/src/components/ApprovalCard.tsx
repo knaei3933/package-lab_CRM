@@ -100,7 +100,7 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
         {card.status === 'DRAFT' ? (
           <Bilingual
             ja="承認すると、この納期・数量で固定されます。変えるにはメーカー発注書を取り消して作り直します。"
-            ko="승인하면 이 납기·수량으로 고정됩니다. 바꾸려면 제조처 발주서를 취소하고 다시 만드세요."
+            ko="승인하면 이 납기·수량으로 고정됩니다. 바꾸려면 제조사 발주서를 취소하고 다시 만드세요."
           />
         ) : (
           <Bilingual ja="納期・数量は代表承認で固定されています。" ko="납기·수량은 대표 승인으로 고정되어 있습니다." />
@@ -161,14 +161,14 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
           <span translate="no">{card.recipient.address ?? '未記録'}</span>{card.recipient.address && !card.recipient.isEmail ? ' ✕ メールアドレスではありません' : ''}
           {/* P2 contract v1.1 L2: where the address comes from (a typed address is allowed, but visible). */}
           {card.recipient.address && card.recipient.inMakerMaster === true ? (
-            <span className="p2-terms-source p1-muted-inline"><span aria-hidden="true">✓ </span><Bilingual ja="メーカーマスターの宛先" ko="제조처 마스터의 수신처" /></span>
+            <span className="p2-terms-source p1-muted-inline"><span aria-hidden="true">✓ </span><Bilingual ja="メーカーマスターの宛先" ko="제조사 마스터의 수신처" /></span>
           ) : null}
           {card.recipient.address && card.recipient.inMakerMaster === false ? (
             <span className="p2-terms-source field-warning">
               <span aria-hidden="true">⚠</span>{' '}
               <Bilingual
                 ja="直接入力の宛先（メーカーマスター外）です。メーカーのメールアドレスと一致しているか確かめてから承認してください。"
-                ko="직접 입력한 수신처(제조처 마스터 외)입니다. 제조처의 메일 주소와 일치하는지 확인한 뒤 승인하세요."
+                ko="직접 입력한 수신처(제조사 마스터 외)입니다. 제조사의 메일 주소와 일치하는지 확인한 뒤 승인하세요."
               />
             </span>
           ) : null}
@@ -214,7 +214,7 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
                 pinned to the content this card shows); left empty, a missing amount needs the check. */}
             <div className="p1-row">
               <SelectField name="currency" label="通貨" choices={[{ value: 'JPY', label: '日本円（JPY）' }, { value: 'USD', label: '米ドル（USD）' }, { value: 'CNY', label: '人民元（CNY）' }, { value: 'KRW', label: '韓国ウォン（KRW）' }]} defaultValue="JPY" width={180} />
-              <TextField name="totalAmount" label={card.amountDisplay ? '金額を直す（数字のみ・任意）' : '金額（数字のみ）'} width={200} autoComplete="off" placeholder="480000" />
+              <TextField name="totalAmount" label={card.amountDisplay ? '金額を直す（数字のみ・任意）' : '金額（数字のみ）'} width={200} autoComplete="off" placeholder="480000" inputMode="decimal" />
             </div>
             {card.amountDisplay ? null : (
               <>

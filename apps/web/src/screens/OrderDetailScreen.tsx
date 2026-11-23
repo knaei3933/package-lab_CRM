@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { Bilingual } from '../components/Bilingual';
+import { orderLookupFailure, ORDER_FORBIDDEN_BODY, ORDER_FORBIDDEN_TITLE } from '../lib/order-lookup';
 import { OrderTimeline } from '../components/OrderTimeline';
 import { StepPanelView } from '../components/StepPanel';
 import { StepAnnouncer } from '../components/StepAnnouncer';
@@ -54,6 +56,16 @@ export async function OrderDetailScreen({
   if (!user) return null;
   const workspace = board.workspace;
   const order = workspace.filmOrders.find((candidate) => candidate.code === orderCode);
+  if (!order && !workspace.error && orderLookupFailure(workspace.filmOrders, user.role) === 'forbidden') {
+    // P4 H10①: not 「見つかりません」 — the role may not open this screen.
+    return (
+      <section className="p1-notfound" aria-labelledby="order-forbidden-title">
+        <h1 id="order-forbidden-title" className="p1-title"><Bilingual ja={ORDER_FORBIDDEN_TITLE} ko="열람 권한으로는 발주 화면을 열 수 없습니다" /></h1>
+        <p className="p1-lead"><Bilingual ja={ORDER_FORBIDDEN_BODY} ko="발주 화면은 담당자와 대표만 열 수 있습니다. 이력은 「履歴」 화면에서 볼 수 있습니다." /></p>
+        <p><Link href="/home">履歴を開く</Link></p>
+      </section>
+    );
+  }
   if (!order) {
     return (
       <section className="p1-notfound" aria-labelledby="order-notfound-title">

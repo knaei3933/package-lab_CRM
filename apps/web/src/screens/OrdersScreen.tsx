@@ -7,6 +7,7 @@ import { Heading } from '@astryxdesign/core/Heading';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import { ActionForm } from '../components/ActionForm';
+import { DraftAutosave } from '../components/DraftAutosave';
 import { AstryxIsland } from '../components/AstryxIsland';
 import { EmptyNote } from '../components/EmptyNote';
 import { ChoiceDisclosure, ChoiceToneActionForm } from '../components/ChoiceDrivenForm';
@@ -105,7 +106,8 @@ const LOAD_FAILED_NOTE = '一覧を表示できませんでした。画面上部
 async function representativeQueueFor(openProjectId: string | null) {
   const list = await loadSelectableProjectList();
   if (list.error) return failedRepresentativeQueue(list.error);
-  return loadRepresentativeQueue(list.projects.filter((project) => project.id !== openProjectId));
+  // P4 H3: the server's own queue (it holds the manual checks the web's status replay misses); the web replay is the fallback.
+  return loadRepresentativeQueue(list.projects.filter((project) => project.id !== openProjectId), { server: true });
 }
 
 export async function OrdersScreen({ projectId, projectCode }: ProjectScreenProps) {
@@ -190,7 +192,7 @@ export async function OrdersScreen({ projectId, projectCode }: ProjectScreenProp
         <VStack gap={3}>
         <Heading level={2}>フィルム発注 一覧</Heading>
         <Text as="p" type="supporting">
-          行の操作で状態を進めます。受領確認（問題なしとみなす）は「{stateLabel('FILM_DELIVERED')}」の発注でだけ記録できます。
+          行の操作で状態を進めます。問題なしで完了は「{stateLabel('FILM_DELIVERED')}」の発注でだけ記録できます。
         </Text>
         {workspace.filmOrders.length === 0 ? (
           loadFailed ? <EmptyNote title={LOAD_FAILED_NOTE} next={null} /> : <EmptyNote title="フィルム発注はまだありません" next={canCreateFilmOrder ? '下の「フィルム発注を作成する」で、確認済みのセブン化学発注書から作成します。' : null} />
@@ -200,7 +202,7 @@ export async function OrdersScreen({ projectId, projectCode }: ProjectScreenProp
               <tr>
                 <th className="ui-th" scope="col">発注コード</th>
                 <th className="ui-th" scope="col">状態</th>
-                <th className="ui-th" scope="col">セブン発注書</th>
+                <th className="ui-th" scope="col">セブン化学発注書</th>
                 <th className="ui-th" scope="col">支払条件</th>
                 <th className="ui-th" scope="col">明細</th>
                 <th className="ui-th" scope="col">作成</th>
@@ -268,13 +270,13 @@ export async function OrdersScreen({ projectId, projectCode }: ProjectScreenProp
                         {status === 'FILM_DELIVERED' ? (
                           <RoleGate role={role} operation="film_order:assume_receipt" label="受領確認の記録">
                             <details className="sx-36ca0af">
-                              <summary className="sx-c981838">受領確認（問題なしとみなす）</summary>
+                              <summary className="sx-c981838">問題なしで完了</summary>
                               <ActionForm
                                 action={assumeFilmReceiptAction}
                                 submitLabel="受領確認を記録する"
                                 hint={`証跡の代わりに問題なしとみなす記録です。メモは必須で、状態は「${stateLabel('FILM_RECEIPT_ASSUMED_NO_ISSUE')}」になります。`}
                                 confirm={{
-                                  title: '受領確認（問題なしとみなす）を記録しますか？',
+                                  title: '問題なしで完了を記録しますか？',
                                   body: `発注 ${order.code} を、証跡なしで問題なしとみなした記録として残し、状態を「${stateLabel('FILM_RECEIPT_ASSUMED_NO_ISSUE')}」にします。この状態は最終の状態で、記録は取り消せません。`,
                                   summaryFields: ['note', 'acknowledgeNoEvidence']
                                 }}
@@ -781,7 +783,7 @@ function SevenPurchaseOrderSection({
             <tr>
               <th className="ui-th" scope="col">発注番号</th>
               <th className="ui-th" scope="col">本登録</th>
-              <th className="ui-th" scope="col">真性確認</th>
+              <th className="ui-th" scope="col">発注書の照合</th>
               {showOperations ? <th className="ui-th" scope="col">操作</th> : null}
             </tr>
           </thead>
@@ -840,7 +842,7 @@ function SevenPurchaseOrderSection({
                           hint="人は必須の記録項目をすべて埋めてください。見積と一致していない場合は「相違あり・確認中」になり、前提ゲートは閉じたままです。"
                           confirm={{
                             title: '発注書の照合チェックを記録しますか？',
-                            body: 'このセブン化学発注書の真性確認として、チェック内容を記録します。突合結果が「見積と一致していない」のときは「相違あり・確認中」になり、前提ゲートは閉じたままです。記録し直すと最新の内容で上書きされ、以前の記録は履歴に残ります。',
+                            body: 'このセブン化学発注書の照合として、チェック内容を記録します。突合結果が「見積と一致していない」のときは「相違あり・確認中」になり、前提ゲートは閉じたままです。記録し直すと最新の内容で上書きされ、以前の記録は履歴に残ります。',
                             tone: 'primary',
                             summaryFields: [
                               'quoteMatchesPo',
@@ -853,6 +855,8 @@ function SevenPurchaseOrderSection({
                           }}
                         >
                           <input type="hidden" readOnly name="poId" value={po.id} />
+                          {/* P4 M9: the long checklist keeps a draft while it is typed. */}
+                          <DraftAutosave name={`po-check-${po.id}`} />
                           <div className="sx-e106d6d">
                             <CheckboxField name="issuerNameRecorded" label="発行者名を確認した" />
                             <TextField name="issuerName" label="発行者名" width={180} />

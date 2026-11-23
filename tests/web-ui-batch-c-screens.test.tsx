@@ -310,7 +310,7 @@ describe('2-④ maker-po stages: status × (pending check, events) → done / cu
     const view = makerPoStages({ orderStatus: 'MAKER_PO_READY', papers: [paper('DRAFT', { ceoApprovedAt: null })] });
     expect(states(view)).toEqual({ create: 'done', approve: 'current', send: 'upcoming', accept: 'upcoming', complete: 'upcoming' });
     expect(view.stages[0]!.summary).toBe('発注書 …000000p1 を作成（2026/11/18 09:00 JST）');
-    expect(upcomingStagesLine(view)).toBe('このあと: ③ 送信の記録 → ④ 受入 → 完了');
+    expect(upcomingStagesLine(view)).toBe('このあと: 手順3: 送信の記録 → 手順4: 受入 → 完了');
   });
 
   it('SNAPSHOT_VOIDED: ② current again, flagged for attention', () => {
@@ -334,9 +334,9 @@ describe('2-④ maker-po stages: status × (pending check, events) → done / cu
     expect(states(view)).toEqual({
       create: 'done', approve: 'done', send: 'done', verify: 'current', accept: 'upcoming', complete: 'upcoming'
     });
-    expect(stageLabel(view.current!)).toBe('③′ 送信の手動確認');
+    expect(stageLabel(view.current!)).toBe('手順3の確認: 送信の手動確認');
     expect(view.stages[2]!.summary).toBe('送信の記録（送信日時 2026/11/18 11:00 JST）');
-    expect(upcomingStagesLine(view)).toBe('このあと: ④ 受入 → 完了');
+    expect(upcomingStagesLine(view)).toBe('このあと: 手順4: 受入 → 完了');
   });
 
   it('SEND_UNVERIFIED: ③ is where the paper stopped (halted)', () => {
@@ -469,7 +469,7 @@ describe('2-④ maker-po stages: status × (pending check, events) → done / cu
   });
 
   it('the 「いまの段階」 headline: current stage, complete, all cancelled, and a neutral text for an unknown status (review L4)', () => {
-    expect(stageHeadline(makerPoStages({ orderStatus: 'MAKER_PO_READY', papers: [paper('DRAFT')] }))).toBe('② 代表承認');
+    expect(stageHeadline(makerPoStages({ orderStatus: 'MAKER_PO_READY', papers: [paper('DRAFT')] }))).toBe('手順2: 代表承認');
     expect(stageHeadline(makerPoStages({ orderStatus: 'MAKER_PO_READY', papers: [paper('MAKER_PO_ACCEPTED')] })))
       .toBe('完了（受入確認済み）');
     expect(stageHeadline(makerPoStages({ orderStatus: 'MAKER_PO_READY', papers: [paper('CANCELLED')] })))
@@ -592,7 +592,7 @@ describe('2-⑤ StatusBadge and DataTable markup', () => {
 
 /** Consequential forms per screen: the confirmation title each must carry (admin). */
 const CONFIRM_TITLES: Record<keyof typeof PAGES, string[]> = {
-  orders: ['発注の状態を変更しますか？', '受領確認（問題なしとみなす）を記録しますか？'],
+  orders: ['発注の状態を変更しますか？', '問題なしで完了を記録しますか？'],
   documents: ['書類の確認結果を記録しますか？'],
   approvals: ['承認証跡の手動確認を記録しますか？'],
   'maker-po': ['メーカー発注書を作成しますか？', 'メーカー発注書 …0000cc01 を取り消しますか？'],
@@ -660,8 +660,8 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
     const send = lists[1]![1]!;
     expect(send).toContain('<li class="step step--current" aria-current="step"><span class="step-mark">いま</span><span class="step-label">送信の記録</span></li>');
     expect(send.match(/step-mark">済</g) ?? []).toHaveLength(2);
-    expect(html).toContain('<p class="stage-next">このあと: ④ 受入 → 完了</p>');
-    expect(html).toContain('<span class="stage-now">いまの段階</span><strong>③ 送信の記録</strong>');
+    expect(html).toContain('<p class="stage-next">このあと: 手順4: 受入 → 完了</p>');
+    expect(html).toContain('<span class="stage-now">いまの段階</span><strong>手順3: 送信の記録</strong>');
   });
 
   it('admin: the done stages are folded in one closed <details> with one line each', async () => {
@@ -669,8 +669,8 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
     const html = await renderPage(MakerPoPage);
     const done = elementAt(html, '<details class="stage-done">');
     expect(done).toContain('<summary>済んだ段階（2件）</summary>');
-    expect(done).toContain('<li>① 発注書の作成: 発注書 …0000cc01 を作成（2026/11/18 09:00 JST）</li>');
-    expect(done).toContain('<li>② 代表承認: 代表承認（2026/11/18 10:00 JST）</li>');
+    expect(done).toContain('<li>手順1: 発注書の作成: 発注書 …0000cc01 を作成（2026/11/18 09:00 JST）</li>');
+    expect(done).toContain('<li>手順2: 代表承認: 代表承認（2026/11/18 10:00 JST）</li>');
   });
 
   it('admin: the 支払条件 box is large only before the approval; after it, one line', async () => {
@@ -735,7 +735,7 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
     serveAs('admin');
     const html = await renderPage(MakerPoPage);
     expect(html).toMatch(/<details class="collapsed-card[^"]*"[^>]*><summary><h2[^>]*>新しいフィルム発注を作成する（支払条件つき）<\/h2><\/summary>/);
-    expect(html).toMatch(/<details class="collapsed-card[^"]*"[^>]*><summary><h2[^>]*>⑤ 監査ダッシュボード（役割に応じた表示）— 1件<\/h2><\/summary>/);
+    expect(html).toMatch(/<details class="collapsed-card[^"]*"[^>]*><summary><h2[^>]*>監査ダッシュボード（役割に応じた表示）— 1件<\/h2><\/summary>/);
     expect(html).not.toContain('<h2 style="font-size:20px;margin:0 0 4px">支払条件を設定して発注を作成する</h2>');
     expect(html).not.toMatch(/<details class="collapsed-card[^"]*"[^>]* open/);
   });
@@ -744,7 +744,7 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
     serveAs('admin', ROWS, [PENDING_SEND_EVENT]);
     const admin = await renderPage(MakerPoPage);
     expect(admin).toContain('<li class="step step--current" aria-current="step"><span class="step-mark">いま</span><span class="step-label">送信の手動確認</span></li>');
-    expect(admin).toContain('<strong>③′ 送信の手動確認</strong>');
+    expect(admin).toContain('<strong>手順3の確認: 送信の手動確認</strong>');
     expect(admin).toContain('送信を確定する（確認）か、確定しない（却下）か');
     expect(admin).toContain('根拠（何を確認して送信を確定したか）');
     expect(admin).toContain('確認（送信を確定する）');
@@ -753,7 +753,7 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
 
     serveAs('staff', ROWS, [PENDING_SEND_EVENT]);
     const staff = await renderPage(MakerPoPage);
-    expect(staff).toContain('<strong>③′ 送信の手動確認</strong>');
+    expect(staff).toContain('<strong>手順3の確認: 送信の手動確認</strong>');
     expect(staff).toContain('送信記録は代表者の手動確認待ちです。');
     expect(staff).not.toContain('>手動確認を記録する</button>');
   });
@@ -766,19 +766,19 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
   });
 });
 
-describe('2-④ ① 作成 card: one line when there is nothing to create, no misleading 二重承認不足', () => {
-  it('orders already past ① (no MAKER_PO_READY order): the paper is below, not 「二重承認不足」', async () => {
+describe('2-④ ① 作成 card: one line when there is nothing to create, no misleading 両組織の承認不足', () => {
+  it('orders already past ① (no MAKER_PO_READY order): the paper is below, not 「両組織の承認不足」', async () => {
     serveAs('admin', [...SEND_ROWS, ...BASE_ROWS]);
     const html = await renderPage(MakerPoPage);
     expect(html).toContain('作成待ちの発注はありません。作成済みの発注書は下の各発注に表示されます。');
-    expect(html).not.toContain('二重承認不足');
+    expect(html).not.toContain('両組織の承認不足');
     expect(html).not.toContain('>メーカー発注書を作成する</button>');
   });
 
   it('no order on the maker board at all: the double-approval guidance stays', async () => {
     serveAs('admin', BASE_ROWS.filter((row) => row.entityId !== ORDER_DONE && row.entityId !== ORDER_DELIVERED));
     const html = await renderPage(MakerPoPage);
-    expect(html).toContain('ブロック理由: 二重承認不足');
+    expect(html).toContain('ブロック理由: 両組織の承認不足');
     expect(html).not.toContain('作成待ちの発注はありません');
   });
 
@@ -786,7 +786,7 @@ describe('2-④ ① 作成 card: one line when there is nothing to create, no mi
     serveAs('admin');
     const html = await renderPage(MakerPoPage);
     expect(html).toContain('>メーカー発注書を作成する</button>');
-    expect(html).not.toContain('二重承認不足');
+    expect(html).not.toContain('両組織の承認不足');
   });
 });
 
