@@ -10,10 +10,10 @@ export async function readAssignmentNotice(projectId: string): Promise<Assignmen
   }
 }
 
-/** Set from the removal action only. */
-export async function rememberAssignmentRemoval(projectId: string, userId: string, now: Date = new Date()): Promise<void> {
+/** Set from the add / remove actions only. */
+export async function rememberAssignmentChange(projectId: string, kind: AssignmentNotice['kind'], userId: string, now: Date = new Date()): Promise<void> {
   try {
-    (await cookies()).set(ASSIGNMENT_NOTICE_COOKIE, encodeAssignmentNotice({ projectId, userId, at: now.toISOString() }), {
+    (await cookies()).set(ASSIGNMENT_NOTICE_COOKIE, encodeAssignmentNotice({ projectId, kind, userId, at: now.toISOString() }), {
       path: '/', httpOnly: true, sameSite: 'lax', maxAge: ASSIGNMENT_NOTICE_MAX_AGE_SECONDS
     });
   } catch {

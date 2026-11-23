@@ -7,7 +7,7 @@ import { chosenUserId, isUserId } from '../lib/assignments';
 import { webErrorText } from '../lib/error-dictionary';
 import { idempotencyKeyOf } from '../lib/project-context';
 import { refuseIfProjectSwitched, writeProjectOf } from '../lib/project-guard';
-import { rememberAssignmentRemoval } from '../lib/assignment-notice-server';
+import { rememberAssignmentChange } from '../lib/assignment-notice-server';
 import type { ActionState } from '../lib/types';
 
 /**
@@ -43,6 +43,8 @@ export async function addAssignmentAction(_prev: ActionState | null, formData: F
     expectedProjectId: projectId
   });
   if (!result.ok) return refusalState(result);
+  // Adding the last person in the list removes the form (and this result line) — the panel's status line says it.
+  await rememberAssignmentChange(projectId, 'added', userId);
   revalidatePath('/', 'layout');
   return { ok: true, message: '担当者を割り当てました。この人は、すぐにこの案件を開けます。', changedId: userId };
 }
@@ -60,7 +62,7 @@ export async function removeAssignmentAction(_prev: ActionState | null, formData
   });
   if (!result.ok) return refusalState(result);
   // web2b review L-6: the row (and this result line) disappears — the panel's status line says it.
-  await rememberAssignmentRemoval(projectId, userId);
+  await rememberAssignmentChange(projectId, 'removed', userId);
   revalidatePath('/', 'layout');
   return { ok: true, message: '担当から外しました。この人は、この案件を開けなくなりました。', changedId: userId };
 }

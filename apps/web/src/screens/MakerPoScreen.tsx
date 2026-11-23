@@ -932,7 +932,7 @@ function MakerPoHistoryBlock({ papers }: { papers: PaperWork[] }) {
         const provisionalEvents = events.filter((event) => event.provisional === true);
         return (
           <div className="sx-72d6c38" key={po.id}>
-            <DataTable caption={`発注書 ${paperRef(po)} の記録`} captionHidden>
+            <DataTable caption={`発注書 ${paperRef(po)} の記録`} captionHidden cards>
               <thead>
                 <tr>
                   <th className="ui-th" scope="col">発注書</th>
@@ -946,22 +946,22 @@ function MakerPoHistoryBlock({ papers }: { papers: PaperWork[] }) {
               </thead>
               <tbody>
                 <tr>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="発注書">
                     <PaperRef po={po} />
                     <TechDetails context="ID">{po.id}</TechDetails>
                   </td>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="状態">
                     <StatusBadge domain="makerPo" status={po.status} label={MAKER_PO_STATUS_LABELS[po.status] ?? po.status} />
                   </td>
-                  <td className="ui-td">{po.createdAt ? formatTimestamp(po.createdAt) : '—'}</td>
-                  <td className="ui-td">{po.ceoApprovedAt ? formatTimestampSeconds(po.ceoApprovedAt) : '未承認'}</td>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="発注書の作成">{po.createdAt ? formatTimestamp(po.createdAt) : '—'}</td>
+                  <td className="ui-td" data-label="代表承認">{po.ceoApprovedAt ? formatTimestampSeconds(po.ceoApprovedAt) : '未承認'}</td>
+                  <td className="ui-td" data-label="送信記録">
                     {sentEvent?.sentAt ? formatTimestampSeconds(sentEvent.sentAt) : '記録なし'}
                   </td>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="受入確認（最終）">
                     {acceptedEvent ? formatTimestamp(acceptedEvent.recordedAt) : '記録なし'}
                   </td>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="受入記録（仮）">
                     {provisionalEvents.length > 0
                       ? `${provisionalEvents.length}件（${provisionalEvents
                           .map((event) => formatTimestamp(event.recordedAt))
@@ -1494,7 +1494,7 @@ function AuditDashboardSection({
       {events.length === 0 ? (
         <p className="ui-note">メーカー発注の監査記録はまだありません。</p>
       ) : (
-        <DataTable caption="メーカー発注の監査記録" captionHidden>
+        <DataTable caption="メーカー発注の監査記録" captionHidden cards>
           <thead>
             <tr>
               <th className="ui-th" scope="col">日時</th>
@@ -1510,24 +1510,24 @@ function AuditDashboardSection({
               const status = after && typeof after.status === 'string' ? after.status : null;
               return (
                 <tr key={event.id}>
-                  <td className="ui-td">{formatTimestamp(event.occurredAt)}</td>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="日時">{formatTimestamp(event.occurredAt)}</td>
+                  <td className="ui-td" data-label="記録の内容">
                     {event.action === 'MAKER_CANCELLATION_ACKNOWLEDGED' && event.entityType === 'maker_po_event'
                       ? acknowledgementAuditLabel(event, acknowledgementKinds)
                       : AUDIT_ACTION_LABELS[event.action] ?? MAKER_PO_EVENT_TYPE_LABELS[event.action] ?? event.action}
                   </td>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="種別">
                     {AUDIT_ENTITY_LABELS[event.entityType] ?? event.entityType}
                     <TechDetails context="コード・ID">
                       <p>{event.action}</p>
                       <p>{event.entityId}</p>
                     </TechDetails>
                   </td>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="状態（役割に見える範囲）">
                     {status ? MAKER_PO_STATUS_LABELS[status] ?? status : '—'}
                     {after && after.provisional === true ? '（仮の受入記録を含む）' : ''}
                   </td>
-                  <td className="ui-td">{event.actor?.displayName ?? '—'}</td>
+                  <td className="ui-td" data-label="実行者">{event.actor?.displayName ?? '—'}</td>
                 </tr>
               );
             })}

@@ -87,6 +87,7 @@ const noticeServer = await optional(() => import('../apps/web/src/lib/approval-n
 const closureLib = await optional(() => import('../apps/web/src/lib/receipt-closure.js'));
 const { RENDERED_PROJECT_FIELD, IDEMPOTENCY_FIELD } = await import('../apps/web/src/lib/project-context.js');
 const { GUIDE_TERMS } = await import('../apps/web/src/lib/guide.js');
+const { webErrorText } = await import('../apps/web/src/lib/error-dictionary.js');
 
 const SHA = 'a'.repeat(64);
 const PO_ID = '0192a000-0000-7000-8000-0000000000f1';
@@ -606,6 +607,13 @@ describe('web2a L-3: the progress rows\' order links and 「完了した発注�
   });
 });
 
+describe('web2a L-3: the overview\'s 「証跡の一覧」 link is a 44px target too (live w06 measured it at 24px)', () => {
+  it('on the real overview screen', async () => {
+    const html = await overview('staff');
+    expect(html).toMatch(/<p class="p1-order-links"><a class="p4w3-target" href="\/p\/PRJ-1\/evidence">証跡の一覧<\/a><\/p>/);
+  });
+});
+
 describe('web2b review Lows', () => {
   it('L-3: the inbox row says the declared issuer itself (detail.evidenceIssuerEntity), then what a declaration is', () => {
     const task = queueLib.taskFromServerItem({
@@ -640,6 +648,8 @@ describe('web2b review Lows', () => {
   it('L-5 (R13): the old 「金額未入力」 warning is not repeated next to the amount the card asks for', () => {
     const html = renderCard({ ...viewOf(serverCard()), amountDisplay: null, canApprove: false, blockers: [{ code: 'AMOUNT_REQUIRED', message: '' }], warnings: [{ code: 'MAKER_PO_AMOUNT_MISSING', message: '金額が未入力です' }] });
     expect(html).toContain('data-need="amount"');
+    // The card says a known code in the dictionary's words — neither those nor the API's own text is repeated.
+    expect(html).not.toContain(webErrorText('MAKER_PO_AMOUNT_MISSING').message);
     expect(html).not.toContain('金額が未入力です');
   });
 
@@ -656,6 +666,18 @@ describe('web2b review Lows', () => {
     const after = inContext(<ProjectAssignmentsPanel view={assignmentsView([{ userId: USER_A, displayName: '佐藤' }]) as never} directory={directory} notice={notice} />);
     expect(after).toMatch(/<p class="p4w3-status" role="status" data-assignment-notice="removed">鈴木 を担当から外しました/);
     expect(decodeAssignmentNotice(state.cookies.get('kanei_assignment_notice'), 'proj-2')).toBeNull();
+  });
+
+  it('L-6 (live w04): adding the last person in the list removes the add form — the status line says the addition', async () => {
+    callApi.mockResolvedValue(ok({ assignment: { userId: USER_B } }));
+    const added = await assignmentActions.addAssignmentAction(null, form({ candidateUserId: USER_B }));
+    expect(added.ok).toBe(true);
+    const { decodeAssignmentNotice } = await import('../apps/web/src/lib/assignment-notice.js');
+    const notice = decodeAssignmentNotice(state.cookies.get('kanei_assignment_notice'), 'proj-1');
+    expect(notice).toMatchObject({ kind: 'added', userId: USER_B });
+    const after = inContext(<ProjectAssignmentsPanel view={assignmentsView([{ userId: USER_B, displayName: '鈴木', role: 'viewer' }]) as never} directory={{ candidates: [], truncated: false, error: null }} notice={notice} />);
+    expect(after).not.toContain('担当者に割り当てる');
+    expect(after).toMatch(/<p class="p4w3-status" role="status" data-assignment-notice="added">鈴木 を担当者に割り当てました/);
   });
 
   it('L-6: the request block is an h2 (it sits under the screen\'s h1)', () => {

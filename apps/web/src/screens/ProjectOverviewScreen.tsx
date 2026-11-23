@@ -77,7 +77,7 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
             ) : null}
           </div>
           {role !== 'viewer' || isAuditorRole(user.role) ? (
-            <p className="p1-order-links"><Link href={projectPath(projectCode, 'evidence')}>証跡の一覧</Link></p>
+            <p className="p1-order-links"><Link className="p4w3-target" href={projectPath(projectCode, 'evidence')}>証跡の一覧</Link></p>
           ) : null}
           <ProjectOrderList workspace={workspace} projectCode={projectCode} loadFailed={Boolean(workspace.error)} />
         </section>

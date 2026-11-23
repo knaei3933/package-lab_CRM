@@ -209,7 +209,7 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
         {workspace.approvalEvents.length === 0 ? (
           <p className="ui-note">記録された承認はまだありません。</p>
         ) : (
-          <DataTable caption="承認の記録履歴" captionHidden>
+          <DataTable caption="承認の記録履歴" captionHidden cards>
             <thead>
               <tr>
                 <th className="ui-th" scope="col">デザイン</th>
@@ -229,32 +229,32 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
                     // UI batch A follow-up (P1-4): the role may not read the
                     // decision details; say so instead of 「—」 or 版0.
                     <>
-                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
-                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
-                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
-                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
-                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
-                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
-                      <td className="ui-td">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td" data-label="デザイン">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td" data-label="版">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td" data-label="組織">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td" data-label="決定">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td" data-label="入手経路">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td" data-label="引用した証跡バージョン">{HIDDEN_BY_ROLE_LABEL}</td>
+                      <td className="ui-td" data-label="承認日時">{HIDDEN_BY_ROLE_LABEL}</td>
                     </>
                   ) : (
                     <>
-                      <td className="ui-td">{event.designKey}</td>
-                      <td className="ui-td">{event.revisionNo === null ? '版未記録' : `版${event.revisionNo}`}</td>
-                      <td className="ui-td">{organizationLabel(event.organization)}</td>
-                      <td className="ui-td">{APPROVAL_DECISION_LABELS[event.decision] ?? event.decision}</td>
-                      <td className="ui-td">
+                      <td className="ui-td" data-label="デザイン">{event.designKey}</td>
+                      <td className="ui-td" data-label="版">{event.revisionNo === null ? '版未記録' : `版${event.revisionNo}`}</td>
+                      <td className="ui-td" data-label="組織">{organizationLabel(event.organization)}</td>
+                      <td className="ui-td" data-label="決定">{APPROVAL_DECISION_LABELS[event.decision] ?? event.decision}</td>
+                      <td className="ui-td" data-label="入手経路">
                         {EVIDENCE_SOURCE_LABELS[event.evidenceSource as keyof typeof EVIDENCE_SOURCE_LABELS]
                           ?? event.evidenceSource}
                       </td>
-                      <td className="ui-td">
+                      <td className="ui-td" data-label="引用した証跡バージョン">
                         {evidenceLabel(event.evidenceDocumentVersionId === '—' ? null : event.evidenceDocumentVersionId)}
                         <TechDetails context="ID">{event.evidenceDocumentVersionId}</TechDetails>
                       </td>
-                      <td className="ui-td">{event.eventTime ? formatTimestamp(event.eventTime) : '未記録'}</td>
+                      <td className="ui-td" data-label="承認日時">{event.eventTime ? formatTimestamp(event.eventTime) : '未記録'}</td>
                     </>
                   )}
-                  <td className="ui-td">{formatTimestamp(event.recordedAt)}</td>
+                  <td className="ui-td" data-label="記録">{formatTimestamp(event.recordedAt)}</td>
                 </tr>
               ))}
             </tbody>

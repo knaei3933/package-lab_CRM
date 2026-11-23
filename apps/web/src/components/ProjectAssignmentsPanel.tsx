@@ -20,7 +20,12 @@ import { formatTimestamp } from '../lib/vocabulary';
  */
 export function ProjectAssignmentsPanel({ view, directory, notice = null }: { view: AssignmentsView; directory: AssignableDirectory; notice?: AssignmentNotice | null }) {
   const roleName = (role: string) => ASSIGNMENT_ROLE_LABELS[role] ?? role;
-  const removed = notice ? directory.candidates.find((candidate) => candidate.userId === notice.userId)?.displayName ?? '選んだ人' : null;
+  // The person's name: a removed one is back in the directory, an added one is in this project's list.
+  const noticeName = notice
+    ? (notice.kind === 'removed'
+      ? directory.candidates.find((candidate) => candidate.userId === notice.userId)?.displayName
+      : view.assignments.find((assignment) => assignment.userId === notice.userId)?.displayName) ?? '選んだ人'
+    : null;
   const canAdd = !view.error && !directory.error && (directory.candidates.length > 0 || directory.truncated);
   return (
     <section className="p1-panel p4-assignments" aria-labelledby="project-assignments-title" data-section="assignments">
@@ -28,8 +33,12 @@ export function ProjectAssignmentsPanel({ view, directory, notice = null }: { vi
         <Bilingual ja="割り当て（この案件を開ける人）" ko="담당 배정(이 안건을 열 수 있는 사람)" />
       </h2>
       {/* web2b review L-6: always on the page, so a removal (its row and result line are gone) is announced. */}
-      <p className="p4w3-status" role="status" data-assignment-notice={notice ? 'removed' : undefined}>
-        {removed ? `${removed} を担当から外しました（${formatTimestamp(notice!.at)}）。この人は、この案件を開けなくなりました。` : null}
+      <p className="p4w3-status" role="status" data-assignment-notice={notice?.kind}>
+        {notice && noticeName
+          ? notice.kind === 'removed'
+            ? `${noticeName} を担当から外しました（${formatTimestamp(notice.at)}）。この人は、この案件を開けなくなりました。`
+            : `${noticeName} を担当者に割り当てました（${formatTimestamp(notice.at)}）。この人は、すぐにこの案件を開けます。`
+          : null}
       </p>
       <p className="p1-muted">
         <Bilingual
