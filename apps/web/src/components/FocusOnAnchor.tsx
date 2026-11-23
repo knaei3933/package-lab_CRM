@@ -47,13 +47,23 @@ export function landOnAnchor(doc: AnchorDocument, id: string, hash: string): boo
   return true;
 }
 
+/** The part of `window` the watcher uses (structural: tested without a browser). */
+export interface AnchorWindow {
+  location: { hash: string };
+  addEventListener(type: 'hashchange', listener: () => void): void;
+  removeEventListener(type: 'hashchange', listener: () => void): void;
+}
+
+/** Lands now and on every later change of the address; returns the cleanup. */
+export function watchAnchor(win: AnchorWindow, doc: AnchorDocument, id: string): () => void {
+  const land = () => { landOnAnchor(doc, id, win.location.hash); };
+  land();
+  win.addEventListener('hashchange', land);
+  return () => win.removeEventListener('hashchange', land);
+}
+
 /** Renders nothing; lands on the element `anchorId` when the address names it (on mount, and when the address changes). */
 export function FocusOnAnchor({ anchorId }: { anchorId: string }) {
-  useEffect(() => {
-    const land = () => { landOnAnchor(document as unknown as AnchorDocument, anchorId, window.location.hash); };
-    land();
-    window.addEventListener('hashchange', land);
-    return () => window.removeEventListener('hashchange', land);
-  }, [anchorId]);
+  useEffect(() => watchAnchor(window as unknown as AnchorWindow, document as unknown as AnchorDocument, anchorId), [anchorId]);
   return null;
 }

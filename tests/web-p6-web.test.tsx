@@ -63,6 +63,7 @@ vi.mock('../apps/web/src/components/FocusOnMount.js', () => ({
 vi.mock('../apps/web/src/components/FocusOnAnchor.js', () => ({
   LANDED_ATTRIBUTE: 'data-landed',
   landOnAnchor: () => false,
+  watchAnchor: () => () => undefined,
   FocusOnAnchor: ({ anchorId }: { anchorId: string }) => <span data-focus-on-anchor={anchorId} />
 }));
 const board = vi.hoisted(() => ({ value: null as unknown }));
@@ -678,6 +679,24 @@ describe('review L-2: a router-followed #payment-terms link marks the landing an
     expect(wrapper.attrs.has('tabindex')).toBe(false);
   });
 
+  it('watchAnchor: lands at once, again whenever the address changes (hashchange), and stops listening on cleanup', async () => {
+    const { watchAnchor } = await load();
+    const field = el(); const target = el({ [SEL]: field });
+    const listeners = new Set<() => void>(); const win = {
+      location: { hash: '#payment-terms' },
+      addEventListener: (_t: string, l: () => void) => { listeners.add(l); }, removeEventListener: (_t: string, l: () => void) => { listeners.delete(l); }
+    };
+    const stop = watchAnchor(win as never, docOf(target) as never, 'payment-terms');
+    expect(field.focused).toHaveLength(1); // on mount
+    expect(listeners.size).toBe(1);
+    win.location.hash = '#order-terms'; for (const l of [...listeners]) l(); // the address moves elsewhere: the mark is cleared by the next land
+    expect(field.focused).toHaveLength(1);
+    win.location.hash = '#payment-terms'; for (const l of [...listeners]) l();
+    expect(field.focused).toHaveLength(2); // landed again
+    stop();
+    expect(listeners.size).toBe(0);
+  });
+
   it('no element with that id: nothing happens', async () => {
     const { landOnAnchor } = await load();
     expect(landOnAnchor(docOf(null) as never, 'payment-terms', '#payment-terms')).toBe(false);
@@ -691,6 +710,10 @@ describe('review L-2: a router-followed #payment-terms link marks the landing an
     expect(await orderScreen()).toMatch(/id="payment-terms" class="p4w3-anchor"><span data-focus-on-anchor="payment-terms"><\/span><details/);
     serveOrder('admin', 'SEVEN_PO_VERIFIED', { orderOver: { ...undetermined, paymentTermsEditable: false } });
     expect(await orderScreen()).toMatch(/data-lock="payment-terms"[\s\S]*?<span data-focus-on-anchor="payment-terms"><\/span>/);
+  });
+
+  it('wiring: the component runs the watcher against the real window and document on mount (the effect itself needs a browser: live evidence)', () => {
+    expect(readSrc('components/FocusOnAnchor.tsx')).toContain('useEffect(() => watchAnchor(window as unknown as AnchorWindow, document as unknown as AnchorDocument, anchorId), [anchorId]);');
   });
 
   it('the stylesheet gives the marked landing the same outline as :target (step panel anchor, 「発注の条件」 details, locked notice)', () => {
@@ -753,15 +776,17 @@ describe('review L-4 / L-6 / M-1: the status line carries the result, the proof 
 
   it('labelOfButton: the pressed button\'s words without the Korean gloss and the screen-reader-only record name', async () => {
     const { labelOfButton } = await import('../apps/web/src/lib/submit-intent.js');
-    const button = (parts: Array<{ text: string; drop?: boolean }>) => {
+    const button = (parts: Array<{ text: string; cls?: string }>) => {
       const make = (list: typeof parts): never => ({
         cloneNode: () => make(list.map((p) => ({ ...p }))),
-        querySelectorAll: () => list.filter((p) => p.drop).map((p) => ({ remove: () => { p.text = ''; } })),
+        // honours the selector: only the parts whose class the selector names are returned
+        querySelectorAll: (selector: string) => list.filter((p) => p.cls && selector.split(',').map((x) => x.trim()).includes(`.${p.cls}`)).map((p) => ({ remove: () => { p.text = ''; } })),
         get textContent() { return list.map((p) => p.text).join(''); }
       }) as never;
       return make(parts);
     };
-    expect(labelOfButton(button([{ text: '送信を記録する' }, { text: '송신을 기록', drop: true }, { text: '（RE-A-FILM-1）', drop: true }]))).toBe('送信を記録する');
+    expect(labelOfButton(button([{ text: '送信を記録する' }, { text: '송신을 기록', cls: 'p1-ko' }, { text: '（RE-A-FILM-1）', cls: 'visually-hidden' }]))).toBe('送信を記録する');
+    expect(labelOfButton(button([{ text: '  送信を\n 記録する ' }]))).toBe('送信を 記録する');
     expect(labelOfButton(button([{ text: '  \n ' }]))).toBeNull();
     expect(labelOfButton(null)).toBeNull();
   });
