@@ -356,11 +356,16 @@ describe('dashboard by role on the real API', () => {
     const first = html.indexOf('<h3');
     expect(html.slice(first, first + 200)).toContain('閲覧者（viewer）の一日');
     expect(html).toContain('（いまログインしている役割）');
-    const notes = html.match(/<details class="guide-ko" lang="ko">[\s\S]*?<\/details>/g) ?? [];
-    // One note under the intro and under each of the four sections, all closed.
+    // p5 R7: a Japanese-only reader (the viewer) gets no Korean note at all — and no Hangul anywhere.
+    expect(html.match(/<details class="guide-ko" lang="ko">/g) ?? []).toHaveLength(0);
+    expect(html).not.toMatch(HANGUL);
+    // The representative (bilingual by default): one note under the intro and under each of the four sections, all closed.
+    signIn('admin');
+    const adminHtml = await render(GuidePage);
+    const notes = adminHtml.match(/<details class="guide-ko" lang="ko">[\s\S]*?<\/details>/g) ?? [];
     expect(notes).toHaveLength(5);
     expect(notes.every((note) => !note.includes(' open=""'))).toBe(true);
-    let outside = html;
+    let outside = adminHtml;
     for (const note of notes) outside = outside.replace(note, '');
     expect(outside).not.toMatch(HANGUL);
     // The wording follows the server: 変更確認 is resumed by 担当者 too; only the hold and the cancellation review are the representative's.

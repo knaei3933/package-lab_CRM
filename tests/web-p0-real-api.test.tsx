@@ -300,9 +300,17 @@ describe('R01: 支払条件 is chosen at creation (real API)', () => {
     const { orderId, orderCode } = await draftOrder('staff');
     signIn('admin');
     const present = async () => (await render(orderScreen(orderCode))).includes('>支払条件を変更する</button>');
+    // p5 R13: at step 7 (DUAL_APPROVED / MAKER_PO_READY) with a 「未定」 term the step panel carries the form (「支払条件を記録する」) and the
+    // 「発注の条件」 one is hidden — the order always offers exactly ONE payment-terms form there.
+    const forms = async () => {
+      const html = await render(orderScreen(orderCode));
+      return (html.match(/<select[^>]*name="paymentTerms"/g) ?? []).length;
+    };
     for (const status of ['DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']) {
       await moveOrderTo(orderId, status);
-      expect(await present(), status).toBe(true);
+      const step7 = status === 'DUAL_APPROVED' || status === 'MAKER_PO_READY';
+      expect(await forms(), status).toBe(1);
+      if (!step7) expect(await present(), status).toBe(true);
     }
     for (const status of ['APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY', 'MAKER_PO_ACCEPTED', 'FILM_IN_PRODUCTION', 'FILM_DELIVERED', 'ON_HOLD', 'CANCELLED']) {
       await moveOrderTo(orderId, status);
