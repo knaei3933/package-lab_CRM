@@ -15,7 +15,7 @@ import type { PartnerAccountsRead, PartnerAccountView } from '../lib/partner-con
 
 export const PARTNERS_TITLE = '取引先の連絡先';
 export const PARTNERS_ONLY_NOTICE = 'この画面は代表者だけが使います。';
-const LEAD = '顧客とセブン化学の連絡先メールアドレスを登録します。承認メール（.eml）の差出人のドメインがこのアドレスのドメインと完全に一致するときだけ自動で承認に数えます。違うとき・差出人を読み取れないときは、代表の確認に回します。';
+const LEAD = '顧客とセブン化学の連絡先メールアドレスを登録します。承認メール（.eml）の差出人のドメインがこのアドレスのドメインと完全に一致するときだけ自動で承認に数えます。違うとき・差出人を読み取れないとき・メールでない証跡（本文だけのテキスト・PDF・画像）のときは、代表の確認に回します。';
 
 function Header() {
   return (

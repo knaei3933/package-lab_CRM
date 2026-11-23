@@ -637,3 +637,40 @@ describe('round 2 L-5 (Y16): a customer-side 却下 is named as the customer in 
     expect(work.rows[0]!.text).toBe('却下された承認証跡を差し替える（顧客・デザイン 表面A）');
   });
 });
+
+// =============================================================================================
+// Round 3 (p5-int review2 REQUEST_CHANGES)
+// =============================================================================================
+describe('round 3: the not-a-mail reason, the previously-rejected form, and the check list never draws a reason for a non-representative', () => {
+  it('H-R2-1: the step-6 check says 「メールとして確認できないため、代表の確認が必要です」 for a text / PDF evidence', async () => {
+    const gate = await gateFrom(rawGate(rawSlot('customer', 'approved'), rawSlot('seven', 'pending'), [rawPending({
+      manualCheckReason: { code: 'EVIDENCE_NOT_A_MAIL', message: 'メールとして確認できないため、代表の確認が必要です' }
+    })]));
+    const html = panel('admin', gate);
+    expect(html).toContain('data-manual-check-reason="EVIDENCE_NOT_A_MAIL"');
+    expect(visibleText(html)).toContain('確認が必要な理由 メールとして確認できないため、代表の確認が必要です');
+  });
+
+  it('L-R2-1: with 「前回却下した書類と同じ内容です」 the result has no preselected 「確認」 (blank, required); otherwise unchanged', async () => {
+    const flagged = await gateFrom(rawGate(rawSlot('customer', 'approved'), rawSlot('seven', 'pending'), [rawPending({
+      previouslyRejected: { approvalEventId: 'ev-0', matchedOn: 'same_version', verifierName: '合成代表者', rejectedAt: '2026-11-22T01:00:00Z', reasonNote: REASON }
+    })]));
+    const select = (html: string) => /<select name="result"[^>]*>([\s\S]*?)<\/select>/.exec(html)?.[0] ?? '';
+    const flaggedSelect = select(panel('admin', flagged));
+    expect(flaggedSelect).toMatch(/^<select name="result"[^>]*required/);
+    expect(flaggedSelect).toContain('<option value="" selected="">（選んでください）</option>');
+    const plain = await gateFrom(rawGate(rawSlot('customer', 'approved'), rawSlot('seven', 'pending'), [rawPending()]));
+    expect(select(panel('admin', plain))).not.toContain('（選んでください）');
+  });
+
+  it('L-R2-4 (review2 Z16): the check list never draws the written reason for staff / auditor / viewer, even if a list reached them', () => {
+    const rejected = { ...rawPending({ approvalEventId: 'ev-r' }), manualVerification: { result: 'rejected', verifierName: '合成代表者', verifiedAt: '2026-11-22T01:00:00Z', recordedAt: '2026-11-22T01:00:00Z', reasonNote: '単価 480,000/本' } };
+    for (const role of ['staff', 'auditor', 'viewer']) {
+      const html = render(<PendingVerificationSection pending={[rejected] as never} role={role} canVerify={false} evidenceLabel={() => 'seal.pdf'} organizationText={(key) => (key === 'seven' ? 'セブン化学' : '顧客')} />);
+      expect(html, role).not.toContain('480,000');
+      expect(html, role).not.toContain('理由: ');
+    }
+    const admin = render(<PendingVerificationSection pending={[rejected] as never} role="admin" canVerify evidenceLabel={() => 'seal.pdf'} organizationText={(key) => (key === 'seven' ? 'セブン化学' : '顧客')} />);
+    expect(admin).toContain('理由: 単価 480,000/本');
+  });
+});

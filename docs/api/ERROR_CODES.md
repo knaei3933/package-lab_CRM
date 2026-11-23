@@ -439,3 +439,11 @@ P4 で既存コードに足した項目（コードは同じ）:
 
 - P5 round 2（検収 H-1）: `EVIDENCE_SENDER_UNVERIFIABLE` は、取引先に登録連絡先があるときは警告だけでなく**手動確認待ちの理由**にもなる（`manualCheckReason = { code: EVIDENCE_SENDER_UNVERIFIABLE, message: 差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン） }`、`countsTowardDualApproval = false`）。判定は許可リスト方式: 登録連絡先がある取引先では、From がちょうど1つでそのドメイン（小文字化・末尾の点を除く）が登録ドメインと**完全一致**するときだけ自動で数える。サブドメインも手動確認（`mismatch`）。キリル文字・全角＠は正規化しない。
 - P5 round 2（検収 H-2）: 却下の理由（`reasonNote`）は代表（admin）の応答にだけ入る。staff・viewer・auditor の応答（承認ゲートの `manualVerification`、監査履歴の `basis`）にはキー自体がない。画面は固定文「却下されました。理由は代表にご確認ください」。
+
+## P5 int round 3: メールでない承認証跡 (再検収 H-R2-1)
+
+| code | HTTP | message (ja) | 備考 |
+|---|---|---|---|
+| `EVIDENCE_NOT_A_MAIL` | — | メールとして確認できないため、代表の確認が必要です | P5 round 3: 拒否コードではなく、手動確認待ちの**理由**（承認記録の応答 `manualCheckReason`、承認ゲート `pendingManualVerifications[].manualCheckReason`、承認箱の行 `reason`）。発行組織に登録連絡先があり、承認証跡が読めるメールでない（`senderDomainCheck.status = not_email`: ヘッダーのない本文だけの .txt、`> ` で引用した転送文、PDF・画像など）とき。識別子の部分一致（`verified_in_document`）があっても自動では数えない（`countsTowardDualApproval = false`）。登録連絡先がない取引先は従来どおり |
+
+- P5 round 3 の判定（許可リスト）: 登録連絡先がある取引先では「読めるメールで、From がちょうど1つ、そのドメインが登録ドメインと完全一致（`match`）」のときだけ自動で数える。それ以外（`mismatch`・`from_missing`・`multiple_from`・`not_email`）はすべて代表の手動確認。

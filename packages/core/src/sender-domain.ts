@@ -76,29 +76,39 @@ export const EVIDENCE_SENDER_DOMAIN_MANUAL_CHECK_REASON = '差出人のドメイ
 export const EVIDENCE_SENDER_UNVERIFIABLE_MANUAL_CHECK_REASON = '差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）';
 
 /**
- * N4(b) (2026-11-23), round 2 (p5-int review H-1): an ALLOWLIST. When the issuing
- * organization has a registered contact address, a mail counts by itself only
- * when its one From address's normalized domain (lower case, a trailing root dot
- * dropped) is EXACTLY the registered domain (`match`). Everything else — another
- * domain, a subdomain, no From, several From addresses, a domain that is not
- * plain ASCII (Cyrillic look-alikes, a full-width ＠ are never normalized), a
- * header the parser cannot read — waits for the representative's manual check
- * (fail closed). Not a refusal. Without a registered address the old meaning
- * stays (warning / neutral, counted), and a non-mail evidence is not judged here.
+ * Round 3 (p5-int review2 H-R2-1): the reason an approval evidence that is not a
+ * readable mail (a text body, a quoted / forwarded copy, a PDF, an image) waits
+ * for the representative's check when the organization has a registered contact.
+ */
+export const EVIDENCE_NOT_A_MAIL_MANUAL_CHECK_REASON = 'メールとして確認できないため、代表の確認が必要です';
+
+/**
+ * N4(b) (2026-11-23) as an ALLOWLIST — round 2 (p5-int review H-1) and round 3
+ * (review2 H-R2-1, conductor decision). When the issuing organization has a
+ * registered contact address, an approval evidence counts by itself ONLY when it
+ * is a readable mail whose one From address's normalized domain (lower case, a
+ * trailing root dot dropped) is EXACTLY the registered domain (`match`).
+ * Everything else waits for the representative's manual check (fail closed):
+ * another domain, a subdomain, no / several / unreadable From, and — since round
+ * 3 — evidence that is not a mail at all (`not_email`: a .txt body or a quoted
+ * copy, a PDF, an image). The identifier substring rule therefore never counts
+ * an approval of such an organization. Not a refusal. Without a registered
+ * address the old meaning stays (warning / neutral, counted as before).
  * Next to the staff approval-evidence choice contract: its fields and refusals
  * are unchanged — only the counting condition is.
  */
 export function senderDomainRequiresManualVerification(check: EvidenceSenderDomainCheck | null | undefined): boolean {
-  if (!check || check.status === 'not_email' || check.status === 'no_registered_domain') return false;
+  if (!check || check.status === 'no_registered_domain') return false;
   if (check.registeredDomain === null) return false;
   return check.status !== 'match';
 }
 
-/** N4(b): the one-line reason a held mail shows in the queue and on the check (null when it is not held). */
+/** N4(b): the one-line reason a held evidence shows in the queue and on the check (null when it is not held). */
 export function senderManualCheckReason(check: EvidenceSenderDomainCheck | null | undefined):
-  | { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH' | 'EVIDENCE_SENDER_UNVERIFIABLE'; message: string }
+  | { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH' | 'EVIDENCE_SENDER_UNVERIFIABLE' | 'EVIDENCE_NOT_A_MAIL'; message: string }
   | null {
   if (!senderDomainRequiresManualVerification(check)) return null;
+  if (check!.status === 'not_email') return { code: 'EVIDENCE_NOT_A_MAIL', message: EVIDENCE_NOT_A_MAIL_MANUAL_CHECK_REASON };
   return check!.status === 'mismatch'
     ? { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', message: EVIDENCE_SENDER_DOMAIN_MANUAL_CHECK_REASON }
     : { code: 'EVIDENCE_SENDER_UNVERIFIABLE', message: EVIDENCE_SENDER_UNVERIFIABLE_MANUAL_CHECK_REASON };

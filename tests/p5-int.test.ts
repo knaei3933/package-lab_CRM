@@ -669,10 +669,13 @@ describe('round 2 H-1: N4(b) is an allowlist — only the exact registered domai
     }
   });
 
-  it('unchanged: a plain text evidence that is not a mail (identifier line) is not judged by the sender rule', async () => {
+  it('round 3: a plain text evidence that is not a mail (identifier line) no longer counts by itself when a contact is registered', async () => {
     const id = `MSG-P5-${tag()}`;
     const recorded = await recordFile(await orderAtApproval(), 'approval-note.txt', 'text/plain', `p5 approval\nidentifier: ${id}\n`, id);
-    expect(recorded.body).toMatchObject({ countsTowardDualApproval: true, senderDomainCheck: { status: 'not_email' }, manualCheckReason: null });
+    expect(recorded.body).toMatchObject({
+      countsTowardDualApproval: false, evidenceIdentifierStatus: 'pending_manual_verification', senderDomainCheck: { status: 'not_email' },
+      manualCheckReason: { code: 'EVIDENCE_NOT_A_MAIL', message: 'メールとして確認できないため、代表の確認が必要です' }
+    });
   });
 
   it('core: only `match` with a registered domain passes; the decision is not a list of bad patterns', () => {
@@ -681,7 +684,9 @@ describe('round 2 H-1: N4(b) is an allowlist — only the exact registered domai
     for (const status of ['mismatch', 'from_missing', 'multiple_from', 'anything-new']) expect(senderDomainRequiresManualVerification(check(status)), status).toBe(true);
     expect(senderDomainRequiresManualVerification(check('from_missing', null))).toBe(false);
     expect(senderDomainRequiresManualVerification(check('no_registered_domain', null))).toBe(false);
-    expect(senderDomainRequiresManualVerification(check('not_email'))).toBe(false);
+    // Round 3 (H-R2-1): not a mail, with a registered contact → waits; without one → unchanged.
+    expect(senderDomainRequiresManualVerification(check('not_email'))).toBe(true);
+    expect(senderDomainRequiresManualVerification(check('not_email', null))).toBe(false);
     expect(senderDomainRequiresManualVerification(null)).toBe(false);
   });
 });
@@ -857,5 +862,72 @@ describe('round 2 L-3 / L-5: no-store on every partner answer; the gaps the revi
     expect(cleared.body.contactEmail).toBeNull();
     const [row] = await db.select({ contactEmail: accounts.contactEmail }).from(accounts).where(eq(accounts.id, ids.customerNoMail));
     expect(row!.contactEmail).toBeNull();
+  });
+});
+
+// ===================================================================== round 3 (p5-int review2 REQUEST_CHANGES)
+describe('round 3 H-R2-1: with a registered contact, only a readable mail from the exact domain counts — not a text copy (REVIEW2 F7–F9)', () => {
+  const foreignEml = (stamp: string) => [
+    'From: 承認者 <boss@evil-rev.example>', 'To: KANEI <staff@kanei.example>', `Subject: 校正承認 ${stamp}`, 'Date: Mon, 16 Nov 2026 01:00:00 +0000',
+    `Message-ID: <approval-${stamp}@mail.example>`, 'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', '', `承認します（${stamp}）`, ''
+  ].join('\r\n');
+  // demo-eml/p5-int-review/r2/work/p22-format.mjs F7–F9, verbatim shapes.
+  const CASES: Array<[string, (s: string) => string, (s: string) => string, 'email' | 'signed_document']> = [
+    ['F7 body only (headers stripped), .txt, id in body', (s) => `承認します。承認番号 SEVEN-APPROVAL-${s}\r\n`, (s) => `SEVEN-APPROVAL-${s}`, 'email'],
+    ['F8 body only, signed_document source', (s) => `セブン化学 承認書 承認番号 SEVEN-APPROVAL-${s}\r\n`, (s) => `SEVEN-APPROVAL-${s}`, 'signed_document'],
+    ['F9 forwarded-quote text (headers indented), .txt', (s) => '> ' + foreignEml(s).split('\r\n').join('\r\n> '), (s) => `approval-${s}@mail.example`, 'email']
+  ];
+  const NOT_A_MAIL = { code: 'EVIDENCE_NOT_A_MAIL', message: 'メールとして確認できないため、代表の確認が必要です' };
+  async function recordText(chain: Chain, content: string, identifier: string, evidenceSource: 'email' | 'signed_document', organization: 'customer' | 'seven' = 'seven') {
+    const uploaded = await post('staff', `/api/projects/${chain.project}/documents`, {
+      documentType: 'approval_evidence', issuerEntity: organization === 'seven' ? 'seven' : 'customer_generated', filename: `r3-${tag()}.txt`, contentType: 'text/plain',
+      contentBase64: b64(content), sevenPurchaseOrderId: chain.sevenPoId, filmSupplyOrderId: chain.orderId, designKey: 'label-front'
+    });
+    expect(uploaded.status, uploaded.text).toBe(201);
+    return post('staff', `/api/artwork-revisions/${chain.revisionId}/approvals`, {
+      organization, decision: 'APPROVE', evidenceSource, eventTime: '2026-11-15T10:00:00.000Z', evidenceIdentifier: identifier, evidenceDocumentVersionId: uploaded.body.version.id
+    });
+  }
+
+  it.each(CASES)('%s → recorded (201), the identifier still checked, but not counted: it waits with 「メールとして確認できない」', async (_name, content, identifier, source) => {
+    const s = tag();
+    const chain = await orderAtApproval();
+    const recorded = await recordText(chain, content(s), identifier(s), source);
+    expect(recorded.status, recorded.text).toBe(201);
+    expect(recorded.body).toMatchObject({
+      countsTowardDualApproval: false, evidenceIdentifierStatus: 'pending_manual_verification',
+      senderDomainCheck: { status: 'not_email', registeredDomain: 'seven-p5.example' }, manualCheckReason: NOT_A_MAIL
+    });
+    expect((await gateOf('staff', chain.orderId)).designs[0].seven).toMatchObject({ valid: false, pendingEvidenceIdentifier: true });
+    const item = (await queue()).items.find((row) => row.key === `approval_evidence_verification:${recorded.body.approvalEvent.id}`);
+    expect(item?.reason).toEqual(NOT_A_MAIL);
+    // The representative's 「確認」 is the way it counts.
+    const confirmed = await verify(recorded.body.approvalEvent.id, 'confirmed', '原本を確認');
+    expect(confirmed.status, confirmed.text).toBe(201);
+    expect(confirmed.body.countsTowardDualApproval).toBe(true);
+  });
+
+  it('an invented identifier is still refused first (the substring check stays a refusal, it just never counts by itself)', async () => {
+    const recorded = await recordText(await orderAtApproval(), '承認します。承認番号 SEVEN-APPROVAL-REAL\r\n', 'SEVEN-APPROVAL-FAKE', 'email');
+    expect(recorded.status).toBe(422);
+    expect(recorded.body.code).toBe('EVIDENCE_IDENTIFIER_NOT_IN_DOCUMENT');
+  });
+
+  it('a PDF was already held; it now carries the same reason', async () => {
+    const recorded = await recordApproval(await orderAtApproval(), 'seven', 'pdf', pdf());
+    expect(recorded.body).toMatchObject({ countsTowardDualApproval: false, evidenceIdentifierStatus: 'pending_manual_verification', manualCheckReason: NOT_A_MAIL });
+  });
+
+  it('unchanged without a registered contact: the same text copy counts by the identifier rule (no reason)', async () => {
+    const s = tag();
+    const chain = await orderAtApproval(ids.projectB);
+    const recorded = await recordText(chain, `承認します。承認番号 CUST-APPROVAL-${s}\r\n`, `CUST-APPROVAL-${s}`, 'email', 'customer');
+    expect(recorded.status, recorded.text).toBe(201);
+    expect(recorded.body).toMatchObject({ countsTowardDualApproval: true, evidenceIdentifierStatus: 'verified_in_document', senderDomainCheck: { status: 'not_email', registeredDomain: null }, manualCheckReason: null });
+  });
+
+  it('a readable mail from the exact registered domain still counts at once (the one allowed path)', async () => {
+    const recorded = await recordApproval(await orderAtApproval(), 'seven', 'eml', approvalEml(SEVEN_MAIL));
+    expect(recorded.body).toMatchObject({ countsTowardDualApproval: true, evidenceIdentifierStatus: 'verified_in_document', manualCheckReason: null, senderDomainCheck: { status: 'match' } });
   });
 });

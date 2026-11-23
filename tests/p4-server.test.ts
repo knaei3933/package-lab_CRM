@@ -181,14 +181,18 @@ async function recordApproval(chain: { sevenPoId: string; orderId: string; revis
   });
 }
 
-/** Both organizations approved through text evidence → MAKER_PO_READY. */
+/**
+ * Both organizations approved → MAKER_PO_READY. P5 round 3 (p5-int review2 H-R2-1, conductor decision): both
+ * organizations of projectA have a registered contact, so a plain text evidence (`p4 approval\nidentifier: …`)
+ * no longer counts by itself — the fixture records the legitimate path, a mail from the registered domain.
+ */
 async function approvedOrder(extra?: Record<string, unknown>) {
   const chain = await orderWithRevision(ids.projectA, extra);
   for (const [organization, issuer] of [['customer', 'customer_generated'], ['seven', 'seven']] as const) {
-    const identifier = `MSG-P4-${organization.toUpperCase()}-${nextTag()}`;
+    const identifier = `<msg-p4-${organization}-${nextTag()}@mail.example>`;
     const doc = await uploadOk(chain.sevenPoId, chain.orderId, {
       documentType: 'approval_evidence', issuerEntity: issuer, designKey: 'label-front',
-      contentBase64: b64(`p4 approval\nidentifier: ${identifier}\n`)
+      contentBase64: b64(approvalEml({ from: organization === 'customer' ? CUSTOMER_MAIL : SEVEN_MAIL, messageId: identifier }))
     });
     const approval = await post('staff', `/api/artwork-revisions/${chain.revisionId}/approvals`, {
       organization, decision: 'APPROVE', evidenceSource: 'email', eventTime: '2026-11-15T10:00:00.000Z',

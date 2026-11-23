@@ -245,6 +245,9 @@ export function PendingVerificationSection({
                   required
                   width={320}
                   choices={entry.confirmable ? VERIFICATION_RESULT_CHOICES : REJECT_ONLY_CHOICES}
+                  // P5 round 3 (p5-int review2 L-R2-1): the same paper was rejected before — no preselected
+                  // 「確認」; the representative chooses (required).
+                  {...(entry.previouslyRejected ? { includeBlank: true, blankLabel: '（選んでください）', defaultValue: '' } : {})}
                 />
                 <TextField
                   name="reasonNote"
