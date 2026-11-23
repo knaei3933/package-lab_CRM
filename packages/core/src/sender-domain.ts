@@ -219,3 +219,38 @@ export function parseStoredEvidenceSenderDomainCheck(value: unknown): EvidenceSe
     registeredDomain: text(row.registeredDomain)
   };
 }
+
+/**
+ * P4 server2 round 7 (p4-web3 review M-1): the sender facts of one approval
+ * evidence, exactly as the representative's screens show them. The approval
+ * card and the approval gate's pending manual verifications both answer this
+ * one shape, so the 6th-step confirmation can never say 「一致」 where the card
+ * warns. Display and warning only: no field here decides a refusal.
+ */
+export interface ApprovalEvidenceSenderFacts {
+  fromAddress: string | null;
+  senderDomainCheck: EvidenceSenderDomainCheck | null;
+  senderVerdict: EvidenceSenderVerdict;
+  declarationLine: ApprovalEvidenceDeclarationLine;
+  warnings: Array<NonNullable<ReturnType<typeof evidenceSenderDomainWarning>>>;
+}
+
+export function approvalEvidenceSenderFacts(input: {
+  issuerMatchesOrganization: boolean;
+  sharedEvidence: boolean;
+  senderDomainCheck: EvidenceSenderDomainCheck | null | undefined;
+}): ApprovalEvidenceSenderFacts {
+  const senderDomainCheck = input.senderDomainCheck ?? null;
+  const warning = evidenceSenderDomainWarning(senderDomainCheck);
+  return {
+    fromAddress: senderDomainCheck?.fromAddress ?? null,
+    senderDomainCheck,
+    senderVerdict: evidenceSenderVerdict(senderDomainCheck),
+    declarationLine: approvalEvidenceDeclarationLine({
+      issuerMatchesOrganization: input.issuerMatchesOrganization,
+      sharedEvidence: input.sharedEvidence,
+      senderDomainCheck
+    }),
+    warnings: warning ? [warning] : []
+  };
+}

@@ -36,9 +36,8 @@ import {
   CEO_APPROVAL_FACT_MESSAGES,
   evaluateEvidenceSenderDomain,
   evidenceSenderDomainWarning,
-  evidenceSenderVerdict,
-  approvalEvidenceDeclarationLine,
   parseStoredEvidenceSenderDomainCheck,
+  approvalEvidenceSenderFacts,
   type EvidenceSenderDomainCheck,
   evaluateRevisionRegistrationGate,
   evaluateSevenPoChecklist,
@@ -6505,7 +6504,7 @@ export function createApp({
     const pendingWithIssuer = await Promise.all(pendingManualVerifications.map(async (item) => {
       const facts = item.evidenceDocumentVersionId
         ? await loadApprovalEvidenceIssuerFacts(item.approvalEventId, item.evidenceDocumentVersionId)
-        : { issuerEntity: null, sharedEvidenceException: null };
+        : { issuerEntity: null, sharedEvidenceException: null, senderDomainCheck: null };
       const expectedIssuerEntity = APPROVAL_ORGANIZATION_ISSUER[item.organization];
       const issuerMatchesOrganization = facts.issuerEntity === expectedIssuerEntity;
       const eventIntegrity = integrity.get(item.approvalEventId);
@@ -6525,7 +6524,16 @@ export function createApp({
         // a held-back older auto-verified one must be recorded again.
         recordedAsPending: storedPendingIds.has(item.approvalEventId),
         confirmable: (issuerMatchesOrganization || facts.sharedEvidenceException !== null)
-          && storedPendingIds.has(item.approvalEventId)
+          && storedPendingIds.has(item.approvalEventId),
+        // P4 server2 round 7 (p4-web3 review M-1): the same sender facts as the
+        // approval card (one helper), so the manual confirmation shows the From
+        // address, the verdict and its warning. Display only: `confirmable` and
+        // the verification endpoint are unchanged.
+        ...approvalEvidenceSenderFacts({
+          issuerMatchesOrganization,
+          sharedEvidence: facts.sharedEvidenceException !== null,
+          senderDomainCheck: facts.senderDomainCheck
+        })
       };
     }));
 
@@ -7835,7 +7843,6 @@ export function createApp({
       // approval and the server's wording for it, so the card never reads
       // 「申告どおり」 for a mail from a foreign domain. Display and warning only.
       const senderDomainCheck = facts.senderDomainCheck;
-      const senderWarning = evidenceSenderDomainWarning(senderDomainCheck);
       const eventIntegrity = integrity.get(event.id);
       const sameContentEventId = eventIntegrity?.sameContentEventId
         ?? [...integrity.entries()].find(([, other]) => other.sameContentEventId === event.id)?.[0]
@@ -7857,11 +7864,9 @@ export function createApp({
           issuerMatchesOrganization,
           uploadedAt: evidence?.uploadedAt ?? null,
           uploadedBy: evidence?.uploaderId ? { id: evidence.uploaderId, displayName: evidence.uploaderName ?? null } : null,
-          fromAddress: senderDomainCheck?.fromAddress ?? null,
-          senderDomainCheck,
-          senderVerdict: evidenceSenderVerdict(senderDomainCheck),
-          declarationLine: approvalEvidenceDeclarationLine({ issuerMatchesOrganization, sharedEvidence: facts.sharedEvidenceException !== null, senderDomainCheck }),
-          warnings: senderWarning ? [senderWarning] : [],
+          // One helper for the card and the gate (round 7): fromAddress, senderDomainCheck,
+          // senderVerdict, declarationLine, warnings.
+          ...approvalEvidenceSenderFacts({ issuerMatchesOrganization, sharedEvidence: facts.sharedEvidenceException !== null, senderDomainCheck }),
           evidenceSource: row?.evidenceSource ?? null,
           identifierStatus: event.evidenceIdentifierStatus ?? null,
           manualVerification: state.manualVerification,
