@@ -519,6 +519,8 @@ describe('X3: the send evidence keeps its own file name and says its send check'
     expect(sendEvidenceDisplayFilename('a\nb/c\u0007d.eml')).toBe('cd.eml');
     expect(sendEvidenceDisplayFilename('  spaced.eml  ')).toBe('spaced.eml');
     expect(sendEvidenceDisplayFilename(`${'あ'.repeat(250)}.eml`)).toBe('あ'.repeat(200));
+    // Cut by characters, never inside a surrogate pair (𠮷 is two UTF-16 units).
+    expect(sendEvidenceDisplayFilename(`${'𠮷'.repeat(250)}.eml`)).toBe('𠮷'.repeat(200));
     expect(sendEvidenceDisplayFilename('<script>alert(1)</script>.eml')).toBe('script>.eml');
     for (const bad of [undefined, null, 7, {}, '', '   ', 'dir/', '\u0001\u0002']) expect(sendEvidenceDisplayFilename(bad), String(bad)).toBeNull();
   });
