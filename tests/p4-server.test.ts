@@ -20,6 +20,7 @@ import {
   accounts,
   auditEvents,
   createDatabase,
+  documents,
   filmSupplyOrders,
   makerPoEvents,
   makerPurchaseOrders,
@@ -32,11 +33,12 @@ import {
 import {
   evaluateCeoApprovalFacts,
   evaluateEvidenceSenderDomain,
-  evaluateMakerPoEmlEvidence
+  evaluateMakerPoEmlEvidence,
+  evidenceSenderDomainWarning
 } from '@kanei/core';
 import { createApp } from '../apps/api/src/app.js';
 import { issueToken, SESSION_COOKIE, sessionTokenHashForRole } from '../apps/api/src/auth.js';
-import { roleScopedIdempotencyKey } from '../apps/api/src/idempotency.js';
+import { IdempotencyStore, roleScopedIdempotencyKey, type IdempotencyBackend } from '../apps/api/src/idempotency.js';
 import { withApprovalSnapshot } from './helpers/approval-snapshot.js';
 
 const databaseUrl = process.env.DATABASE_URL!;
@@ -46,7 +48,7 @@ if (!/@127\.0\.0\.1:5434\/kanei_crm_mvp_test($|\?)/.test(databaseUrl)) {
 const { db, pool } = createDatabase(databaseUrl);
 
 const ids = {
-  admin: uuidv7(), staff: uuidv7(), staffNew: uuidv7(), staffOff: uuidv7(), viewer: uuidv7(), auditor: uuidv7(), flip: uuidv7(),
+  admin: uuidv7(), staff: uuidv7(), staffNew: uuidv7(), staffOff: uuidv7(), staffDeleted: uuidv7(), viewer: uuidv7(), auditor: uuidv7(), flip: uuidv7(),
   customer: uuidv7(), customerNoMail: uuidv7(), seven: uuidv7(), maker: uuidv7(),
   projectA: uuidv7(), projectB: uuidv7()
 };
@@ -246,6 +248,8 @@ beforeAll(async () => {
     { id: ids.staff, username: 'staff_p4', passwordHash: 'not-a-login-hash', displayName: '合成担当者P4', role: 'staff' },
     { id: ids.staffNew, username: 'staff_new_p4', passwordHash: 'not-a-login-hash', displayName: '合成新任担当P4', role: 'staff' },
     { id: ids.staffOff, username: 'staff_off_p4', passwordHash: 'not-a-login-hash', displayName: '合成無効担当P4', role: 'staff', isActive: false },
+    // Review L-2: logically deleted while is_active stays true.
+    { id: ids.staffDeleted, username: 'staff_deleted_p4', passwordHash: 'not-a-login-hash', displayName: '合成削除済担当P4', role: 'staff', isActive: true, deletedAt: new Date('2026-11-01T00:00:00.000Z') },
     { id: ids.viewer, username: 'viewer_p4', passwordHash: 'not-a-login-hash', displayName: '合成閲覧者P4', role: 'viewer' },
     { id: ids.auditor, username: 'auditor_p4', passwordHash: 'not-a-login-hash', displayName: '合成監査P4', role: 'auditor' },
     { id: ids.flip, username: 'flip_p4', passwordHash: 'not-a-login-hash', displayName: '合成役割変更P4', role: 'admin' }
@@ -742,5 +746,190 @@ describe('H14: a delivery the uploader may not confirm waits in the representati
     for (const role of ['staff', 'viewer', 'auditor'] as const) {
       expect((await get(role, '/api/representative-queue')).status, role).toBe(403);
     }
+  });
+});
+
+// ================================================================ P4 review (REVIEW.md M-1, M-2, L-1, L-2)
+describe('P4 review M-1: the judged send time passes the SENT_AT_IN_FUTURE gate too (fail closed)', () => {
+  function sendMail(code: string, artwork: string, date: Date): string {
+    const boundary = '----m1-boundary';
+    return [
+      `From: KANEI <${SENDER}>`, `To: Maker <${PAPER_RECIPIENT}>`, `Subject: 製造先発注書 ${code}`,
+      `Date: ${date.toUTCString()}`, `Message-ID: <m1-${nextTag()}@mail.kanei.example>`,
+      'MIME-Version: 1.0', `Content-Type: multipart/mixed; boundary="${boundary}"`, '',
+      `--${boundary}`, 'Content-Type: text/plain; charset=UTF-8', '', `発注コード ${code}`, '',
+      `--${boundary}`, 'Content-Type: text/plain; name="po.txt"', 'Content-Disposition: attachment; filename="po.txt"',
+      'Content-Transfer-Encoding: base64', '', b64(artwork), '', `--${boundary}--`, ''
+    ].join('\r\n');
+  }
+  async function approvedPaper() {
+    const chain = await approvedOrder();
+    const poId = await createPaper(chain.orderId);
+    expect((await post('admin', `/api/maker-purchase-orders/${poId}/ceo-approval`, await withApprovalSnapshot(app, tokens.admin, poId))).status).toBe(200);
+    return { chain, poId };
+  }
+
+  it('declared now+9 min with a Date of now+18 min is refused 422 SENT_AT_IN_FUTURE; nothing is recorded, the evidence file included', async () => {
+    const { chain, poId } = await approvedPaper();
+    const now = Date.now();
+    const refused = await post('staff', `/api/maker-purchase-orders/${poId}/send-evidence`, {
+      contentBase64: b64(sendMail(chain.code, chain.artwork, new Date(now + 18 * 60_000))),
+      senderAddress: SENDER, recipients: [PAPER_RECIPIENT], sentAt: new Date(now + 9 * 60_000).toISOString()
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(422);
+    expect(refused.body.code).toBe('SENT_AT_IN_FUTURE');
+    expect(new Date(refused.body.sentAt).getTime()).toBeGreaterThan(now + 17 * 60_000);
+    expect(await db.select().from(makerPoEvents)
+      .where(and(eq(makerPoEvents.makerPurchaseOrderId, poId), eq(makerPoEvents.eventType, 'SEND_EVIDENCE_REGISTERED')))).toHaveLength(0);
+    expect(await db.select().from(documents)
+      .where(and(eq(documents.makerPurchaseOrderId, poId), eq(documents.documentType, 'send_evidence')))).toHaveLength(0);
+    expect((await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)))[0]!.status).toBe('APPROVED_FOR_MANUAL_SEND');
+  });
+
+  it('a Date a few minutes ahead (inside the allowed skew) still verifies and is stored as the header says', async () => {
+    const { chain, poId } = await approvedPaper();
+    const now = Date.now();
+    const date = new Date(Math.floor((now + 4 * 60_000) / 1000) * 1000);
+    const sent = await post('staff', `/api/maker-purchase-orders/${poId}/send-evidence`, {
+      contentBase64: b64(sendMail(chain.code, chain.artwork, date)),
+      senderAddress: SENDER, recipients: [PAPER_RECIPIENT], sentAt: new Date(now + 60_000).toISOString()
+    });
+    expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+    expect(sent.body.verificationStatus).toBe('VERIFIED');
+    expect(new Date(sent.body.event.sentAt).toISOString()).toBe(date.toISOString());
+  });
+});
+
+describe('P4 review M-2: N2 boundaries and the N8 wait path', () => {
+  const RECIPIENT = 'maker@example.com';
+  const ARTWORK = 'm2 approved artwork\n';
+  function mail(dateIso: string): Buffer {
+    const boundary = '----m2-boundary';
+    return Buffer.from([
+      `From: KANEI <${SENDER}>`, `To: Maker <${RECIPIENT}>`, 'Subject: 製造先発注書 FSO-M2-0001',
+      `Date: ${new Date(dateIso).toUTCString()}`, 'Message-ID: <m2@mail.kanei.example>',
+      'MIME-Version: 1.0', `Content-Type: multipart/mixed; boundary="${boundary}"`, '',
+      `--${boundary}`, 'Content-Type: text/plain; charset=UTF-8', '', '添付します', '',
+      `--${boundary}`, 'Content-Type: text/plain; name="po.txt"', 'Content-Disposition: attachment; filename="po.txt"',
+      'Content-Transfer-Encoding: base64', '', b64(ARTWORK), '', `--${boundary}--`, ''
+    ].join('\r\n'), 'utf8');
+  }
+  const evaluate = (dateIso: string, sentAtIso: string, approvedIso: string) => evaluateMakerPoEmlEvidence({
+    bytes: mail(dateIso), sentAt: new Date(sentAtIso), ceoApprovedAt: new Date(approvedIso), now: new Date('2026-11-16T02:00:00.000Z'),
+    expectedRecipientAddress: RECIPIENT, recordedSenderAddress: SENDER, subjectIdentifiers: ['FSO-M2-0001'],
+    artworkFileSha256s: [sha256(ARTWORK)]
+  });
+
+  it('a Date exactly equal to the approval instant is not "before" it (strict <): VERIFIED', () => {
+    const result = evaluate('2026-11-16T00:10:20.000Z', '2026-11-16T00:10:00.000Z', '2026-11-16T00:10:20.000Z');
+    expect(result.effectiveSentAt.toISOString()).toBe('2026-11-16T00:10:20.000Z');
+    expect(result.verificationStatus).toBe('VERIFIED');
+  });
+
+  it('a Date exactly at the 10-minute skew tolerance is adopted; one second more is a conflict judged by sentAt', () => {
+    const at = evaluate('2026-11-16T00:20:00.000Z', '2026-11-16T00:10:00.000Z', '2026-11-16T00:05:00.000Z');
+    expect(at.effectiveSentAt.toISOString()).toBe('2026-11-16T00:20:00.000Z');
+    expect(at.verificationStatus).toBe('VERIFIED');
+    const over = evaluate('2026-11-16T00:20:01.000Z', '2026-11-16T00:10:00.000Z', '2026-11-16T00:05:00.000Z');
+    expect(over.effectiveSentAt.toISOString()).toBe('2026-11-16T00:10:00.000Z');
+    if (over.verificationStatus !== 'PENDING_MANUAL_VERIFICATION') throw new Error('expected pending');
+    expect(over.pendingCodes).toContain('EML_DATE_SENT_AT_CONFLICT');
+  });
+
+  it('N8: a request that waited on a forgotten first answer begins again with the same role-scoped key', async () => {
+    const inner = new IdempotencyStore();
+    const keys: string[] = [];
+    let secondArrived!: () => void;
+    const arrived = new Promise<void>((resolve) => { secondArrived = resolve; });
+    const spy: IdempotencyBackend = {
+      begin(scope, storedKey, fingerprint) {
+        keys.push(storedKey);
+        if (keys.length === 2) secondArrived();
+        const lookup = inner.begin(scope, storedKey, fingerprint);
+        if (keys.length === 1 && lookup.kind === 'execute') {
+          // Hold the first answer until the second request is waiting on it.
+          const complete = lookup.complete;
+          return { kind: 'execute', complete: async (answer) => {
+            await Promise.race([arrived, new Promise((resolve) => setTimeout(resolve, 5000))]);
+            await complete(answer);
+          } };
+        }
+        return lookup;
+      }
+    };
+    const waitingApp = createApp({ db, idempotencyStore: spy });
+    const k = key();
+    const request = () => waitingApp.request(`/api/projects/${ids.projectA}/seven-purchase-orders`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', cookie: `${SESSION_COOKIE}=${tokens.staff}`, 'Idempotency-Key': k },
+      body: JSON.stringify({})
+    });
+    const answers = await Promise.all([request(), request()]);
+    // The first answer is a refusal (4xx), so it is forgotten and the waiter runs itself.
+    expect(answers.map((answer) => answer.status)).toEqual([422, 422]);
+    expect(keys).toHaveLength(3);
+    expect(keys).toEqual(Array(3).fill(roleScopedIdempotencyKey('staff', k)));
+  });
+});
+
+describe('P4 review L-2: a logically deleted user cannot be assigned', () => {
+  it('deleted_at set (even with is_active true) → 422 ASSIGNMENT_USER_NOT_FOUND, no row', async () => {
+    const refused = await post('admin', `/api/projects/${ids.projectA}/assignments`, { userId: ids.staffDeleted });
+    expect(refused.status).toBe(422);
+    expect(refused.body.code).toBe('ASSIGNMENT_USER_NOT_FOUND');
+    expect(await db.select().from(projectAssignments).where(eq(projectAssignments.userId, ids.staffDeleted))).toHaveLength(0);
+  });
+});
+
+describe('P4 review L-1: From shapes that cannot be compared become warnings (never refusals)', () => {
+  const raw = (lines: string[]) => Buffer.from([...lines, '', '本文', ''].join('\r\n'), 'utf8');
+  const check = (bytes: Buffer) => evaluateEvidenceSenderDomain({ bytes, registeredContactEmail: CUSTOMER_MAIL });
+
+  it('a mail with only a From header (no Message-ID, Date or Received) is still compared', () => {
+    expect(check(raw(['From: 承認者 <a@customer-p4.example>', 'Subject: 承認'])).status).toBe('match');
+    expect(check(raw(['From: 承認者 <a@other.example>', 'Subject: 承認'])).status).toBe('mismatch');
+  });
+
+  it('an IP literal is compared as written and reported as a mismatch', () => {
+    const result = check(raw(['From: a@[203.0.113.5]', 'Date: Mon, 16 Nov 2026 01:00:00 +0000']));
+    expect(result).toMatchObject({ status: 'mismatch', fromDomain: '[203.0.113.5]' });
+  });
+
+  it('two From headers, or one From with two addresses, are multiple_from (the first is never trusted alone)', () => {
+    expect(check(raw(['From: good <a@customer-p4.example>', 'From: evil <b@evil.example>', 'Date: Mon, 16 Nov 2026 01:00:00 +0000'])).status).toBe('multiple_from');
+    expect(check(raw(['From: a@customer-p4.example, b@evil.example', 'Date: Mon, 16 Nov 2026 01:00:00 +0000'])).status).toBe('multiple_from');
+  });
+
+  it('a non-ASCII (homograph) domain is from_missing, not a silent match', () => {
+    expect(check(raw(['From: a@customer-p4.exаmple', 'Date: Mon, 16 Nov 2026 01:00:00 +0000'])).status).toBe('from_missing');
+  });
+
+  it('the warning helper: mismatch → DOMAIN_MISMATCH; from_missing / multiple_from → UNVERIFIABLE; the rest → none', () => {
+    const base = { fromAddress: null, fromDomain: null, registeredDomain: 'customer-p4.example' };
+    expect(evidenceSenderDomainWarning({ ...base, status: 'mismatch' })?.code).toBe('EVIDENCE_SENDER_DOMAIN_MISMATCH');
+    expect(evidenceSenderDomainWarning({ ...base, status: 'from_missing' })?.code).toBe('EVIDENCE_SENDER_UNVERIFIABLE');
+    expect(evidenceSenderDomainWarning({ ...base, status: 'multiple_from' })?.code).toBe('EVIDENCE_SENDER_UNVERIFIABLE');
+    for (const status of ['match', 'not_email', 'no_registered_domain'] as const) {
+      expect(evidenceSenderDomainWarning({ ...base, status }), status).toBeNull();
+    }
+    expect(evidenceSenderDomainWarning(null)).toBeNull();
+  });
+
+  it('API: an approval mail with two From headers is recorded (201) with the UNVERIFIABLE warning; counting is unchanged', async () => {
+    const chain = await orderWithRevision();
+    const tag = nextTag();
+    const eml = [
+      'From: 承認者 <boss@customer-p4.example>', 'From: 別人 <x@evil.example>',
+      'To: KANEI 担当 <staff@kanei.example>', `Subject: 校正承認 ${tag}`, 'Date: Mon, 16 Nov 2026 01:00:00 +0000',
+      `Message-ID: <approval-${tag}@mail.example>`, 'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', '', `承認します（${tag}）`, ''
+    ].join('\r\n');
+    const recorded = await recordApproval(chain, 'customer', eml);
+    expect(recorded.status, JSON.stringify(recorded.body)).toBe(201);
+    expect(recorded.body).toMatchObject({
+      evidenceIdentifierStatus: 'verified_in_document',
+      countsTowardDualApproval: true,
+      senderDomainCheck: { status: 'multiple_from' },
+      warnings: [{ code: 'EVIDENCE_SENDER_UNVERIFIABLE' }]
+    });
   });
 });
