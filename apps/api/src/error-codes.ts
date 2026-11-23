@@ -280,6 +280,7 @@ export const ERROR_MESSAGES_JA: Readonly<Record<string, string>> = {
   DELIVERY_EVIDENCE_NOT_VERIFIED: '納品の証跡を先に文書画面で確認済みにしてください',
   DELIVERY_EVIDENCE_PROJECT_MISMATCH: '納品の証跡がこの案件に見つかりません',
   DELIVERY_EVIDENCE_ORDER_MISMATCH: '納品の証跡は別の発注に紐付いています',
+  DELIVERY_EVIDENCE_MAKER_PO_BOUND: 'メーカーの受領書（メーカー発注書に紐付いた受領証跡）は納品確認の証跡にできません。お客様の納品受領の証跡を選んでください',
   DELIVERY_ALREADY_CONFIRMED: 'この納品はすでに確認済みです',
   DELIVERY_SEQUENCE_EXISTS: 'この納品の連番はすでに登録されています',
   INVALID_DELIVERY_SEQUENCE: '納品の連番は1以上の整数にしてください',

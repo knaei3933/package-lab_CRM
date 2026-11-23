@@ -36,9 +36,8 @@ import {
   CEO_APPROVAL_FACT_MESSAGES,
   evaluateEvidenceSenderDomain,
   evidenceSenderDomainWarning,
-  evidenceSenderVerdict,
-  approvalEvidenceDeclarationLine,
   parseStoredEvidenceSenderDomainCheck,
+  approvalEvidenceSenderFacts,
   type EvidenceSenderDomainCheck,
   evaluateRevisionRegistrationGate,
   evaluateSevenPoChecklist,
@@ -785,6 +784,18 @@ async function readCappedBody(request: Request, cap: number): Promise<Uint8Array
  * `blocked` rows all read it, so the screen can never show a lock the PATCH
  * would not apply (or the reverse).
  */
+/**
+ * P4 server2 review3/review4 M-1: the confirmation's evidence is the maker's
+ * acceptance of the paper — the document is bound to a maker PO, or its bytes
+ * (SHA-256) equal a version of a maker-PO-bound document of the same project.
+ * Read side of the refusal in the confirmation handler (legacy confirmations).
+ */
+function evidenceFromMakerPoSql() {
+  return sql<boolean>`(${documents.makerPurchaseOrderId} is not null or exists (
+    select 1 from document_versions mv join documents md on md.id = mv.document_id
+    where md.project_id = ${documents.projectId} and md.maker_purchase_order_id is not null and mv.sha256 = ${documentVersions.sha256}))`;
+}
+
 export function liveApprovedPaperOf(filmSupplyOrderIds: string[]) {
   return and(
     inArray(makerPurchaseOrders.filmSupplyOrderId, filmSupplyOrderIds),
@@ -2887,13 +2898,19 @@ export function createApp({
     const rows = await executor.select({
       deliveryId: filmDeliveries.id,
       confirmationId: deliveryConfirmations.id,
-      evidenceDocumentVersionId: deliveryConfirmations.evidenceDocumentVersionId
+      evidenceDocumentVersionId: deliveryConfirmations.evidenceDocumentVersionId,
+      evidenceFromMakerPo: evidenceFromMakerPoSql()
     }).from(filmDeliveries)
       .leftJoin(deliveryConfirmations, eq(deliveryConfirmations.filmDeliveryId, filmDeliveries.id))
+      .leftJoin(documentVersions, eq(documentVersions.id, deliveryConfirmations.evidenceDocumentVersionId))
+      .leftJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(filmDeliveries.filmSupplyOrderId, orderId))
       .orderBy(asc(filmDeliveries.deliverySequence), asc(filmDeliveries.id));
     const deliveryIds = new Set(rows.map((row) => row.deliveryId));
-    const confirmed = rows.filter((row) => row.confirmationId !== null);
+    // P4 server2 review3 M-1: a confirmation recorded (before the refusal existed)
+    // on a maker-PO-bound document is not receipt evidence, so it does not make
+    // the closure an evidence-based one — that closure needs the acknowledgment.
+    const confirmed = rows.filter((row) => row.confirmationId !== null && row.evidenceFromMakerPo !== true);
     return {
       counts: { total: deliveryIds.size, confirmed: new Set(confirmed.map((row) => row.deliveryId)).size },
       confirmations: confirmed.map((row) => ({
@@ -3108,10 +3125,28 @@ export function createApp({
         projectId: documents.projectId,
         documentType: documents.documentType,
         filmSupplyOrderId: documents.filmSupplyOrderId,
-        verificationStatus: documents.verificationStatus
+        // P4 server2 review3 M-1: a maker-PO-bound document is refused as delivery evidence.
+        makerPurchaseOrderId: documents.makerPurchaseOrderId,
+        verificationStatus: documents.verificationStatus,
+        sha256: documentVersions.sha256
       }).from(documentVersions)
         .innerJoin(documents, eq(documents.id, documentVersions.documentId))
         .where(eq(documentVersions.id, requestedEvidenceId)).limit(1)
+      : [];
+    // P4 server2 review4 M-1 (conductor decision): the same bytes as any version
+    // of a maker-PO-bound document of this project (withdrawn, replaced and
+    // cancelled-paper versions included) are the maker's acceptance re-uploaded
+    // without its binding — refused like the bound document itself. Scoped to
+    // the project: a customer receipt reused for another order is untouched.
+    const [makerContentMatch] = evidence
+      ? await db.select({ id: documentVersions.id }).from(documentVersions)
+        .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+        .where(and(
+          eq(documents.projectId, target.projectId),
+          isNotNull(documents.makerPurchaseOrderId),
+          eq(documentVersions.sha256, evidence.sha256),
+          ne(documentVersions.id, evidence.versionId)
+        )).limit(1)
       : [];
 
     const evaluation = evaluateDeliveryEvidence(requestedEvidenceId, {
@@ -3119,7 +3154,7 @@ export function createApp({
         projectId: target.projectId,
         filmSupplyOrderId: kind === 'film' ? target.orderId : null
       },
-      evidenceDocument: evidence ?? null
+      evidenceDocument: evidence ? { ...evidence, contentMatchesMakerPoDocument: makerContentMatch !== undefined } : null
     });
     if (!evaluation.ok) {
       return context.json({ error: evaluation.message, code: evaluation.code }, 422);
@@ -3203,11 +3238,13 @@ export function createApp({
       confirmedByUserId: deliveryConfirmations.confirmedByUserId,
       confirmedByName: users.displayName,
       evidenceDocumentVersionId: deliveryConfirmations.evidenceDocumentVersionId,
-      evidenceUploaderId: documentVersions.createdByUserId
+      evidenceUploaderId: documentVersions.createdByUserId,
+      evidenceFromMakerPo: evidenceFromMakerPoSql()
     }).from(filmDeliveries)
       .leftJoin(deliveryConfirmations, eq(deliveryConfirmations.filmDeliveryId, filmDeliveries.id))
       .leftJoin(users, eq(users.id, deliveryConfirmations.confirmedByUserId))
       .leftJoin(documentVersions, eq(documentVersions.id, deliveryConfirmations.evidenceDocumentVersionId))
+      .leftJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(filmDeliveries.filmSupplyOrderId, orderId))
       .orderBy(filmDeliveries.deliverySequence, filmDeliveries.id);
     const [anyFillingOrder] = await db.select({ id: fillingOrders.id }).from(fillingOrders)
@@ -3250,7 +3287,10 @@ export function createApp({
                 confirmedAt: delivery.confirmedAt,
                 confirmedBy: { id: delivery.confirmedByUserId, displayName: delivery.confirmedByName ?? null },
                 evidenceDocumentVersionId: delivery.evidenceDocumentVersionId,
-                selfVerification: delivery.evidenceUploaderId !== null && delivery.evidenceUploaderId === delivery.confirmedByUserId
+                selfVerification: delivery.evidenceUploaderId !== null && delivery.evidenceUploaderId === delivery.confirmedByUserId,
+                // P4 server2 review3 M-1: 'maker_po_acceptance' only on confirmations
+                // recorded before the refusal (legacy data); new ones are always receipts.
+                evidenceKind: delivery.evidenceFromMakerPo === true ? 'maker_po_acceptance' : 'customer_receipt'
               }
             : null
         }))
@@ -3308,7 +3348,8 @@ export function createApp({
     }
     // P4 server2 (web2a review M-2): while the order waits for its closure, what
     // the closure would rest on now and whether it needs acknowledgeNoEvidence.
-    const confirmedCount = deliveries.filter((delivery) => delivery.confirmationId).length;
+    // Receipt-evidence confirmations only, the same rule as the closure itself (review3 M-1).
+    const confirmedCount = deliveries.filter((delivery) => delivery.confirmationId && delivery.evidenceFromMakerPo !== true).length;
     const closureBasisNow = filmReceiptClosureBasis({ total: deliveries.length, confirmed: confirmedCount });
     const receiptClosure = status === 'FILM_DELIVERED'
       ? { basis: closureBasisNow, acknowledgeNoEvidenceRequired: closureBasisNow === 'evidence_free_acknowledgment' }
@@ -6463,7 +6504,7 @@ export function createApp({
     const pendingWithIssuer = await Promise.all(pendingManualVerifications.map(async (item) => {
       const facts = item.evidenceDocumentVersionId
         ? await loadApprovalEvidenceIssuerFacts(item.approvalEventId, item.evidenceDocumentVersionId)
-        : { issuerEntity: null, sharedEvidenceException: null };
+        : { issuerEntity: null, sharedEvidenceException: null, senderDomainCheck: null };
       const expectedIssuerEntity = APPROVAL_ORGANIZATION_ISSUER[item.organization];
       const issuerMatchesOrganization = facts.issuerEntity === expectedIssuerEntity;
       const eventIntegrity = integrity.get(item.approvalEventId);
@@ -6483,7 +6524,16 @@ export function createApp({
         // a held-back older auto-verified one must be recorded again.
         recordedAsPending: storedPendingIds.has(item.approvalEventId),
         confirmable: (issuerMatchesOrganization || facts.sharedEvidenceException !== null)
-          && storedPendingIds.has(item.approvalEventId)
+          && storedPendingIds.has(item.approvalEventId),
+        // P4 server2 round 7 (p4-web3 review M-1): the same sender facts as the
+        // approval card (one helper), so the manual confirmation shows the From
+        // address, the verdict and its warning. Display only: `confirmable` and
+        // the verification endpoint are unchanged.
+        ...approvalEvidenceSenderFacts({
+          issuerMatchesOrganization,
+          sharedEvidence: facts.sharedEvidenceException !== null,
+          senderDomainCheck: facts.senderDomainCheck
+        })
       };
     }));
 
@@ -7793,7 +7843,6 @@ export function createApp({
       // approval and the server's wording for it, so the card never reads
       // 「申告どおり」 for a mail from a foreign domain. Display and warning only.
       const senderDomainCheck = facts.senderDomainCheck;
-      const senderWarning = evidenceSenderDomainWarning(senderDomainCheck);
       const eventIntegrity = integrity.get(event.id);
       const sameContentEventId = eventIntegrity?.sameContentEventId
         ?? [...integrity.entries()].find(([, other]) => other.sameContentEventId === event.id)?.[0]
@@ -7815,11 +7864,9 @@ export function createApp({
           issuerMatchesOrganization,
           uploadedAt: evidence?.uploadedAt ?? null,
           uploadedBy: evidence?.uploaderId ? { id: evidence.uploaderId, displayName: evidence.uploaderName ?? null } : null,
-          fromAddress: senderDomainCheck?.fromAddress ?? null,
-          senderDomainCheck,
-          senderVerdict: evidenceSenderVerdict(senderDomainCheck),
-          declarationLine: approvalEvidenceDeclarationLine({ issuerMatchesOrganization, sharedEvidence: facts.sharedEvidenceException !== null, senderDomainCheck }),
-          warnings: senderWarning ? [senderWarning] : [],
+          // One helper for the card and the gate (round 7): fromAddress, senderDomainCheck,
+          // senderVerdict, declarationLine, warnings.
+          ...approvalEvidenceSenderFacts({ issuerMatchesOrganization, sharedEvidence: facts.sharedEvidenceException !== null, senderDomainCheck }),
           evidenceSource: row?.evidenceSource ?? null,
           identifierStatus: event.evidenceIdentifierStatus ?? null,
           manualVerification: state.manualVerification,
@@ -8558,7 +8605,9 @@ export function createApp({
         sql`not exists (select 1 from delivery_confirmations c where c.film_delivery_id = ${filmDeliveries.id})`,
         sql`exists (select 1 from documents d join document_versions v on v.document_id = d.id join users u on u.id = v.created_by_user_id
           where d.film_supply_order_id = ${filmDeliveries.filmSupplyOrderId} and d.document_type = 'acceptance_evidence'
-            and d.maker_purchase_order_id is null and u.role::text <> 'admin')`
+            and d.maker_purchase_order_id is null and u.role::text <> 'admin'
+            and not exists (select 1 from document_versions mv join documents md on md.id = mv.document_id
+              where md.project_id = d.project_id and md.maker_purchase_order_id is not null and mv.sha256 = v.sha256))`
       ))
       .orderBy(asc(filmDeliveries.createdAt), asc(filmDeliveries.id))
       .limit(limit + 1));
@@ -8581,6 +8630,8 @@ export function createApp({
       .where(and(
         eq(documents.documentType, 'acceptance_evidence'),
         isNull(documents.makerPurchaseOrderId),
+        // review4 M-1: nor an unbound copy (same bytes) of a maker-PO-bound document.
+        sql`not ${evidenceFromMakerPoSql()}`,
         inArray(documents.filmSupplyOrderId, deliveryOrderIds)
       ))
       .orderBy(asc(documentVersions.createdAt), asc(documentVersions.id));

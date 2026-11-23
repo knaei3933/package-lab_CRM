@@ -16,6 +16,8 @@ import {
   accounts,
   auditEvents,
   createDatabase,
+  deliveryConfirmations,
+  documents,
   filmSupplyOrders,
   makerPurchaseOrders,
   projectAssignments,
@@ -26,6 +28,8 @@ import {
 } from '@kanei/db';
 import {
   approvalEvidenceDeclarationLine,
+  approvalEvidenceSenderFacts,
+  evaluateDeliveryEvidence,
   evaluateFilmReceiptAssumption,
   evaluateFilmReceiptClosure,
   filmReceiptClosureBasis,
@@ -1151,5 +1155,398 @@ describe('(6) web2a review L-1: the delivery_confirmation queue item counts rece
     expect(item).toBeDefined();
     expect(item.detail.evidence.map((entry: { documentId: string }) => entry.documentId)).toEqual([receipt.document.id]);
     expect(JSON.stringify(item)).not.toContain(makerAcceptance.document.id);
+  });
+});
+
+// ================================================================ (7) review3 M-1 / L-1
+describe('(7) review3 M-1: a maker-PO acceptance document never confirms a delivery', () => {
+  const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+  const closeUrl = (orderId: string) => `/api/film-supply-orders/${orderId}/receipt-assumption`;
+  const MAKER_BOUND_JA = 'メーカーの受領書（メーカー発注書に紐付いた受領証跡）は納品確認の証跡にできません。お客様の納品受領の証跡を選んでください';
+
+  async function orderWithDelivery() {
+    const order = await createOrder('prepaid');
+    const delivery = await post('staff', `/api/film-supply-orders/${order.orderId}/deliveries`, { filmSupplyOrderLineId: order.lineId, deliveredQuantity: 500, unit: 'sheets' });
+    expect(delivery.status, delivery.text).toBe(201);
+    const paperId = uuidv7();
+    await db.insert(makerPurchaseOrders).values({
+      id: paperId, filmSupplyOrderId: order.orderId, snapshot: {}, snapshotSha256: '0'.repeat(64), status: 'DRAFT', createdByUserId: ids.admin
+    });
+    return { ...order, deliveryId: delivery.body.id as string, paperId };
+  }
+  async function upload(role: Role, order: { orderId: string; sevenPoId: string }, extra: Record<string, unknown> = {}) {
+    const uploaded = await post(role, `/api/projects/${ids.projectA}/documents`, {
+      documentType: 'acceptance_evidence', issuerEntity: 'kanei', filename: `s2-r3-${tag()}.txt`, contentType: 'text/plain',
+      contentBase64: b64(`s2 r3 ${tag()}\n`), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, ...extra
+    });
+    expect(uploaded.status, uploaded.text).toBe(201);
+    return uploaded.body as { document: { id: string }; version: { id: string } };
+  }
+  const verify = async (documentId: string) =>
+    expect((await post('admin', `/api/documents/${documentId}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+  const confirmationsOf = (deliveryId: string) => db.select().from(deliveryConfirmations).where(eq(deliveryConfirmations.filmDeliveryId, deliveryId));
+
+  it('review3 R4 path: a verified maker-PO acceptance document is refused 422 DELIVERY_EVIDENCE_MAKER_PO_BOUND for staff and the representative; nothing is written', async () => {
+    const order = await orderWithDelivery();
+    // The representative uploads the maker's acceptance (step 10), so P-4 alone would let staff use it.
+    const maker = await upload('admin', order, { makerPurchaseOrderId: order.paperId });
+    await verify(maker.document.id);
+    const auditBefore = (await db.select().from(auditEvents).where(eq(auditEvents.entityId, order.deliveryId))).length;
+    for (const role of ['staff', 'admin'] as const) {
+      const refused = await post(role, `/api/film-deliveries/${order.deliveryId}/confirmation`, { evidenceDocumentVersionId: maker.version.id });
+      expect(refused.status, `${role} ${refused.text}`).toBe(422);
+      expect(refused.body.code, role).toBe('DELIVERY_EVIDENCE_MAKER_PO_BOUND');
+    }
+    expect(await confirmationsOf(order.deliveryId)).toHaveLength(0);
+    expect((await db.select().from(auditEvents).where(eq(auditEvents.entityId, order.deliveryId))).length).toBe(auditBefore);
+    // The delivery is still waiting, and the order cannot be closed as "confirmed".
+    await db.update(filmSupplyOrders).set({ status: 'FILM_DELIVERED' }).where(eq(filmSupplyOrders.id, order.orderId));
+    const status = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
+    expect(status.body.receiptClosure).toEqual({ basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true });
+    expect((await post('staff', closeUrl(order.orderId), { note: 'メーカー受領書で' })).body.code).toBe('RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED');
+  });
+
+  it('the specific reason wins even before verification (unverified maker document → same code, not NOT_VERIFIED)', async () => {
+    const order = await orderWithDelivery();
+    const maker = await upload('admin', order, { makerPurchaseOrderId: order.paperId });
+    const refused = await post('staff', `/api/film-deliveries/${order.deliveryId}/confirmation`, { evidenceDocumentVersionId: maker.version.id });
+    expect(refused.status).toBe(422);
+    expect(refused.body.code).toBe('DELIVERY_EVIDENCE_MAKER_PO_BOUND');
+  });
+
+  it('the customer receipt document still confirms (by someone other than the uploader), and the confirmation says customer_receipt', async () => {
+    const order = await orderWithDelivery();
+    const receipt = await upload('staff', order);
+    await verify(receipt.document.id);
+    expect((await post('staff', `/api/film-deliveries/${order.deliveryId}/confirmation`, { evidenceDocumentVersionId: receipt.version.id })).body.code)
+      .toBe('SELF_VERIFICATION_FORBIDDEN');
+    const confirmed = await post('admin', `/api/film-deliveries/${order.deliveryId}/confirmation`, { evidenceDocumentVersionId: receipt.version.id });
+    expect(confirmed.status, confirmed.text).toBe(201);
+    const status = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
+    expect(status.body.lines[0].deliveries[0].confirmation).toMatchObject({ evidenceDocumentVersionId: receipt.version.id, evidenceKind: 'customer_receipt' });
+  });
+
+  it('legacy data: a delivery confirmed on a maker document before the refusal is shown as maker_po_acceptance and does not make the closure evidence-based', async () => {
+    const order = await orderWithDelivery();
+    const maker = await upload('admin', order, { makerPurchaseOrderId: order.paperId });
+    await verify(maker.document.id);
+    // The pre-refusal shape, written directly (the API refuses it now).
+    await db.insert(deliveryConfirmations).values({
+      id: uuidv7(), deliveryKind: 'film', filmDeliveryId: order.deliveryId, evidenceDocumentVersionId: maker.version.id, confirmedByUserId: ids.staff2
+    });
+    await db.update(filmSupplyOrders).set({ status: 'FILM_DELIVERED' }).where(eq(filmSupplyOrders.id, order.orderId));
+    const status = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
+    expect(status.body.lines[0].deliveries[0].confirmation).toMatchObject({ evidenceKind: 'maker_po_acceptance' });
+    // §11-3 (review4 L-2): quantities and stage are unchanged — the legacy confirmation still counts there.
+    expect(status.body.lines[0]).toMatchObject({ deliveredQuantity: '500.000', confirmedQuantity: '500.000' });
+    expect(status.body.stage).toBe('quantity_confirmed');
+    expect(status.body.nextAction).toMatchObject({ action: 'CLOSE_ORDER' });
+    expect(status.body.receiptClosure).toEqual({ basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true });
+    // The queue does not ask for it again: the row is confirmed (read impact recorded in REPORT).
+    expect((await queue()).items.find((item) => item.key === `delivery_confirmation:${order.deliveryId}`)).toBeUndefined();
+    expect((await post('staff', closeUrl(order.orderId), { note: '旧データ' })).body.code).toBe('RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED');
+    const closed = await post('staff', closeUrl(order.orderId), { note: '旧データ', acknowledgeNoEvidence: true });
+    expect(closed.status, closed.text).toBe(200);
+    expect(closed.body).toMatchObject({ closureBasis: 'evidence_free_acknowledgment', evidenceFreeAcknowledgment: true, deliveries: { total: 1, confirmed: 0 } });
+  });
+
+  it('pure: the evaluator refuses a maker-bound document and keeps every earlier answer', () => {
+    const base = { projectId: 'p', documentType: 'acceptance_evidence', verificationStatus: 'verified', filmSupplyOrderId: 'o' };
+    const context = (evidenceDocument: any) => ({ order: { projectId: 'p', filmSupplyOrderId: 'o' }, evidenceDocument });
+    expect(evaluateDeliveryEvidence('v', context({ ...base, makerPurchaseOrderId: 'po' }))).toMatchObject({ ok: false, code: 'DELIVERY_EVIDENCE_MAKER_PO_BOUND' });
+    expect(evaluateDeliveryEvidence('v', context({ ...base, makerPurchaseOrderId: 'po', verificationStatus: 'unverified' }))).toMatchObject({ code: 'DELIVERY_EVIDENCE_MAKER_PO_BOUND' });
+    expect(evaluateDeliveryEvidence('v', context({ ...base, makerPurchaseOrderId: null }))).toEqual({ ok: true, confirmedOn: 'verified_delivery_evidence' });
+    expect(evaluateDeliveryEvidence('v', context(base))).toEqual({ ok: true, confirmedOn: 'verified_delivery_evidence' });
+    expect(evaluateDeliveryEvidence('v', context({ ...base, makerPurchaseOrderId: 'po', documentType: 'proof' }))).toMatchObject({ code: 'DELIVERY_EVIDENCE_DOCUMENT_TYPE_INVALID' });
+  });
+
+  it('the code is in the server dictionary (ja) and the web dictionary (ja/ko) with the 「納品確認の証跡にできません」 reason', async () => {
+    const { ERROR_MESSAGES_JA } = await import('../apps/api/src/error-codes.js');
+    const { ERROR_DICTIONARY } = await import('../apps/web/src/lib/error-dictionary-data.js');
+    expect((ERROR_MESSAGES_JA as Record<string, string>).DELIVERY_EVIDENCE_MAKER_PO_BOUND).toBe(MAKER_BOUND_JA);
+    const entry = (ERROR_DICTIONARY as Record<string, { ja: string; ko: string }>).DELIVERY_EVIDENCE_MAKER_PO_BOUND;
+    expect(entry?.ja).toContain('納品確認の証跡にできません');
+    expect(entry?.ko).toContain('납품 확인 증빙으로 쓸 수 없습니다');
+  });
+});
+
+describe('(7) review3 L-1: a closure recorded before P4 reads as evidence-free', () => {
+  it('no closureBasis in the audit row (pre-P4 shape) — or no audit row at all — reads evidence_free_acknowledgment, even with every delivery confirmed', async () => {
+    const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+    for (const withAuditRow of [true, false]) {
+      const order = await createOrder('prepaid');
+      const delivery = await post('staff', `/api/film-supply-orders/${order.orderId}/deliveries`, { filmSupplyOrderLineId: order.lineId, deliveredQuantity: 500, unit: 'sheets' });
+      const receipt = await post('staff', `/api/projects/${ids.projectA}/documents`, {
+        documentType: 'acceptance_evidence', issuerEntity: 'kanei', filename: `s2-l1-${tag()}.txt`, contentType: 'text/plain',
+        contentBase64: b64(`s2 l1 ${tag()}\n`), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId
+      });
+      expect((await post('admin', `/api/documents/${receipt.body.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+      expect((await post('admin', `/api/film-deliveries/${delivery.body.id}/confirmation`, { evidenceDocumentVersionId: receipt.body.version.id })).status).toBe(201);
+      const assumedAt = new Date('2026-11-10T09:00:00.000Z');
+      await db.update(filmSupplyOrders).set({
+        status: 'FILM_RECEIPT_ASSUMED_NO_ISSUE', receiptAssumedAt: assumedAt, receiptAssumedByUserId: ids.staff, receiptAssumedNote: 'P4以前の完了'
+      }).where(eq(filmSupplyOrders.id, order.orderId));
+      if (withAuditRow) {
+        await db.insert(auditEvents).values({
+          id: uuidv7(), projectId: ids.projectA, actorUserId: ids.staff, action: 'FILM_RECEIPT_ASSUMPTION_RECORDED',
+          entityType: 'film_supply_order', entityId: order.orderId,
+          beforeState: { status: 'FILM_DELIVERED', receiptAssumedAt: null },
+          afterState: { status: 'FILM_RECEIPT_ASSUMED_NO_ISSUE', receiptAssumedAt: assumedAt.toISOString(), receiptAssumedNote: 'P4以前の完了', evidenceFreeAcknowledgment: true },
+          occurredAt: assumedAt, requestMetadata: { operation: 'film_order:assume_receipt', evidenceFreeAcknowledgment: true }
+        });
+      }
+      const status = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
+      expect(status.body.receiptAssumption, String(withAuditRow)).toMatchObject({ note: 'P4以前の完了', closureBasis: 'evidence_free_acknowledgment' });
+    }
+  });
+});
+
+// ================================================================ (8) review4 M-1 / L-1
+describe('(8) review4 M-1: the maker acceptance re-uploaded without its binding (same bytes) is refused too', () => {
+  const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+  const confirmUrl = (deliveryId: string) => `/api/film-deliveries/${deliveryId}/confirmation`;
+
+  async function orderWithDelivery(project = ids.projectA) {
+    const order = await createOrder('prepaid', project);
+    const delivery = await post('staff', `/api/film-supply-orders/${order.orderId}/deliveries`, { filmSupplyOrderLineId: order.lineId, deliveredQuantity: 500, unit: 'sheets' });
+    expect(delivery.status, delivery.text).toBe(201);
+    const paperId = uuidv7();
+    await db.insert(makerPurchaseOrders).values({
+      id: paperId, filmSupplyOrderId: order.orderId, snapshot: {}, snapshotSha256: '0'.repeat(64), status: 'DRAFT', createdByUserId: ids.admin
+    });
+    return { ...order, project, deliveryId: delivery.body.id as string, paperId };
+  }
+  async function upload(role: Role, order: { orderId: string; sevenPoId: string; project: string }, content: string, extra: Record<string, unknown> = {}, filename = `s2-r4-${tag()}.txt`) {
+    const uploaded = await post(role, `/api/projects/${order.project}/documents`, {
+      documentType: 'acceptance_evidence', issuerEntity: 'kanei', filename, contentType: 'text/plain',
+      contentBase64: b64(content), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, ...extra
+    });
+    // 201 = a new document; 200 = a new version of an existing one (same project, type, issuer, file name).
+    expect([200, 201], uploaded.text).toContain(uploaded.status);
+    return uploaded.body as { document: { id: string }; version: { id: string; sha256?: string } };
+  }
+  const verify = async (documentId: string) =>
+    expect((await post('admin', `/api/documents/${documentId}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+  const confirmationsOf = (deliveryId: string) => db.select().from(deliveryConfirmations).where(eq(deliveryConfirmations.filmDeliveryId, deliveryId));
+
+  it('review4 B2: the maker document\'s bytes under another file name, unbound and verified → 422 DELIVERY_EVIDENCE_MAKER_PO_BOUND for staff and the representative; nothing written', async () => {
+    const order = await orderWithDelivery();
+    const bytes = `メーカー受入書 ${tag()}\n`;
+    await upload('admin', order, bytes, { makerPurchaseOrderId: order.paperId }, `maker-accept-${tag()}.txt`);
+    const copy = await upload('staff', order, bytes, {}, `receipt-looking-${tag()}.txt`);
+    await verify(copy.document.id);
+    // The evidence rule is decided before the P-4 self-check, so even the uploader gets the specific reason.
+    for (const role of ['admin', 'staff'] as const) {
+      const refused = await post(role, confirmUrl(order.deliveryId), { evidenceDocumentVersionId: copy.version.id });
+      expect(refused.status, `${role} ${refused.text}`).toBe(422);
+      expect(refused.body.code, role).toBe('DELIVERY_EVIDENCE_MAKER_PO_BOUND');
+    }
+    expect(await confirmationsOf(order.deliveryId)).toHaveLength(0);
+    // The queue does not raise 「納品の確認」 for that copy either.
+    expect((await queue()).items.find((item) => item.key === `delivery_confirmation:${order.deliveryId}`)).toBeUndefined();
+  });
+
+  it('a non-uploader staff member is refused the same way (the review4 R4/B2 path without the representative)', async () => {
+    const order = await orderWithDelivery();
+    const bytes = `メーカー受入書 ${tag()}\n`;
+    await upload('staff', order, bytes, { makerPurchaseOrderId: order.paperId }, `maker-accept-${tag()}.txt`);
+    const copy = await upload('admin', order, bytes, {}, `receipt-looking-${tag()}.txt`);
+    await verify(copy.document.id);
+    const refused = await post('staff', confirmUrl(order.deliveryId), { evidenceDocumentVersionId: copy.version.id });
+    expect(refused.status, refused.text).toBe(422);
+    expect(refused.body.code).toBe('DELIVERY_EVIDENCE_MAKER_PO_BOUND');
+  });
+
+  it('an older (replaced) version of the bound document and a cancelled paper\'s document count too', async () => {
+    const order = await orderWithDelivery();
+    const first = `メーカー受入書 v1 ${tag()}\n`;
+    const boundName = `maker-accept-${tag()}.txt`;
+    await upload('admin', order, first, { makerPurchaseOrderId: order.paperId }, boundName);
+    const replaced = await upload('admin', order, `メーカー受入書 v2 ${tag()}\n`, { makerPurchaseOrderId: order.paperId }, boundName);
+    expect((replaced.version as any).versionNumber).toBe(2); // the first bytes are now an older version
+    await db.update(makerPurchaseOrders).set({ status: 'CANCELLED' }).where(eq(makerPurchaseOrders.id, order.paperId));
+    const copy = await upload('staff', order, first, {}, `receipt-looking-${tag()}.txt`);
+    await verify(copy.document.id);
+    const refused = await post('admin', confirmUrl(order.deliveryId), { evidenceDocumentVersionId: copy.version.id });
+    expect(refused.body.code).toBe('DELIVERY_EVIDENCE_MAKER_PO_BOUND');
+  });
+
+  it('no regression: one customer receipt (same bytes) confirms deliveries of two orders of the project', async () => {
+    const first = await orderWithDelivery();
+    const second = await orderWithDelivery();
+    const bytes = `お客様受領書 ${tag()}\n`;
+    for (const order of [first, second]) {
+      const receipt = await upload('staff', order, bytes, {}, `customer-receipt-${tag()}.txt`);
+      await verify(receipt.document.id);
+      const confirmed = await post('admin', confirmUrl(order.deliveryId), { evidenceDocumentVersionId: receipt.version.id });
+      expect(confirmed.status, confirmed.text).toBe(201);
+    }
+  });
+
+  it('scope is the project: the same bytes bound to a maker PO in another project do not block this project\'s receipt', async () => {
+    const elsewhere = await orderWithDelivery(ids.projectB);
+    const here = await orderWithDelivery(ids.projectA);
+    const bytes = `共通の内容 ${tag()}\n`;
+    await upload('admin', elsewhere, bytes, { makerPurchaseOrderId: elsewhere.paperId }, `maker-accept-${tag()}.txt`);
+    const receipt = await upload('staff', here, bytes, {}, `customer-receipt-${tag()}.txt`);
+    await verify(receipt.document.id);
+    const confirmed = await post('admin', confirmUrl(here.deliveryId), { evidenceDocumentVersionId: receipt.version.id });
+    expect(confirmed.status, confirmed.text).toBe(201);
+    const status = await get('staff', `/api/film-supply-orders/${here.orderId}/delivery-status`);
+    expect(status.body.lines[0].deliveries[0].confirmation.evidenceKind).toBe('customer_receipt');
+  });
+
+  it('legacy read: a confirmation recorded on an unbound copy before this change is shown as maker_po_acceptance and is not counted for the closure', async () => {
+    const order = await orderWithDelivery();
+    const bytes = `メーカー受入書 ${tag()}\n`;
+    await upload('admin', order, bytes, { makerPurchaseOrderId: order.paperId }, `maker-accept-${tag()}.txt`);
+    const copy = await upload('staff', order, bytes, {}, `receipt-looking-${tag()}.txt`);
+    await db.insert(deliveryConfirmations).values({
+      id: uuidv7(), deliveryKind: 'film', filmDeliveryId: order.deliveryId, evidenceDocumentVersionId: copy.version.id, confirmedByUserId: ids.admin
+    });
+    await db.update(filmSupplyOrders).set({ status: 'FILM_DELIVERED' }).where(eq(filmSupplyOrders.id, order.orderId));
+    const status = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
+    expect(status.body.lines[0].deliveries[0].confirmation.evidenceKind).toBe('maker_po_acceptance');
+    expect(status.body.receiptClosure).toEqual({ basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true });
+    expect(status.body.lines[0].confirmedQuantity).toBe('500.000');
+  });
+
+  it('review4 L-1: the filling delivery confirmation refuses the maker document and its unbound copy', async () => {
+    const order = await orderWithDelivery();
+    const filling = await post('staff', `/api/projects/${ids.projectA}/filling-orders`, {
+      code: `FILL-S2-${tag()}`, lines: [{ lineNumber: 1, description: '合成充填S2', orderedQuantity: 100, unit: 'pods' }]
+    });
+    expect(filling.status, filling.text).toBe(201);
+    const fillingDelivery = await post('staff', `/api/filling-orders/${filling.body.id}/deliveries`, {
+      fillingOrderLineId: filling.body.lines[0].id, deliveredQuantity: 100, unit: 'pods'
+    });
+    expect(fillingDelivery.status, fillingDelivery.text).toBe(201);
+    const bytes = `メーカー受入書 ${tag()}\n`;
+    const bound = await upload('admin', order, bytes, { makerPurchaseOrderId: order.paperId }, `maker-accept-${tag()}.txt`);
+    await verify(bound.document.id);
+    const copy = await upload('staff', order, bytes, {}, `receipt-looking-${tag()}.txt`);
+    await verify(copy.document.id);
+    for (const version of [bound.version.id, copy.version.id]) {
+      const refused = await post('admin', `/api/filling-deliveries/${fillingDelivery.body.id}/confirmation`, { evidenceDocumentVersionId: version });
+      expect(refused.status, refused.text).toBe(422);
+      expect(refused.body.code).toBe('DELIVERY_EVIDENCE_MAKER_PO_BOUND');
+    }
+    const rows = await db.select().from(deliveryConfirmations).where(eq(deliveryConfirmations.fillingDeliveryId, fillingDelivery.body.id));
+    expect(rows).toHaveLength(0);
+  });
+
+  it('pure: a content match alone refuses; no match and no binding confirms', () => {
+    const base = { projectId: 'p', documentType: 'acceptance_evidence', verificationStatus: 'verified', filmSupplyOrderId: 'o', makerPurchaseOrderId: null };
+    const context = (evidenceDocument: any) => ({ order: { projectId: 'p', filmSupplyOrderId: 'o' }, evidenceDocument });
+    expect(evaluateDeliveryEvidence('v', context({ ...base, contentMatchesMakerPoDocument: true }))).toMatchObject({ code: 'DELIVERY_EVIDENCE_MAKER_PO_BOUND' });
+    expect(evaluateDeliveryEvidence('v', context({ ...base, contentMatchesMakerPoDocument: true, verificationStatus: 'unverified' }))).toMatchObject({ code: 'DELIVERY_EVIDENCE_MAKER_PO_BOUND' });
+    expect(evaluateDeliveryEvidence('v', context({ ...base, contentMatchesMakerPoDocument: false }))).toEqual({ ok: true, confirmedOn: 'verified_delivery_evidence' });
+  });
+});
+
+// ================================================================ (9) round 7: p4-web3 review M-1
+describe('(9) p4-web3 review M-1: the approval gate\'s pending manual verifications carry the card\'s sender facts', () => {
+  const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+  /** An approval mail without Message-ID: recorded as pending the representative's manual verification. */
+  const pendingEml = (from: string, stamp = tag()) => [
+    `From: 承認者 <${from}>`, 'To: KANEI 担当 <staff@kanei.example>', `Subject: 校正承認 ${stamp}`, 'Date: Mon, 16 Nov 2026 01:00:00 +0000',
+    'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', '', `承認します（${stamp}）`, ''
+  ].join('\r\n');
+
+  async function pendingApproval(from: string) {
+    const order = await createOrder('prepaid');
+    expect((await post('staff', `/api/film-supply-orders/${order.orderId}/transitions`, { to: 'ARTWORK_RECEIVED' })).status).toBe(200);
+    const proof = await post('staff', `/api/projects/${ids.projectA}/documents`, {
+      documentType: 'proof', issuerEntity: 'kanei', filename: `s2-g-proof-${tag()}.txt`, contentType: 'text/plain',
+      contentBase64: b64(`s2 gate artwork ${tag()}\n`), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, designKey: 'label-front'
+    });
+    const revision = await post('staff', `/api/film-supply-orders/${order.orderId}/artwork-revisions`, { designKey: 'label-front', fileDocumentVersionId: proof.body.version.id });
+    expect(revision.status, revision.text).toBe(201);
+    const evidence = await post('staff', `/api/projects/${ids.projectA}/documents`, {
+      documentType: 'approval_evidence', issuerEntity: 'customer_generated', filename: `s2-g-${tag()}.eml`, contentType: 'text/plain',
+      contentBase64: b64(pendingEml(from)), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, designKey: 'label-front'
+    });
+    expect(evidence.status, evidence.text).toBe(201);
+    const approval = await post('staff', `/api/artwork-revisions/${revision.body.id}/approvals`, {
+      organization: 'customer', decision: 'APPROVE', evidenceSource: 'email', eventTime: '2026-11-15T10:00:00.000Z',
+      evidenceIdentifier: `S2-G-${tag()}`, evidenceDocumentVersionId: evidence.body.version.id
+    });
+    expect(approval.status, approval.text).toBe(201);
+    expect(approval.body.evidenceIdentifierStatus).toBe('pending_manual_verification');
+    return { order, eventId: approval.body.approvalEvent.id as string, documentId: evidence.body.document.id as string };
+  }
+  const gateItem = async (role: Role, orderId: string, eventId: string) => {
+    const gate = await get(role, `/api/film-supply-orders/${orderId}/approval-gate`);
+    expect(gate.status, gate.text).toBe(200);
+    return { gate, item: gate.body.pendingManualVerifications.find((entry: { approvalEventId: string }) => entry.approvalEventId === eventId) };
+  };
+
+  it('a foreign-domain mail waiting for the manual confirmation shows the From, a warning verdict and no 「申告どおり」; it stays confirmable', async () => {
+    const { order, eventId } = await pendingApproval('boss@evil-s2.example');
+    const { item } = await gateItem('admin', order.orderId, eventId);
+    expect(item).toMatchObject({
+      issuerMatchesOrganization: true,
+      confirmable: true,
+      fromAddress: 'boss@evil-s2.example',
+      senderDomainCheck: { status: 'mismatch', fromDomain: 'evil-s2.example', registeredDomain: 'customer-s2.example' },
+      senderVerdict: { code: 'mismatch', tone: 'warning' },
+      declarationLine: { code: 'sender_domain_mismatch', tone: 'warning' },
+      warnings: [{ code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', fromDomain: 'evil-s2.example', registeredDomain: 'customer-s2.example' }]
+    });
+    expect(item.declarationLine.label).not.toContain('申告どおり');
+    // Display only: the representative can still record the confirmation.
+    const confirmed = await post('admin', `/api/artwork-approval-events/${eventId}/verification`, {
+      result: 'confirmed', verifiedAt: '2026-11-16T10:00:00.000Z', reasonNote: '差出人を電話で確認'
+    });
+    expect([200, 201], confirmed.text).toContain(confirmed.status);
+  });
+
+  it('a matching From says 「申告どおり（差出人のドメインも一致）」 with no warning', async () => {
+    const { order, eventId } = await pendingApproval('boss@customer-s2.example');
+    const { item } = await gateItem('admin', order.orderId, eventId);
+    expect(item).toMatchObject({
+      fromAddress: 'boss@customer-s2.example',
+      senderVerdict: { code: 'match', tone: 'ok' },
+      declarationLine: { code: 'declared_and_sender_match', tone: 'ok', label: '申告どおり（差出人のドメインも一致）' },
+      warnings: []
+    });
+  });
+
+  it('a declared issuer other than the organization is a warning line (issuer_differs) and stays unconfirmable, as before', async () => {
+    // Recording refuses this (EVIDENCE_ISSUER_MISMATCH), so it is built as data: the document's declared issuer changed afterwards.
+    const { order, eventId, documentId } = await pendingApproval('boss@customer-s2.example');
+    await db.update(documents).set({ issuerEntity: 'seven' }).where(eq(documents.id, documentId));
+    const { item } = await gateItem('admin', order.orderId, eventId);
+    expect(item).toMatchObject({
+      issuerMatchesOrganization: false,
+      confirmable: false,
+      declarationLine: { code: 'issuer_differs', tone: 'warning' }
+    });
+    expect(item.declarationLine.label).not.toContain('申告どおり');
+  });
+
+  it('the gate and the card answer the same shape from one helper (parity on every check status)', () => {
+    const check = (status: string) => ({ status, fromAddress: 'a@b.example', fromDomain: 'b.example', registeredDomain: 'c.example' }) as any;
+    for (const status of ['match', 'mismatch', 'from_missing', 'multiple_from', 'no_registered_domain', 'not_email']) {
+      const facts = approvalEvidenceSenderFacts({ issuerMatchesOrganization: true, sharedEvidence: false, senderDomainCheck: check(status) });
+      expect(Object.keys(facts).sort()).toEqual(['declarationLine', 'fromAddress', 'senderDomainCheck', 'senderVerdict', 'warnings']);
+      expect(facts.declarationLine.label.includes('申告どおり'), status).toBe(status === 'match');
+      expect(facts.warnings.length > 0, status).toBe(['mismatch', 'from_missing', 'multiple_from'].includes(status));
+    }
+    expect(approvalEvidenceSenderFacts({ issuerMatchesOrganization: true, sharedEvidence: false, senderDomainCheck: null }))
+      .toMatchObject({ fromAddress: null, senderDomainCheck: null, senderVerdict: { code: 'not_recorded' }, warnings: [] });
+  });
+
+  it('staff, viewer and auditor still get no pending items (no From, no identifiers); no amount anywhere in the gate', async () => {
+    const { order, eventId } = await pendingApproval('boss@evil-s2.example');
+    for (const role of ['staff', 'viewer', 'auditor'] as const) {
+      const gate = await get(role, `/api/film-supply-orders/${order.orderId}/approval-gate`);
+      // Existing permission: staff and auditor read the gate (no pending items), the viewer is refused.
+      expect(gate.status, role).toBe(role === 'viewer' ? 403 : 200);
+      if (gate.status === 200) expect(gate.body.pendingManualVerifications, role).toEqual([]);
+      expect(gate.text, role).not.toMatch(/evil-s2|fromAddress|senderVerdict/);
+    }
+    const { gate } = await gateItem('admin', order.orderId, eventId);
+    expect(gate.text).not.toMatch(/totalAmount|"amounts"|480000/);
   });
 });
