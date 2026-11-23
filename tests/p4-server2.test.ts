@@ -1045,7 +1045,10 @@ describe('(6) web2a review M-2: a closure on confirmed deliveries is never recor
       operation: 'film_order:close_receipt_on_confirmed_deliveries', closureBasis: 'delivery_confirmations', evidenceFreeAcknowledgment: false
     });
     const status = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
-    expect(status.body.receiptAssumption).toMatchObject({ closureBasis: 'delivery_confirmations', note: '受領証跡で納品確認済み' });
+    // p6 int round 2 (review H-1): the closure note is the representative's alone.
+    expect(status.body.receiptAssumption).toMatchObject({ closureBasis: 'delivery_confirmations' });
+    expect(status.body.receiptAssumption).not.toHaveProperty('note');
+    expect((await get('admin', `/api/film-supply-orders/${order.orderId}/delivery-status`)).body.receiptAssumption.note).toBe('受領証跡で納品確認済み');
     expect(status.body.receiptClosure).toBeNull();
   });
 
@@ -1328,7 +1331,10 @@ describe('(7) review3 L-1: a closure recorded before P4 reads as evidence-free',
         });
       }
       const status = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
-      expect(status.body.receiptAssumption, String(withAuditRow)).toMatchObject({ note: 'P4以前の完了', closureBasis: 'evidence_free_acknowledgment' });
+      expect(status.body.receiptAssumption, String(withAuditRow)).toMatchObject({ closureBasis: 'evidence_free_acknowledgment' });
+      // p6 int round 2 (review H-1): the note itself is the representative's.
+      expect(status.body.receiptAssumption, String(withAuditRow)).not.toHaveProperty('note');
+      expect((await get('admin', `/api/film-supply-orders/${order.orderId}/delivery-status`)).body.receiptAssumption.note, String(withAuditRow)).toBe('P4以前の完了');
     }
   });
 });

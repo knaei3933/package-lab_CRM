@@ -612,7 +612,10 @@ class ReceiptAssumptionStateConflict extends Error {}
 export function sendEvidenceDisplayFilename(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const lastSegment = value.replace(/^[\s\S]*[\\/]/, '');
-  const cleaned = lastSegment.replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  // p6 int round 2 (review L-4): every control (Cc: C0, DEL, C1) and format character (Cf: bidi
+  // overrides and isolates, zero-width, BOM) and the line / paragraph separators — none is visible, and
+  // a bidi override can make 「invoice‮lme.exe」 read as another name.
+  const cleaned = lastSegment.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '').trim();
   if (cleaned.length === 0) return null;
   return Array.from(cleaned).slice(0, 200).join('');
 }
@@ -2948,11 +2951,15 @@ export function createApp({
    * The representative may. Amount-free: existence only.
    */
   async function receiptEvidenceAwaitsRepresentative(executor: MakerPoQueryExecutor, orderId: string): Promise<boolean> {
-    const [row] = await executor.select({ id: filmDeliveries.id }).from(filmDeliveries)
+    // p6 int round 2 (review L-1): an order moved to 納品済み without any delivery row has nothing
+    // the queue could list, yet its receipt evidence still waits — no delivery counts as unconfirmed.
+    const [row] = await executor.select({ id: filmSupplyOrders.id }).from(filmSupplyOrders)
       .where(and(
-        eq(filmDeliveries.filmSupplyOrderId, orderId),
-        sql`not exists (select 1 from delivery_confirmations c where c.film_delivery_id = ${filmDeliveries.id})`,
-        nonAdminReceiptEvidenceExistsSql(sql`${orderId}::uuid`)
+        eq(filmSupplyOrders.id, orderId),
+        nonAdminReceiptEvidenceExistsSql(sql`${filmSupplyOrders.id}`),
+        sql`(not exists (select 1 from film_deliveries fd where fd.film_supply_order_id = ${filmSupplyOrders.id})
+          or exists (select 1 from film_deliveries fd where fd.film_supply_order_id = ${filmSupplyOrders.id}
+            and not exists (select 1 from delivery_confirmations c where c.film_delivery_id = fd.id)))`
       )).limit(1);
     return row !== undefined;
   }
@@ -3042,8 +3049,8 @@ export function createApp({
         const basis: FilmReceiptClosureBasis = locked.basis;
         const evidenceFree = basis === 'evidence_free_acknowledgment';
         // p6 X5: staff do not close evidence-free while receipt evidence waits for the representative,
-        // decided on what is committed once the order row is locked (it needs an unconfirmed delivery,
-        // so a closure on confirmed deliveries is never refused here).
+        // decided on what is committed once the order row is locked (it needs an unconfirmed delivery, or
+        // none at all — round 2 L-1 — so a closure on confirmed deliveries is never refused here).
         if (staffActor && await receiptEvidenceAwaitsRepresentative(tx, orderId)) {
           throw new ReceiptEvidenceAwaitingRepresentative();
         }
@@ -3397,7 +3404,7 @@ export function createApp({
               ? { action: 'CLOSE_ORDER', label: '受領確認（問題なし）を記録する' }
               : null;
     let receiptAssumption: {
-      assumedAt: Date; assumedBy: { id: string; displayName: string | null }; note: string | null;
+      assumedAt: Date; assumedBy: { id: string; displayName: string | null }; note?: string | null;
       closureBasis: FilmReceiptClosureBasis;
     } | null = null;
     if (order.receiptAssumedAt && order.receiptAssumedByUserId) {
@@ -3416,7 +3423,10 @@ export function createApp({
       receiptAssumption = {
         assumedAt: order.receiptAssumedAt,
         assumedBy: { id: order.receiptAssumedByUserId, displayName: assumer?.displayName ?? null },
-        note: order.receiptAssumedNote,
+        // p6 int round 2 (review H-1): the closure note is free text — it cannot be proven amount- or
+        // address-free — so it is the representative's alone, like the manual check's reasonNote in the
+        // audit feed. Every other role gets no `note` key (the screens never drew it).
+        ...(user.role === 'admin' ? { note: order.receiptAssumedNote } : {}),
         closureBasis: closureRow?.basis === 'delivery_confirmations' ? 'delivery_confirmations' : 'evidence_free_acknowledgment'
       };
     }

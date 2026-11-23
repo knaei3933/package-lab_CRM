@@ -1161,7 +1161,9 @@ describe('P1 review additions', () => {
     const closed = await post('staff', `/api/film-supply-orders/${order.orderId}/receipt-assumption`, { note: '受領問題なし（合成）', acknowledgeNoEvidence: true });
     expect(closed.status, JSON.stringify(closed.body)).toBe(200);
     const done = await get('viewer', `/api/film-supply-orders/${order.orderId}/delivery-status`);
-    expect(done.body).toMatchObject({ stage: 'completed', nextAction: null, receiptAssumption: { assumedBy: { id: staffId }, note: '受領問題なし（合成）' } });
+    expect(done.body).toMatchObject({ stage: 'completed', nextAction: null, receiptAssumption: { assumedBy: { id: staffId } } });
+    // p6 int round 2 (review H-1): the closure note is free text — the representative's alone, never the viewer's.
+    expect(done.body.receiptAssumption).not.toHaveProperty('note');
     const units = (await get('viewer', '/api/status-labels')).body.units;
     expect(Object.keys(units).sort()).toEqual(['meters', 'pieces', 'pods', 'rolls', 'sheets']);
     expect(units.pods.symbol).toBe('ポッド');

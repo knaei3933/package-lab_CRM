@@ -286,6 +286,22 @@ describe('X5: staff may not close 「証跡なしで問題なし」 while receip
     expect((await post('admin', closeUrl(order.orderId), evidenceFree)).body).toMatchObject({ closureBasis: 'evidence_free_acknowledgment', deliveries: { total: 2, confirmed: 1 } });
   });
 
+  it('round 2 (review L-1): 納品済み without any delivery row and staff receipt evidence → staff 409 too; the representative closes', async () => {
+    const order = await deliveredOrder(0);
+    await uploadReceipt(order, 'staff');
+    expect((await get('staff', statusUrl(order.orderId))).body.receiptClosure).toEqual({
+      basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true, receiptEvidenceAwaitingRepresentative: true
+    });
+    const refused = await post('staff', closeUrl(order.orderId), evidenceFree);
+    expect(refused.status, refused.text).toBe(409);
+    expect(refused.body.code).toBe('RECEIPT_EVIDENCE_AWAITING_REPRESENTATIVE');
+    expect(await closureRows(order.orderId)).toHaveLength(0);
+    // Without receipt evidence the same empty order still closes evidence-free (the earlier contract).
+    const bare = await deliveredOrder(0);
+    expect((await post('staff', closeUrl(bare.orderId), evidenceFree)).status).toBe(200);
+    expect((await post('admin', closeUrl(order.orderId), evidenceFree)).body).toMatchObject({ closureBasis: 'evidence_free_acknowledgment', deliveries: { total: 0, confirmed: 0 } });
+  });
+
   it('race: evidence registered while the staff closure waits on the order lock → refused under the lock (409), nothing written', async () => {
     const order = await deliveredOrder();
     const client = await pool.connect();
@@ -500,6 +516,26 @@ describe('X3: the send evidence keeps its own file name and says its send check'
     expect((await evidenceRow('staff', document.id)).versions.at(-1).sendVerification).toBe('manual_confirmed');
   });
 
+  it('round 2 (review L-7, R14): the same version cited again by a newer send reads the newer send\'s check', async () => {
+    const chain = await approvedPaper();
+    const first = await recordSend(chain, { filename: 'recited.eml' }, false);
+    expect((await post('admin', `/api/maker-po-events/${first.id}/send-manual-verification`, {
+      result: 'rejected', verifierName: '合成代表者P6', verifiedAt: new Date().toISOString(), reasonNote: '合成: 宛先違い'
+    })).status).toBe(201);
+    const document = await sendDocumentOf(chain.paperId);
+    expect((await evidenceRow('staff', document.id)).versions.at(-1).sendVerification).toBe('manual_rejected');
+    // The same stored version is cited again: a new send event, waiting for its own check.
+    const again = await post('staff', `/api/maker-purchase-orders/${chain.paperId}/send-evidence`, {
+      evidenceDocumentVersionId: first.evidenceDocumentVersionId, senderAddress: 'staff@kanei.example', recipients: [MAKER_MAIL], sentAt: new Date().toISOString()
+    });
+    expect(again.status, again.text).toBe(200);
+    const events = await db.select().from(makerPoEvents)
+      .where(and(eq(makerPoEvents.makerPurchaseOrderId, chain.paperId), eq(makerPoEvents.eventType, 'SEND_EVIDENCE_REGISTERED')));
+    expect(events).toHaveLength(2);
+    expect(new Set(events.map((event) => event.evidenceDocumentVersionId)).size).toBe(1);
+    expect((await evidenceRow('auditor', document.id)).versions.at(-1).sendVerification).toBe('manual_pending');
+  });
+
   it('documents that are not a cited send evidence carry sendVerification null; the viewer is still refused the list', async () => {
     const order = await createOrder();
     const uploaded = await post('staff', `/api/projects/${ids.projectA}/documents`, {
@@ -522,6 +558,12 @@ describe('X3: the send evidence keeps its own file name and says its send check'
     // Cut by characters, never inside a surrogate pair (𠮷 is two UTF-16 units).
     expect(sendEvidenceDisplayFilename(`${'𠮷'.repeat(250)}.eml`)).toBe('𠮷'.repeat(200));
     expect(sendEvidenceDisplayFilename('<script>alert(1)</script>.eml')).toBe('script>.eml');
+    // Round 2 (review L-4): bidi overrides / isolates, zero-width, BOM, C1 controls and line separators are gone.
+    expect(sendEvidenceDisplayFilename('invoice\u202Elme.exe')).toBe('invoicelme.exe');
+    expect(sendEvidenceDisplayFilename('a\u0085b\u200Bc\u200Dd\u2066e\u2069f\uFEFFg\u2028h\u2029i\u009Fj.eml')).toBe('abcdefghij.eml');
+    expect(sendEvidenceDisplayFilename('\u202A\u202B\u202C\u202D\u202E\u2067\u2068\u200E\u200F')).toBeNull();
+    // Visible characters stay, the Japanese ones included (a combining mark is not a format character).
+    expect(sendEvidenceDisplayFilename('送信済み_が\u3099.eml')).toBe('送信済み_が\u3099.eml');
     for (const bad of [undefined, null, 7, {}, '', '   ', 'dir/', '\u0001\u0002']) expect(sendEvidenceDisplayFilename(bad), String(bad)).toBeNull();
   });
 });
