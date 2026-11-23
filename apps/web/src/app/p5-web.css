@@ -21,7 +21,8 @@
   /* The facts read as table rows (label left, value right) instead of one stacked pair per fact: 6 facts were 560px. */
   .p1-card > .p5-card-facts { grid-template-columns: minmax(0, 40%) minmax(0, 1fr); column-gap: var(--space-3); row-gap: 0; align-items: start; }
   .p5-card-facts > dt,
-  .p5-card-facts > dd { margin: 0; padding-block: 6px; border-top: 1px solid var(--line); }
+  .p5-card-facts > dd { margin: 0; padding-block: 4px; border-top: 1px solid var(--line); }
+  /* p5/rc: 4px (was 6px) — the approve button had 8px to spare under 2 screens (bottom 1680 / 1688); the 6 rows give back 24px. */
   /* A fact nobody recorded says so once; the way to record it is the 「発注の条件」 link of the header. */
   .p5-card-facts > dd > .p5-card-hint { display: none; }
   /* The list under 「承認の前に、次を入力してください」 already says what to type; its title is not repeated. */
