@@ -21,6 +21,7 @@ import { loadSelectableProjectList } from '../lib/project-data';
 import { newOrderPath, projectPath } from '../lib/project-route';
 import { failedRepresentativeQueue, loadRepresentativeQueue } from '../lib/representative-queue';
 import type { ProjectScreenProps } from './screen-props';
+import { orderScreenRefused } from '../lib/order-lookup';
 
 /** The representative's waiting decisions in every project but the open one (UI batch E F-23). */
 async function representativeQueueFor(openProjectId: string | null) {
@@ -58,6 +59,8 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
   const { workspace, boards } = data.board;
   if (workspace.projectRefused) return <ProjectUnavailable title="案件" reason={workspace.error} returnTo="/dashboard" />;
 
+  // p6/rc (a): the viewer reads codes and stages (H10) but is refused the order screen — no link points there.
+  const orderLinks = !orderScreenRefused(user.role);
   const view = buildDashboard({ role: user.role, workspace, boards, activity: data.activity, now: new Date(), projectCode });
   const projectName = workspace.project ? `${workspace.project.code}（${workspace.project.name}）` : null;
 
@@ -79,10 +82,10 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
           {role !== 'viewer' || isAuditorRole(user.role) ? (
             <p className="p1-order-links"><Link className="p4w3-target" href={projectPath(projectCode, 'evidence')}>証跡の一覧</Link></p>
           ) : null}
-          <ProjectOrderList workspace={workspace} projectCode={projectCode} loadFailed={Boolean(workspace.error)} />
+          <ProjectOrderList workspace={workspace} projectCode={projectCode} loadFailed={Boolean(workspace.error)} role={user.role} />
         </section>
 
-        <DashboardFlow view={view} projectCode={projectCode} />
+        <DashboardFlow view={view} projectCode={projectCode} orderLinks={orderLinks} />
 
         <div className="dash-columns">
           <Card>
@@ -90,7 +93,7 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
               <Heading level={2}>{TODO_TITLE}</Heading>
               <Text as="p" type="supporting">{TODO_SCOPE[role]}</Text>
               {role === 'viewer' ? null : (
-                <DashboardItemList
+                <DashboardItemList orderLinks={orderLinks}
                   projectCode={projectCode}
                   items={view.todo}
                   label={TODO_TITLE}
@@ -107,7 +110,7 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
             <VStack gap={3}>
               <Heading level={2}>止まっている発注</Heading>
               <Text as="p" type="supporting">保留・変更確認・取消確認中のもの、明細やセブン化学発注書の紐付けがないもの、支払条件が「未定」のものや送信確認で進めないもの。</Text>
-              <DashboardItemList
+              <DashboardItemList orderLinks={orderLinks}
                 projectCode={projectCode}
                 items={view.blocked}
                 label="止まっている発注"
@@ -124,7 +127,7 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
             {view.stalledNote ? (
               <p className="dash-empty">{view.stalledNote}</p>
             ) : (
-              <DashboardItemList projectCode={projectCode} items={view.stalled} label={STALLED_TITLE} empty={`${STALE_AFTER_DAYS}日以上更新が止まっている発注はありません。`} />
+              <DashboardItemList orderLinks={orderLinks} projectCode={projectCode} items={view.stalled} label={STALLED_TITLE} empty={`${STALE_AFTER_DAYS}日以上更新が止まっている発注はありません。`} />
             )}
           </VStack>
         </Card>
@@ -132,7 +135,7 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
         <Card>
           <VStack gap={3}>
             <Heading level={2}>{OTHERS_TITLE[role]}</Heading>
-            <DashboardItemList projectCode={projectCode} items={view.others} label={OTHERS_TITLE[role]} empty="ほかの人の作業待ちはありません。" />
+            <DashboardItemList orderLinks={orderLinks} projectCode={projectCode} items={view.others} label={OTHERS_TITLE[role]} empty="ほかの人の作業待ちはありません。" />
           </VStack>
         </Card>
 
@@ -150,7 +153,7 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
         <Card>
           <VStack gap={3}>
             <Heading level={2}>最近の記録</Heading>
-            <DashboardActivity view={view} projectCode={projectCode} />
+            <DashboardActivity view={view} projectCode={projectCode} orderLinks={orderLinks} />
           </VStack>
         </Card>
       </VStack>

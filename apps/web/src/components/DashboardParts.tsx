@@ -8,7 +8,7 @@ import { isRouteCode, orderPath, scopeHref } from '../lib/project-route';
  */
 
 /** The flow strip: open orders per step of the film order flow, and the one next action. */
-export function DashboardFlow({ view, projectCode }: { view: DashboardView; projectCode?: string | null | undefined }) {
+export function DashboardFlow({ view, projectCode, orderLinks = true }: { view: DashboardView; projectCode?: string | null | undefined; orderLinks?: boolean }) {
   const outside = [
     view.exceptionCount > 0 ? `止まっている ${view.exceptionCount}件` : null,
     view.completedCount > 0 ? `完了 ${view.completedCount}件` : null,
@@ -42,7 +42,7 @@ export function DashboardFlow({ view, projectCode }: { view: DashboardView; proj
           {view.nextAction.text}
           {view.nextAction.owner ? <span className="dash-next-owner">（担当: {view.nextAction.owner}）</span> : null}
         </p>
-        {view.nextAction.href && view.nextAction.linkLabel ? (
+        {view.nextAction.href && view.nextAction.linkLabel && (orderLinks || !isOrderScreenHref(scopeHref(projectCode, view.nextAction.href))) ? (
           <Link href={scopeHref(projectCode, view.nextAction.href)} className="dash-next-link">{view.nextAction.linkLabel}</Link>
         ) : null}
       </div>
@@ -71,38 +71,58 @@ export function dashboardItemHref(item: Pick<DashboardItem, 'href' | 'orderCode'
   return scopeHref(projectCode, item.href);
 }
 
+/** p6/rc (a): an address on the order screen (/p/{案件}/o/{発注}[?step=…]) — refused to the viewer by role. */
+export function isOrderScreenHref(href: string): boolean {
+  return /^\/p\/[^/?#]+\/o\/[^/?#]+(?:[?#]|$)/.test(href);
+}
+
 export function DashboardItemList({
   items,
   label,
   empty,
-  projectCode
+  projectCode,
+  orderLinks = true
 }: {
   items: readonly DashboardItem[];
   label: string;
   empty: string;
   projectCode?: string | null | undefined;
+  /** p6/rc (a): false for a role refused the order screen — an item that would open it is read without a link. */
+  orderLinks?: boolean;
 }) {
   if (items.length === 0) return <p className="dash-empty">{empty}</p>;
   return (
     <ul className="dash-items" aria-label={label}>
-      {items.map((item) => (
-        <li key={item.key}>
-          <Link href={dashboardItemHref(item, projectCode)} className="dash-item">
+      {items.map((item) => {
+        const href = dashboardItemHref(item, projectCode);
+        const body = (
+          <>
             <span className="dash-item-head">
               {item.orderCode ? <span className="dash-item-code" translate="no">{item.orderCode}</span> : null}
               <span className="dash-item-title">{item.title}</span>
             </span>
             {item.detail ? <span className="dash-item-detail">{item.detail}</span> : null}
             <ItemMeta item={item} />
-            <span className="dash-item-go">{projectCode && isRouteCode(item.orderCode) ? ORDER_LINK_LABEL : item.linkLabel}</span>
-          </Link>
-        </li>
-      ))}
+          </>
+        );
+        return (
+          <li key={item.key}>
+            {orderLinks || !isOrderScreenHref(href) ? (
+              <Link href={href} className="dash-item">
+                {body}
+                <span className="dash-item-go">{projectCode && isRouteCode(item.orderCode) ? ORDER_LINK_LABEL : item.linkLabel}</span>
+              </Link>
+            ) : (
+              <div className="dash-item dash-item--static">{body}</div>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
 
-export function DashboardActivity({ view, projectCode }: { view: DashboardView; projectCode?: string | null | undefined }) {
+export function DashboardActivity({ view, projectCode, orderLinks = true }: { view: DashboardView; projectCode?: string | null | undefined; orderLinks?: boolean }) {
   return (
     <>
       {view.activity.length > 0 ? (
@@ -111,7 +131,7 @@ export function DashboardActivity({ view, projectCode }: { view: DashboardView; 
             <li key={row.key}>
               <span className="dash-activity-at">{row.at}</span>
               <span className="dash-activity-text">
-                {row.href ? <Link href={scopeHref(projectCode, row.href)}>{row.text}</Link> : row.text}
+                {row.href && (orderLinks || !isOrderScreenHref(row.href)) ? <Link href={scopeHref(projectCode, row.href)}>{row.text}</Link> : row.text}
                 <span className="dash-activity-actor">{row.actor}</span>
               </span>
             </li>

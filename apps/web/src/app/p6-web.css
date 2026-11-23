@@ -47,3 +47,8 @@
   .p1-step { gap: var(--space-2); }
   .p1-announce { padding-block: var(--space-2); }
 }
+
+/* p6/rc (a): an order row / dashboard item read by a role refused the order screen (viewer) is not a link — no hover affordance. */
+.p1-order-row--static:hover { background: none; }
+.dash-item--static { cursor: default; }
+.dash-item--static:hover { border-color: var(--line); }

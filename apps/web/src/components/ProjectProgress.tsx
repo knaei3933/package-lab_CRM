@@ -17,6 +17,7 @@ import type {
   Workspace
 } from '../lib/project-data';
 import { newOrderPath, orderPath, scopeHref } from '../lib/project-route';
+import { orderScreenRefused } from '../lib/order-lookup';
 
 /**
  * UI batch B (①): the project's progress at the top of every operator screen —
@@ -53,18 +54,21 @@ function Stepper({ marks, label }: { marks: ProgressStepMark[]; label: string })
 function OrderProgressRow({
   order,
   stateLabel,
-  projectCode
+  projectCode,
+  orderLinks
 }: {
   order: FilmSupplyOrderView;
   stateLabel: (key: string) => string;
   projectCode?: string | null | undefined;
+  /** p6/rc (a): false for a role refused the order screen (viewer) — the code is read, not linked. */
+  orderLinks: boolean;
 }) {
   const progress = orderProgress(order);
   return (
     <div className="progress-row">
       <p className="progress-head">
         {/* P1 R21: the order code opens that order's own screen. */}
-        {projectCode ? (
+        {projectCode && orderLinks ? (
           <Link className="progress-code p4w3-target" href={orderPath(projectCode, order.code)}>{order.code}</Link>
         ) : (
           <span className="progress-code">{order.code}</span>
@@ -91,7 +95,8 @@ function NextActionBody({
   orderCode,
   currentPath,
   projectCode,
-  workOrderCode = null
+  workOrderCode = null,
+  orderLinks
 }: {
   action: NextActionView;
   orderCode: string | null;
@@ -99,11 +104,13 @@ function NextActionBody({
   projectCode?: string | null | undefined;
   /** P4 §0: the order the work belongs to — its own screen is where it is recorded. */
   workOrderCode?: string | null | undefined;
+  /** p6/rc (a): false for a role refused the order screen (viewer). */
+  orderLinks: boolean;
 }) {
   // P4 §0: the old screens only read now, so the one link is the order screen (or the
   // new-order wizard when there is no order yet) — never 「文書画面を開く」.
   const workHref = projectCode && action.screens.length > 0
-    ? workOrderCode ? orderPath(projectCode, workOrderCode) : action.operation === 'seven_po:create' || action.operation === 'film_order:create' ? newOrderPath(projectCode) : null
+    ? workOrderCode ? (orderLinks ? orderPath(projectCode, workOrderCode) : null) : action.operation === 'seven_po:create' || action.operation === 'film_order:create' ? newOrderPath(projectCode) : null
     : null;
   return (
     <>
@@ -149,6 +156,7 @@ export function ProjectProgress({
   // Without the project (an unreadable or refused selection) there is no
   // progress to claim; the screen shows the API's error instead.
   if (!workspace.project) return null;
+  const orderLinks = !orderScreenRefused(role);
   const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
   const { active, completed, hidden } = groupOrdersForProgress(workspace.filmOrders);
 
@@ -182,7 +190,7 @@ export function ProjectProgress({
         </div>
       ) : null}
       {active.map((order) => (
-        <OrderProgressRow key={order.id} order={order} stateLabel={stateLabel} projectCode={projectCode} />
+        <OrderProgressRow key={order.id} order={order} stateLabel={stateLabel} projectCode={projectCode} orderLinks={orderLinks} />
       ))}
       {hidden.length > 0 ? (
         <div className="progress-row">
@@ -195,7 +203,7 @@ export function ProjectProgress({
         <details className="progress-completed">
           <summary className="p4w3-target-summary">完了した発注 {completed.length}件</summary>
           {completed.map((order) => (
-            <OrderProgressRow key={order.id} order={order} stateLabel={stateLabel} projectCode={projectCode} />
+            <OrderProgressRow key={order.id} order={order} stateLabel={stateLabel} projectCode={projectCode} orderLinks={orderLinks} />
           ))}
         </details>
       ) : null}
@@ -203,12 +211,12 @@ export function ProjectProgress({
       <div className="next-card">
         <h2>次にやること</h2>
         {items.length === 1 ? (
-          <NextActionBody action={items[0]!.action} orderCode={items[0]!.orderCode} currentPath={currentPath} projectCode={projectCode} workOrderCode={items[0]!.workOrderCode} />
+          <NextActionBody action={items[0]!.action} orderCode={items[0]!.orderCode} currentPath={currentPath} projectCode={projectCode} workOrderCode={items[0]!.workOrderCode} orderLinks={orderLinks} />
         ) : (
           <ul className="next-list">
             {items.map((item) => (
               <li key={item.key}>
-                <NextActionBody action={item.action} orderCode={item.orderCode} currentPath={currentPath} projectCode={projectCode} workOrderCode={item.workOrderCode} />
+                <NextActionBody action={item.action} orderCode={item.orderCode} currentPath={currentPath} projectCode={projectCode} workOrderCode={item.workOrderCode} orderLinks={orderLinks} />
               </li>
             ))}
           </ul>
