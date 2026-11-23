@@ -27,6 +27,8 @@ import { IN_PROGRESS_CODE, KEY_REUSED_CODE, OUTCOME_UNKNOWN_CODE } from '../lib/
 import { IN_PROGRESS_HINT, KEY_REUSED_CHECKED_KO, KEY_REUSED_CHECKED_LABEL, LOGIN_OTHER_TAB_KO, LOGIN_OTHER_TAB_LABEL, OUTCOME_UNKNOWN_CHECKED_KO, OUTCOME_UNKNOWN_CHECKED_LABEL, OUTCOME_UNKNOWN_LINE, RELOAD_KO, RELOAD_LABEL } from '../lib/idempotency-notice';
 import { loginHrefFor } from '../lib/return-path';
 import { forget as forgetUnsaved, markDirty } from '../lib/unsaved-guard';
+import type { LabelledButton } from '../lib/submit-intent';
+import { labelOfButton, noteSubmitIntent, resultDetailOf, withdrawSubmitIntent } from '../lib/submit-intent';
 import { installUnsavedGuard } from './unsaved-guard-dom';
 import { RenderedProjectField, useRenderedContext } from './RenderedContext';
 
@@ -514,13 +516,15 @@ interface FeedbackFormProps {
   confirm?: ConfirmResolver | undefined;
   /** What the closed dialog carries before a submit fills it (server markup, first paint). */
   dialogDefaults?: { options: ConfirmOptions; confirmLabel: string } | undefined;
+  /** p6 X6: the submit button's label — the order screen's status region names the action by it (lib/submit-intent). */
+  intentLabel?: string | undefined;
   style?: CSSProperties | undefined;
   className?: string | undefined;
   children: ReactNode;
 }
 
 /** The <form> shell: validation, server-field mapping, the held confirm and the dialog. */
-export function FeedbackForm({ action, state, pending, onReset, confirm, dialogDefaults, style, className, children }: FeedbackFormProps) {
+export function FeedbackForm({ action, state, pending, onReset, confirm, dialogDefaults, intentLabel, style, className, children }: FeedbackFormProps) {
   const formRef = useRef<HTMLFormElement>(null);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [summaryCount, setSummaryCount] = useState(0);
@@ -553,6 +557,8 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
   const keyReuseLocked = isKeyReuseLocked(state, confirmedFor);
   const outcomeCheckPending = awaitsOutcomeCheck(state, confirmedFor);
   useEffect(() => {
+    // p6 X6: a refused submit recorded nothing — it must not name a later, unrelated change.
+    if (state !== null && !state.ok) withdrawSubmitIntent();
     // P2 R05: OUTCOME_UNKNOWN refreshes the list like KEY_REUSED (the key is kept by shouldRenewSubmitKey).
     if (locksForKeyReuse(state) || (state !== null && !state.ok && state.code === OUTCOME_UNKNOWN_CODE)) {
       const detail: SavedRecordDetail = { changedId: null };
@@ -628,6 +634,9 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
     if (!inFlight.acquire(state)) return;
     const formData = formDataFor(form, submitter);
     startTransition(() => action(formData));
+    // p6 review M-1 / L-4: the form's own label, else the pressed button's words; a 手動確認 also says what was chosen.
+    // (The action's answer arrives later than this line, so the status region always finds the intent.)
+    noteSubmitIntent(intentLabel ?? labelOfButton(submitter as unknown as LabelledButton | null), resultDetailOf(formData.get('result')));
   }
 
   function onSubmit(event: FormEvent<HTMLFormElement>): void {

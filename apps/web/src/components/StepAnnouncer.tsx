@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
+import { announcementText, takeSubmitIntent } from '../lib/submit-intent';
 
 /**
  * P1 R34 (M14): after a step is recorded the screen is drawn again and the
@@ -30,7 +31,8 @@ export function StepAnnouncer({
   useEffect(() => {
     if (seen.current === progressKey) return;
     seen.current = progressKey;
-    setMessage(`記録しました${latest ? `（${latest}）` : ''}。${now ? `いまの手順: ${now}` : 'この発注の手順はすべて終わりました。'}`);
+    // p6 X6: the submit's own action (the button's words) first; the newest record only when the change was not this screen's submit.
+    setMessage(announcementText({ intent: takeSubmitIntent(), latest, now }));
   }, [progressKey, latest, now]);
   useEffect(() => {
     if (message) region.current?.focus();

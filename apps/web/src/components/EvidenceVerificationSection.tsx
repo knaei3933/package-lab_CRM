@@ -142,6 +142,12 @@ const VERIFICATION_RESULT_CHOICES: Choice[] = [
  * against (교정본) and records the append-only verification; every other role
  * reads why the approval is not counting yet and waits for the representative.
  */
+/** p6 X2: every kind of approval evidence that waits for the representative (rounds 2–3 included); the item says its own reason. */
+export const MANUAL_CHECK_KINDS = {
+  ja: 'PDF・画像、差出人のドメインが違う・確認できないメール、メールでない証跡',
+  ko: 'PDF·이미지, 발신 도메인이 다르거나 확인할 수 없는 메일, 메일이 아닌 증빙'
+} as const;
+
 export function PendingVerificationSection({
   pending,
   role,
@@ -163,11 +169,11 @@ export function PendingVerificationSection({
   return (
     <div className="sx-1f27ed4">
       <h3 className="sx-e6251b7">
-        承認証跡の手動確認（PDF・画像の識別子確認、差出人のドメインが違うメール）— {pending.length}件
+        承認証跡の手動確認（{MANUAL_CHECK_KINDS.ja}）— {pending.length}件
       </h3>
       <p className="ui-note">
         バイナリ証跡（PDF・画像）の承認は、識別子を自動検証できないため手動確認待ちとして記録されます。
-        差出人のドメインが登録先と違うメールも同じです（2026-11-23 決定）。
+        差出人のドメインが登録先と違うメール、差出人を確認できないメール、メールとして確認できない証跡も同じです（2026-11-23 決定）。
         確認が記録されるまで両組織の承認には算入されません。確認の記録は代表者だけです。
       </p>
       {pending.map((entry) => {

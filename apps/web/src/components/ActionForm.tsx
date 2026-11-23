@@ -40,6 +40,8 @@ interface ActionFormProps {
    * 「戻る」 the page cannot ask about (no Navigation API, or not cancelable) does not lose it. false: no draft.
    */
   draft?: boolean | undefined;
+  /** p6 review L-6: the action's name when the button's own words are no sentence (「校正を登録して校了の確認へ」 → 「校正を登録する」). */
+  intentLabel?: string | undefined;
 }
 
 /**
@@ -51,7 +53,7 @@ interface ActionFormProps {
  * after a success, so a refused submit keeps its values (review H1); with a
  * confirm dialog the button stays disabled until hydration (review M1).
  */
-export function ActionForm({ action, submitLabel, children, hint, hintKo, submitLabelKo, confirm, tone, successHint, submitContext, quiet, draft = true }: ActionFormProps) {
+export function ActionForm({ action, submitLabel, children, hint, hintKo, submitLabelKo, confirm, tone, successHint, submitContext, quiet, draft = true, intentLabel }: ActionFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   // P4 H13: a class, not an inline style — an inline style beat the 44px target and the hover of p3-polish.
   const buttonClass = tone === 'danger' ? 'ui-button--danger' : quiet ? 'ui-button--subtle' : 'ui-button';
@@ -62,6 +64,7 @@ export function ActionForm({ action, submitLabel, children, hint, hintKo, submit
       pending={pending}
       confirm={resolverFromOptions(confirm, submitLabel)}
       dialogDefaults={confirm ? { options: confirm, confirmLabel: confirm.confirmLabel ?? submitLabel } : undefined}
+      intentLabel={intentLabel ?? submitLabel}
       style={{ display: 'grid', gap: 10 }}
     >
       {draft ? <DraftAutosave name={`step:${submitLabel}${submitContext ? `:${submitContext}` : ''}`} orderScreenOnly pending={pending} refusal={state !== null && state.ok === false ? state : null} /> : null}
