@@ -2887,13 +2887,19 @@ export function createApp({
     const rows = await executor.select({
       deliveryId: filmDeliveries.id,
       confirmationId: deliveryConfirmations.id,
-      evidenceDocumentVersionId: deliveryConfirmations.evidenceDocumentVersionId
+      evidenceDocumentVersionId: deliveryConfirmations.evidenceDocumentVersionId,
+      evidenceMakerPurchaseOrderId: documents.makerPurchaseOrderId
     }).from(filmDeliveries)
       .leftJoin(deliveryConfirmations, eq(deliveryConfirmations.filmDeliveryId, filmDeliveries.id))
+      .leftJoin(documentVersions, eq(documentVersions.id, deliveryConfirmations.evidenceDocumentVersionId))
+      .leftJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(filmDeliveries.filmSupplyOrderId, orderId))
       .orderBy(asc(filmDeliveries.deliverySequence), asc(filmDeliveries.id));
     const deliveryIds = new Set(rows.map((row) => row.deliveryId));
-    const confirmed = rows.filter((row) => row.confirmationId !== null);
+    // P4 server2 review3 M-1: a confirmation recorded (before the refusal existed)
+    // on a maker-PO-bound document is not receipt evidence, so it does not make
+    // the closure an evidence-based one — that closure needs the acknowledgment.
+    const confirmed = rows.filter((row) => row.confirmationId !== null && row.evidenceMakerPurchaseOrderId === null);
     return {
       counts: { total: deliveryIds.size, confirmed: new Set(confirmed.map((row) => row.deliveryId)).size },
       confirmations: confirmed.map((row) => ({
@@ -3108,6 +3114,8 @@ export function createApp({
         projectId: documents.projectId,
         documentType: documents.documentType,
         filmSupplyOrderId: documents.filmSupplyOrderId,
+        // P4 server2 review3 M-1: a maker-PO-bound document is refused as delivery evidence.
+        makerPurchaseOrderId: documents.makerPurchaseOrderId,
         verificationStatus: documents.verificationStatus
       }).from(documentVersions)
         .innerJoin(documents, eq(documents.id, documentVersions.documentId))
@@ -3203,11 +3211,13 @@ export function createApp({
       confirmedByUserId: deliveryConfirmations.confirmedByUserId,
       confirmedByName: users.displayName,
       evidenceDocumentVersionId: deliveryConfirmations.evidenceDocumentVersionId,
-      evidenceUploaderId: documentVersions.createdByUserId
+      evidenceUploaderId: documentVersions.createdByUserId,
+      evidenceMakerPurchaseOrderId: documents.makerPurchaseOrderId
     }).from(filmDeliveries)
       .leftJoin(deliveryConfirmations, eq(deliveryConfirmations.filmDeliveryId, filmDeliveries.id))
       .leftJoin(users, eq(users.id, deliveryConfirmations.confirmedByUserId))
       .leftJoin(documentVersions, eq(documentVersions.id, deliveryConfirmations.evidenceDocumentVersionId))
+      .leftJoin(documents, eq(documents.id, documentVersions.documentId))
       .where(eq(filmDeliveries.filmSupplyOrderId, orderId))
       .orderBy(filmDeliveries.deliverySequence, filmDeliveries.id);
     const [anyFillingOrder] = await db.select({ id: fillingOrders.id }).from(fillingOrders)
@@ -3250,7 +3260,10 @@ export function createApp({
                 confirmedAt: delivery.confirmedAt,
                 confirmedBy: { id: delivery.confirmedByUserId, displayName: delivery.confirmedByName ?? null },
                 evidenceDocumentVersionId: delivery.evidenceDocumentVersionId,
-                selfVerification: delivery.evidenceUploaderId !== null && delivery.evidenceUploaderId === delivery.confirmedByUserId
+                selfVerification: delivery.evidenceUploaderId !== null && delivery.evidenceUploaderId === delivery.confirmedByUserId,
+                // P4 server2 review3 M-1: 'maker_po_acceptance' only on confirmations
+                // recorded before the refusal (legacy data); new ones are always receipts.
+                evidenceKind: delivery.evidenceMakerPurchaseOrderId === null ? 'customer_receipt' : 'maker_po_acceptance'
               }
             : null
         }))
@@ -3308,7 +3321,8 @@ export function createApp({
     }
     // P4 server2 (web2a review M-2): while the order waits for its closure, what
     // the closure would rest on now and whether it needs acknowledgeNoEvidence.
-    const confirmedCount = deliveries.filter((delivery) => delivery.confirmationId).length;
+    // Receipt-evidence confirmations only, the same rule as the closure itself (review3 M-1).
+    const confirmedCount = deliveries.filter((delivery) => delivery.confirmationId && delivery.evidenceMakerPurchaseOrderId === null).length;
     const closureBasisNow = filmReceiptClosureBasis({ total: deliveries.length, confirmed: confirmedCount });
     const receiptClosure = status === 'FILM_DELIVERED'
       ? { basis: closureBasisNow, acknowledgeNoEvidenceRequired: closureBasisNow === 'evidence_free_acknowledgment' }

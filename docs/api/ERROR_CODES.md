@@ -328,6 +328,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `DELIVERY_EVIDENCE_REQUIRED` | 422 | 納品の証跡（受領証跡）を選んでください |  |
 | `DELIVERY_EVIDENCE_DOCUMENT_VERSION_NOT_FOUND` | 422 | 納品の証跡が見つかりません |  |
 | `DELIVERY_EVIDENCE_DOCUMENT_TYPE_INVALID` | 422 | 納品の証跡には「受領証跡」の種類の書類を選んでください |  |
+| `DELIVERY_EVIDENCE_MAKER_PO_BOUND` | 422 | メーカーの受領書（メーカー発注書に紐付いた受領証跡）は納品確認の証跡にできません。お客様の納品受領の証跡を選んでください | P4 server2 review3 M-1（指揮者決定）: POST /api/film-deliveries/:deliveryId/confirmation・/api/filling-deliveries/:deliveryId/confirmation で、`maker_purchase_order_id` のある acceptance_evidence（メーカー発注書の受入証跡＝10段階）を引用した。検証済みでも拒否し（検証より先に判定）、何も書かない。お客様の納品受領の証跡（メーカー発注書に紐付かない acceptance_evidence）だけが根拠になる |
 | `DELIVERY_EVIDENCE_NOT_VERIFIED` | 422 | 納品の証跡を先に文書画面で確認済みにしてください |  |
 | `DELIVERY_EVIDENCE_PROJECT_MISMATCH` | 422 | 納品の証跡がこの案件に見つかりません |  |
 | `DELIVERY_EVIDENCE_ORDER_MISMATCH` | 422 | 納品の証跡は別の発注に紐付いています |  |

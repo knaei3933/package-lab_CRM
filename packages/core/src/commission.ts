@@ -134,6 +134,12 @@ export interface DeliveryEvidenceDocument {
   verificationStatus: string;
   /** The film supply order the document is bound to, when it carries one. */
   filmSupplyOrderId: string | null;
+  /**
+   * P4 server2 (review3 M-1, conductor decision): the maker PO the document is
+   * bound to. An acceptance_evidence bound to a maker PO is the maker's 受入 of
+   * the paper (step 10), never the customer's 受領 of the delivered film.
+   */
+  makerPurchaseOrderId?: string | null;
 }
 
 export interface DeliveryEvidenceContext {
@@ -153,6 +159,7 @@ export type DeliveryEvidenceEvaluation =
         | 'DELIVERY_EVIDENCE_DOCUMENT_TYPE_INVALID'
         | 'DELIVERY_EVIDENCE_PROJECT_MISMATCH'
         | 'DELIVERY_EVIDENCE_ORDER_MISMATCH'
+        | 'DELIVERY_EVIDENCE_MAKER_PO_BOUND'
         | 'DELIVERY_EVIDENCE_NOT_VERIFIED';
       message: string;
     };
@@ -206,6 +213,16 @@ export function evaluateDeliveryEvidence(
       ok: false,
       code: 'DELIVERY_EVIDENCE_ORDER_MISMATCH',
       message: 'delivery evidence is bound to a different film supply order'
+    };
+  }
+  // P4 server2 (review3 M-1, conductor decision): only the customer's receipt
+  // evidence confirms a delivery. Checked before the verification so the
+  // reason is the specific one even for a maker document nobody verified.
+  if (evidence.makerPurchaseOrderId !== undefined && evidence.makerPurchaseOrderId !== null) {
+    return {
+      ok: false,
+      code: 'DELIVERY_EVIDENCE_MAKER_PO_BOUND',
+      message: 'evidence bound to a maker purchase order is the maker\'s acceptance of the paper, not the customer\'s receipt of the delivery'
     };
   }
   if (evidence.verificationStatus !== 'verified') {
