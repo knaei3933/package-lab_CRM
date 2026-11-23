@@ -695,10 +695,13 @@ describe('H12 / H2 / M2 the happy path is ≤ 15 submits on ONE screen (no step 
       return ok({ id: 'row-1' });
     });
   }
-  const writes = () => callApi.mock.calls.filter((call) => {
+  const writeCalls = () => callApi.mock.calls.filter((call) => {
     const method = (call[1] as { method?: string } | undefined)?.method;
     return method !== undefined && method !== 'GET';
-  }).length;
+  });
+  const writes = () => writeCalls().length;
+  /** p4/web4 (web3 review L-3): the Idempotency-Key of every write the last submit made. */
+  const writeKeys = () => writeCalls().map((call) => (call[1] as { idempotencyKey?: string }).idempotencyKey);
   const ATTACHED = { contentBase64: B64, filename: 'evidence.pdf', contentType: 'application/pdf' };
   const MAIL = { contentBase64: Buffer.from('From: a@customer.example\r\nMessage-ID: <m1@customer.example>\r\nDate: Thu, 20 Nov 2026 10:00:00 +0900\r\n\r\nOK').toString('base64'), filename: 'approval.eml', contentType: 'message/rfc822', mailMessageId: '<m1@customer.example>', mailDate: '2026-11-20T01:00:00.000Z' };
 
@@ -750,6 +753,7 @@ describe('H12 / H2 / M2 the happy path is ≤ 15 submits on ONE screen (no step 
     }));
     expect(wizard.ok, wizard.message).toBe(true);
     const perSubmit: Array<[string, number]> = [['1–3 受付・照合・発注', writes()]];
+    const submitKeys: Array<[string, Array<string | undefined>]> = [['1–3 受付・照合・発注', writeKeys()]];
     for (const step of steps) {
       const index = submitLabels(step.html).indexOf(step.label);
       expect(index, `${step.name}: the step's button`).toBeGreaterThanOrEqual(0);
@@ -759,6 +763,7 @@ describe('H12 / H2 / M2 the happy path is ≤ 15 submits on ONE screen (no step 
       const result = await step.action(null, filled(step.html, step.typed ?? {}, index));
       expect(result.ok, `${step.name}: ${result.message ?? ''}`).toBe(true);
       perSubmit.push([step.name, writes()]);
+      submitKeys.push([step.name, writeKeys()]);
     }
     // Every submit writes (a submit that writes nothing would not be a step), and the operator submits ≤ 15 times.
     expect(perSubmit.every(([, count]) => count >= 1), JSON.stringify(perSubmit)).toBe(true);
@@ -766,6 +771,15 @@ describe('H12 / H2 / M2 the happy path is ≤ 15 submits on ONE screen (no step 
     const total = perSubmit.reduce((sum, [, count]) => sum + count, 0);
     // The writes behind those submits, pinned: a write added to (or dropped from) any step's chain fails here.
     expect(Object.fromEntries(perSubmit), `total ${total}`).toEqual(EXPECTED_WRITES);
+    // p4/web4 (web3 review L-3): and every one of those writes carries a key derived from the form's own key
+    // (the chain's `${KEY}.n`, its fallback `${KEY}.na`, the amount write `${KEY}.amounts`, or the key itself for a single
+    // write) — different within a submit — so "32 writes" really is "14 submits' chains", never a new submit hiding behind one.
+    const keyShape = new RegExp(`^${KEY}(\\.\\d+a?|\\.amounts)?$`);
+    for (const [name, keys] of submitKeys) {
+      expect(keys.every((key) => typeof key === 'string' && keyShape.test(key)), `${name}: ${JSON.stringify(keys)}`).toBe(true);
+      expect(new Set(keys).size, `${name}: one key per write`).toBe(keys.length);
+    }
+    expect(submitKeys.filter(([, keys]) => keys.length > 1).length, 'the chained steps').toBeGreaterThanOrEqual(8);
   });
 
   it('the exceptional steps stay on the order screen too (evidence check, hold, cancellation review, change review, steps 1–2)', () => {
