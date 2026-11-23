@@ -3,6 +3,7 @@ import { RenderedContextProvider } from '../../../components/RenderedContext';
 import { RouteGate } from '../../../components/RouteGate';
 import { ProjectNotFound } from '../../../components/ProjectNotFound';
 import { loadSessionUser } from '../../../lib/api';
+import { requesterOf } from '../../../lib/requester';
 import { displayLanguage } from '../../../lib/locale-server';
 import { resolveRouteProject } from '../../../lib/project-route-server';
 
@@ -28,7 +29,7 @@ export default async function ProjectLayout({
   const user = await loadSessionUser();
   if (route.kind === 'not-found') {
     // P4 N1: with nothing to open, the person can ask the representative to assign them (the request carries their 利用者ID).
-    const requester = user ? { id: user.id, role: user.role, ...(user.displayName ? { displayName: user.displayName } : {}) } : undefined;
+    const requester = user ? await requesterOf(user) : undefined;
     return <ProjectNotFound code={route.code} projects={route.projects} listError={null} requester={requester} />;
   }
   const display = await displayLanguage(user);

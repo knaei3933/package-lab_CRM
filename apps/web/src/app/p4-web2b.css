@@ -56,16 +56,26 @@
   box-sizing: border-box;
 }
 
-/* M18 / N11 / N4: the extra lines of an 承認箱 row */
-.p4-inbox-due {
+/* M18 / N11 / N4: the extra lines of an 承認箱 row — one full-width block under the row's four cells. */
+.p1-inbox-item > .p4-inbox-extra {
+  grid-column: 1 / -1;
+  order: 1;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.p4-inbox-line {
   margin: 0;
+  font-size: var(--t-table);
+  color: var(--ink-sub);
+  overflow-wrap: anywhere;
+}
+
+.p4-inbox-line.field-warning {
+  color: inherit;
 }
 
 .p4-inbox-due--late {
   font-weight: 600;
-}
-
-.p4-inbox-evidence {
-  margin: 4px 0 0;
-  overflow-wrap: anywhere;
+  color: var(--ink);
 }

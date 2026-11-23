@@ -9,6 +9,7 @@ import { AstryxIsland } from '../../components/AstryxIsland';
 import { ProjectChooser } from '../../components/ProjectChooser';
 import { RepresentativeQueuePanel } from '../../components/RepresentativeQueue';
 import { loadSession } from '../../lib/api';
+import { requesterOf } from '../../lib/requester';
 import { normalizeRole } from '../../lib/permissions';
 import { loadSelectableProjectList } from '../../lib/project-data';
 import { projectPath } from '../../lib/project-route';
@@ -57,7 +58,7 @@ export default async function DashboardPage() {
         <VStack as="section" gap={5}>
           <Heading level={1}>ダッシュボード</Heading>
           {/* ui/fix-project-select: choose here, not in the header — one big card per project. */}
-          <ProjectChooser selection={selection} role={role} requester={{ id: user.id, role: user.role, ...(user.displayName ? { displayName: user.displayName } : {}) }} />
+          <ProjectChooser selection={selection} role={role} requester={await requesterOf(user)} />
           {queue ? (
             <Card>
               <VStack gap={3}>

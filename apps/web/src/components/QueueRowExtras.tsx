@@ -13,16 +13,18 @@ export function QueueRowExtras({ task, now }: { task: RepresentativeTask; now: D
   const evidence = task.evidence ?? null;
   const warnings = task.warnings ?? [];
   const statusText = senderStatusText(evidence?.senderStatus ?? null);
+  if (!due && !evidence && warnings.length === 0) return null;
   return (
-    <>
+    // One full-width line under the row (the row's own grid has four narrow cells).
+    <div className="p4-inbox-extra">
       {due ? (
-        <p className={`p1-inbox-facts p4-inbox-due${due.late ? ' p4-inbox-due--late' : ''}`} data-due={due.late ? 'late' : 'ok'}>
+        <p className={`p4-inbox-line p4-inbox-due${due.late ? ' p4-inbox-due--late' : ''}`} data-due={due.late ? 'late' : 'ok'}>
           {due.late ? <span aria-hidden="true">⚠ </span> : null}{due.text}
         </p>
       ) : null}
       {evidence ? (
-        <p className="p1-inbox-facts p4-inbox-evidence" data-evidence="">
-          <span className="p1-muted-inline">{ISSUER_DECLARED_LABEL}は登録した人の申告です。 </span>
+        <p className="p4-inbox-line p4-inbox-evidence" data-evidence="">
+          <span className="p1-muted-inline">{ISSUER_DECLARED_LABEL}: 登録した人の申告で、ファイルの中身から確かめたものではありません。 </span>
           {evidence.filename ? <>ファイル <span translate="no">{evidence.filename}</span></> : null}
           {evidence.fromAddress ? <> ・ 差出人 <span translate="no">{evidence.fromAddress}</span></> : null}
           {evidence.uploadedBy ? <> ・ 登録した人 {evidence.uploadedBy}</> : null}
@@ -30,10 +32,10 @@ export function QueueRowExtras({ task, now }: { task: RepresentativeTask; now: D
         </p>
       ) : null}
       {warnings.map((warning) => (
-        <p key={warning.code} className="field-warning p1-inbox-facts" role="note" data-warning={warning.code}>
+        <p key={warning.code} className="field-warning p4-inbox-line" role="note" data-warning={warning.code}>
           <span aria-hidden="true">⚠</span> <Bilingual ja={warning.ja} ko={warning.ko ?? ''} />
         </p>
       ))}
-    </>
+    </div>
   );
 }

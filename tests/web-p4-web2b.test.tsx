@@ -565,6 +565,29 @@ describe('N1 add / remove actions', () => {
   });
 });
 
+describe('N1 who is asking: the name the web remembered at login (/api/me has none)', () => {
+  async function requesterWith(cookieValue: string | undefined, user: Record<string, unknown>) {
+    vi.resetModules();
+    vi.doMock('next/headers', () => ({ cookies: async () => ({ get: (name: string) => (name === 'kanei_web_display_name' && cookieValue ? { value: cookieValue } : undefined), set: () => undefined }) }));
+    const lib = await optional(() => import('../apps/web/src/lib/requester.js'));
+    const session = await import('../apps/web/src/lib/session-display.js');
+    const result = await lib.requesterOf(user);
+    vi.doUnmock('next/headers');
+    return { result, session };
+  }
+
+  it('takes the remembered login name for the signed-in user (never another user\'s), else none', async () => {
+    const { session } = await requesterWith(undefined, { id: USER_A, role: 'staff' }).catch(() => ({ session: null as never }));
+    const cookie = session ? session.encodeDisplayNameCookie(USER_A, '佐藤') : undefined;
+    const own = await requesterWith(cookie ?? undefined, { id: USER_A, role: 'staff' });
+    expect(own.result).toEqual({ id: USER_A, role: 'staff', displayName: '佐藤' });
+    const other = await requesterWith(cookie ?? undefined, { id: USER_B, role: 'staff' });
+    expect(other.result).toEqual({ id: USER_B, role: 'staff' });
+    const given = await requesterWith(cookie ?? undefined, { id: USER_A, role: 'viewer', displayName: 'API名' });
+    expect(given.result.displayName).toBe('API名');
+  });
+});
+
 describe('N1 the screen with no project: 「代表者に割り当てを依頼」', () => {
   const requester = { id: USER_A, displayName: '佐藤', role: 'staff' };
 
