@@ -288,6 +288,7 @@ export function StepPanelView(props: StepPanelProps) {
             <StepFileField label="受領証跡のファイル" required={false} hint="受領書・受領メール（.eml）など。付けると、この記録と同時に納品数量を確認します（担当者が付けた証跡は代表が確認します）。" />
             <SelectField name="receiptIssuer" label="受領証跡の発行元（ファイルを付けるとき）" includeBlank blankLabel="（選ぶ）" choices={RECEIPT_ISSUER_CHOICES} width={300} />
             <input type="hidden" readOnly name="receiptMode" value={normalizeRole(props.role) === 'admin' ? 'confirm' : 'register'} />
+            {order.sevenPurchaseOrderId ? <input type="hidden" readOnly name="sevenPurchaseOrderId" value={order.sevenPurchaseOrderId} /> : null}
             <input type="hidden" readOnly name="evaluateReadiness" value={canRoleOperate(props.role, 'commission_readiness:evaluate') ? 'true' : 'false'} />
           </fieldset>
         </ActionForm>

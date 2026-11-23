@@ -616,6 +616,7 @@ export async function recordDeliveryStepAction(_prev: ActionState | null, formDa
       ? receiptSteps({
           projectId,
           orderId,
+          sevenPurchaseOrderId: optional(formData, 'sevenPurchaseOrderId'),
           receipt,
           offset: deliverySteps.length + 1,
           deliveryIdsOf: (answers) => deliverySteps.map((_, index) => answerId(answers[index])),
@@ -664,6 +665,8 @@ function receiptOf(formData: FormData): ReceiptInput | ActionState {
 function receiptSteps(options: {
   projectId: string;
   orderId: string;
+  /** The order's セブン化学発注書: the API registers an official evidence only with its PO link. */
+  sevenPurchaseOrderId: string | undefined;
   receipt: ReceiptInput | null;
   existing?: ExistingReceipt | null;
   offset: number;
@@ -687,6 +690,7 @@ function receiptSteps(options: {
         body: {
           documentType: 'acceptance_evidence',
           issuerEntity: receipt.issuer,
+          ...(options.sevenPurchaseOrderId ? { sevenPurchaseOrderId: options.sevenPurchaseOrderId } : {}),
           filmSupplyOrderId: orderId,
           filename: receipt.file.filename,
           contentBase64: receipt.file.contentBase64,
@@ -746,6 +750,7 @@ export async function confirmDeliveryReceiptStepAction(_prev: ActionState | null
   const steps = receiptSteps({
     projectId,
     orderId,
+    sevenPurchaseOrderId: optional(formData, 'sevenPurchaseOrderId'),
     receipt: receipt as ReceiptInput | null,
     existing,
     offset: 0,

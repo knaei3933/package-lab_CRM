@@ -48,16 +48,28 @@ function Hidden({ order, projectCode }: { order: FilmSupplyOrderView; projectCod
       <input type="hidden" readOnly name="orderId" value={order.id} />
       <input type="hidden" readOnly name="orderCode" value={order.code} />
       <input type="hidden" readOnly name="projectCode" value={projectCode} />
+      {order.sevenPurchaseOrderId ? <input type="hidden" readOnly name="sevenPurchaseOrderId" value={order.sevenPurchaseOrderId} /> : null}
     </>
   );
 }
 
-/** The receipt evidence of the delivery: acceptance_evidence of this order NOT bound to a maker paper (that one is step 10's). */
-export function deliveryReceiptDocuments(documents: readonly DocumentView[], orderId: string): DocumentView[] {
+/**
+ * The receipt evidence of the delivery: acceptance_evidence of this order that is not step 10's
+ * maker acceptance — not bound to a maker paper, and registered once the delivery was recorded.
+ * (The API answers the maker-paper link to the representative only, so for staff the time is
+ * what tells the two apart — live check w02: staff were offered the maker's acceptance.)
+ */
+export function deliveryReceiptDocuments(
+  documents: readonly DocumentView[],
+  orderId: string,
+  deliveries: ReadonlyArray<Pick<DeliveryView, 'recordedAt'>> = []
+): DocumentView[] {
+  const firstDelivery = deliveries.map((delivery) => delivery.recordedAt).filter(Boolean).sort()[0] ?? null;
   return documents.filter((document) => document.documentType === 'acceptance_evidence'
     && document.filmSupplyOrderId === orderId
     && document.makerPurchaseOrderId === null
-    && document.versions.length > 0);
+    && document.versions.length > 0
+    && (firstDelivery === null || document.createdAt >= firstDelivery));
 }
 
 export type ReceiptPlan =
@@ -107,7 +119,7 @@ export function DeliveryReceiptStep({
   completed: boolean;
 }) {
   const unconfirmed = context.deliveries.filter((delivery) => !delivery.confirmed && !delivery.confirmationHidden);
-  const receipts = deliveryReceiptDocuments(documents, order.id);
+  const receipts = deliveryReceiptDocuments(documents, order.id, context.deliveries);
   const plan = receiptPlan(role, context.userId, receipts);
   const evaluate = canRoleOperate(role, 'commission_readiness:evaluate');
   const canConfirm = canRoleOperate(role, 'delivery_confirmation:record');

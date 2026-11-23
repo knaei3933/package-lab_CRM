@@ -418,6 +418,11 @@ describe('H14 step 12: the receipt evidence confirms the delivery (the main path
     expect(receiptPlan('staff', 'u-staff', []).kind).toBe('upload_only');
     // Step 10's maker acceptance evidence (bound to the maker paper) is not the delivery's receipt.
     expect(deliveryReceiptDocuments([receiptDoc('u-staff', 'verified', 'mpo-1') as never], 'order-1')).toEqual([]);
+    // Live check w02: staff do not read the maker-paper link — a document registered before the
+    // delivery was recorded is step 10's, never the delivery's receipt.
+    const early = { ...receiptDoc('u-admin', 'verified'), createdAt: '2026-11-21T00:00:00Z' };
+    expect(deliveryReceiptDocuments([early as never], 'order-1', [delivery('del-1')])).toEqual([]);
+    expect(deliveryReceiptDocuments([receiptDoc('u-admin') as never], 'order-1', [delivery('del-1')])).toHaveLength(1);
   });
 
   it('admin at 納品済み: 「受領証跡で納品を確認する」 with the file and its issuer; the evidence-free close is the quiet fallback', () => {
@@ -425,6 +430,7 @@ describe('H14 step 12: the receipt evidence confirms the delivery (the main path
     expect(submitLabels(html)).toEqual(['受領証跡で納品を確認する', '手数料準備の状態を評価し直す', '証跡なしで問題なしとして完了する']);
     expect(html).toContain('name="receiptMode" value="confirm"');
     expect(html).toContain('name="deliveryId" value="del-1"');
+    expect(html).toContain('name="sevenPurchaseOrderId" value="po-1"');
     expect(html).toMatch(/<select[^>]*name="receiptIssuer"[^>]*required/);
     expect(html).toContain('<h3 class="p4w2-subtitle">受領の証跡がない場合</h3>');
     expect(html).toMatch(/class="ui-button--subtle"[^>]*>証跡なしで問題なしとして完了する/);
@@ -458,7 +464,7 @@ describe('H14 step 12: the receipt evidence confirms the delivery (the main path
   it('confirmDeliveryReceiptStepAction (admin, new file): document → verify → each delivery → readiness, one derived key each', async () => {
     callApi.mockResolvedValueOnce(ok({ document: { id: 'doc-n' }, version: { id: 'ver-n' } }));
     const result = await stepActions.confirmDeliveryReceiptStepAction(null, form({
-      orderId: 'order-1', deliveryId: ['del-1', 'del-2'], receiptMode: 'confirm', evaluateReadiness: 'true', receiptIssuer: 'customer_generated', ...FILE
+      orderId: 'order-1', sevenPurchaseOrderId: 'po-1', deliveryId: ['del-1', 'del-2'], receiptMode: 'confirm', evaluateReadiness: 'true', receiptIssuer: 'customer_generated', ...FILE
     }));
     expect(result.ok).toBe(true);
     expect(paths()).toEqual([
@@ -468,7 +474,8 @@ describe('H14 step 12: the receipt evidence confirms the delivery (the main path
       '/api/film-deliveries/del-2/confirmation',
       '/api/projects/project-a/commission-readiness'
     ]);
-    expect(callApi.mock.calls[0]![1]).toMatchObject({ body: { documentType: 'acceptance_evidence', issuerEntity: 'customer_generated', filmSupplyOrderId: 'order-1' } });
+    // Live check w03: the API registers an official evidence only with the order's PO link (422 otherwise).
+    expect(callApi.mock.calls[0]![1]).toMatchObject({ body: { documentType: 'acceptance_evidence', issuerEntity: 'customer_generated', filmSupplyOrderId: 'order-1', sevenPurchaseOrderId: 'po-1' } });
     expect(callApi.mock.calls[2]![1]).toMatchObject({ body: { evidenceDocumentVersionId: 'ver-n' } });
     expect(callApi.mock.calls.map((call) => (call[1] as { idempotencyKey?: string }).idempotencyKey)).toEqual([1, 2, 3, 4, 5].map((n) => `${KEY}.${n}`));
   });
@@ -498,7 +505,7 @@ describe('H14 step 12: the receipt evidence confirms the delivery (the main path
       .mockResolvedValueOnce(ok({ order: { id: 'order-1' } }))
       .mockResolvedValueOnce(ok({ document: { id: 'doc-n' }, version: { id: 'ver-n' } }));
     const result = await stepActions.recordDeliveryStepAction(null, form({
-      orderId: 'order-1', lineId: 'line-1', 'quantity_line-1': '500', 'unit_line-1': 'meters',
+      orderId: 'order-1', sevenPurchaseOrderId: 'po-1', lineId: 'line-1', 'quantity_line-1': '500', 'unit_line-1': 'meters',
       receiptMode: 'confirm', evaluateReadiness: 'false', receiptIssuer: 'customer_generated', ...FILE
     }));
     expect(result.ok).toBe(true);
