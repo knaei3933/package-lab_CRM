@@ -178,7 +178,7 @@ describe('Medium-3: cleanup of a cancelled or frozen order', () => {
     expect(left.text).toContain('メーカー発注書の整理が残っています（取り消されていない発注書 1件）');
     expect(left.text).not.toContain('これ以上の作業はありません');
     const unread = nextActionForOrder(order, workspace(), 'staff');
-    expect(unread.text).toContain('残っていないかは、メーカー発注画面で確認してください');
+    expect(unread.text).toContain('残っていないかは、発注の画面で確認してください');
     expect(unread.text).not.toContain('これ以上の作業はありません');
   });
 
@@ -226,7 +226,7 @@ describe('Low-7', () => {
       makerPaperCleanup: { o1: makerPaperCleanupSummary([{ status: 'APPROVED_FOR_MANUAL_SEND', sendProof: 'unproven', acknowledgementRecorded: false }]) }
     }, 'admin');
     expect(withCleanup.screens).toEqual(['/orders', '/maker-po']);
-    expect(withCleanup.text).toContain('解除の前でも、メーカー発注画面で取り消し・取り消し承認を記録できます');
+    expect(withCleanup.text).toContain('解除の前でも、発注の画面の「その他の操作」で取り消し・取り消し承認を記録できます');
   });
 
   it('(c) the API\'s Korean hold-reason refusals reach the screen in Japanese (by code)', async () => {

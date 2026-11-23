@@ -7,6 +7,7 @@ import { SelectField, TextField } from './fields';
 import { registerArtworkRevisionAction } from '../app/actions';
 import { uploadChangeProofStepAction } from '../app/step-actions';
 import type { DocumentView, FilmSupplyOrderView, SevenPurchaseOrderView } from '../lib/project-data';
+import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL } from '../lib/maker-po-data';
 
 /**
  * P4 §0: 「デザインを差し替える（変更依頼）」 on the order screen — the old 承認 screen's
@@ -25,8 +26,11 @@ export function DesignChangeForms({
   documents,
   historyKeys,
   printedOrderIds,
-  evidenceChoices
+  evidenceChoices,
+  livePapers = []
 }: {
+  /** Recheck 8 Low-5: the maker paper not cancelled (its names) — the API refuses a new 版 while one exists. */
+  livePapers?: readonly string[];
   order: FilmSupplyOrderView;
   projectCode: string;
   po: SevenPurchaseOrderView | null;
@@ -45,6 +49,13 @@ export function DesignChangeForms({
       label: `${document.designKey ?? 'デザイン未指定'}／${document.filename}（版${version.versionNumber}・登録 ${version.createdAt.slice(0, 10)}）`
     })))
     .reverse();
+  if (livePapers.length > 0) {
+    return (
+      <RoleGate role={role} operation="artwork_revision:create" label="デザインの差し替え">
+        <p className="role-notice">{`取り消されていないメーカー発注書（${livePapers.join('、')}）があります。`}{ARTWORK_REVISION_LIVE_PAPER_REFUSAL}</p>
+      </RoleGate>
+    );
+  }
   return (
     <RoleGate role={role} operation="artwork_revision:create" label="デザインの差し替え">
       <p className="ui-note">

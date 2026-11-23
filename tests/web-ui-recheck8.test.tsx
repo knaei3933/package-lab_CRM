@@ -123,9 +123,9 @@ describe('Low-9: the cleanup copy names only what the API takes', () => {
 
   it('mixed: the records the API takes, then the rest', () => {
     expect(makerCleanupActionText(makerPaperCleanupSummary([cancellable, owed])))
-      .toBe('メーカー発注画面で発注書の取り消し・取り消し承認を記録する。');
+      .toBe('発注の画面の「その他の操作」で発注書の取り消し・取り消し承認を記録する。');
     expect(makerCleanupActionText(makerPaperCleanupSummary([owed, stuck])))
-      .toBe('メーカー発注画面で取り消し承認を記録する。取り消せない発注書（送信未確認・受入済み）は、メーカーへの連絡と対応を代表者が判断する。');
+      .toBe('発注の画面の「その他の操作」で取り消し承認を記録する。取り消せない発注書（送信未確認・受入済み）は、メーカーへの連絡と対応を代表者が判断する。');
   });
 
   it('次にやること of a CANCELLED order with only uncancellable paper', () => {

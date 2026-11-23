@@ -544,11 +544,11 @@ describe('① 次にやること: the step, the owner and the reason a role cann
 
   it('ARTWORK_RECEIVED: asks for the proof revision, but never claims it missing when revisions are withheld (L8)', () => {
     expect(nextActionForOrder(order('ARTWORK_RECEIVED'), workspace(), 'admin')).toMatchObject({
-      text: '校正ゲラを承認画面で登録します。登録すると自動で進みます。',
+      text: '校正ゲラを発注の画面（手順5）で登録します。登録すると自動で進みます。',
       operation: 'artwork_revision:create', screens: ['/approvals', '/orders']
     });
     expect(nextActionForOrder(order('ARTWORK_RECEIVED'), workspace([po], 2), 'staff')).toMatchObject({
-      text: '校正ゲラの版が承認画面に登録されていることを確かめます。校正ゲラを登録すると自動で進みます。進んでいないときは、発注の画面で理由を確認してください。',
+      text: '校正ゲラの版が登録されていることを発注の画面で確かめます。校正ゲラを登録すると自動で進みます。進んでいないときは、発注の画面で理由を確認してください。',
       operation: 'film_order:transition', refusal: null
     });
   });
@@ -628,7 +628,7 @@ describe('① 次にやること: the step, the owner and the reason a role cann
       text: 'この発注は取消で終了しています。これ以上の作業はありません。', owner: null, screens: [], operation: null, refusal: null
     });
     expect(nextActionForOrder(order('CANCELLED'), workspace(), 'admin')).toMatchObject({
-      text: 'この発注は取消で終了しています。メーカー発注書の整理（取り消し・取り消し承認）が残っていないかは、メーカー発注画面で確認してください。',
+      text: 'この発注は取消で終了しています。メーカー発注書の整理（取り消し・取り消し承認）が残っていないかは、発注の画面で確認してください。',
       owner: null, screens: ['/maker-po']
     });
     expect(nextActionForOrder(order('FILM_RECEIPT_ASSUMED_NO_ISSUE'), workspace(), 'admin')).toEqual({

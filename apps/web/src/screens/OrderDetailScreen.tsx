@@ -9,7 +9,7 @@ import { standardTerm } from '../lib/terms';
 import { ClearDrafts } from '../components/ClearDrafts';
 import { StatusBadge } from '../components/StatusBadge';
 import { callApi, loadSessionUser } from '../lib/api';
-import { loadMakerPaperCleanup, loadMakerPoBoard, loadMakerPoDetail, makerPoName, makerPoNumberOf, sendManualVerificationsFromAuditEvents, undisclosedSendDecisionEventIds, MAKER_PO_AUDIT_WINDOW } from '../lib/maker-po-data';
+import { liveMakerPapers, loadMakerPaperCleanup, loadMakerPoBoard, loadMakerPoDetail, makerPoName, makerPoNumberOf, sendManualVerificationsFromAuditEvents, undisclosedSendDecisionEventIds, MAKER_PO_AUDIT_WINDOW } from '../lib/maker-po-data';
 import type { MakerPoEventRow } from '../lib/maker-po-data';
 import { buildOrderFlow, currentPaymentTerms, liveMakerPo, nextStepText, ORDER_STEPS, STEP_COUNT } from '../lib/order-flow';
 import { loadApprovalCard } from '../lib/approval-card';
@@ -185,6 +185,7 @@ export async function OrderDetailScreen({
               historyKeys={approvalHistoryKeys(workspace.revisions, workspace.approvalEvents, [gate])}
               printedOrderIds={printingStartedOrderIds([order])}
               evidenceChoices={changeEvidenceChoices(workspace.documents).filter((choice) => choice.orderId === order.id)}
+              livePapers={liveMakerPapers(makerPos).map((paper) => makerPoName(paper, order.code))}
             />
           )
         }]

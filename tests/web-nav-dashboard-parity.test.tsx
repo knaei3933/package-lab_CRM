@@ -316,7 +316,7 @@ describe('dashboard by role on the real API', () => {
     // The 変更確認 restart is the staff's own work, with the server's rule as its note.
     expect(todo).toContain(chain.reviewCode);
     expect(todo).toContain('変更確認からの再開は担当者・代表者が行えます');
-    expect(todo).toContain('デザイン入稿データを文書画面で登録し');
+    expect(todo).toContain('デザイン入稿データを発注の画面（手順4）で登録し');
     expect(todo).toContain('証跡が未登録: この発注に紐付いた書類（デザイン入稿データ）');
     expect(todo).not.toContain(chain.readyCode);
     const waiting = panel(html, '代表者の対応待ち（代表者が行う作業）');
