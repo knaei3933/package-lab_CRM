@@ -633,9 +633,10 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
   function dispatch(form: HTMLFormElement, submitter: HTMLElement | null): void {
     if (!inFlight.acquire(state)) return;
     const formData = formDataFor(form, submitter);
-    // p6 review M-1 / L-4: the form's own label, else the pressed button's words; a 手動確認 also says what was chosen.
-    noteSubmitIntent(intentLabel ?? labelOfButton(submitter as unknown as LabelledButton | null), resultDetailOf(formData.get('result')));
     startTransition(() => action(formData));
+    // p6 review M-1 / L-4: the form's own label, else the pressed button's words; a 手動確認 also says what was chosen.
+    // (The action's answer arrives later than this line, so the status region always finds the intent.)
+    noteSubmitIntent(intentLabel ?? labelOfButton(submitter as unknown as LabelledButton | null), resultDetailOf(formData.get('result')));
   }
 
   function onSubmit(event: FormEvent<HTMLFormElement>): void {

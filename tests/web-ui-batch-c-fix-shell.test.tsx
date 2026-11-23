@@ -110,6 +110,10 @@ class FakeFormData {
     this.entries = named.map((node) => [node.name, node.value]);
     this.formAttribute = named.map((node) => node.attributes.form);
   }
+  /** Like FormData.get: the first entry of that name (p6: the shell reads the 手動確認 result from it). */
+  get(name: string): string | null {
+    return this.entries.find(([entry]) => entry === name)?.[1] ?? null;
+  }
 }
 
 interface FakeForm {

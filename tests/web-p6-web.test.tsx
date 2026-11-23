@@ -579,7 +579,7 @@ describe('X6 the status line after a submit is the action that was submitted', (
 
   it('wiring: the shell notes the intent when a submit goes out and withdraws it on a refusal; the status region takes it', () => {
     const shell = readSrc('components/form-feedback.tsx');
-    expect(shell).toMatch(/noteSubmitIntent\(intentLabel \?\? labelOfButton\(submitter as unknown as LabelledButton \| null\), resultDetailOf\(formData\.get\('result'\)\)\);\s*startTransition\(\(\) => action\(formData\)\);/);
+    expect(shell).toMatch(/startTransition\(\(\) => action\(formData\)\);[^\n]*\n[^\n]*\n[^\n]*\n\s*noteSubmitIntent\(intentLabel \?\? labelOfButton\(submitter as unknown as LabelledButton \| null\), resultDetailOf\(formData\.get\('result'\)\)\);/);
     expect(shell).toMatch(/if \(state !== null && !state\.ok\) withdrawSubmitIntent\(\);/);
     expect(readSrc('components/StepAnnouncer.tsx')).toContain('announcementText({ intent: takeSubmitIntent(), latest, now })');
   });
@@ -789,6 +789,7 @@ describe('review L-4 / L-6 / M-1: the status line carries the result, the proof 
     expect(labelOfButton(button([{ text: '  送信を\n 記録する ' }]))).toBe('送信を 記録する');
     expect(labelOfButton(button([{ text: '  \n ' }]))).toBeNull();
     expect(labelOfButton(null)).toBeNull();
+    expect(labelOfButton({} as never)).toBeNull(); // not a DOM node: no label, no crash
   });
 
   it('ActionForm: an explicit intentLabel wins over the button\'s words (the proof step: 「校正を登録する」)', async () => {

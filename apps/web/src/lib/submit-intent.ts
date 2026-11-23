@@ -58,7 +58,7 @@ export interface LabelledButton {
  * without the Korean gloss and the screen-reader-only record name (「（RE-A-FILM-1）」) that ride inside the button.
  */
 export function labelOfButton(button: LabelledButton | null): string | null {
-  if (!button) return null;
+  if (!button || typeof button.cloneNode !== 'function') return null;
   const copy = button.cloneNode(true);
   for (const extra of copy.querySelectorAll('.p1-ko, .visually-hidden')) extra.remove();
   const text = (copy.textContent ?? '').replace(/\s+/g, ' ').trim();
