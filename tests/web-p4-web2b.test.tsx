@@ -643,3 +643,356 @@ describe('N1 the project overview draws the panel for the representative only', 
     expect(callApi.mock.calls.some((call) => String(call[0]).includes('/assignments'))).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------------------------
+// N4 the evidence the representative confirms: file, From, who registered it, and the sender warnings
+// ---------------------------------------------------------------------------------------------
+const evidenceItem = (over: Record<string, unknown> = {}) => ({
+  key: 'approval_evidence_verification:1', kind: 'approval_evidence_verification', label: '承認証跡の確認',
+  project: { id: 'proj-1', code: 'PRJ-1', name: '案件A' }, order: { id: 'ord-1', code: 'FSO-1', status: 'APPROVAL_PENDING', requestedDeliveryDate: '2026-12-15', plannedDeliveryDate: null },
+  organization: 'customer', designKey: '表面A', waitingSince: '2026-11-20T01:00:00Z', requestedBy: { displayName: '佐藤' },
+  detail: {
+    evidence: { documentVersionId: 'v1', filename: 'ok-mail.eml', uploadedAt: '2026-11-20T01:00:00Z', uploadedBy: { id: 'u1', displayName: '佐藤' }, fromAddress: 'someone@other.example', senderDomainCheck: { status: 'mismatch', fromAddress: 'someone@other.example', fromDomain: 'other.example', registeredDomain: 'customer.example' } },
+    warnings: [{ code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', message: 'x', fromDomain: 'other.example', registeredDomain: 'customer.example' }]
+  },
+  ...over
+});
+const multipleFrom = () => evidenceItem({
+  detail: {
+    evidence: { documentVersionId: 'v2', filename: 'two-from.eml', uploadedBy: { id: 'u1', displayName: '鈴木' }, fromAddress: null, senderDomainCheck: { status: 'multiple_from', fromAddress: null, fromDomain: null, registeredDomain: 'customer.example' } },
+    warnings: [{ code: 'EVIDENCE_SENDER_UNVERIFIABLE', message: 'y' }]
+  }
+});
+const NOW = new Date('2026-11-23T03:00:00.000Z'); // 12:00 JST
+
+describe('N4 the sender check is shown (warn only — the confirmation itself is unchanged)', () => {
+  it('taskFromServerItem keeps the file, From, uploader, sender status and the warnings of an 承認証跡の確認 row', () => {
+    const task = queueLib.taskFromServerItem(evidenceItem())!;
+    expect(task.evidence).toEqual({ filename: 'ok-mail.eml', fromAddress: 'someone@other.example', uploadedBy: '佐藤', senderStatus: 'mismatch' });
+    expect(task.warnings?.map((warning) => warning.code)).toEqual(['EVIDENCE_SENDER_DOMAIN_MISMATCH']);
+    const none = queueLib.taskFromServerItem({ ...evidenceItem(), detail: undefined })!;
+    expect(none.evidence).toBeNull();
+    expect(none.warnings).toEqual([]);
+  });
+
+  it('a row shows 発行元（登録時の申告）, the file name, the From address, the uploader and the mismatch warning', () => {
+    const html = inContext(<QueueRowExtras task={queueLib.taskFromServerItem(evidenceItem())!} now={NOW} />);
+    expect(html).toContain('発行元（登録時の申告）');
+    expect(html).toContain('ok-mail.eml');
+    expect(html).toContain('someone@other.example');
+    expect(html).toContain('登録した人 佐藤');
+    expect(html).toContain('差出人のドメインが登録と違います');
+    expect(html).toContain('data-warning="EVIDENCE_SENDER_DOMAIN_MISMATCH"');
+    expect(html).toContain('承認証跡メールの差出人のドメインが、登録されている取引先のドメインと違います');
+  });
+
+  it('multiple_from (and a missing From) shows the UNVERIFIABLE warning and says the From is plural', () => {
+    const html = inContext(<QueueRowExtras task={queueLib.taskFromServerItem(multipleFrom())!} now={NOW} />);
+    expect(html).toContain('data-warning="EVIDENCE_SENDER_UNVERIFIABLE"');
+    expect(html).toContain('差出人（From）が複数あります');
+    expect(html).toContain('承認証跡メールの差出人を確認できません');
+    expect(html).toContain('two-from.eml');
+    const none = inContext(<QueueRowExtras task={queueLib.taskFromServerItem(evidenceItem({ detail: { evidence: { filename: 'm.eml', uploadedBy: { displayName: 'x' }, fromAddress: 'a@customer.example', senderDomainCheck: { status: 'match' } }, warnings: [] } }))!} now={NOW} />);
+    expect(none).not.toContain('data-warning');
+    expect(none).not.toContain('差出人のドメイン');
+  });
+
+  it('the Korean lines of the warning and the status follow showKorean (P-7)', () => {
+    const task = queueLib.taskFromServerItem(multipleFrom())!;
+    const ko = renderToStaticMarkup(<RenderedContextProvider value={{ projectId: 'p', showKorean: true }}><QueueRowExtras task={task} now={NOW} /></RenderedContextProvider>);
+    expect(ko).toContain('발신자(From)가 여러 개입니다');
+    expect(ko).toContain('lang="ko"');
+    expect(inContext(<QueueRowExtras task={task} now={NOW} />)).not.toContain('lang="ko"');
+  });
+
+  it('the home inbox draws it on the row (the real screen, not the helper)', async () => {
+    state.projects = [{ id: 'proj-1', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }];
+    callApi.mockResolvedValue(ok({ items: [evidenceItem(), multipleFrom()], blocked: [] }));
+    const { HomeScreen } = await import('../apps/web/src/screens/HomeScreen.js');
+    const html = renderToStaticMarkup((await resolve(await HomeScreen())) as ReactElement);
+    expect(html).toContain('ok-mail.eml');
+    expect(html).toContain('data-warning="EVIDENCE_SENDER_UNVERIFIABLE"');
+    expect(html).toContain('data-warning="EVIDENCE_SENDER_DOMAIN_MISMATCH"');
+  });
+
+  it('the approval card names the issuer a declaration (not 「発行元」 alone) and shows the file name of the evidence', () => {
+    const evidence = { filename: 'customer-ok.eml', issuerEntity: 'customer_generated', expectedIssuerEntity: 'customer_generated', issuerMatchesOrganization: true, evidenceSource: 'email', identifierStatus: 'verified' };
+    const html = renderCard(card({ designs: [{ designKey: '表面A', revisionNo: 2, customer: { state: 'approved', eventTime: null, evidence }, seven: org('approved') }] }));
+    expect(html).toContain('発行元（登録時の申告）');
+    expect(html).toContain('申告どおり');
+    expect(html).toContain('customer-ok.eml');
+    expect(html).not.toMatch(/ ・ 発行元 /);
+  });
+
+  it('recording an approval: the server\'s sender warnings are added to the success line (and nothing is added without them)', async () => {
+    const answers = (warnings: unknown) => callApi
+      .mockResolvedValueOnce({ ok: true, status: 201, error: null, code: null, failure: null, data: { document: { id: 'd' }, version: { id: 'v1' } } })
+      .mockResolvedValueOnce({ ok: true, status: 201, error: null, code: null, failure: null, data: { id: 'ap-1', ...(warnings ? { warnings } : {}) } });
+    const approvalForm = () => form({
+      orderId: 'ord-1', sevenPurchaseOrderId: 'po-1', revisionId: 'rev-1', designKey: '表面A', organization: 'customer',
+      contentBase64: Buffer.from('x').toString('base64'), filename: 'ok.eml', contentType: 'message/rfc822',
+      mailMessageId: '<msg-1234@customer.example>', mailDate: '2026-11-20T01:00:00.000Z'
+    });
+    answers([{ code: 'EVIDENCE_SENDER_UNVERIFIABLE', message: 'z', fromDomain: null }]);
+    const warned = await stepActions.recordApprovalStepAction(null, approvalForm());
+    expect(warned.ok).toBe(true);
+    expect(warned.message).toContain('顧客の承認を記録しました');
+    expect(warned.message).toContain('⚠');
+    expect(warned.message).toContain('承認証跡メールの差出人を確認できません');
+    callApi.mockReset();
+    answers(null);
+    const clean = await stepActions.recordApprovalStepAction(null, approvalForm());
+    expect(clean.message).not.toContain('⚠');
+  });
+
+  it('senderWarningsOf: only the two sender codes, once each, in the dictionary\'s words', () => {
+    const list = senderLib.senderWarningsOf([{ code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH' }, { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH' }, { code: 'OTHER' }, null, { code: 3 }]);
+    expect(list.map((warning) => warning.code)).toEqual(['EVIDENCE_SENDER_DOMAIN_MISMATCH']);
+    expect(list[0]!.ko).toContain('발신자');
+    expect(senderLib.senderWarningsOf(undefined)).toEqual([]);
+    expect(senderLib.senderStatusOf({ status: 'bogus' })).toBeNull();
+    expect(senderLib.senderStatusOf({ status: 'multiple_from' })).toBe('multiple_from');
+    expect(senderLib.senderWarningSentence([])).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// M18 / N11 / M13 the rows of the 承認箱: 希望納期・あと○日, and which organization / design
+// ---------------------------------------------------------------------------------------------
+describe('M18 希望納期 and the days left on a queue row', () => {
+  const due = queueLib.queueDueText;
+  it('future / today / past, in Japan time (a UTC evening is already tomorrow in JST)', () => {
+    expect(due({ requestedDeliveryDate: '2026-12-15' }, NOW)).toEqual({ text: '希望納期 12/15（あと22日）', late: false });
+    expect(due({ requestedDeliveryDate: '2026-11-23' }, NOW)).toEqual({ text: '希望納期 11/23（今日）', late: false });
+    expect(due({ requestedDeliveryDate: '2026-11-20' }, NOW)).toEqual({ text: '希望納期 11/20（3日超過）', late: true });
+    // 2026-11-22 16:00 UTC = 2026-11-23 01:00 JST
+    expect(due({ requestedDeliveryDate: '2026-11-23' }, new Date('2026-11-22T16:00:00Z'))?.text).toBe('希望納期 11/23（今日）');
+    expect(due({ requestedDeliveryDate: null }, NOW)).toBeNull();
+    expect(due({ requestedDeliveryDate: '2026/12/15' }, NOW)).toBeNull();
+    expect(due({}, NOW)).toBeNull();
+  });
+
+  it('taskFromServerItem reads both dates of the order (null when the order does not carry them)', () => {
+    const task = queueLib.taskFromServerItem(evidenceItem())!;
+    expect(task).toMatchObject({ requestedDeliveryDate: '2026-12-15', plannedDeliveryDate: null });
+    expect(queueLib.taskFromServerItem(evidenceItem({ order: { id: 'o', code: 'F-1', requestedDeliveryDate: 'soon' } }))!.requestedDeliveryDate).toBeNull();
+  });
+
+  it('the home row prints 「希望納期 12/15（あと22日）」 and marks a late one', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+    try {
+      state.projects = [{ id: 'proj-1', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }];
+      callApi.mockResolvedValue(ok({
+        items: [evidenceItem(), evidenceItem({ organization: 'seven', designKey: '裏面B', order: { id: 'ord-2', code: 'FSO-2', requestedDeliveryDate: '2026-11-20' } })],
+        blocked: []
+      }));
+      const { HomeScreen } = await import('../apps/web/src/screens/HomeScreen.js');
+      const html = renderToStaticMarkup((await resolve(await HomeScreen())) as ReactElement);
+      expect(html).toContain('希望納期 12/15（あと22日）');
+      expect(html).toContain('希望納期 11/20（3日超過）');
+      expect(html).toContain('data-due="late"');
+      expect(html).toContain('data-due="ok"');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the cross-project panel shows it too', () => {
+    const tasks = [queueLib.taskFromServerItem(evidenceItem())!];
+    const html = inContext(<RepresentativeQueuePanel queue={{ tasks, unreadProjects: [], skippedProjects: 0 }} currentProjectId={null} now={NOW} />);
+    expect(html).toContain('希望納期 12/15（あと22日）');
+  });
+});
+
+describe('N11 / M13 two rows of one order are told apart (組織・デザイン)', () => {
+  const customerRow = evidenceItem();
+  const sevenRow = evidenceItem({ organization: 'seven', designKey: '表面A', detail: undefined });
+
+  it('queueRowTitle: 「承認証跡の確認（顧客／表面A）」; a row about the whole order is unchanged', () => {
+    expect(queueLib.queueRowTitle(queueLib.taskFromServerItem(customerRow)!)).toBe('承認証跡の確認（顧客／表面A）');
+    expect(queueLib.queueRowTitle(queueLib.taskFromServerItem(sevenRow)!)).toBe('承認証跡の確認（セブン化学／表面A）');
+    expect(queueLib.queueRowTitle(queueLib.taskFromServerItem(evidenceItem({ organization: null, designKey: null }))!)).toBe('承認証跡の確認');
+    expect(queueLib.queueRowTitle({ work: '代表承認', organization: null, designKey: '表面A' })).toBe('代表承認（表面A）');
+    expect(queueLib.queueRowSuffixKo({ organization: 'seven', designKey: '表面A' })).toBe('(세븐화학／表面A)');
+    expect(queueLib.queueRowSuffixKo({ organization: null, designKey: null })).toBeNull();
+  });
+
+  it('the home shows both rows with their own titles and does not collapse them (distinct keys, one link each)', async () => {
+    state.projects = [{ id: 'proj-1', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }];
+    callApi.mockResolvedValue(ok({ items: [customerRow, sevenRow], blocked: [] }));
+    const { HomeScreen } = await import('../apps/web/src/screens/HomeScreen.js');
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const html = renderToStaticMarkup((await resolve(await HomeScreen())) as ReactElement);
+    expect(html).toContain('承認証跡の確認（顧客／表面A）');
+    expect(html).toContain('承認証跡の確認（セブン化学／表面A）');
+    expect(html.match(/href="\/p\/PRJ-1\/o\/FSO-1\?step=6"/g)).toHaveLength(2);
+    // each link's hidden name says which row it opens
+    expect(errors.mock.calls.filter((call) => String(call[0]).includes('same key'))).toHaveLength(0);
+    errors.mockRestore();
+  });
+
+  it('the cross-project panel keeps both rows too (it used to key on order alone)', () => {
+    const tasks = [customerRow, sevenRow].map((row) => queueLib.taskFromServerItem(row)!);
+    const html = inContext(<RepresentativeQueuePanel queue={{ tasks, unreadProjects: [], skippedProjects: 0 }} currentProjectId={null} now={NOW} />);
+    expect(html).toContain('承認証跡の確認（顧客／表面A）');
+    expect(html).toContain('承認証跡の確認（セブン化学／表面A）');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// B1 final check: 「未定」 is in 「止まっている」 from the moment the order exists
+// ---------------------------------------------------------------------------------------------
+describe('B1 final: a just-created order with 支払条件「未定」 is listed as stopped, on the real overview screen', () => {
+  async function overviewWith(orders: unknown[]) {
+    vi.resetModules();
+    vi.doMock('../apps/web/src/lib/dashboard-data.js', () => ({
+      loadDashboardData: async () => ({
+        board: {
+          workspace: {
+            labels: { filmSupplyOrderStates: [{ key: 'DRAFT', label: '下書き' }], makerPurchaseOrderStatuses: [], commissionReadinessStates: [], fillingDeliveryConfirmationStates: [], approvalOrganizations: [] },
+            filmOrders: orders, sevenPurchaseOrders: [], revisions: [], revisionsWithheld: 0, documents: [], deliveries: [], readiness: null,
+            project: { id: 'proj-1', code: 'PRJ-1', name: '案件A' }, projectRefused: false, error: null
+          },
+          boards: []
+        },
+        activity: []
+      })
+    }));
+    state.user = { id: 'u', role: 'admin', displayName: 'X' };
+    state.projects = [{ id: 'proj-1', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }];
+    callApi.mockImplementation(async (url: string) => (url.endsWith('/assignments') ? ok({ assignments: [], assignableRoles: [] }) : ok({ items: [], blocked: [] })));
+    const { ProjectOverviewScreen } = await import('../apps/web/src/screens/ProjectOverviewScreen.js');
+    const { RenderedContextProvider: Provider } = await import('../apps/web/src/components/RenderedContext.js');
+    const tree = await ProjectOverviewScreen({ projectId: 'proj-1', projectCode: 'PRJ-1' } as never);
+    return renderToStaticMarkup(<Provider value={{ projectId: 'proj-1', showKorean: false }}>{(await resolve(tree)) as ReactElement}</Provider>);
+  }
+  const fresh = (over: Record<string, unknown> = {}) => ({
+    id: 'ord-1', code: 'PRJ-1-FILM-001', status: 'DRAFT', sevenPurchaseOrderId: 'po-1', lineCount: 1, lines: [], detailsHidden: false, statusHidden: false,
+    lastNormalStatus: 'DRAFT', hold: null, paymentTerms: 'undetermined', paymentTermsHidden: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    paymentTermsUndetermined: true, ...over
+  });
+
+  it('the stopped list holds the order from creation (status DRAFT), with a link to its own screen — and a decided one is not listed', async () => {
+    const html = await overviewWith([fresh()]);
+    const blocked = html.slice(html.indexOf('止まっている発注</h2>'));
+    expect(blocked).toContain('PRJ-1-FILM-001');
+    expect(blocked).toContain('未定');
+    expect(blocked).toContain('href="/p/PRJ-1/o/PRJ-1-FILM-001"');
+    expect(blocked).not.toContain('/orders#');
+    const decided = await overviewWith([fresh({ paymentTerms: 'prepaid', paymentTermsUndetermined: false })]);
+    expect(decided.slice(decided.indexOf('止まっている発注</h2>'))).toContain('止まっている発注はありません');
+  });
+
+  it('the home 承認箱 lists the server\'s blocked row (kind payment_terms_undetermined) with a 直す link to step 7', async () => {
+    state.projects = [{ id: 'proj-1', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }];
+    callApi.mockResolvedValue(ok({
+      items: [], blocked: [{ kind: 'payment_terms_undetermined', project: { id: 'proj-1', code: 'PRJ-1' }, order: { id: 'ord-1', code: 'PRJ-1-FILM-001', requestedDeliveryDate: '2026-12-15' }, reason: { message: '支払条件が「未定」です。' } }]
+    }));
+    const { HomeScreen } = await import('../apps/web/src/screens/HomeScreen.js');
+    const html = renderToStaticMarkup((await resolve(await HomeScreen())) as ReactElement);
+    expect(html).toContain('止まっている（代表が直せるもの）');
+    expect(html).toContain('支払条件が「未定」です。');
+    expect(html).toMatch(/href="\/p\/PRJ-1\/o\/PRJ-1-FILM-001\?step=7">直す/);
+    // M18: the blocked row carries the 希望納期 too
+    expect(html).toMatch(/希望納期 12\/15（/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// M16 remainder: one 「確認」 (納品確認), glossary words in the guide / status / dashboard
+// ---------------------------------------------------------------------------------------------
+describe('M16 remainder: 受領確認 is 納品確認 (受領証跡 is the evidence)', () => {
+  it('the guide steps and terms no longer call the delivery check 受領確認 / 受領確認済', async () => {
+    const { GUIDE_STEPS, GUIDE_TERMS, GUIDE_DAYS, GUIDE_TROUBLES } = await import('../apps/web/src/lib/guide.js');
+    const text = JSON.stringify([GUIDE_STEPS, GUIDE_TERMS, GUIDE_DAYS, GUIDE_TROUBLES]);
+    expect(text).not.toContain('受領確認');
+    expect(text).toContain('納品確認');
+    expect(GUIDE_TERMS.some((entry: { term: string }) => entry.term === '納品確認')).toBe(true);
+  });
+
+  it('the guide page and the status page say 納品の確認', () => {
+    expect(code(readSrc('app/guide/page.tsx'))).not.toContain('受領確認');
+    expect(code(readSrc('app/status/page.tsx'))).not.toContain('受領確認');
+    expect(code(readSrc('app/status/page.tsx'))).toContain('納品の確認');
+  });
+
+  it('the dashboard says a delivered order waits for 「納品の確認」', async () => {
+    const { buildDashboard } = await import('../apps/web/src/lib/dashboard.js');
+    const old = '2026-10-01T00:00:00.000Z';
+    const view = buildDashboard({
+      role: 'admin',
+      workspace: {
+        labels: { filmSupplyOrderStates: [{ key: 'FILM_DELIVERED', label: '納品済み' }], makerPurchaseOrderStatuses: [], commissionReadinessStates: [], fillingDeliveryConfirmationStates: [], approvalOrganizations: [] },
+        filmOrders: [{ id: 'o', code: 'FSO-1', status: 'FILM_DELIVERED', sevenPurchaseOrderId: 'po', lineCount: 1, lines: [], detailsHidden: false, statusHidden: false, lastNormalStatus: 'FILM_DELIVERED', hold: null, paymentTerms: 'prepaid', paymentTermsHidden: false, createdAt: old, updatedAt: old }],
+        sevenPurchaseOrders: [], revisions: [], revisionsWithheld: 0, documents: [], deliveries: [], readiness: null
+      },
+      boards: [], activity: [], now: new Date('2026-11-23T03:00:00Z')
+    } as never);
+    const text = JSON.stringify(view);
+    expect(text).toContain('納品の確認');
+    expect(text).not.toContain('受領確認');
+  });
+
+  it('LEGACY_TERMS now lists the words so a screen cannot bring them back', async () => {
+    const { LEGACY_TERMS } = await import('../apps/web/src/lib/terms.js');
+    const words = LEGACY_TERMS.map(([word]: readonly [string, string]) => word);
+    expect(words).toEqual(expect.arrayContaining(['受領確認済', '納品・受領確認']));
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// R-1 a form on an order screen keeps its draft (so an uncancelable 「戻る」 does not lose the input)
+// R-2 SelectField hands its `value` to the <select>
+// ---------------------------------------------------------------------------------------------
+describe('R-1 step forms keep a draft; the guard comment says which forms', () => {
+  it('isOrderScreenPath: the order screen only (not the list, the wizard or a step query)', () => {
+    expect(guardLib.isOrderScreenPath('/p/PRJ-1/o/PRJ-1-FILM-001')).toBe(true);
+    expect(guardLib.isOrderScreenPath('/p/PRJ-1/o/PRJ-1-FILM-001/')).toBe(true);
+    for (const other of ['/p/PRJ-1', '/p/PRJ-1/new', '/p/PRJ-1/orders', '/p/PRJ-1/o', '/dashboard', '/p/PRJ-1/o/A/b']) expect(guardLib.isOrderScreenPath(other), other).toBe(false);
+  });
+
+  it('draftIdentity: built from the record ids only (not the per-render key, project or hash)', () => {
+    const controls = [
+      { name: '_kaneiRenderedProjectId', value: 'p1' }, { name: '_kaneiIdempotencyKey', value: 'k' }, { name: 'expectedSnapshotSha256', value: 'h' },
+      { name: 'orderId', value: 'ord-1' }, { name: 'designKey', value: '表面A' }, { name: 'organization', value: 'seven' }
+    ];
+    expect(guardLib.draftIdentity(controls)).toBe('#ord-1|表面A|seven');
+    expect(guardLib.draftIdentity([{ name: 'other', value: 'x' }])).toBe('');
+    // two forms with the same button for two designs do not share a draft
+    expect(guardLib.draftIdentity([{ name: 'designKey', value: '裏面B' }])).not.toBe(guardLib.draftIdentity([{ name: 'designKey', value: '表面A' }]));
+  });
+
+  it('every ActionForm mounts the draft keeper (the step panel forms are ActionForms); draft={false} opts out', () => {
+    const noop = (async () => ({ ok: true, message: '' })) as never;
+    const withDraft = inContext(<ActionForm action={noop} submitLabel="校正を登録する"><input name="designKey" /></ActionForm>);
+    expect(withDraft).toContain('class="p1-draft-anchor"');
+    const without = inContext(<ActionForm action={noop} submitLabel="校正を登録する" draft={false}><input name="designKey" /></ActionForm>);
+    expect(without).not.toContain('p1-draft-anchor');
+  });
+
+  it('the guard\'s comment no longer claims every form survives (it names the forms that keep a draft)', () => {
+    const comment = readSrc('lib/unsaved-guard.ts');
+    expect(comment).not.toContain('The typed input still survives through DraftAutosave.');
+    expect(comment).toContain('survives only for a form that keeps a draft');
+  });
+});
+
+describe('R-2 SelectField value', () => {
+  const render = (value: string | undefined) => inContext(
+    <SelectField
+      name="existingPoId"
+      label="登録済みのセブン化学発注書"
+      choices={[{ value: 'a', label: 'PO-A' }, { value: 'b', label: 'PO-B' }, { value: 'c', label: 'PO-C' }]}
+      {...(value !== undefined ? { value, onChange: () => undefined } : { defaultValue: 'a' })}
+    />
+  );
+  it('the option named by `value` is the selected one — and it follows a changed value (the partial PO the wizard re-opens on)', () => {
+    expect(render('b')).toMatch(/<option value="b" selected="">PO-B<\/option>/);
+    expect(render('b')).not.toMatch(/<option value="a" selected/);
+    expect(render('c')).toMatch(/<option value="c" selected="">PO-C<\/option>/);
+  });
+  it('without `value` the defaultValue is used', () => {
+    expect(render(undefined)).toMatch(/<option value="a" selected="">PO-A<\/option>/);
+  });
+});

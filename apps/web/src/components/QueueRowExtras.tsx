@@ -31,8 +31,7 @@ export function QueueRowExtras({ task, now }: { task: RepresentativeTask; now: D
       ) : null}
       {warnings.map((warning) => (
         <p key={warning.code} className="field-warning p1-inbox-facts" role="note" data-warning={warning.code}>
-          <span aria-hidden="true">⚠</span> {warning.ja}
-          {warning.ko ? <span className="p1-ko" lang="ko"> {warning.ko}</span> : null}
+          <span aria-hidden="true">⚠</span> <Bilingual ja={warning.ja} ko={warning.ko ?? ''} />
         </p>
       ))}
     </>

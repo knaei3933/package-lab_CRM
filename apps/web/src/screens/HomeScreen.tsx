@@ -123,6 +123,7 @@ async function AdminInbox({ projects }: { projects: ProjectSummary[] }) {
                 {[task.amount, task.waitingSince ? `${formatTimestamp(task.waitingSince)}から` : null, task.requestedBy ? `依頼 ${task.requestedBy}` : null]
                   .filter(Boolean).join(' ・ ') || ' '}
               </p>
+              <QueueRowExtras task={task} now={now} />
               <Link className="p1-button p1-button--primary p1-inbox-go" href={taskHref(task)}>
                 {task.kind === 'maker_po_ceo_approval'
                   ? <Bilingual ja="内容を見て承認" ko="내용 확인 후 승인" />
@@ -141,6 +142,7 @@ async function AdminInbox({ projects }: { projects: ProjectSummary[] }) {
               <li key={`b-${task.kind}-${task.orderId}-${task.organization ?? ''}-${task.designKey ?? ''}`} className="p1-inbox-item p1-inbox-item--blocked">
                 <p className="p1-inbox-work"><span translate="no">{task.orderCode}</span></p>
                 <p className="p1-inbox-target">{task.blockedReason ?? task.work}<KoGloss ko={taskWorkKo(task)} /></p>
+                <QueueRowExtras task={task} now={now} />
                 <Link className="p1-button p1-button--quiet p1-inbox-go" href={taskHref(task)}><Bilingual ja="直す" ko="고치기" /><span className="visually-hidden">（{task.orderCode}）</span></Link>
               </li>
             ))}
