@@ -394,7 +394,7 @@ describe('(c) a 未定 row opens 「支払条件を変更する」 on the order 
   const order = (over: Record<string, unknown> = {}) => ({ id: 'ord-1', code: 'FSO-1', paymentTerms: 'undetermined', paymentTermsUndetermined: true, paymentTermsEditable: true, ...over });
   it('the order screen holds the anchor: the open form while editable, the lock reason (not a dead form) once locked', () => {
     const open = inContext(<PaymentTermsChange order={order() as never} role="staff" cancelled={false} />);
-    expect(open).toMatch(/^<div id="payment-terms" class="p4w3-anchor" tabindex="-1"><details class="p4-terms-change" open="">/);
+    expect(open).toMatch(/^<div id="payment-terms" class="p4w3-anchor"><details class="p4-terms-change" open="">/);
     const locked = inContext(<PaymentTermsChange order={order({ paymentTermsEditable: false }) as never} role="admin" cancelled={false} />);
     expect(locked).toContain('id="payment-terms"');
     expect(locked).toContain('data-lock="payment-terms"');

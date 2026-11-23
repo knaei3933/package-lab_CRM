@@ -123,7 +123,7 @@ export function PaymentTermsChange({ order, role, cancelled, locked = false }: {
     if (!undecided) return null;
     const lock = webErrorText('PAYMENT_TERMS_LOCKED');
     return (
-      <p id={PAYMENT_TERMS_ANCHOR} className="field-warning p4w3-lock" data-lock="payment-terms" tabIndex={-1}>
+      <p id={PAYMENT_TERMS_ANCHOR} className="field-warning p4w3-lock" data-lock="payment-terms">
         <span aria-hidden="true">⚠</span> 支払条件は「未定」のままですが、いまは変更できません。{lock.message}
         <KoGloss ko={lock.messageKo} />
       </p>
@@ -131,7 +131,7 @@ export function PaymentTermsChange({ order, role, cancelled, locked = false }: {
   }
   return (
     // p4/web3 (c): the anchor the home 「止まっている」 row opens (#payment-terms).
-    <div id={PAYMENT_TERMS_ANCHOR} className="p4w3-anchor" tabIndex={-1}>
+    <div id={PAYMENT_TERMS_ANCHOR} className="p4w3-anchor">
     <details className="p4-terms-change" open={undecided || undefined}>
       <summary className="p4-terms-change-summary">
         <Bilingual ja="支払条件を変更する" ko="결제 조건 변경" />

@@ -31,7 +31,6 @@
   overflow-wrap: anywhere;
 }
 
-.p4w3-anchor:focus { outline: none; }
 .p4w3-anchor:target > .p4-terms-change,
 .p4w3-lock:target {
   outline: 2px solid var(--primary);
