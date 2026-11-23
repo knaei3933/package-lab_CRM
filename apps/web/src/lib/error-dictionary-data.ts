@@ -67,7 +67,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
   },
   DELIVERY_TERMS_LOCKED: {
     ja: '代表承認済みのメーカー発注書があるため、納期・セブン化学発注書の数量は変更できません。変更する場合はメーカー発注書を取り消して作り直してください。',
-    ko: '대표 승인된 제조처 발주서가 있어 납기·세븐화학 발주서 수량은 바꿀 수 없습니다. 바꾸려면 제조처 발주서를 취소하고 다시 만드세요.'
+    ko: '대표 승인된 제조사 발주서가 있어 납기·세븐화학 발주서 수량은 바꿀 수 없습니다. 바꾸려면 제조사 발주서를 취소하고 다시 만드세요.'
   },
   READ_ONLY_ROLE: {
     ja: '閲覧・監査の権限では案件を登録できません。',
@@ -86,12 +86,12 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '세븐화학 발주서의 금액은 대표만 입력할 수 있습니다.'
   },
   MAKER_ACCOUNT_INVALID: {
-    ja: '製造先の名前（200 文字まで）を入力してください。取引先コードは 64 文字までです。',
-    ko: '제조처 이름(200자 이내)을 입력하세요. 거래처 코드는 64자 이내입니다.'
+    ja: 'メーカーの名前（200 文字まで）を入力してください。取引先コードは 64 文字までです。',
+    ko: '제조사 이름(200자 이내)을 입력하세요. 거래처 코드는 64자 이내입니다.'
   },
   MAKER_ACCOUNT_NOT_FOUND: {
-    ja: '製造先が見つかりません。画面を再読み込みしてください。',
-    ko: '제조처를 찾을 수 없습니다. 화면을 새로 고치세요.'
+    ja: 'メーカーが見つかりません。画面を再読み込みしてください。',
+    ko: '제조사를 찾을 수 없습니다. 화면을 새로 고치세요.'
   },
   MAKER_RECIPIENT_ADDRESS_INVALID: {
     ja: '宛先の表示名は 100 文字まで、既定・使用中は「はい」か「いいえ」で指定してください。',
@@ -102,8 +102,8 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ko: '수신처를 찾을 수 없습니다. 화면을 새로 고치세요.'
   },
   MAKER_RECIPIENT_ADDRESS_UNAVAILABLE: {
-    ja: '選んだ送信先は使用できません。この案件の製造先の宛先から選び直してください。',
-    ko: '선택한 송신처는 사용할 수 없습니다. 이 안건 제조처의 수신처에서 다시 선택하세요.'
+    ja: '選んだ送信先は使用できません。この案件のメーカーの宛先から選び直してください。',
+    ko: '선택한 송신처는 사용할 수 없습니다. 이 안건 제조사의 수신처에서 다시 선택하세요.'
   },
   DISPLAY_LANGUAGE_INVALID: {
     ja: '表示言語は「日本語」「日本語＋한국어」「한국어」から選んでください。',
@@ -821,7 +821,7 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
   },
   MAKER_PO_NOT_READY: {
     ja: 'メーカー発注書を作成できるのは、発注が「メーカー発注準備完了」のときだけです。発注の状態を確認してください。',
-    ko: '제조사 발주서를 작성할 수 있는 것은 발주가 「제조처 발주 준비 완료」일 때뿐입니다. 발주 상태를 확인하세요.'
+    ko: '제조사 발주서를 작성할 수 있는 것은 발주가 「제조사 발주 준비 완료」일 때뿐입니다. 발주 상태를 확인하세요.'
   },
   MAKER_PO_SEND_ALREADY_CONFIRMED: {
     ja: 'この送信はすでに確認済みです。取り消す場合は、新しい記録として残してください。',

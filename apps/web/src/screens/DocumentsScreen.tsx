@@ -59,9 +59,9 @@ function sevenPoUploadChoices(orders: readonly SevenPurchaseOrderView[]): SevenP
     const missing = po.reviewPending
       ? '不一致の確認中です'
       : po.verificationStatus === 'mismatch'
-        ? '真性確認で相違ありです'
+        ? '発注書の照合で相違ありです'
         : po.verificationStatus !== 'verified'
-          ? po.verificationHidden ? '真性確認の状態は閲覧権限なしです' : '発注書の照合チェックがまだです'
+          ? po.verificationHidden ? '発注書の照合の状態は閲覧権限なしです' : '発注書の照合チェックがまだです'
           : !po.officiallyRegistered
             ? po.officialRegistrationHidden ? '本登録の状態は閲覧権限なしです' : '本登録がまだです'
             : '';
@@ -119,7 +119,7 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
         <RoleGate role={role} operation="document:create" label="書類のアップロード">
           <p className="ui-note">
             セブン化学発注書は先行発注参照として記録される場合があります。正式書類（校正ゲラ・各種証跡）は、
-            セブン発注書の本登録と真性確認がすんでいる必要があります。
+            セブン化学発注書の本登録と発注書の照合がすんでいる必要があります。
           </p>
           <DocumentUploadForm
             action={uploadDocumentAction}
@@ -214,7 +214,7 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                   </td>
                   <td className="ui-td">
                     {document.sevenPurchaseOrderId ? (
-                      <div>セブン発注書: {poLabelById.get(document.sevenPurchaseOrderId) ?? shortId(document.sevenPurchaseOrderId)}</div>
+                      <div>セブン化学発注書: {poLabelById.get(document.sevenPurchaseOrderId) ?? shortId(document.sevenPurchaseOrderId)}</div>
                     ) : null}
                     {document.filmSupplyOrderId ? (
                       <div>

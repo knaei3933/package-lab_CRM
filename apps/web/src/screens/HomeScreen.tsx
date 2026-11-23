@@ -1,5 +1,7 @@
+import { FocusOnMount } from '../components/FocusOnMount';
 import Link from 'next/link';
 import { Bilingual } from '../components/Bilingual';
+import { KoGloss } from '../components/RenderedContext';
 import { callApi, loadSessionUser } from '../lib/api';
 import { ACTION_LABELS } from '../lib/dashboard';
 import { loadMyWork } from '../lib/my-work';
@@ -12,7 +14,7 @@ import type { EvidenceRef } from '../lib/audit-history';
 import { loadEvidenceMetadata } from '../lib/evidence-data';
 import { roleLabel } from '../lib/session-display';
 import { isRouteCode, orderPath, projectPath } from '../lib/project-route';
-import { loadRepresentativeQueue } from '../lib/representative-queue';
+import { loadRepresentativeQueue, taskWorkKo } from '../lib/representative-queue';
 import type { RepresentativeQueue, RepresentativeTask } from '../lib/representative-queue';
 import { formatTimestamp } from '../lib/vocabulary';
 
@@ -49,6 +51,8 @@ export async function HomeScreen() {
   const list = await loadSelectableProjectList();
   return (
     <section className="p1-home" aria-labelledby="home-title">
+      {/* P4 M14: after login the focus is on the heading, not on <body>. */}
+      <FocusOnMount targetId="home-title" />
       <h1 id="home-title" className="p1-title" tabIndex={-1}>
         <Bilingual ja={HOME_TITLES[role]} ko={role === 'admin' ? '승인함' : role === 'staff' ? '내 작업' : role === 'auditor' ? '감사 이력' : '이력'} />
       </h1>
@@ -100,7 +104,7 @@ async function AdminInbox({ projects }: { projects: ProjectSummary[] }) {
         <ul className="p1-inbox" aria-label="承認箱">
           {tasks.map((task) => (
             <li key={`${task.kind ?? task.status}-${task.projectId}-${task.orderId}`} className="p1-inbox-item">
-              <p className="p1-inbox-work">{task.work}</p>
+              <p className="p1-inbox-work">{task.work}<KoGloss ko={taskWorkKo(task)} /></p>
               <p className="p1-inbox-target">
                 <span translate="no">{task.orderCode}</span>
                 <span className="p1-muted-inline"> ・ <span translate="no">{task.projectCode}</span></span>
@@ -111,7 +115,9 @@ async function AdminInbox({ projects }: { projects: ProjectSummary[] }) {
                   .filter(Boolean).join(' ・ ') || ' '}
               </p>
               <Link className="p1-button p1-button--primary p1-inbox-go" href={taskHref(task)}>
-                {task.kind === 'maker_po_ceo_approval' ? '内容を見て承認' : '開く'}
+                {task.kind === 'maker_po_ceo_approval'
+                  ? <Bilingual ja="内容を見て承認" ko="내용 확인 후 승인" />
+                  : <Bilingual ja="開く" ko="열기" />}
                 <span className="visually-hidden">（{task.orderCode}{task.displayNumber ? ` ${task.displayNumber}` : ''}）</span>
               </Link>
             </li>
@@ -125,8 +131,8 @@ async function AdminInbox({ projects }: { projects: ProjectSummary[] }) {
             {blocked.map((task) => (
               <li key={`b-${task.kind}-${task.orderId}`} className="p1-inbox-item p1-inbox-item--blocked">
                 <p className="p1-inbox-work"><span translate="no">{task.orderCode}</span></p>
-                <p className="p1-inbox-target">{task.blockedReason ?? task.work}</p>
-                <Link className="p1-button p1-button--quiet p1-inbox-go" href={taskHref(task)}>直す<span className="visually-hidden">（{task.orderCode}）</span></Link>
+                <p className="p1-inbox-target">{task.blockedReason ?? task.work}<KoGloss ko={taskWorkKo(task)} /></p>
+                <Link className="p1-button p1-button--quiet p1-inbox-go" href={taskHref(task)}><Bilingual ja="直す" ko="고치기" /><span className="visually-hidden">（{task.orderCode}）</span></Link>
               </li>
             ))}
           </ul>

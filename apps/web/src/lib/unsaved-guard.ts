@@ -10,6 +10,7 @@ export const LEAVE_CONFIRM_MESSAGE = '入力中の内容があります。移動
 
 const dirtyForms = new Set<object>();
 
+
 export function hasUnsavedInput(): boolean {
   return dirtyForms.size > 0;
 }
@@ -26,6 +27,33 @@ export function forgetAll(): void {
 
 export function forget(form: object): void {
   dirtyForms.delete(form);
+}
+
+/**
+ * P4 M9 (review H-1): the browser's 「戻る」 / 「進む」, asked about through the Navigation API's
+ * `navigate` event — BEFORE anything changes. A refusal cancels the traversal (`preventDefault`), so the
+ * address, the history and the drawn screen stay exactly as they were. The earlier popstate guard had to
+ * put the address back with `pushState(history.state, …)` AFTER it changed, and that stored the previous
+ * screen's router tree under the typed screen's address (「進む」 then drew another order under the URL).
+ * Nothing here ever writes to the history.
+ *
+ * - Only a `traverse` (back / forward / history jump) is asked about; links are asked by the click guard,
+ *   closing and reloading by beforeunload.
+ * - A traversal the browser does not let a page cancel (`cancelable: false`: no history-action
+ *   activation, or a browser without the API) is NOT asked about — a question that cannot be acted on
+ *   would be false. The typed input still survives through DraftAutosave.
+ */
+export function decideTraverse(
+  event: { navigationType: string; cancelable: boolean },
+  deps: { hasUnsaved: () => boolean; confirm: (message: string) => boolean; forget: () => void }
+): 'allow' | 'cancel' {
+  if (event.navigationType !== 'traverse' || !event.cancelable) return 'allow';
+  if (!deps.hasUnsaved()) return 'allow';
+  if (deps.confirm(LEAVE_CONFIRM_MESSAGE)) {
+    deps.forget();
+    return 'allow';
+  }
+  return 'cancel';
 }
 
 /** Whether a click on this anchor leaves the page in the same tab (and so may lose input). */

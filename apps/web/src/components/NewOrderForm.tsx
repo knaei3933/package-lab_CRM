@@ -57,7 +57,19 @@ export function NewOrderForm({
   const [paymentTerms, setPaymentTerms] = useState('');
   const [existingPoId, setExistingPoId] = useState('');
   const warningId = useId();
-  const needsChecklist = mode === 'new' || unverifiedPoIds.includes(existingPoId);
+  // A PO the submit just registered keeps its checklist open even before the refreshed list says it is unverified.
+  const justRegistered = state && !state.ok ? state.partialPoId ?? null : null;
+  const needsChecklist = mode === 'new' || unverifiedPoIds.includes(existingPoId) || (justRegistered !== null && existingPoId === justRegistered);
+
+  // P4 N3: the submit registered the PO and then stopped (the 照合 was refused): the form re-opens on
+  // 「登録済みの発注書に追加する」 with that PO chosen — a second 「新しい発注書」 would meet the PO number
+  // it just registered (409). The same Idempotency-Key is kept (the result is not settled).
+  const partialPoId = state && !state.ok ? state.partialPoId ?? null : null;
+  useEffect(() => {
+    if (!partialPoId) return;
+    setMode('existing');
+    setExistingPoId(partialPoId);
+  }, [partialPoId]);
 
   // R34: the lines are React state, so their draft is kept here (the rest by DraftAutosave).
   useEffect(() => {
@@ -124,6 +136,7 @@ export function NewOrderForm({
             blankLabel="（選ぶ）"
             choices={existingPoChoices}
             width={360}
+            value={existingPoId}
             onChange={(event) => setExistingPoId(event.target.value)}
           />
         ) : (
@@ -141,19 +154,19 @@ export function NewOrderForm({
         <fieldset className="p1-fieldset">
           {mode === 'existing' ? <input type="hidden" readOnly name="runChecklist" value="true" /> : null}
           <legend className="p1-legend"><span className="p1-legend-no">2</span>発注書の照合</legend>
-          <p className="p1-field-hint">発注書の原本を見ながら、確かめた項目にチェックします（番号・数量・価格・納期・見積の版）。</p>
+          <p className="p1-field-hint">発注書の原本を見ながら、すべての項目を確かめてチェックします（必須。番号・数量・価格・納期・見積の版）。</p>
           <div className="p1-check-grid">
-            <CheckboxField name="issuerNameRecorded" label="発行者名を確認した" />
+            <CheckboxField name="issuerNameRecorded" label="発行者名を確認した" required />
             <TextField name="issuerName" label="発行者名" width={220} />
-            <CheckboxField name="documentNumberRecorded" label="文書番号を確認した" />
+            <CheckboxField name="documentNumberRecorded" label="文書番号を確認した" required />
             <TextField name="documentNumber" label="文書番号" width={220} />
-            <CheckboxField name="issueDateRecorded" label="発行日を確認した" />
+            <CheckboxField name="issueDateRecorded" label="発行日を確認した" required />
             <DateTextField name="issueDate" label="発行日" />
-            <CheckboxField name="sendingChannelRecorded" label="送信経路を確認した" />
+            <CheckboxField name="sendingChannelRecorded" label="送信経路を確認した" required />
             <TextField name="sendingChannel" label="送信経路" width={220} />
-            <CheckboxField name="pastTransactionCompared" label="過去取引と突合した" />
+            <CheckboxField name="pastTransactionCompared" label="過去取引と突合した" required />
             <TextField name="pastTransactionNote" label="突合メモ" width={220} />
-            <CheckboxField name="quoteCompared" label="見積と突合した" />
+            <CheckboxField name="quoteCompared" label="見積と突合した" required />
             <SelectField name="quoteMatchesPo" label="見積との突合結果" required choices={QUOTE_MATCH_CHOICES} width={240} />
             <CheckboxField name="uncertain" label="確認が不確かだった" />
             <CheckboxField name="confirmationReplyRecorded" label="確認の返信を記録した（不確かな場合必須）" />

@@ -41,12 +41,12 @@ describe('F-15: amounts and date-only values as people write them', () => {
   it('formatMoney: ¥ and group commas for JPY, the code for another currency, unchanged text otherwise', () => {
     expect(formatMoney('JPY', '480000')).toBe('¥480,000');
     expect(formatMoney('jpy', '1200.5')).toBe('¥1,200.5');
-    expect(formatMoney('USD', '1234567.25')).toBe('USD 1,234,567.25');
-    expect(formatMoney('', '999')).toBe('999');
-    expect(formatMoney('JPY', '約50万')).toBe('JPY 約50万');
+    expect(formatMoney('USD', '1234567.25')).toBe('1,234,567.25 USD');
+    expect(formatMoney('', '999')).toBe('¥999');
+    expect(formatMoney('JPY', '約50万')).toBe('約50万');
     expect(formatMoney('JPY', '')).toBe('—');
     // A value that is not a plain non-negative decimal is shown as recorded (review L8).
-    expect(formatMoney('JPY', '-480000')).toBe('JPY -480000');
+    expect(formatMoney('JPY', '-480000')).toBe('-480000');
   });
 
   it('normalizeAmountText / isPlainAmount: only the spelling of a plain amount is normalised (review L8)', () => {

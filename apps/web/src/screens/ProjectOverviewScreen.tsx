@@ -22,7 +22,8 @@ import type { ProjectScreenProps } from './screen-props';
 async function representativeQueueFor(openProjectId: string | null) {
   const list = await loadSelectableProjectList();
   if (list.error) return failedRepresentativeQueue(list.error);
-  return loadRepresentativeQueue(list.projects.filter((project) => project.id !== openProjectId));
+  // P4 H3: the server's own queue (it holds the manual checks the web's status replay misses); the web replay is the fallback.
+  return loadRepresentativeQueue(list.projects.filter((project) => project.id !== openProjectId), { server: true });
 }
 
 /**
@@ -43,7 +44,7 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
   const { workspace, boards } = data.board;
   if (workspace.projectRefused) return <ProjectUnavailable title="案件" reason={workspace.error} returnTo="/dashboard" />;
 
-  const view = buildDashboard({ role: user.role, workspace, boards, activity: data.activity, now: new Date() });
+  const view = buildDashboard({ role: user.role, workspace, boards, activity: data.activity, now: new Date(), projectCode });
   const projectName = workspace.project ? `${workspace.project.code}（${workspace.project.name}）` : null;
 
   return (

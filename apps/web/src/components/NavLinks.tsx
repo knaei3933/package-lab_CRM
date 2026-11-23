@@ -5,7 +5,6 @@ import { usePathname } from 'next/navigation';
 import { useRef } from 'react';
 import { isCurrentPath } from '../lib/navigation';
 import { parseProjectPath, scopeHref, unscopedPath } from '../lib/project-route';
-import { MENU_TERMS } from '../lib/terms';
 import type { NavGroup } from '../lib/navigation';
 import { DRAWER_TITLE_ID, drawerDialogAttributes, SIDEBAR_ID, useDrawerKeyboard, useNavDrawer } from './NavDrawer';
 
@@ -73,7 +72,7 @@ export function SideNav({ groups, roleNote, korean = false, role = 'viewer' }: {
                       <Link href={scopeHref(projectCode, item.href)} aria-current={current ? 'page' : undefined}>
                         {item.label}
                         {/* P1 R29: the menu's Korean gloss (same table as the screens, lib/terms). */}
-                        {korean ? <span className="p1-ko" lang="ko">{(MENU_TERMS[item.href === '/home' ? `/home:${role}` : item.href] ?? null)?.ko}</span> : null}
+                        {korean ? <span className="p1-ko" lang="ko">{item.ko}</span> : null}
                       </Link>
                     </li>
                   );

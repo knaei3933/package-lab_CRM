@@ -286,7 +286,7 @@ async function confirmSend(eventId: string) {
 
 /** The audit dashboard row (⑤) of one audit entity, e.g. an acknowledgement event. */
 function dashboardRow(html: string, entityId: string): string {
-  const dashboard = html.slice(html.indexOf('⑤ 監査ダッシュボード'));
+  const dashboard = html.slice(html.indexOf('監査ダッシュボード'));
   let at = dashboard.indexOf(`>${entityId}<`);
   while (at !== -1) {
     const row = dashboard.slice(dashboard.lastIndexOf('<tr', at), dashboard.indexOf('</tr>', at));

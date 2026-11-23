@@ -283,6 +283,17 @@ describe('R23 chains of the other steps', () => {
     expect(callApi.mock.calls[2]![1].body).toEqual({ to: 'FILM_DELIVERED' });
   });
 
+  it('N15: the delivery date is the date + time pair the form posts (explicit offset first, wall clock as the fallback)', async () => {
+    await stepActions.recordDeliveryStepAction(null, form({ orderId: 'ord-1', lineId: ['l1'], quantity_l1: '5', unit_l1: 'rolls', deliveredAt: '2026-11-21T03:00:00.000Z', deliveredAtLocal: '2026-11-21T12:00' }));
+    expect(callApi.mock.calls[0]![1].body).toMatchObject({ deliveredAt: '2026-11-21T03:00:00.000Z' });
+    callApi.mockClear();
+    await stepActions.recordDeliveryStepAction(null, form({ orderId: 'ord-1', lineId: ['l1'], quantity_l1: '5', unit_l1: 'rolls', deliveredAt: '', deliveredAtLocal: '2026-11-21T12:00' }));
+    expect(callApi.mock.calls[0]![1].body.deliveredAt).toBe('2026-11-21T12:00:00+09:00');
+    callApi.mockClear();
+    await stepActions.recordDeliveryStepAction(null, form({ orderId: 'ord-1', lineId: ['l1'], quantity_l1: '5', unit_l1: 'rolls' }));
+    expect(callApi.mock.calls[0]![1].body).not.toHaveProperty('deliveredAt');
+  });
+
   it('a failure of the second delivery line is not settled and names the line', async () => {
     callApi.mockResolvedValueOnce(ok()).mockResolvedValueOnce({ ok: false, status: 422, data: null, error: '数量が多すぎます', code: 'X', failure: null });
     const result = await stepActions.recordDeliveryStepAction(null, form({ orderId: 'ord-1', lineId: ['l1', 'l2'], quantity_l1: '1', unit_l1: 'rolls', quantity_l2: '1', unit_l2: 'rolls' }));
@@ -464,5 +475,52 @@ describe('B2/P-1: the issuer is fixed by the organization, never by the form', (
   it('the evidence is bound to the order, the PO and the design the slot shows', async () => {
     await run(null, form(approvalForm({ orderId: 'ord-7', sevenPurchaseOrderId: 'po-7', designKey: '裏面B' })));
     expect(evidenceBody()).toMatchObject({ filmSupplyOrderId: 'ord-7', sevenPurchaseOrderId: 'po-7', designKey: '裏面B' });
+  });
+});
+
+describe('H7① / N3 the new-order wizard: where a duplicate is, and what a stop leaves behind', () => {
+  const duplicate = (existing: Record<string, unknown> | null) => ({
+    ok: false, status: 409, error: 'dup', code: 'DUPLICATE', failure: null,
+    data: { code: 'DUPLICATE', error: 'この発注番号はすでに登録されています', ...(existing ? { existing } : {}) }
+  });
+
+  it('a seven-PO number that is registered: the refusal links the project list at that record (inside this project)', async () => {
+    callApi.mockResolvedValueOnce(duplicate({ id: 'po-existing', projectId: RENDERED, projectCode: 'PRJ-1' }));
+    const result = await stepActions.startFilmOrderAction(null, form(startForm()));
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe('DUPLICATE');
+    expect(result.link).toEqual({ href: '/p/PRJ-1/orders#seven-po-po-existing', label: '登録済みのセブン化学発注書を開く' });
+    expect(result.settled).toBe(true);
+  });
+
+  it('an order code that is registered (after the PO was written): the link opens that order\'s own screen; the result stays unsettled', async () => {
+    callApi.mockResolvedValueOnce(ok()).mockResolvedValueOnce(ok()).mockResolvedValueOnce(ok()).mockResolvedValueOnce(duplicate({ id: 'ord-existing', projectId: RENDERED, projectCode: 'PRJ-1' }));
+    const result = await stepActions.startFilmOrderAction(null, form({ ...startForm(), contentBase64: B64, filename: 'a.pdf', contentType: 'application/pdf' }));
+    expect(result.code).toBe('DUPLICATE');
+    expect(result.link).toEqual({ href: '/p/PRJ-1/o/FSO-NEW', label: '登録済みのフィルム発注を開く' });
+    expect(result.settled).toBe(false);
+  });
+
+  it('a duplicate in another project names that project and links nothing', async () => {
+    callApi.mockResolvedValueOnce(duplicate({ id: 'po-x', projectId: 'proj-OTHER', projectCode: 'PRJ-9' }));
+    const result = await stepActions.startFilmOrderAction(null, form(startForm()));
+    expect(result.link ?? null).toBeNull();
+    expect(result.message).toContain('PRJ-9');
+  });
+
+  it('N3: the 照合 refused after the PO was registered → the id of that PO comes back, so the wizard re-opens on it', async () => {
+    const refused = { ok: false, status: 422, error: 'x', code: 'CHECKLIST_INCOMPLETE', failure: null, data: { code: 'CHECKLIST_INCOMPLETE', error: 'チェックが不足しています' } };
+    callApi.mockResolvedValueOnce({ ...ok(), data: { purchaseOrder: { id: 'po-77' } } }).mockResolvedValueOnce(refused);
+    const result = await stepActions.startFilmOrderAction(null, form(startForm()));
+    expect(result.ok).toBe(false);
+    expect(result.settled).toBe(false);
+    expect(result.partialPoId).toBe('po-77');
+    expect(result.message).toContain('その前の手順は記録済みです');
+  });
+
+  it('N3: a refusal of the very first write leaves nothing behind (no partial id)', async () => {
+    callApi.mockResolvedValueOnce({ ok: false, status: 422, error: 'x', code: 'INVALID', failure: null, data: { code: 'INVALID', error: 'x' } });
+    const result = await stepActions.startFilmOrderAction(null, form(startForm()));
+    expect(result.partialPoId).toBeUndefined();
   });
 });

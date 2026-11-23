@@ -14,9 +14,9 @@ export const REPRESENTATIVE_QUEUE_PROJECT_LIMIT = 30;
 
 /** Order states whose next step is the representative's, and that step in words. */
 export const REPRESENTATIVE_WORK: Readonly<Record<string, string>> = {
-  // P1 R25: a 校了 order waits for the representative's maker paper (P-6: admin draws it up).
-  DUAL_APPROVED: 'メーカー発注書の作成と代表承認（校了済み）',
-  MAKER_PO_READY: 'メーカー発注書の作成と代表承認',
+  // P4 N14 (P-6): drafting the maker paper is staff work; the representative's part is the 代表承認 of the drafted paper.
+  DUAL_APPROVED: 'メーカー発注書の代表承認（作成は担当者・校了済み）',
+  MAKER_PO_READY: 'メーカー発注書の代表承認（作成は担当者）',
   // Review L4: shared step — the representative's part comes after the staff record and the evidence.
   MAKER_PO_SENT_MANUALLY: '受入の最終確認（担当者の仮記録・受領証跡のあと）',
   ON_HOLD: '保留の解除（理由の確認）',
@@ -70,6 +70,36 @@ export const QUEUE_KIND_STEP: Readonly<Record<string, number | null>> = {
   cancellation_acknowledgement: null,
   payment_terms_undetermined: 7
 };
+
+/**
+ * P4 H11: the Korean line of a queue row, by the kind of work (the server's `label` is Japanese
+ * only; the kind is a code, so the dictionary lives here). The representative reads Korean
+ * first (P-7). A kind this table does not know gets no Korean line (never a guess).
+ */
+export const QUEUE_KIND_KO: Readonly<Record<string, string>> = {
+  approval_evidence_verification: '승인 증빙 확인',
+  maker_po_creation: '제조사 발주서 작성',
+  maker_po_ceo_approval: '제조사 발주서 대표 승인',
+  send_verification: '송신 확인',
+  maker_po_final_acceptance: '최종 수령 확인',
+  hold_release: '보류 해제',
+  cancellation_review: '취소 확인 처리',
+  cancellation_acknowledgement: '취소 승인 기록',
+  payment_terms_undetermined: '지불 조건 미정'
+};
+
+/** The Korean status-based work line (the fallback queue's `work`). */
+export const REPRESENTATIVE_WORK_KO: Readonly<Record<string, string>> = {
+  DUAL_APPROVED: '제조사 발주서 대표 승인(작성은 담당자·교정 확정 완료)',
+  MAKER_PO_READY: '제조사 발주서 대표 승인(작성은 담당자)',
+  MAKER_PO_SENT_MANUALLY: '최종 수령 확인(담당자의 임시 기록·수령 증빙 후)',
+  ON_HOLD: '보류 해제(사유 확인)',
+  CANCELLATION_REVIEW: '취소 확인 처리'
+};
+
+export function taskWorkKo(task: Pick<RepresentativeTask, 'kind' | 'status'>): string | null {
+  return (task.kind ? QUEUE_KIND_KO[task.kind] : undefined) ?? REPRESENTATIVE_WORK_KO[task.status] ?? null;
+}
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : {};

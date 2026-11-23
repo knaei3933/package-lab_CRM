@@ -4,6 +4,7 @@ import { MAKER_PO_STATUS_LABELS } from './maker-po-data';
 import type { MakerPoViewRow, PaymentGateView } from './maker-po-data';
 import { navHrefsForRole } from './navigation';
 import { canRoleOperate, normalizeRole } from './permissions';
+import { newOrderPath, orderPath } from './project-route';
 import {
   knownStatus,
   labelLookup,
@@ -49,7 +50,7 @@ export const TODO_TITLE = 'いま自分がやること';
  * representative's alone; a 変更確認 is resumed by 担当者・代表者.
  */
 export const TODO_SCOPE: Record<'admin' | 'staff' | 'viewer', string> = {
-  admin: '代表者だけが行う作業: メーカー発注書の作成・代表承認、最終受入、保留の解除、取消確認の処理、取消後のメーカー発注書の整理。',
+  admin: '代表者だけが行う作業: 代表承認、送信の確認、最終受入、保留の解除、取消確認の処理、承認証跡の確認、取消後のメーカー発注書の整理。メーカー発注書の作成は担当者も行います。',
   staff: '担当者の作業: 発注書と状態の記録、証跡の登録、承認・送信・受入（仮）・納品の記録、変更確認からの再開。',
   viewer: '閲覧者は記録・変更をしません。下の「止まっている発注」と「進行中の作業」で状況を確認します。'
 };
@@ -63,7 +64,7 @@ export const OTHERS_TITLE: Record<'admin' | 'staff' | 'viewer', string> = {
 };
 
 /** The basis line shown under the 「更新が止まっている発注」 list. */
-export const STALE_BASIS = `基準: 発注と関連する記録（明細・書類・版・承認・納品・セブン化学発注書）の最後の記録から${STALE_AFTER_DAYS}日以上。納期は記録されていないため、遅れかどうかは判定していません。製造中・発送済みは対象外です。`;
+export const STALE_BASIS = `基準: 発注と関連する記録（明細・書類・版・承認・納品・セブン化学発注書）の最後の記録から${STALE_AFTER_DAYS}日以上。製造中・発送済みは対象外です。希望納期が記録された発注は、その日を過ぎると、製造中・発送済みでも「希望納期を過ぎています」として載せます。`;
 
 /** The newest activity rows the dashboard lists. */
 export const ACTIVITY_LIMIT = 8;
@@ -160,6 +161,8 @@ export interface DashboardInput {
   /** The project audit read (oldest first) or null when it failed. */
   activity: readonly AuditEventView[] | null;
   now: Date;
+  /** P4: the open project's code — an item may then link the order screen (/p/{案件}/o/{発注}) instead of an old address. */
+  projectCode?: string | null | undefined;
 }
 
 /**
@@ -301,6 +304,17 @@ function evidenceGapText(
   return gap ? `証跡が未登録: ${gap.message}` : null;
 }
 
+/**
+ * P4 N12: whole days the calendar date `YYYY-MM-DD` lies before today (Japan time);
+ * 0 = today, null when there is no usable date. Pure.
+ */
+export function daysPastDate(date: string | null | undefined, now: Date): number | null {
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const today = new Date(now.getTime() + 9 * 3_600_000).toISOString().slice(0, 10);
+  const days = Math.round((Date.parse(`${today}T00:00:00Z`) - Date.parse(`${date}T00:00:00Z`)) / 86_400_000);
+  return Number.isNaN(days) ? null : days;
+}
+
 function daysBetween(from: string, to: Date): number | null {
   const at = Date.parse(from);
   if (Number.isNaN(at)) return null;
@@ -380,7 +394,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
         amount: approvalPaper ? dashboardAmount(role, approvalPaper) : null,
         step
       };
-      // P-6: before the paper exists, 製造先発注準備完了 / 校了 are staff work (drafting it).
+      // P-6: before the paper exists, メーカー発注準備完了 / 校了 are staff work (drafting it).
       const draftingStep = status === 'MAKER_PO_READY' || status === 'DUAL_APPROVED';
       const representativeStep = approvalPaper !== undefined || action.owner === OWNER_ADMIN
         || (isRepresentativeStep(status) && !draftingStep);
@@ -454,7 +468,8 @@ export function buildDashboard(input: DashboardInput): DashboardView {
     }
 
     // ---- blocked: the G6 payment gate refuses the 代表承認.
-    if (status === 'MAKER_PO_READY' && board?.paymentGate && !board.paymentGate.gate.satisfied) {
+    const gateBlocks = status === 'MAKER_PO_READY' && board?.paymentGate != null && !board.paymentGate.gate.satisfied;
+    if (gateBlocks && board?.paymentGate) {
       blocked.push({
         key: `gate-${order.id}`,
         kind: 'maker_po',
@@ -464,6 +479,25 @@ export function buildDashboard(input: DashboardInput): DashboardView {
         owner: OWNER_ADMIN,
         href: itemHref('/maker-po', order.id),
         linkLabel: linkLabelFor('/maker-po'),
+        paymentTerms: terms,
+        amount: null,
+        step
+      });
+    }
+
+    // ---- blocked (P4 B1①): the 支払条件 is 「未定」 — from creation on, whatever the status.
+    // The API's list says so (attention); the gate item above already covers the order at メーカー発注準備完了.
+    if (!gateBlocks && order.paymentTermsUndetermined === true
+      && progress.phase !== 'cancelled' && progress.phase !== 'complete') {
+      blocked.push({
+        key: `terms-${order.id}`,
+        kind: 'order',
+        orderCode: order.code,
+        title: '支払条件が「未定」です。代表承認の前に決めてください。',
+        detail: '「発注の条件」で「前払い」か「納品後払い」を選びます。',
+        owner: null,
+        href: input.projectCode ? orderPath(input.projectCode, order.code) : itemHref('/orders', order.id),
+        linkLabel: '支払条件を決める',
         paymentTerms: terms,
         amount: null,
         step
@@ -483,6 +517,28 @@ export function buildDashboard(input: DashboardInput): DashboardView {
         owner: OWNER_ADMIN,
         href: itemHref('/maker-po', order.id),
         linkLabel: linkLabelFor('/maker-po'),
+        paymentTerms: terms,
+        amount: null,
+        step
+      });
+    }
+
+    // ---- P4 N12 (R30): an open order past its 希望納期 — the date the customer asked for, recorded on the order.
+    // A date that was not read (the list failed) or not recorded claims nothing.
+    const lateDays = progress.phase === 'active' && order.deliveryDatesRead !== false
+      ? daysPastDate(order.requestedDeliveryDate, now)
+      : null;
+    if (lateDays !== null && lateDays > 0) {
+      stalled.push({
+        key: `late-${order.id}`,
+        kind: 'order',
+        orderCode: order.code,
+        title: `希望納期（${order.requestedDeliveryDate!.slice(5).replace('-', '/')}）を過ぎています（${lateDays}日）。`,
+        detail: [WAITING_ON[status] ? `待っているもの: ${WAITING_ON[status]}` : null, gapText]
+          .filter((part): part is string => part !== null).join('／') || null,
+        owner: null,
+        href: input.projectCode ? orderPath(input.projectCode, order.code) : itemHref('/orders', order.id),
+        linkLabel: input.projectCode ? '発注の画面を開く' : linkLabelFor('/orders'),
         paymentTerms: terms,
         amount: null,
         step
@@ -540,6 +596,28 @@ export function buildDashboard(input: DashboardInput): DashboardView {
       todo.push(item);
     } else {
       others.push(item);
+    }
+  }
+
+  // ---- P4 N3: a セブン化学発注書 without any film order — the wizard stopped after registering it.
+  // Claimed only when the links were read in full (a viewer, a hidden order or a failed read never claims it).
+  if (!readFailed && effective !== 'viewer' && !workspace.filmOrders.some((order) => order.detailsHidden)) {
+    const linkedPoIds = new Set(workspace.filmOrders.map((order) => order.sevenPurchaseOrderId).filter((id): id is string => Boolean(id)));
+    for (const po of workspace.sevenPurchaseOrders) {
+      if (linkedPoIds.has(po.id)) continue;
+      blocked.push({
+        key: `po-orphan-${po.id}`,
+        kind: 'order',
+        orderCode: null,
+        title: `発注のないセブン化学発注書があります（${po.poNumberHidden ? `ID ${po.id.slice(-8)}` : po.poNumber}）。`,
+        detail: '登録のあと、照合などで止まった可能性があります。新規発注の画面で「登録済みの発注書に追加する」を選ぶと、この発注書に発注を作れます。',
+        owner: null,
+        href: input.projectCode ? newOrderPath(input.projectCode) : '/orders',
+        linkLabel: input.projectCode ? '発注を作る画面を開く' : linkLabelFor('/orders'),
+        paymentTerms: null,
+        amount: null,
+        step: 0
+      });
     }
   }
 
@@ -647,7 +725,7 @@ export const ACTION_LABELS: Readonly<Record<string, string>> = {
   FILM_SUPPLY_ORDER_TRANSITIONED: '発注の状態を変更',
   FILM_SUPPLY_ORDER_HOLD_RELEASED: '保留を解除',
   FILM_SUPPLY_ORDER_CANCELLATION_REVIEW_RESOLVED: '取消確認を処理',
-  FILM_RECEIPT_ASSUMPTION_RECORDED: '受領確認（問題なしとみなす）を記録',
+  FILM_RECEIPT_ASSUMPTION_RECORDED: '問題なしで完了を記録',
   DOCUMENT_CREATED: '書類を登録',
   DOCUMENT_VERSION_UPLOADED: '書類の版を登録',
   DOCUMENT_VERIFICATION_RECORDED: '書類の確認を記録',

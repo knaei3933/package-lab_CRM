@@ -37,7 +37,9 @@ export function StepAnnouncer({
   }, [message]);
   return (
     <>
-      <div ref={region} tabIndex={-1} role="status" className={message ? 'p1-announce p1-announce--on' : 'p1-announce'}>
+      {/* P4 N15: the focus alone announces this (a role=status on a focused element was read twice). No
+          aria-label: a label would replace the message as the element's name (review L-1). */}
+      <div ref={region} tabIndex={-1} className={message ? 'p1-announce p1-announce--on' : 'p1-announce'}>
         {message ? <><span aria-hidden="true">✓ </span>{message}</> : null}
       </div>
       {children}

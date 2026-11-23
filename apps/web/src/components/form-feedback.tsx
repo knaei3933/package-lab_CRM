@@ -377,11 +377,14 @@ export function FormResult({ state, successHint }: { state: ActionState | null; 
                   {korean}
                 </span>
               ) : null}
-              <ResultRemedy state={state} />
+              <ResultRemedyText state={state} />
             </span>
           </>
         ) : null}
       </span>
+      {/* P4 N15 (P3 M-4①): the buttons and links sit OUTSIDE the role=alert region — a live region
+          that holds a control re-announces it on every change and hides it from some screen readers. */}
+      {failed ? <ResultRemedyAction state={state} /> : null}
       <span role="status" className="form-result form-result--ok">
         {succeeded ? (
           <>
@@ -403,31 +406,38 @@ export function FormResult({ state, successHint }: { state: ActionState | null; 
  * P0: the one way out next to a refusal — reload after another tab switched
  * the project (R03), log in again in a new tab so this tab keeps every entered
  * value (R08), open the record a duplicate number belongs to (R05).
+ * P4 N15: the sentence of it (read by the alert) and the control (outside it) are two parts.
  */
-function ResultRemedy({ state }: { state: ActionState }) {
-  const feedback = useContext(FormFeedbackContext);
-  // P-7: the Korean line follows the user's display setting. Only the two idempotency
-  // buttons (KEY_REUSED / OUTCOME_UNKNOWN) keep the NM1 always-bilingual exception.
-  const showKorean = useRenderedContext()?.showKorean === true;
+function ResultRemedyText({ state }: { state: ActionState }) {
   // P2 R05: the result of the earlier submit is unknown — the key stays fixed until the
-  // operator checked the list; 「一覧を確認しました」 then allows a new submit (new key).
+  // operator checked the list.
   if (state.code === OUTCOME_UNKNOWN_CODE) {
-    return (
-      <span className="form-result-remedy">
-        <strong className="form-result-line">{OUTCOME_UNKNOWN_LINE}</strong>
-        {feedback?.outcomeCheckPending && feedback.startNewIntent ? (
-          <button type="button" className="form-result-action" onClick={feedback.startNewIntent}>
-            {OUTCOME_UNKNOWN_CHECKED_LABEL}
-            <span className="form-result-ko" lang="ko">{OUTCOME_UNKNOWN_CHECKED_KO}</span>
-          </button>
-        ) : null}
-      </span>
-    );
+    return <strong className="form-result-line">{OUTCOME_UNKNOWN_LINE}</strong>;
   }
   // P2 R05: still processing — the same input is sent again later with the same key.
   if (state.code === IN_PROGRESS_CODE) {
     return <span className="form-result-hint">{IN_PROGRESS_HINT}</span>;
   }
+  return null;
+}
+
+function ResultRemedyAction({ state }: { state: ActionState }) {
+  const feedback = useContext(FormFeedbackContext);
+  // P-7: the Korean line follows the user's display setting. Only the two idempotency
+  // buttons (KEY_REUSED / OUTCOME_UNKNOWN) keep the NM1 always-bilingual exception.
+  const showKorean = useRenderedContext()?.showKorean === true;
+  // 「一覧を確認しました」 allows a new submit (new key).
+  if (state.code === OUTCOME_UNKNOWN_CODE) {
+    return feedback?.outcomeCheckPending && feedback.startNewIntent ? (
+      <span className="form-result-remedy">
+        <button type="button" className="form-result-action" onClick={feedback.startNewIntent}>
+          {OUTCOME_UNKNOWN_CHECKED_LABEL}
+          <span className="form-result-ko" lang="ko">{OUTCOME_UNKNOWN_CHECKED_KO}</span>
+        </button>
+      </span>
+    ) : null;
+  }
+  if (state.code === IN_PROGRESS_CODE) return null;
   if (state.code === KEY_REUSED_CODE && feedback?.keyReuseLocked && feedback.startNewIntent) {
     const startNewIntent = feedback.startNewIntent;
     return (

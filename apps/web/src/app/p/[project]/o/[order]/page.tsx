@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import { OrderDetailScreen } from '../../../../../screens/OrderDetailScreen';
 import { resolveRouteProject } from '../../../../../lib/project-route-server';
 import { decodeRouteCode } from '../../../../../lib/project-route';
+import { RouteGate } from '../../../../../components/RouteGate';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +21,7 @@ export default async function Page({
 }) {
   const { project, order } = await params;
   const route = await resolveRouteProject(project);
-  if (route.kind !== 'open') return null;
+  if (route.kind !== 'open') return <RouteGate route={route} />;
   const orderCode = decodeRouteCode(order);
   const query = await searchParams;
   return (

@@ -4,12 +4,14 @@ import { redirect } from 'next/navigation';
 import { revalidatePath } from 'next/cache';
 import { FILM_UNITS } from '@kanei/core';
 import { refuseIfProjectSwitched, writeProjectOf } from '../lib/project-guard';
+import { offsetDateTimeField } from '../lib/datetime';
 import { isRouteCode, orderPath } from '../lib/project-route';
 import { alreadyAt, answeredOrderStatus, answerId, AUTO_TRANSITION_CODES, autoAdvanceRequest, runChain, uploadedVersionId, withAnswer } from '../lib/step-chain';
 import type { ChainStep } from '../lib/step-chain';
 import { RECIPIENT_EMAIL_INVALID_MESSAGE } from '../lib/form-messages';
 import { isPlainAmount, normalizeAmountText } from '../lib/amount';
 import { STEP_REFUSALS } from '../lib/step-messages';
+import { DUPLICATE_CODE, duplicateFromAnswer } from '../lib/duplicate-check';
 import { deliveryDatesFromForm } from '../lib/delivery-dates';
 import { RECIPIENT_CHOICE_INVALID_MESSAGE, RECIPIENT_UNAVAILABLE_CODE, recipientChoiceOf } from '../lib/maker-master';
 import { EVIDENCE_NOTE_FIELD } from '../lib/transition-evidence';
@@ -204,8 +206,20 @@ export async function startFilmOrderAction(_prev: ActionState | null, formData: 
       }))
     }
   ];
-  const result = await runChain(formData, steps, { success: `フィルム発注 ${code} を作成し、発注内容を確定しました。`, refusal: STEP_REFUSALS });
   const projectCode = field(formData, 'projectCode');
+  const result = await runChain(formData, steps, {
+    success: `フィルム発注 ${code} を作成し、発注内容を確定しました。`,
+    // P4 N3: a stop after the PO was registered hands its id back (the wizard re-opens on it).
+    partialId: (answers) => (existingPoId ? null : answerId(answers[0])),
+    // P4 H7①: a number that is already registered says where (a link to the record), not only 「登録済み」.
+    refusal: (refusedCode, index, data) => refusedCode === DUPLICATE_CODE && (index === 0 || index === 3)
+      ? duplicateFromAnswer(index === 0 ? 'seven_po' : 'film_order', data, {
+        projectId,
+        projectCode: isRouteCode(projectCode) ? projectCode : null,
+        value: index === 0 ? poNumber : code
+      })
+      : STEP_REFUSALS(refusedCode)
+  });
   // The order's own screen is the next place to work (R21); a refusal stays on the wizard.
   if (result.ok && isRouteCode(projectCode) && isRouteCode(code)) redirect(`${orderPath(projectCode, code)}?started=1`);
   return result;
@@ -552,7 +566,8 @@ export async function recordDeliveryStepAction(_prev: ActionState | null, formDa
   if (orderId.length === 0) return missing('フィルム発注が見つかりません。');
   const lineIds = formData.getAll('lineId').filter((value): value is string => typeof value === 'string' && value.length > 0);
   if (lineIds.length === 0) return missing('納品する明細がありません。');
-  const deliveredAt = optional(formData, 'deliveredAt');
+  // P4 N15: the date + time inputs post an explicit-offset value (with the wall-clock fallback).
+  const deliveredAt = offsetDateTimeField(formData, 'deliveredAt') || optional(formData, 'deliveredAt');
   const deliveries: Array<{ lineId: string; unit: string; quantity: number }> = [];
   for (const [index, lineId] of lineIds.entries()) {
     const raw = field(formData, `quantity_${lineId}`).replace(/[,，\s]/g, '').replace(/[０-９]/g, (digit) => String.fromCharCode(digit.charCodeAt(0) - 0xfee0));

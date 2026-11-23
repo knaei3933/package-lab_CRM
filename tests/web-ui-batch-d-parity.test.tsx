@@ -519,7 +519,7 @@ describe('High-A: a busy project — the confirmation lies past the capped audit
     const card = orderCard(await render(MakerPoPage), chain.orderCode);
     expect(card).toContain('この発注書の送信状態: </strong>送信ずみ');
     expect(card).not.toContain('未送信');
-    expect(card).not.toContain('③′ 送信の手動確認（代表者のみ）');
+    expect(card).not.toContain('手順3の確認: 送信の手動確認（代表者のみ）');
     expect(card).toContain('手動確認: 確認（合成代表者');
 
     const cancelled = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancel`, { note: '訂正' });

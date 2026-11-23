@@ -272,7 +272,8 @@ describe('§7 the auditor role: label, notices, menu', () => {
   });
 
   it('sees only the screens whose reads it is allowed: home, orders, maker POs, evidence, reference', () => {
-    expect(navHrefsForRole('auditor')).toEqual(['/home', '/orders', '/maker-po', '/evidence', '/guide', '/status']);
+    // P4 H10②: the approval history (read-only) is in the auditor's menu.
+    expect(navHrefsForRole('auditor')).toEqual(['/home', '/orders', '/approvals', '/maker-po', '/evidence', '/guide', '/status']);
     expect(navHrefsForRole('viewer')).not.toContain('/evidence');
     expect(navHrefsForRole('staff')).not.toContain('/makers');
     expect(navHrefsForRole('auditor')).not.toContain('/makers');

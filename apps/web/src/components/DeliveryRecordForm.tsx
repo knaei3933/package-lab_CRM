@@ -21,7 +21,7 @@ import {
   deliveryRecordConfirmSpec
 } from '../lib/confirm-summary';
 import type { Choice } from '../lib/types';
-import { buttonStyle, inputStyle, noteStyle } from '../lib/ui';
+import { inputStyle, noteStyle } from '../lib/ui';
 
 /** UI batch E: a line choice carries its ordered unit, so the 単位 follows the line. */
 export interface DeliveryLineChoice extends Choice {
@@ -39,6 +39,8 @@ interface DeliveryRecordFormProps {
   kind: 'film' | 'filling';
   orders: DeliveryOrderOption[];
   unitChoices: Choice[];
+  /** Said instead of 「発注がまだありません」 when the list is empty for another reason (P4 M11). */
+  emptyText?: string | undefined;
   /** Appended after 「記録しました。」. */
   successHint?: string | undefined;
 }
@@ -60,11 +62,12 @@ const deliveryConfirm: ConfirmResolver = (form) => {
  * confirmed, so the confirmation screen also records deliveries. The line
  * select follows the selected order.
  */
-export function DeliveryRecordForm({ action, kind, orders, unitChoices, successHint }: DeliveryRecordFormProps) {
+export function DeliveryRecordForm({ action, kind, orders, unitChoices, successHint, emptyText }: DeliveryRecordFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   const [orderId, setOrderId] = useState(orders[0]?.id ?? '');
   const [lineId, setLineId] = useState('');
-  const [unit, setUnit] = useState(unitChoices[0]?.value ?? '');
+  // P4 M11: no unit is pre-chosen (the first, 「ロール」, was recorded by mistake): choosing the line sets it.
+  const [unit, setUnit] = useState('');
 
   const lines = orders.find((order) => order.id === orderId)?.lines ?? [];
   const lineUnit = lines.find((line) => line.value === lineId)?.unit;
@@ -74,7 +77,7 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices, successH
   if (orders.length === 0) {
     return (
       <p style={noteStyle}>
-        {kind === 'film' ? 'フィルム発注' : '充填発注'}がまだありません。先に発注を作成してください。
+        {emptyText ?? `${kind === 'film' ? 'フィルム発注' : '充填発注'}がまだありません。先に発注を作成してください。`}
       </p>
     );
   }
@@ -188,12 +191,14 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices, successH
                 <select
                   name="unit"
                   value={unit}
+                  required
                   onChange={(event) => setUnit(event.target.value)}
                   aria-describedby={[unitFeedback.describedBy, unitMismatch ? unitWarningId : undefined].filter(Boolean).join(' ') || undefined}
                   aria-invalid={unitFeedback.invalid}
                   data-feedback-label="単位"
                   style={control(140)}
                 >
+                  <option value="">明細を選ぶと入ります</option>
                   {unitChoices.map((choice) => (
                     <option key={choice.value} value={choice.value}>
                       {choice.label}
@@ -227,7 +232,7 @@ export function DeliveryRecordForm({ action, kind, orders, unitChoices, successH
               type="submit"
               aria-disabled={pending || undefined}
               disabled={locked || undefined}
-              style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
+              className="ui-button"
             >
               {pending ? '記録中…' : DELIVERY_RECORD_SUBMIT_LABEL}
             </button>

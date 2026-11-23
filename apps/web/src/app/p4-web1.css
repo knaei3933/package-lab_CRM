@@ -1,0 +1,60 @@
+/*
+ * P4 web 1 (audit44 leftovers). Loaded last, unlayered, like p3-polish.css.
+ * Sizes, wrapping and focus only — no new colours.
+ */
+
+/* L5: an order code is one token; a narrow table scrolls instead of breaking it. */
+.p4-nowrap {
+  white-space: nowrap;
+}
+
+/* N15: 「破棄」 of a restored draft is a 44px target (it was 32px). */
+.p1-draft .p1-link-button {
+  min-height: 44px;
+}
+
+/* M14: the heading that takes the focus after login stays below the sticky header. */
+#home-title {
+  scroll-margin-top: 72px;
+}
+
+#home-title:focus {
+  outline: none;
+}
+
+#home-title:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+}
+
+/* B1②: 「支払条件を変更する」 on the order screen. */
+.p4-terms-change {
+  margin-top: var(--space-3);
+}
+
+.p4-terms-change-summary {
+  min-height: 44px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  cursor: pointer;
+}
+
+.p4-terms-change-summary:hover {
+  background: var(--primary-tint);
+}
+
+.p4-terms-change-summary:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+.p4-terms-change[open] > .p4-terms-change-summary {
+  margin-bottom: var(--space-2);
+}
+
+/* N15: a control next to a result line (moved out of the alert) keeps the line's layout. */
+.form-actions > .form-result-action {
+  align-self: flex-start;
+}

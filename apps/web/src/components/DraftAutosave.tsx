@@ -38,6 +38,9 @@ function write(key: string, values: Record<string, string> | null): void {
   }
 }
 
+/** P4 N15: asked before the restored draft is thrown away. */
+export const DISCARD_CONFIRM_MESSAGE = '復元した入力を破棄します。元に戻せません。破棄しますか？';
+
 export function DraftAutosave({ name }: { name: string }) {
   const anchor = useRef<HTMLSpanElement>(null);
   const [restored, setRestored] = useState(false);
@@ -95,6 +98,8 @@ export function DraftAutosave({ name }: { name: string }) {
   }, [name]);
 
   function discard(): void {
+    // P4 N15: 「破棄」 deletes what was typed — asked first (it used to delete at once).
+    if (!window.confirm(DISCARD_CONFIRM_MESSAGE)) return;
     const form = anchor.current?.closest('form');
     write(keyRef.current, null);
     setRestored(false);

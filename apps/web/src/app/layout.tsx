@@ -10,6 +10,7 @@ import { cookies, headers } from 'next/headers';
 import { loadSession } from '../lib/api';
 import { RenderedContextProvider } from '../components/RenderedContext';
 import { SavedRecordRefresher } from '../components/SavedRecordRefresher';
+import { UnsavedGuardBoot } from '../components/UnsavedGuardBoot';
 import { SessionNotice } from '../components/SessionNotice';
 import { REQUEST_PATH_HEADER, sessionGateFor } from '../lib/request-path';
 import { decodeDisplayNameCookie, DISPLAY_NAME_COOKIE, operatorName, roleLabel } from '../lib/session-display';
@@ -31,6 +32,7 @@ import './p2-terms.css';
 import './p2-makers.css';
 import './p2-audit.css';
 import './p3-polish.css';
+import './p4-web1.css';
 
 // UI batch A: each screen sets its own title (tabs stay distinguishable); the
 // template adds the product name.
@@ -77,6 +79,8 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
     <html lang={display.lang === 'ko' ? 'ko' : 'ja'} suppressHydrationWarning>
       <body suppressHydrationWarning>
         <a className="skip-link" href="#main">本文へ移動</a>
+        {/* P4 M9: the unsaved-input guard (browser Back too) is installed before the router's own listener. */}
+        <UnsavedGuardBoot />
         {/* UI nav-dashboard (A): a thin top bar (project, help, user, logout) and the
             work menu in a left sidebar — a drawer opened by 「メニュー」 under 1024px. */}
         <NavDrawerProvider>

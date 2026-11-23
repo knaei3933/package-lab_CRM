@@ -23,7 +23,8 @@ export const metadata: Metadata = { title: 'ダッシュボード' };
 async function representativeQueueFor(openProjectId: string | null) {
   const list = await loadSelectableProjectList();
   if (list.error) return failedRepresentativeQueue(list.error);
-  return loadRepresentativeQueue(list.projects.filter((project) => project.id !== openProjectId));
+  // P4 H3: the server's own queue (it holds the manual checks the web's status replay misses); the web replay is the fallback.
+  return loadRepresentativeQueue(list.projects.filter((project) => project.id !== openProjectId), { server: true });
 }
 
 /**

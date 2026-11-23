@@ -1,4 +1,4 @@
-import { apiBaseUrl, readSessionToken, SESSION_COOKIE } from '../../../../../lib/api';
+import { apiBaseUrl, apiTimeoutMs, readSessionToken, SESSION_COOKIE } from '../../../../../lib/api';
 import {
   downloadRefusalForStatus,
   downloadRefusalLocation,
@@ -33,6 +33,10 @@ export async function GET(
   const token = await readSessionToken();
   if (!token) return backToDocuments('login');
 
+  // P4 N15: the wait for the API's answer has an end (the relay used to wait for ever). The limit covers
+  // the answer's start, not the whole body: a large file keeps streaming once it has begun.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), apiTimeoutMs());
   let upstream: Response;
   try {
     upstream = await fetch(`${apiBaseUrl}/api/document-versions/${encodeURIComponent(versionId)}/download`, {
@@ -40,10 +44,13 @@ export async function GET(
       headers: { cookie: `${SESSION_COOKIE}=${token}` },
       cache: 'no-store',
       // Review L3: the session cookie is never carried to wherever a redirect points.
-      redirect: 'manual'
+      redirect: 'manual',
+      signal: controller.signal
     });
   } catch {
     return backToDocuments('unavailable');
+  } finally {
+    clearTimeout(timer);
   }
   if (!upstream.ok || upstream.body === null) {
     // A refusal body is a short JSON message; read it to the end (cancelling

@@ -4,6 +4,7 @@ import {
   FILM_SUPPLY_ORDER_STATES,
   FILM_SUPPLY_ORDER_TERMINAL_STATE,
   filmSupplyOrderTransitions,
+  isAutoOnlyManualTarget,
   isExceptionFilmSupplyOrderState,
   isFilmOrderMakerChainState
 } from '@kanei/core';
@@ -103,7 +104,8 @@ export function transitionChoicesFor(
   }
 
   const all = filmSupplyOrderTransitions(status);
-  const offered = all.filter((to) => !isFilmOrderMakerChainState(to) && to !== FILM_SUPPLY_ORDER_TERMINAL_STATE);
+  // P4 M5: a step the system makes itself (校正準備完了・校了確認待ち・メーカー発注準備完了) is never offered to do by hand — the API refuses it (AUTO_TRANSITION_ONLY).
+  const offered = all.filter((to) => !isFilmOrderMakerChainState(to) && to !== FILM_SUPPLY_ORDER_TERMINAL_STATE && !isAutoOnlyManualTarget(status, to));
   const choice = (to: string, group?: string): Choice => (group ? { value: to, label: label(to), group } : { value: to, label: label(to) });
 
   if (isExceptionFilmSupplyOrderState(status)) {
@@ -145,7 +147,7 @@ export function transitionChoicesFor(
     hint: status === 'APPROVAL_PENDING'
       ? `「${label('DUAL_APPROVED')}」へは、通常は承認の記録で自動的に進みます。`
       : status === 'FILM_DELIVERED'
-        ? '受領確認は下の「受領確認（問題なしとみなす）」で記録します。'
+        ? '「問題なしで完了」は下の操作で記録します。'
         : null,
     resumeNotice: null,
     emptyReason: offered.length === 0 ? 'この画面から進める先はありません。' : null

@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { ActionForm } from '../components/ActionForm';
+import { KoGloss } from '../components/RenderedContext';
 import { ApprovalDecisionForm } from '../components/ApprovalDecisionForm';
 import { ChangeRequestFields } from '../components/ChangeRequestFields';
 import { OffsetDateTimeField } from '../components/OffsetDateTimeField';
@@ -49,14 +50,14 @@ import {
 import type { IssuerEntity } from '@kanei/core';
 import type { Choice } from '../lib/types';
 import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../lib/redaction';
-import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL, liveMakerPapers, MAKER_PO_STATUS_LABELS } from '../lib/maker-po-data';
+import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL, liveMakerPapers, makerPoName, MAKER_PO_STATUS_LABELS, withDisplayNumbers } from '../lib/maker-po-data';
 import type { MakerPoViewRow } from '../lib/maker-po-data';
 
 
 /** UI batch A: per-screen tab title (layout template adds 「｜KANEI CRM」). */
 
 /**
- * Criterion 5: 承認（アートワークのダブル承認）. The pending designs of every
+ * Criterion 5: 承認（アートワークの両組織の承認）. The pending designs of every
  * order that has revisions are read from the API's derived approval gate
  * (GET /api/film-supply-orders/:orderId/approval-gate), and each one offers the
  * two approval buttons. Both buttons submit the same evidence version select,
@@ -73,7 +74,7 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
 
   const [user, workspace] = await Promise.all([loadSessionUser(), loadWorkspace(projectId)]);
   // UI batch E (F-12): a remembered project the API no longer opens — no forms, only the way out.
-  if (workspace.projectRefused) return <ProjectUnavailable title="承認（校了のダブル承認）" reason={workspace.error} returnTo="/approvals" />;
+  if (workspace.projectRefused) return <ProjectUnavailable title="承認（顧客とセブン化学の承認）" reason={workspace.error} returnTo="/approvals" />;
   const role = user?.role ?? null;
   // UI batch B (④): the representative-only manual verification, through the shared helper.
   const canVerifyEvidence = canRoleOperate(role, 'artwork_approval:verify_evidence');
@@ -167,11 +168,11 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
   return (
     <section className="sx-11bfff5">
       <header>
-        <h1 className="sx-15b888e">承認（校了のダブル承認）</h1>
+        <h1 className="sx-15b888e">承認（顧客とセブン化学の承認）</h1>
         <ProjectProgress workspace={workspace} role={role} currentPath="/approvals" projectCode={projectCode} />
         <ViewerPageNotice role={role} />
         <p className="ui-note">
-          顧客とセブン化学の両組織の承認でダブル承認（校了）になります。承認は必ず承認証跡の
+          顧客とセブン化学の両組織の承認で校了になります。承認は必ず承認証跡の
           書類バージョンを引用して記録します。どちらの組織が先でも構いません。
         </p>
         {workspace.error ? <div className="ui-info">{workspace.error}</div> : null}
@@ -197,7 +198,7 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
               </h2>
               <p className="ui-note">
                 {gate?.dualApproved
-                  ? 'この発注の必要なデザインはすべてダブル承認済みです。'
+                  ? 'この発注の必要なデザインはすべて両組織の承認済みです。'
                   : '未承認のデザインがあります。証跡を選んで承認を記録してください。'}
               </p>
 
@@ -209,7 +210,7 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
                       <th className="ui-th" scope="col">現在の版</th>
                       <th className="ui-th" scope="col">顧客の承認</th>
                       <th className="ui-th" scope="col">セブン化学の承認</th>
-                      <th className="ui-th" scope="col">ダブル承認</th>
+                      <th className="ui-th" scope="col">両組織の承認</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -302,8 +303,8 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
           {revisionTargets.blocked.length > 0 ? (
             <div className="ui-info">
               <strong>版を登録できない発注: </strong>
-              {revisionTargets.blocked.map(({ order, papers }) => `${order.code}（メーカー発注書 ${papers
-                .map((paper) => `${shortId(paper.id)}: ${MAKER_PO_STATUS_LABELS[paper.status] ?? paper.status}`)
+              {revisionTargets.blocked.map(({ order, papers }) => `${order.code}（${papers
+                .map((paper) => `${makerPoName(paper, order.code)}: ${MAKER_PO_STATUS_LABELS[paper.status] ?? paper.status}`)
                 .join('、')}）`).join('／')}
               <p className="ui-note">{ARTWORK_REVISION_LIVE_PAPER_REFUSAL}</p>
             </div>
@@ -418,7 +419,7 @@ function organizationStateText(state: DesignApprovalGateView['customer']): strin
   // so it never completes the dual approval while this is true.
   if (state.pendingEvidenceIdentifier) {
     return state.manualVerification?.result === 'rejected'
-      ? '手動確認で却下（二重承認に算入されません）'
+      ? '手動確認で却下（両組織の承認に算入されません）'
       : '手動確認待ち（証跡識別子未確認）';
   }
   if (state.revoked) return '取消済み';
@@ -532,12 +533,12 @@ function PendingVerificationSection({
       </h3>
       <p className="ui-note">
         バイナリ証跡（PDF・画像）の承認は、識別子を自動検証できないため手動確認待ちとして記録されます。
-        確認が記録されるまで二重承認には算入されません。確認の記録は代表者だけです。
+        確認が記録されるまで両組織の承認には算入されません。確認の記録は代表者だけです。
       </p>
       {pending.map((entry) => (
         <div className="sx-045aac8" key={entry.approvalEventId}>
           <div className="ui-info sx-ab544d4">
-            <StatusBadge tone="waiting" label="手動確認待ち" />{' '}
+            <StatusBadge tone="waiting" label="手動確認待ち" /><KoGloss ko="수동 확인 대기" />{' '}
             <strong>{organizationText(entry.organization)}</strong> の承認（デザイン {entry.designKey}／版
             {entry.revisionNo}）は手動確認待ちです。
             <EvidenceIssuerCheck entry={entry} organizationText={organizationText} />
@@ -565,10 +566,12 @@ function PendingVerificationSection({
             <ActionForm
               action={verifyEvidenceManualAction}
               submitLabel="手動確認を記録する"
+              submitLabelKo="수동 확인을 기록"
               hint="確認の記録は新しい追記型イベントです。元の承認イベントとその監査記録は書き換えられません。"
+              hintKo="확인 기록은 새로 추가되는 이벤트입니다. 원래의 승인 이벤트와 감사 기록은 수정되지 않습니다."
               confirm={{
                 title: '承認証跡の手動確認を記録しますか？',
-                body: `${organizationText(entry.organization)} の承認（デザイン ${entry.designKey}／版${entry.revisionNo}）に、選んだ結果を記録します。「確認」は二重承認に算入されます。記録は追記型で、あとから書き換えられません。`,
+                body: `${organizationText(entry.organization)} の承認（デザイン ${entry.designKey}／版${entry.revisionNo}）に、選んだ結果を記録します。「確認」は両組織の承認に算入されます。記録は追記型で、あとから書き換えられません。`,
                 summaryFields: ['result', 'reasonNote']
               }}
             >
@@ -592,7 +595,7 @@ function PendingVerificationSection({
             </ActionForm>
           ) : (
             <p className="role-notice">
-              次のアクション: 代表者による原本証跡の確認を待ちます。{operationRefusal(role, 'artwork_approval:verify_evidence', '手動確認の記録')}
+              次のアクション: 代表者による原本証跡の確認を待ちます。<KoGloss ko="다음 작업: 대표의 원본 증빙 확인을 기다립니다." />{operationRefusal(role, 'artwork_approval:verify_evidence', '手動確認の記録')}
             </p>
           )}
         </div>
@@ -614,7 +617,7 @@ function nowInputValue(): string {
  * live-paper ones are named with their paper. An order whose paper list could
  * not be read stays a choice (the API decides), and is named as unread.
  */
-async function loadRevisionTargets(orders: ReadonlyArray<FilmSupplyOrderView>): Promise<{
+export async function loadRevisionTargets(orders: ReadonlyArray<FilmSupplyOrderView>): Promise<{
   registrable: FilmSupplyOrderView[];
   blocked: Array<{ order: FilmSupplyOrderView; papers: MakerPoViewRow[] }>;
   unread: FilmSupplyOrderView[];
@@ -623,14 +626,15 @@ async function loadRevisionTargets(orders: ReadonlyArray<FilmSupplyOrderView>): 
     const status = knownStatus(order);
     return status !== 'DRAFT' && status !== 'CANCELLED';
   });
-  const lists = await Promise.all(candidates.map((order) => callApi<{ makerPurchaseOrders: MakerPoViewRow[] }>(
+  const lists = await Promise.all(candidates.map((order) => callApi<{ makerPurchaseOrders: MakerPoViewRow[]; displayNumbers?: unknown }>(
     `/api/film-supply-orders/${encodeURIComponent(order.id)}/maker-purchase-orders`
   )));
   const out = { registrable: [] as FilmSupplyOrderView[], blocked: [] as Array<{ order: FilmSupplyOrderView; papers: MakerPoViewRow[] }>, unread: [] as FilmSupplyOrderView[] };
   candidates.forEach((order, index) => {
     const result = lists[index];
+    // P4 L4: the stored 「MPO-…」 numbers of the list are merged, so the blocked notice names the paper by it.
     const rows = result?.ok && result.data && Array.isArray(result.data.makerPurchaseOrders)
-      ? result.data.makerPurchaseOrders
+      ? withDisplayNumbers(result.data.makerPurchaseOrders, result.data.displayNumbers)
       : null;
     if (rows === null) {
       out.unread.push(order);

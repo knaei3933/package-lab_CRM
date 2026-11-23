@@ -7,9 +7,11 @@ import { VStack } from '@astryxdesign/core/VStack';
 import { AstryxIsland } from '../components/AstryxIsland';
 import { LoginForm } from '../components/LoginForm';
 import { loadSessionUser } from '../lib/api';
+import { LOGIN_ADMIN_ONLY_NOTE } from '../lib/login-messages';
 import { DEFAULT_AFTER_LOGIN, RETURN_PARAM, safeReturnPath } from '../lib/return-path';
 
 export const dynamic = 'force-dynamic';
+
 
 /** UI batch A: per-screen tab title (layout template adds 「｜KANEI CRM」). */
 export const metadata: Metadata = { title: 'ログイン' };
@@ -42,7 +44,7 @@ export default async function LoginPage({ searchParams }: { searchParams: Promis
         </Card>
         <Text as="p" type="supporting">
           {'ユーザー名やパスワードが分からないときは、代表者に確認してください。'
-            + '代表者のユーザーでログインすると、承認・納品確認・手数料準備の操作も行えます。'}
+            + LOGIN_ADMIN_ONLY_NOTE}
         </Text>
       </VStack>
     </AstryxIsland>

@@ -298,7 +298,7 @@ function section(props: { role: string | null; facts?: unknown; lock?: unknown; 
 const AMOUNT_TRACES = ['金額', 'totalAmount', 'name="currency"', '¥312,000', '312000'];
 
 describe('OrderTermsSection: what each role sees', () => {
-  it('admin: dates, quantity and amount, three separate forms', () => {
+  it('admin: dates, quantity and amount, plus the 支払条件 change — four separate forms', () => {
     const html = section({ role: 'admin' });
     expect(html).toContain('id="order-terms"');
     expect(html).toContain('2026/12/01（火）');
@@ -306,7 +306,8 @@ describe('OrderTermsSection: what each role sees', () => {
     expect(html).toContain('1,000 メートル');
     expect(html).toContain('セブン化学発注書の金額');
     expect(html).toContain('¥312,000');
-    expect(html.match(/<form/g)?.length).toBe(3);
+    // P4 B1②: the 支払条件 change is the 4th form; the amount form is still its own form.
+    expect(html.match(/<form/g)?.length).toBe(4);
     expect(html).toContain('name="requestedDeliveryDate"');
     expect(html).toContain('name="plannedDeliveryDate"');
     expect(html).toContain('name="requestedDeliveryDateBefore" value="2026-12-01"');
@@ -320,9 +321,9 @@ describe('OrderTermsSection: what each role sees', () => {
     expect(quantityForm).not.toContain('name="totalAmount"');
   });
 
-  it('staff: dates and quantity forms; no amount label, field or text anywhere', () => {
+  it('staff: dates, quantity and 支払条件 forms; no amount label, field or text anywhere', () => {
     const html = section({ role: 'staff' });
-    expect(html.match(/<form/g)?.length).toBe(2);
+    expect(html.match(/<form/g)?.length).toBe(3);
     expect(html).toContain('name="requestedDeliveryDate"');
     expect(html).toContain('name="orderedQuantity"');
     for (const trace of AMOUNT_TRACES) expect(html).not.toContain(trace);

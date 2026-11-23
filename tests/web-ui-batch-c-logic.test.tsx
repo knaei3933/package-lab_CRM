@@ -288,8 +288,8 @@ describe('approvalConfirmSpec / makerPoSendConfirmSpec', () => {
 
   it('the send dialog reads back sender, recipients, the JST send time and the EML held for the submit', () => {
     const spec = makerPoSendConfirmSpec(base);
-    expect(spec.options.title).toBe('手動送信を記録しますか？');
-    expect(spec.confirmLabel).toBe('手動送信を記録する');
+    expect(spec.options.title).toBe('送信を記録しますか？');
+    expect(spec.confirmLabel).toBe('送信を記録する');
     expect(spec.summary).toEqual([
       { label: '送信元', value: 'kanei@example.test' },
       { label: '宛先', value: 'maker@example.test' },

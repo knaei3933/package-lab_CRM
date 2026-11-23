@@ -22,6 +22,12 @@ export interface ActionState {
    * the write (or never saw it), and a retry must carry the same key.
    */
   settled?: boolean | undefined;
+  /**
+   * P4 N3: a submit that wrote the セブン化学発注書 and then stopped (the 照合 was refused):
+   * the id of that registered PO. The wizard re-opens with 「登録済みの発注書に追加する」
+   * already chosen, so the retry adds to it instead of registering a second one.
+   */
+  partialPoId?: string | null | undefined;
 }
 
 export interface Choice {

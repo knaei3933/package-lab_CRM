@@ -3,7 +3,7 @@
  *
  * The menu is ordered by the F1 film order flow (Workflow v1.3 §4 A-2 / §5 F1):
  * セブン化学発注書 → デザイン入稿・校正 → 校了（顧客＋セブン化学） → メーカー発注書・
- * 代表承認・手動送信・受入 → 生産・出荷・納品 → 受領確認・手数料準備. Each group is one
+ * 代表承認・送信の記録・受入 → 生産・出荷・納品 → 受領確認・手数料準備. Each group is one
  * phase of that flow and is numbered because the phases are a real sequence.
  *
  * Which items a role sees is display only (DESIGN_RULES §0-1): the API keeps
@@ -29,6 +29,8 @@ export function navRole(role: string | null | undefined): NavRole {
 export interface NavLinkItem {
   href: string;
   label: string;
+  /** P4 N15: the Korean gloss — one source with the label (it used to come from a second table). */
+  ko: string;
   /** The roles that see this item in the menu. */
   roles: readonly NavRole[];
 }
@@ -62,26 +64,28 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     step: null,
     title: 'ホーム',
     items: [
-      { href: HOME_PATH, label: '承認箱', roles: ['admin'] },
-      { href: HOME_PATH, label: '自分の作業', roles: ['staff'] },
-      { href: HOME_PATH, label: '履歴', roles: ['viewer'] },
-      { href: HOME_PATH, label: '監査履歴', roles: ['auditor'] },
-      { href: DASHBOARD_PATH, label: 'ダッシュボード', roles: ALL }
+      { href: HOME_PATH, label: '承認箱', ko: '승인함', roles: ['admin'] },
+      { href: HOME_PATH, label: '自分の作業', ko: '내 작업', roles: ['staff'] },
+      { href: HOME_PATH, label: '履歴', ko: '이력', roles: ['viewer'] },
+      { href: HOME_PATH, label: '監査履歴', ko: '감사 이력', roles: ['auditor'] },
+      { href: DASHBOARD_PATH, label: 'ダッシュボード', ko: '대시보드(안건 선택)', roles: ALL }
     ]
   },
   {
     key: 'intake',
     step: 1,
     title: '受付・発注',
-    items: [{ href: '/orders', label: '発注の一覧', roles: READERS }]
+    items: [{ href: '/orders', label: '発注の一覧', ko: '발주 목록', roles: READERS }]
   },
   {
     key: 'artwork',
     step: 2,
     title: 'デザイン・校正',
     items: [
-      { href: '/documents', label: '文書', roles: OPERATORS },
-      { href: '/approvals', label: '承認（校了）', roles: OPERATORS }
+      { href: '/documents', label: '文書', ko: '서류', roles: OPERATORS },
+      { href: '/approvals', label: '承認（校了）', ko: '승인(교정 확정)', roles: OPERATORS },
+      // P4 H10②: the auditor reads the approval history (the API allows artwork_approval:read); no forms there.
+      { href: '/approvals', label: '承認（閲覧）', ko: '승인(열람)', roles: ['auditor'] }
     ]
   },
   {
@@ -89,29 +93,29 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     step: 3,
     title: 'メーカー発注',
     items: [
-      { href: '/maker-po', label: 'メーカー発注', roles: READERS },
-      { href: MAKERS_PATH, label: 'メーカーの宛先', roles: ['admin'] }
+      { href: '/maker-po', label: 'メーカー発注', ko: '제조사 발주', roles: READERS },
+      { href: MAKERS_PATH, label: 'メーカーの宛先', ko: '제조사 수신처', roles: ['admin'] }
     ]
   },
   {
     key: 'delivery',
     step: 4,
     title: '納品・手数料',
-    items: [{ href: '/deliveries', label: '納品確認・手数料準備', roles: ALL }]
+    items: [{ href: '/deliveries', label: '納品確認・手数料準備', ko: '납품 확인·수수료 준비', roles: ALL }]
   },
   {
     key: 'evidence',
     step: null,
     title: '証跡',
-    items: [{ href: EVIDENCE_PATH, label: '証跡の一覧', roles: ['admin', 'staff', 'auditor'] }]
+    items: [{ href: EVIDENCE_PATH, label: '証跡の一覧', ko: '증빙 목록', roles: ['admin', 'staff', 'auditor'] }]
   },
   {
     key: 'help',
     step: null,
     title: '参照',
     items: [
-      { href: GUIDE_PATH, label: '使い方ガイド', roles: READERS },
-      { href: '/status', label: '状態表示', roles: READERS }
+      { href: GUIDE_PATH, label: '使い方ガイド', ko: '사용 안내', roles: READERS },
+      { href: '/status', label: '状態表示', ko: '상태 표시', roles: READERS }
     ]
   }
 ];
@@ -179,12 +183,12 @@ export const SCREEN_GUIDES: Readonly<Record<string, ScreenGuide>> = {
     step: 2,
     phase: 'デザイン・校正',
     doHere: '校正ゲラの版を登録し、同じ版に対する顧客の承認とセブン化学の承認をそれぞれ記録します（順番は問いません。両方そろって校了です）。',
-    next: { href: '/maker-po', label: 'メーカー発注', text: '「校了（顧客・セブン化学）」になったら、発注を「メーカー発注準備完了」へ進めてメーカー発注画面へ。' }
+    next: { href: '/maker-po', label: 'メーカー発注', text: '両組織の承認がそろって「校了（顧客・セブン化学）」になると、発注は自動で「メーカー発注準備完了」に進みます。メーカー発注画面へ。' }
   },
   '/maker-po': {
     step: 3,
     phase: 'メーカー発注',
-    doHere: 'メーカー発注書の作成と代表承認（代表者）→ 送信済みメールの原本（EML）で手動送信を記録 → 受入（仮）と最終受入、の順に進めます。',
+    doHere: 'メーカー発注書の作成（担当者・代表者）→ 代表承認（代表者）→ 送信済みメールの原本（EML）で送信を記録 → 受入（仮）と最終受入、の順に進めます。',
     next: { href: '/orders', label: '案件（発注）', text: '最終受入が済んだら、発注画面で「製造中」「出荷済み」へ進めます。' }
   },
   [MAKERS_PATH]: {

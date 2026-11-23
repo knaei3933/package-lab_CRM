@@ -190,9 +190,9 @@ export interface MakerPoBoard {
 /** The Japanese wording of every maker PO status the screens may show. */
 export const MAKER_PO_STATUS_LABELS: Readonly<Record<string, string>> = {
   DRAFT: '下書き（代表承認待ち）',
-  APPROVED_FOR_MANUAL_SEND: '代表承認ずみ（手動送信待ち）',
+  APPROVED_FOR_MANUAL_SEND: '代表承認ずみ（送信待ち）',
   SEND_UNVERIFIED: '送信未確認（要対応）',
-  MAKER_PO_SENT_MANUALLY: '手動送信ずみ（受入確認待ち）',
+  MAKER_PO_SENT_MANUALLY: '送信ずみ（受入確認待ち）',
   MAKER_PO_ACCEPTED: '受入確認済み（最終）',
   SNAPSHOT_VOIDED: 'スナップショット失効（再承認が必要）',
   // M8-HARDEN FIX B2: the replacement exit — history stays, a new maker PO follows.
@@ -230,7 +230,7 @@ export function nextActionForStatus(status: string, role: string): string {
         ? '次のアクション：代表承認（支払条件が「未定」でない場合のみ記録できます）'
         : '次のアクション：代表者による代表承認を待ちます（担当者は承認できません）';
     case 'APPROVED_FOR_MANUAL_SEND':
-      return '次のアクション：送信済みメールの原本（.eml）を送信証跡として手動送信を記録する';
+      return '次のアクション：送信済みメールの原本（.eml）を送信証跡として送信を記録する';
     case 'SEND_UNVERIFIED':
       return '次のアクション：なし（送信未確認のまま停止中。証跡を揃えたうえで代表者へ相談してください）';
     case 'MAKER_PO_SENT_MANUALLY':
@@ -584,7 +584,7 @@ export function cancelSendStateCopy(
     }
     return {
       tone: 'warning',
-      status: '送信は記録されていますが、まだ確認されていません（手動確認待ち）。いま取り消すと内部の訂正として扱われ、すぐに発注書の作成ステップが再度開きます。メーカーに届いている場合は、先に「③′ 送信の手動確認」を記録してください。',
+      status: '送信は記録されていますが、まだ確認されていません（手動確認待ち）。いま取り消すと内部の訂正として扱われ、すぐに発注書の作成ステップが再度開きます。メーカーに届いている場合は、先に「手順3の確認: 送信の手動確認」を記録してください。',
       dialog: `この発注書の送信は手動確認待ちで、まだ確認されていません。取り消すと内部の訂正として扱われ、すぐに発注書の作成ステップが再度開きます。メーカーに届いている場合は、取り消す前に送信の手動確認を記録してください。${CANCEL_IRREVERSIBLE}`
     };
   }

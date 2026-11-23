@@ -38,12 +38,20 @@ export function formatQuantityWithUnit(value: string | number | null | undefined
   return symbol ? `${quantity} ${symbol}` : quantity;
 }
 
-const YEN = new Intl.NumberFormat('ja-JP', { style: 'currency', currency: 'JPY', currencyDisplay: 'symbol' });
+const MONEY = new Intl.NumberFormat('ja-JP', { maximumFractionDigits: 2, minimumFractionDigits: 0 });
 
-/** A money amount: ¥312,000 for JPY, 「1,200.50 USD」 for others; the raw text when it is not a number. */
+/**
+ * P4 N15: THE money text of every screen (the old screens used a second formatter
+ * with another word order, and a JPY amount with sen was rounded to whole yen here).
+ * ¥480,000 for JPY (or no currency), 「1,200.5 USD」 for another code — the same words as the server's
+ * card (`amounts.display`). Up to 2 decimals, no trailing zeros; text that is not a number is
+ * shown as recorded (never NaN, never reinterpreted).
+ */
 export function formatAmount(currency: string | null | undefined, amount: string | number | null | undefined): string {
   const parsed = numeric(amount);
   if (parsed === null) return amount === null || amount === undefined || typeof amount === 'number' ? '' : String(amount);
-  if (!currency || currency === 'JPY') return YEN.format(parsed);
-  return `${new Intl.NumberFormat('ja-JP', { maximumFractionDigits: 2, minimumFractionDigits: 0 }).format(parsed)} ${currency}`;
+  const code = (currency ?? '').trim().toUpperCase();
+  const grouped = MONEY.format(parsed);
+  if (code === '' || code === 'JPY') return `¥${grouped}`;
+  return `${grouped} ${code}`;
 }

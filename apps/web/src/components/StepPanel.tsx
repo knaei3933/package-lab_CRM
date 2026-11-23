@@ -1,3 +1,5 @@
+import { Bilingual } from './Bilingual';
+import { OffsetDateTimeField } from './OffsetDateTimeField';
 import Link from 'next/link';
 import { ActionForm } from './ActionForm';
 import { MakerPoSendEvidenceForm } from './MakerPoSendEvidenceForm';
@@ -183,7 +185,7 @@ export function StepPanelView(props: StepPanelProps) {
           {props.role === 'admin' ? (
             <div className="p1-row">
               <SelectField name="currency" label="通貨" choices={CURRENCY_CHOICES} defaultValue="JPY" width={200} />
-              <TextField name="totalAmount" label="金額（数字のみ・任意）" width={200} placeholder="480000" autoComplete="off" />
+              <TextField name="totalAmount" label="金額（数字のみ・任意）" width={200} placeholder="480000" autoComplete="off" inputMode="decimal" />
             </div>
           ) : null}
         </ActionForm>
@@ -210,9 +212,15 @@ export function StepPanelView(props: StepPanelProps) {
       return (
         <>
           <PaperLine maker={props.maker} orderCode={order.code} />
-          <ActionForm action={verifyMakerPoSendAction} submitLabel="送信の確認を記録する" hint="確認者と日時は自動で記録されます。">
+          <ActionForm
+            action={verifyMakerPoSendAction}
+            submitLabel="送信の確認を記録する"
+            submitLabelKo="송신 확인을 기록"
+            hint="確認者と日時は自動で記録されます。"
+            hintKo="확인자와 일시는 자동으로 기록됩니다."
+          >
             <input type="hidden" readOnly name="eventId" value={action.eventId} />
-            <p>送信メールを自動では確かめられませんでした。宛先・送信日時・件名を原本で確認してください。</p>
+            <p><Bilingual ja="送信メールを自動では確かめられませんでした。宛先・送信日時・件名を原本で確認してください。" ko="송신 메일을 자동으로 확인하지 못했습니다. 수신처·송신 일시·제목을 원본에서 확인하세요." /></p>
             <SelectField name="result" label="確認の結果" required includeBlank blankLabel="（選ぶ）" choices={[{ value: 'confirmed', label: '確認済み（送信された）' }, { value: 'rejected', label: '相違あり（送信として認めない）' }]} />
             <TextareaField name="reasonNote" label="根拠（何を確かめたか）" required rows={2} />
           </ActionForm>
@@ -222,7 +230,7 @@ export function StepPanelView(props: StepPanelProps) {
       return (
         <>
           <PaperLine maker={props.maker} orderCode={order.code} />
-          <p>送信未確認のまま止まっています（証跡なしの送信）。証跡をそろえたうえで代表が判断します。</p>
+          <p><Bilingual ja="送信未確認のまま止まっています（証跡なしの送信）。証跡をそろえたうえで代表が判断します。" ko="송신 미확인 상태로 멈춰 있습니다(증빙 없는 송신). 증빙을 갖춘 뒤 대표가 판단합니다." /></p>
           <p><Link href={`${projectPath(projectCode, 'maker-po')}#maker-order-${order.id}`}>メーカー発注の一覧で確認する</Link></p>
         </>
       );
@@ -250,7 +258,8 @@ export function StepPanelView(props: StepPanelProps) {
               />
             </div>
           ))}
-          <TextField name="deliveredAt" label="納品日（任意）" type="date" width={200} />
+          {/* P4 N15: the same date + time inputs as every other date of a record (no native date picker). */}
+          <OffsetDateTimeField name="deliveredAt" label="納品日（任意・未入力は現在日時）" />
         </ActionForm>
       );
     case 'receipt':
@@ -281,7 +290,11 @@ export function StepPanelView(props: StepPanelProps) {
     case 'cancellation_review':
       return (
         <>
-          <p>{action.kind === 'hold' ? 'この発注は保留中です。解除は代表が理由を書いて行います。' : 'この発注は取消確認中です。再開するか取消で終了するかを代表が決めます（取消で終了は元に戻せません）。'}</p>
+          <p>
+            {action.kind === 'hold'
+              ? <Bilingual ja="この発注は保留中です。解除は代表が理由を書いて行います。" ko="이 발주는 보류 중입니다. 해제는 대표가 사유를 적어 처리합니다." />
+              : <Bilingual ja="この発注は取消確認中です。再開するか取消で終了するかを代表が決めます（取消で終了は元に戻せません）。" ko="이 발주는 취소 확인 중입니다. 재개할지 취소로 종료할지 대표가 결정합니다(취소 종료는 되돌릴 수 없음)." />}
+          </p>
           <p><Link className="p1-button p1-button--primary" href={`${projectPath(projectCode, 'orders')}#order-${order.id}`}>{action.kind === 'hold' ? '保留を解除する' : '取消確認を処理する'}</Link></p>
         </>
       );
@@ -304,7 +317,7 @@ export function StepPanelView(props: StepPanelProps) {
 function waitDetail(action: OrderFlowView['panel']['action']): string {
   switch (action.kind) {
     case 'maker_po_create':
-      return '（代表がメーカー発注書を作ります）';
+      return '（担当者または代表がメーカー発注書を作ります）';
     case 'ceo_approve':
       return '（メーカー発注書の代表承認）';
     case 'evidence_check':
@@ -410,7 +423,7 @@ function ApprovalSlots({ order, projectCode, po, designs, role }: StepPanelProps
                 <div key={organization} className={`p1-seal-slot p1-seal-slot--${state}`}>
                   <p className="p1-seal-name">{name}の承認</p>
                   {state === 'approved' ? (
-                    <p className="p1-seal" aria-label={`${name} 承認済み`}><span className="p1-seal-mark">承認</span></p>
+                    <p className="p1-seal"><span className="p1-seal-mark" aria-hidden="true">承認</span><span className="visually-hidden">{name}の承認済み</span></p>
                   ) : state === 'pending_check' ? (
                     <Waiting text={role === 'admin' ? '証跡の確認が必要です（上の「証跡を確認する」）' : '代表の確認を待っています'} />
                   ) : (
@@ -449,9 +462,13 @@ function AcceptStep({ order, projectCode, po, role, documents, poId, provisional
     <ActionForm
       action={recordAcceptanceStepAction}
       submitLabel={final ? 'メーカーの受注を確定する（最終受入）' : '受入記録（仮）を残す'}
+      submitLabelKo={final ? '제조사 수주를 확정(최종 수령)' : '수령 기록(임시)을 남김'}
       hint={final
         ? '受領証跡を確認済みにして最終受入を記録します。確認者と日時は自動で記録されます。'
         : 'メーカーからの受注確認（メール・書面）を登録し、仮の受入として記録します。確定は代表です。'}
+      hintKo={final
+        ? '수령 증빙을 확인 완료로 하고 최종 수령을 기록합니다. 확인자와 일시는 자동으로 기록됩니다.'
+        : '제조사의 수주 확인(메일·서면)을 등록하고 임시 수령으로 기록합니다. 확정은 대표가 합니다.'}
     >
       <OrderFields order={order} projectCode={projectCode} />
       <input type="hidden" readOnly name="poId" value={poId} />

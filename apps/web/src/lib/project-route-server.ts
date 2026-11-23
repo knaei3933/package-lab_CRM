@@ -1,5 +1,6 @@
 import { cookies } from 'next/headers';
 import { loadSession, PROJECT_COOKIE } from './api';
+import type { SessionState } from './api';
 import { loadSelectableProjectList } from './project-data';
 import type { ProjectSummary } from './project-data';
 import { decodeRouteCode, LAST_PROJECT_COOKIE, projectPath } from './project-route';
@@ -15,12 +16,12 @@ export type RouteProject =
   | { kind: 'open'; project: ProjectSummary; projects: ProjectSummary[] }
   | { kind: 'not-found'; code: string | null; projects: ProjectSummary[] }
   | { kind: 'list-failed'; error: string }
-  | { kind: 'no-session' };
+  | { kind: 'no-session'; session: Exclude<SessionState, { kind: 'user' }> };
 
 export async function resolveRouteProject(segment: string): Promise<RouteProject> {
   // P0 R04 (B4): without a usable session the layout shows its notice; no list read.
   const session = await loadSession();
-  if (session.kind !== 'user') return { kind: 'no-session' };
+  if (session.kind !== 'user') return { kind: 'no-session', session };
   const code = decodeRouteCode(segment);
   const list = await loadSelectableProjectList();
   if (list.error) return { kind: 'list-failed', error: list.error };

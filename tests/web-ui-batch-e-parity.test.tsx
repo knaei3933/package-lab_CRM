@@ -399,7 +399,7 @@ describe('F-23: the representative queue', () => {
     expect(queue.unreadProjects).toEqual([]);
     const works = queue.tasks.map((task) => task.work);
     expect(works).toContain('保留の解除（理由の確認）');
-    expect(works).toContain('メーカー発注書の作成と代表承認');
+    expect(works).toContain('メーカー発注書の代表承認（作成は担当者）');
     expect(queue.tasks.every((task) => task.projectLabel === 'TEST-BE-PROJECT（合成BE案件）')).toBe(true);
   });
 });

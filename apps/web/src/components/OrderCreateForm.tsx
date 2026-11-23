@@ -17,7 +17,7 @@ import { DateTextField } from './fields';
 import { lineField } from '../lib/form-messages';
 import { normalizeQuantityText } from '../lib/form-validation';
 import type { Choice } from '../lib/types';
-import { buttonStyle, inputStyle, noteStyle, subtleButtonStyle } from '../lib/ui';
+import { inputStyle, noteStyle } from '../lib/ui';
 
 /** P0 R01: the term that keeps 代表承認 closed (the API's undetermined). */
 export const UNDECIDED_TERMS = 'undetermined';
@@ -307,7 +307,7 @@ export function OrderCreateForm({
             {lines.length > 1 ? (
               <button
                 type="button"
-                style={subtleButtonStyle}
+                className="ui-button--subtle"
                 aria-label={`明細${index + 1}を削除`}
                 onClick={() => setLines(lines.filter((_, i) => i !== index))}
               >
@@ -319,7 +319,7 @@ export function OrderCreateForm({
         <div>
           <button
             type="button"
-            style={subtleButtonStyle}
+            className="ui-button--subtle"
             onClick={() => setLines([...lines, { description: '', quantity: '', unit: unitChoices[0]?.value ?? '' }])}
           >
             {orderKind === 'film' ? '明細を追加（フィルム発注）' : '明細を追加（充填発注）'}
@@ -351,7 +351,7 @@ export function OrderCreateForm({
               type="submit"
               aria-disabled={pending || undefined}
               disabled={locked || undefined}
-              style={{ ...buttonStyle, opacity: pending || locked ? 0.6 : 1 }}
+              className="ui-button"
             >
               {pending ? '作成中…' : SUBMIT_LABEL}
             </button>

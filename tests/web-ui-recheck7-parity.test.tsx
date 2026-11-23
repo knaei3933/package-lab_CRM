@@ -332,7 +332,7 @@ describe('Medium-1 (W1): a cancelled paper\'s pending send is history, never ③
     signIn('admin');
     // Before the cancel the paper is live: ③′ is the work.
     const live = orderCard(await render(MakerPoPage), chain.orderCode);
-    expect(live).toContain('③′ 送信の手動確認（代表者のみ）');
+    expect(live).toContain('手順3の確認: 送信の手動確認（代表者のみ）');
     expect(live).toContain(`name="eventId" value="${eventId}"`);
 
     const cancelled = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancel`, { note: '未確認の送信を訂正' });
@@ -341,7 +341,7 @@ describe('Medium-1 (W1): a cancelled paper\'s pending send is history, never ③
 
     signedIn.paths.length = 0;
     const card = orderCard(await render(MakerPoPage), chain.orderCode);
-    expect(card).not.toContain('③′ 送信の手動確認（代表者のみ）');
+    expect(card).not.toContain('手順3の確認: 送信の手動確認（代表者のみ）');
     expect(card).not.toContain(`name="eventId" value="${eventId}"`);
     expect(card).toContain('は手動確認待ちのまま残っています。取り消し済みの発注書の送信は、確認も却下も記録できません（APIが拒否します）');
     expect(card).toContain('この取り消しは内部の訂正として扱われたため、取り消し承認も不要です。');
@@ -361,7 +361,7 @@ describe('Medium-1 (W1): a cancelled paper\'s pending send is history, never ③
     expect(replacement.status).toBe(201);
     const withReplacement = orderCard(await render(MakerPoPage), chain.orderCode);
     expect(withReplacement).not.toContain(`name="eventId" value="${eventId}"`);
-    expect(withReplacement).not.toContain('③′ 送信の手動確認（代表者のみ）');
+    expect(withReplacement).not.toContain('手順3の確認: 送信の手動確認（代表者のみ）');
   });
 });
 
@@ -379,7 +379,7 @@ describe('Medium-3: a cancelled order with live maker paper', () => {
     // The board lists the frozen order in cleanup mode — no send form (the API refuses it there).
     const frozenCard = orderCard(await render(MakerPoPage), chain.orderCode);
     expect(frozenCard).toContain('整理だけができます');
-    expect(frozenCard).not.toContain('③ 手動送信記録');
+    expect(frozenCard).not.toContain('手順3: 送信の記録');
     const sendWhileFrozen = await postAs(staffToken, `/api/maker-purchase-orders/${poId}/send-evidence`, {});
     expect(sendWhileFrozen.status).toBe(409);
 
@@ -403,7 +403,7 @@ describe('Medium-3: a cancelled order with live maker paper', () => {
     expect(card).toContain(`name="poId" value="${poId}"`);
     expect(card).toContain('この発注は取消で終了しているため、取り消しても発注の状態は変わらず、新しい発注書も作成されません。');
     expect(card).not.toContain('再度開きます');
-    expect(card).not.toContain('② 代表承認（代表者のみ）');
+    expect(card).not.toContain('手順2: 代表承認（代表者のみ）');
 
     signIn('staff');
     const staffCard = orderCard(await render(MakerPoPage), chain.orderCode);

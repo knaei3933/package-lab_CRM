@@ -2,8 +2,9 @@ import type { ReactNode } from 'react';
 import { ActionForm } from './ActionForm';
 import { Bilingual } from './Bilingual';
 import { DateTextField, SelectField, TextField } from './fields';
+import { updateFilmPaymentTermsAction } from '../app/actions';
 import { saveOrderAmountAction, saveOrderQuantityAction, updateDeliveryDatesAction } from '../app/order-terms-actions';
-import { makerPoNumberOf } from '../lib/maker-po-data';
+import { makerPoNumberOf, PAYMENT_TERMS_LABELS } from '../lib/maker-po-data';
 import {
   beforeFieldOf,
   deliveryDateDisplay,
@@ -99,6 +100,59 @@ function amountCell(facts: OrderFactsRead): TermCell {
   return shown ? { text: shown } : { missing: 'unrecorded' };
 }
 
+const PAYMENT_TERMS_CHOICES = [
+  { value: 'prepaid', label: PAYMENT_TERMS_LABELS.prepaid! },
+  { value: 'on_delivery', label: PAYMENT_TERMS_LABELS.on_delivery! },
+  { value: 'undetermined', label: PAYMENT_TERMS_LABELS.undetermined! }
+];
+
+/**
+ * P4 B1②: 「支払条件を変更する」 on the order screen. The API already allows the change
+ * before the 代表承認 (PATCH …/payment-terms, one history row per change); opened while
+ * the term is still 「未定」, because that is the one value that will stop the approval.
+ * `paymentTermsEditable === false` (the API's own answer: approved, frozen, closed) hides it.
+ */
+export function PaymentTermsChange({ order, role, cancelled }: { order: FilmSupplyOrderView; role: string | null | undefined; cancelled: boolean }) {
+  if (!editsOrderTerms(role) || cancelled || order.paymentTermsEditable === false) return null;
+  const current = order.paymentTerms ?? null;
+  const undecided = current === 'undetermined' || order.paymentTermsUndetermined === true;
+  return (
+    <details className="p4-terms-change" open={undecided || undefined}>
+      <summary className="p4-terms-change-summary">
+        <Bilingual ja="支払条件を変更する" ko="결제 조건 변경" />
+        {current && PAYMENT_TERMS_LABELS[current] ? `（いま: ${PAYMENT_TERMS_LABELS[current]}）` : ''}
+      </summary>
+      {undecided ? (
+        <p className="field-warning" role="status">
+          <span aria-hidden="true">⚠</span> 支払条件が「未定」です。このままでは代表承認できません。決まったらここで選んでください。
+        </p>
+      ) : null}
+      <ActionForm
+        action={updateFilmPaymentTermsAction}
+        submitLabel="支払条件を変更する"
+        hint="代表承認の前なら変更できます（変更は履歴に残ります）。記録は入金確認ではありません。"
+        confirm={{
+          title: `発注 ${order.code} の支払条件を変更しますか？`,
+          body: '選んだ支払条件をこの発注に記録します。代表承認の前なら記録し直せます。記録は入金確認ではありません。',
+          tone: 'primary',
+          summaryFields: ['paymentTerms', 'reason']
+        }}
+      >
+        <input type="hidden" readOnly name="orderId" value={order.id} />
+        <SelectField
+          name="paymentTerms"
+          label="支払条件"
+          required
+          width={280}
+          choices={PAYMENT_TERMS_CHOICES}
+          {...(current && current in PAYMENT_TERMS_LABELS ? { defaultValue: current } : {})}
+        />
+        <TextField name="reason" label="変更の理由（任意）" width={280} />
+      </ActionForm>
+    </details>
+  );
+}
+
 /** 1 行の要約 (現在の手順が メーカー発注書の作成 / 代表承認 のとき、手順パネルの下に出す). */
 export function deliveryTermsSummary(order: FilmSupplyOrderView, facts: OrderFactsRead): string {
   const read = order.deliveryDatesRead !== false;
@@ -180,7 +234,7 @@ export function OrderTermsSection({
           <p className="p1-note">
             <Bilingual
               ja="メーカー発注書を代表が承認すると、この納期・数量で固定されます。直すなら承認の前に。"
-              ko="대표가 제조처 발주서를 승인하면 이 납기·수량으로 고정됩니다."
+              ko="대표가 제조사 발주서를 승인하면 이 납기·수량으로 고정됩니다."
             />
           </p>
           {lock.state === 'draft' ? (
@@ -252,6 +306,9 @@ export function OrderTermsSection({
         </div>
       ) : null}
 
+      {/* An approved maker paper fixes the 支払条件 too (the API: paymentTermsEditable false). */}
+      {locked ? null : <PaymentTermsChange order={order} role={role} cancelled={cancelled} />}
+
       {editable && isAdmin && poId && readFacts ? (
         <div key={`amount-${readFacts.amount?.totalAmount ?? ''}-${readFacts.amount?.currency ?? ''}`} className="p2-terms-form p2-terms-forms">
           {locked ? <p className="p1-note">セブン化学発注書の金額は、承認で固定される対象に入りません。</p> : null}
@@ -270,6 +327,7 @@ export function OrderTermsSection({
                 label="セブン化学発注書の金額（数字のみ）"
                 width={220}
                 autoComplete="off"
+                inputMode="decimal"
                 defaultValue={plainNumberText(readFacts.amount?.totalAmount)}
                 hint="例 312000 / 312000.50。空のまま保存すると記録を消します。"
               />

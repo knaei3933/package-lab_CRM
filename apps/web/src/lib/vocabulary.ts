@@ -5,6 +5,7 @@ import {
   FILLING_UNITS,
   ISSUER_ENTITIES
 } from '@kanei/core';
+import { formatAmount } from './number-format';
 import type {
   ApprovalEvidenceSource,
   DocumentType,
@@ -210,19 +211,13 @@ export function formatTimestamp(value: unknown): string {
 }
 
 /**
- * UI batch E (F-15): an amount as people write it — 「¥480,000」 for JPY,
- * 「USD 1,234.50」 style grouping for another ISO code. A value that is not a
- * plain decimal is shown as recorded (never reinterpreted), and the currency
- * code is kept when Intl does not know it.
+ * An amount as people write it. P4 N15: one formatter for every screen — lib/number-format
+ * `formatAmount`; this keeps the older name and shows 「—」 for an empty amount.
  */
 export function formatMoney(currency: string | null | undefined, amount: string | null | undefined): string {
   const raw = (amount ?? '').trim();
-  const code = (currency ?? '').trim().toUpperCase();
   if (raw.length === 0) return '—';
-  if (!/^\d+(\.\d+)?$/.test(raw)) return code ? `${code} ${raw}` : raw;
-  // Web Interface Guidelines: Intl.NumberFormat, keeping the recorded number of decimals.
-  const decimals = raw.split('.')[1]?.length ?? 0;
-  const grouped = new Intl.NumberFormat('ja-JP', { minimumFractionDigits: decimals, maximumFractionDigits: decimals }).format(Number(raw));
-  if (code === 'JPY' || code === '') return code === 'JPY' ? `¥${grouped}` : grouped;
-  return `${code} ${grouped}`;
+  // A value that is not a plain non-negative decimal is shown as recorded (never reinterpreted, review L8).
+  if (!/^\d+(\.\d+)?$/.test(raw)) return raw;
+  return formatAmount(currency, raw);
 }
