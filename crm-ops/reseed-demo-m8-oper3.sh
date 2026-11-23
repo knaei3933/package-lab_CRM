@@ -239,10 +239,13 @@ require_id "film supply order id" "$ORDER_ID"
 call PATCH "/api/film-supply-orders/$ORDER_ID/delivery-dates" '{"requestedDeliveryDate":"2027-03-31"}'
 step "PATCH /api/film-supply-orders/:id/delivery-dates (希望納期)" 200 "$STATUS"
 
-for NEXT_STATE in SEVEN_PO_VERIFIED ARTWORK_RECEIVED PROOF_READY APPROVAL_PENDING; do
-  call POST "/api/film-supply-orders/$ORDER_ID/transitions" "{\"to\":\"$NEXT_STATE\"}"
-  step "transition → $NEXT_STATE" 200 "$STATUS"
-done
+# P1 R23: SEVEN_PO_VERIFIED (on creation against the verified seven PO),
+# PROOF_READY / APPROVAL_PENDING (on the proof revision) and MAKER_PO_READY
+# (on the dual approval) are automatic steps the API refuses to take by hand
+# (AUTO_TRANSITION_ONLY / INVALID_TRANSITION). Only デザインデータ受領 is a human
+# record.
+call POST "/api/film-supply-orders/$ORDER_ID/transitions" '{"to":"ARTWORK_RECEIVED"}'
+step "transition → ARTWORK_RECEIVED" 200 "$STATUS"
 
 # ------------------------------------------------- proof + artwork revision
 PROOF_PAYLOAD="$(printf '{"documentType":"proof","issuerEntity":"maker","filename":"demo-proof-%s.txt","contentType":"text/plain","designKey":"label-front","filmSupplyOrderId":"%s","sevenPurchaseOrderId":"%s","contentBase64":"%s"}' "$STAMP" "$ORDER_ID" "$PO_ID" "$(base64_content "demo proof label-front rev1 $STAMP")")"
@@ -286,9 +289,6 @@ call GET "/api/film-supply-orders/$ORDER_ID/approval-gate"
 step "GET /api/film-supply-orders/:id/approval-gate" 200 "$STATUS"
 
 # -------------------------------------------------- maker purchase order
-call POST "/api/film-supply-orders/$ORDER_ID/transitions" '{"to":"MAKER_PO_READY"}'
-step "transition → MAKER_PO_READY" 200 "$STATUS"
-
 call POST "/api/film-supply-orders/$ORDER_ID/maker-purchase-orders" \
   '{"recipientAddress":"demo-maker@example.com","amounts":{"currency":"JPY","totalAmount":"480000"}}'
 step "POST maker-purchase-orders (dual-approval re-check)" 201 "$STATUS"
