@@ -785,7 +785,7 @@ describe('(3) L-1: a slot that waits for the representative\'s check no longer p
 describe('(3) L-2: the two survivors of the p4/web3 review\'s mutation run are pinned', () => {
   it('V7: a delivery-status that does not say whether the 「証跡なし」 agreement is needed asks for it (the safe default)', () => {
     const missing = closureLib.receiptClosureFrom({ receiptClosure: { basis: 'delivery_confirmations' }, receiptAssumption: null });
-    expect(missing.pending).toEqual({ basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: true });
+    expect(missing.pending).toEqual({ basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: true, awaitingRepresentative: null });
     expect(closureLib.receiptClosureFrom({ receiptClosure: { basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: false }, receiptAssumption: null }).pending.acknowledgeNoEvidenceRequired).toBe(false);
     const html = (closure: unknown) => panel('FILM_DELIVERED', 'admin', { deliveryContext: context('u-admin', [delivery('del-1', true)], { closure }) });
     expect(html(missing)).toContain('name="acknowledgeNoEvidence"');
@@ -877,5 +877,40 @@ describe('(3) L-6: the old approvals list\'s link to the step-6 check is a 44px 
     const css = readSrc('app/p4-web4.css');
     expect(css).toMatch(/@media \(max-width: 600px\) \{\s*main details > summary \{[^}]*min-height: 44px;/);
     expect(readSrc('app/layout.tsx')).toContain("import './p4-web4.css';");
+  });
+});
+
+describe('p6 int round 2: the order screen stays closed to the viewer now that it reads the order codes (H10)', () => {
+  const serve = (role: string) => {
+    session.user = { id: `u-${role}`, role };
+    const o = order('FILM_DELIVERED', { lines: [], detailsHidden: role === 'viewer' });
+    workspaceFixture.value = {
+      error: null, projectRefused: false, project: { id: 'project-a', code: 'PRJ-1', name: 'A', route: 'F1' }, labels: null, filmOrders: [o], fillingOrders: [],
+      sevenPurchaseOrders: [PO], documents: [], revisions: [], approvalEvents: [], deliveries: [], readiness: null, documentVersionsWithheld: false, revisionsWithheld: 0
+    };
+    board.value = { workspace: workspaceFixture.value, boards: [{ order: o, closure: null, makerPurchaseOrders: [], makerPoError: null, paymentGate: null, paymentGateError: null }] };
+    callApi.mockImplementation(async (url: string) => url.endsWith('/delivery-status') ? ok({ lines: [] }) : url.endsWith('/order-facts') ? ok({ orderedQuantity: '500', orderedUnit: 'meters', updatedAt: null }) : ok({ events: [] }));
+  };
+  const screen = async () => render(await OrderDetailScreen({ projectId: 'project-a', projectCode: 'PRJ-1', orderCode: 'FSO-1', started: false, step: 12 } as never));
+
+  it('viewer (and an unknown role): the order of the address is found by its code, and still the permission page with the 履歴 link', async () => {
+    for (const role of ['viewer', 'mystery']) {
+      serve(role);
+      const html = await screen();
+      expect(html, role).toContain('閲覧権限では発注の画面を開けません');
+      expect(html, role).toContain('href="/home"');
+      expect(html, role).not.toContain('現在の手順');
+      expect(html, role).not.toContain('完了の根拠');
+      expect(visibleText(html), role).not.toMatch(HANGUL);
+    }
+  });
+
+  it('staff, the representative and the auditor open it as before', async () => {
+    for (const role of ['staff', 'admin', 'auditor']) {
+      serve(role);
+      const html = await screen();
+      expect(html, role).not.toContain('閲覧権限では発注の画面を開けません');
+      expect(html, role).toContain('FSO-1');
+    }
   });
 });

@@ -1007,6 +1007,11 @@ export const ERROR_DICTIONARY: Readonly<Record<string, ErrorDictionaryEntry>> = 
     ja: 'フィルム発注の状態がすでに変わっています。画面を再読み込みして、最新の状態を確認してください。',
     ko: '필름 발주 상태가 이미 바뀌었습니다. 화면을 다시 불러와 최신 상태를 확인하세요.'
   },
+  // p6 X5: while receipt evidence waits for the representative, staff do not close 「証跡なしで問題なし」.
+  RECEIPT_EVIDENCE_AWAITING_REPRESENTATIVE: {
+    ja: '受領証跡が代表の確認を待っています。証跡なしでの完了は代表だけが記録できます。代表の確認を待ってください。',
+    ko: '수령 증빙이 대표 확인을 기다리고 있습니다. 증빙 없는 완료는 대표만 기록할 수 있습니다. 대표 확인을 기다려 주세요.'
+  },
   RECIPIENTS_REQUIRED: {
     ja: '送信証跡の宛先が入力されていません。宛先を入力してください。',
     ko: '송신 증빙의 수신자가 입력되지 않았습니다. 수신자를 입력하세요.'

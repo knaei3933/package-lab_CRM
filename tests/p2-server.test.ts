@@ -1242,15 +1242,16 @@ describe('P-2 auditor role and the unchanged viewer answers', () => {
       expect(history.text).toContain(QUOTE_TOKEN);
     });
 
-    it('keeps the viewer answer to statuses and payment terms only (P1 shape)', async () => {
+    it('keeps the viewer answer to statuses and payment terms only (P1 shape) — plus the order code on order rows (p6 H10)', async () => {
       const history = await get('viewer', `/api/projects/${ids.projectA}/audit-history?limit=500&order=desc`);
       expect(history.status).toBe(200);
       for (const event of history.body.events) {
         for (const key of Object.keys(event)) {
           expect(['id', 'action', 'entityType', 'entityId', 'occurredAt', 'actor', 'beforeState', 'afterState']).toContain(key);
         }
+        const orderRow = event.entityType === 'film_supply_order' || event.entityType === 'filling_order';
         for (const state of [event.beforeState, event.afterState]) {
-          if (state) for (const key of Object.keys(state)) expect(['status', 'readinessState', 'isReady', 'paymentTerms']).toContain(key);
+          if (state) for (const key of Object.keys(state)) expect(['status', 'readinessState', 'isReady', 'paymentTerms', ...(orderRow ? ['code'] : [])]).toContain(key);
         }
       }
       expect(history.text).not.toContain('987654');
@@ -1310,7 +1311,8 @@ describe('P-2 auditor role and the unchanged viewer answers', () => {
 
   describe('evidence metadata', () => {
     const DOCUMENT_KEYS = ['createdAt', 'createdBy', 'designKey', 'documentId', 'documentType', 'filmSupplyOrderId', 'issuerEntity', 'makerPurchaseOrderId', 'orderCode', 'originalFilename', 'originalFilenameHidden', 'sevenPurchaseOrderId', 'verificationStatus', 'verifiedAt', 'verifiedBy', 'versions'];
-    const VERSION_KEYS = ['byteSize', 'detectedMimeType', 'originalFilename', 'sha256', 'uploadedAt', 'uploadedBy', 'versionId', 'versionNumber'];
+    // p6 X3: sendVerification (null except on a cited send-evidence version).
+    const VERSION_KEYS = ['byteSize', 'detectedMimeType', 'originalFilename', 'sendVerification', 'sha256', 'uploadedAt', 'uploadedBy', 'versionId', 'versionNumber'];
 
     it.each(['admin', 'staff', 'auditor'] as const)('answers %s the metadata without bytes, paths or notes', async (role) => {
       const read = await get(role, `/api/projects/${ids.projectA}/evidence-metadata`);

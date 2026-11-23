@@ -290,6 +290,8 @@ export const ERROR_MESSAGES_JA: Readonly<Record<string, string>> = {
   RECEIPT_ASSUMPTION_NOTE_REQUIRED: '問題なしとみなす理由を入力してください',
   RECEIPT_ASSUMPTION_ONLY_FROM_FILM_DELIVERED: '受領確認は「フィルム納品済み」の発注でだけ記録できます',
   RECEIPT_ASSUMPTION_STATE_CHANGED: 'フィルム発注の状態が別の操作で変わりました。画面を再読み込みしてください',
+  // p6 X5: staff's evidence-free closure while receipt evidence waits for the representative.
+  RECEIPT_EVIDENCE_AWAITING_REPRESENTATIVE: '受領証跡が代表の確認を待っています。証跡なしでの完了は代表だけが記録できます。代表の確認を待ってください',
   INVALID_RECEIPT_ASSUMED_AT: '受領確認の日付が正しくありません',
   INVALID_DATE: '日付が正しくありません。日付の形式を確認してください',
   // ---- P1 R23: automatic steps

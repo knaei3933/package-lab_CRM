@@ -247,8 +247,12 @@ describe('server batch E follow-ups', () => {
       actor: null
     };
     const viewer = buildAuditViewForRole('viewer', [orderRow])[0]!;
-    expect(viewer.afterState).toEqual({ status: 'DRAFT', paymentTerms: 'prepaid' });
-    expect(JSON.stringify(viewer)).not.toContain('FSO-SECRET-E2');
+    // p6 H10 (conductor decision): the order code joins the viewer answer on order rows.
+    expect(viewer.afterState).toEqual({ code: 'FSO-SECRET-E2', status: 'DRAFT', paymentTerms: 'prepaid' });
+    // ...and only there: the same keys on another entity keep the code withheld.
+    const projectViewer = buildAuditViewForRole('viewer', [{ ...orderRow, entityType: 'project' }])[0]!;
+    expect(projectViewer.afterState).toEqual({ status: 'DRAFT', paymentTerms: 'prepaid' });
+    expect(JSON.stringify(projectViewer)).not.toContain('FSO-SECRET-E2');
     expect(viewer).not.toHaveProperty('requestMetadata');
   });
 });

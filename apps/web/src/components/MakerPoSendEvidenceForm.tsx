@@ -41,6 +41,12 @@ interface MakerPoSendEvidenceFormProps {
 }
 
 const SUBMIT_LABEL = MAKER_PO_SEND_SUBMIT_LABEL;
+/**
+ * p6 int round 2 (p6/web review M-1, X6): the form shell's `intentLabel` (p6/web) names this submit in the
+ * order screen's status line — 「送信を記録する」, not the newest record's label. Spread, so this file needs
+ * no change to the shell's props and stays clean against p6/web's form-feedback.tsx when the two merge.
+ */
+const SUBMIT_INTENT = { intentLabel: SUBMIT_LABEL };
 
 interface MakerPoEmlFormState {
   values: EmlFormValues;
@@ -240,6 +246,7 @@ export function MakerPoSendEvidenceForm({
 
   return (
     <FeedbackForm
+      {...SUBMIT_INTENT}
       action={formAction}
       state={state}
       pending={pending}
@@ -253,6 +260,8 @@ export function MakerPoSendEvidenceForm({
     >
       <input type="hidden" readOnly name="poId" value={poId} />
       <input type="hidden" readOnly name="contentBase64" value={contentBase64} />
+      {/* p6 X3: the picked .eml's own name, kept as the stored version's name (the evidence list shows it). */}
+      <input type="hidden" readOnly name="filename" value={emlFilename} />
 
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
         <FieldFeedback name={FILE_FIELD}>

@@ -125,11 +125,11 @@ describe('loadWorkspace role labels (UI batch A, P1-4)', () => {
     const [po] = workspace.sevenPurchaseOrders;
     expect(po).toMatchObject({ poNumber: HIDDEN_BY_ROLE_LABEL, officialRegistrationHidden: true, verificationHidden: true });
     expect(po?.officialRegisteredAt).toBeNull();
-    // UI batch E3: the 支払条件 reads for the viewer too; the order code does not.
+    // UI batch E3: the 支払条件 reads for the viewer too; p6 H10: so does the order code (lines stay hidden).
     expect(workspace.filmOrders[0]).toMatchObject({
-      code: HIDDEN_BY_ROLE_LABEL, status: 'DRAFT', statusHidden: false, detailsHidden: true, paymentTerms: 'undetermined', paymentTermsHidden: false
+      code: 'FSO-2026-001', status: 'DRAFT', statusHidden: false, detailsHidden: true, paymentTerms: 'undetermined', paymentTermsHidden: false
     });
-    expect(workspace.fillingOrders[0]).toMatchObject({ code: HIDDEN_BY_ROLE_LABEL, detailsHidden: true });
+    expect(workspace.fillingOrders[0]).toMatchObject({ code: 'FIL-2026-001', detailsHidden: true });
     expect(workspace.documents[0]).toMatchObject({ filename: HIDDEN_BY_ROLE_LABEL, detailsHidden: true, typeHidden: true, verificationHidden: true });
   });
 });

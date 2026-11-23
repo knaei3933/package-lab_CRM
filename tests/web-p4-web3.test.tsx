@@ -521,7 +521,7 @@ const receiptStep = (closure: unknown, completed = false, deliveries = [delivery
 describe('(e) 納品の完了: the server says what it rests on (確認済みの納品 / 証跡なしの同意)', () => {
   it('receiptClosureFrom: pending while 納品済み, recorded once completed (no basis recorded = evidence-free, before P4); an older answer is null', () => {
     expect(closureLib.receiptClosureFrom({ receiptClosure: { basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: false }, receiptAssumption: null }))
-      .toEqual({ pending: { basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: false }, recorded: null });
+      .toEqual({ pending: { basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: false, awaitingRepresentative: null }, recorded: null });
     expect(closureLib.receiptClosureFrom({ receiptClosure: null, receiptAssumption: { assumedAt: '2026-11-23T01:00:00Z', assumedBy: { id: 'u', displayName: '代表' }, note: 'n' } }))
       .toEqual({ pending: null, recorded: { basis: 'evidence_free_acknowledgment', at: '2026-11-23T01:00:00Z', by: '代表' } });
     expect(closureLib.receiptClosureFrom({ status: 'FILM_DELIVERED' })).toBeNull();

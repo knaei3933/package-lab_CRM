@@ -15,6 +15,23 @@ export interface EvidenceVersionView {
   sha256: string | null;
   uploadedAt: string | null;
   uploadedBy: string | null;
+  /** p6 X3: the send check of a send-evidence version (null: not a send evidence, not cited, or an older API). */
+  sendVerification: SendVerificationState | null;
+}
+
+/** p6 X3: GET …/evidence-metadata `versions[].sendVerification` (the server's words for the send check). */
+export type SendVerificationState = 'auto_verified' | 'manual_pending' | 'manual_confirmed' | 'manual_rejected';
+
+/** p6 X3: 「送信の検証: …」 on a send-evidence row, apart from the document check. */
+export const SEND_VERIFICATION_TEXT: Readonly<Record<SendVerificationState, string>> = {
+  auto_verified: '自動確認済み',
+  manual_pending: '手動確認待ち',
+  manual_confirmed: '手動確認済み',
+  manual_rejected: '却下'
+};
+
+function sendVerificationOf(value: unknown): SendVerificationState | null {
+  return typeof value === 'string' && Object.hasOwn(SEND_VERIFICATION_TEXT, value) ? (value as SendVerificationState) : null;
 }
 
 export interface EvidenceDocumentView {
@@ -68,7 +85,8 @@ export function parseEvidenceMetadata(data: unknown): EvidenceMetadata | null {
         originalFilename: str(version.originalFilename),
         sha256: str(version.sha256),
         uploadedAt: str(version.uploadedAt),
-        uploadedBy: person(version.uploadedBy)
+        uploadedBy: person(version.uploadedBy),
+        sendVerification: sendVerificationOf(version.sendVerification)
       };
     });
     return {
@@ -88,6 +106,13 @@ export function parseEvidenceMetadata(data: unknown): EvidenceMetadata | null {
     };
   });
   return { documents, truncated: body.truncated === true, limit: typeof body.limit === 'number' ? body.limit : null };
+}
+
+/** p6 X3, pure: the send check of a send-evidence document — its newest cited version's (null: not a send evidence, or none read). */
+export function sendVerificationOfDocument(doc: Pick<EvidenceDocumentView, 'documentType' | 'versions'>): SendVerificationState | null {
+  if (doc.documentType !== 'send_evidence') return null;
+  const newestFirst = [...doc.versions].sort((a, b) => (b.versionNumber ?? 0) - (a.versionNumber ?? 0));
+  return newestFirst.find((version) => version.sendVerification !== null)?.sendVerification ?? null;
 }
 
 /** The request path: the project, an optional order filter and the row limit. */

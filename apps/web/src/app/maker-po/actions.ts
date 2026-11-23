@@ -156,6 +156,9 @@ export async function recordMakerPoSendEvidenceAction(
   const body: Record<string, unknown> = { senderAddress, recipients, sentAt };
   if (contentBase64.length > 0) {
     body.contentBase64 = contentBase64;
+    // p6 X3: the uploaded .eml's own name (display only; the API keeps the paper's document key).
+    const filename = field(formData, 'filename');
+    if (filename.length > 0) body.filename = filename;
   } else {
     body.evidenceDocumentVersionId = evidenceDocumentVersionId;
   }

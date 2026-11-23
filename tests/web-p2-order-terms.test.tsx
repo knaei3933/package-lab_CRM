@@ -573,7 +573,8 @@ describe('OrderDetailScreen: 「発注の条件」 in place, the MPO number in t
 
   it('viewer: the quantity is never asked for', async () => {
     const html = await screen('viewer', []);
-    expect(html).toContain('閲覧権限では表示されません');
+    // p6 int round 2: the viewer does not open the order screen at all (by role; since H10 it reads the codes).
+    expect(html).toContain('閲覧権限では発注の画面を開けません');
     expect(callApi).not.toHaveBeenCalledWith('/api/seven-purchase-orders/po-1/order-facts');
     expect(html).not.toContain('name="requestedDeliveryDate"');
   });

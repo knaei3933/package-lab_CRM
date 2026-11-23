@@ -5,6 +5,8 @@ import {
   documents,
   documentVersions,
   filmSupplyOrders,
+  makerPoEvents,
+  makerPoSendManualVerifications,
   makerPurchaseOrders,
   makerRecipientAddresses,
   projects,
@@ -22,6 +24,9 @@ import {
   type UserRole
 } from '@kanei/core';
 import { getSessionUser, toActor, type AppDatabase } from './auth.js';
+
+/** p6 X3: the send check of a send-evidence version, as the evidence list shows it. */
+export type SendVerificationState = 'auto_verified' | 'manual_pending' | 'manual_confirmed' | 'manual_rejected';
 
 /**
  * P2 server routes (representative approval 2026-11-21). Every route here:
@@ -623,6 +628,8 @@ export function registerP2Routes(app: Hono<any>, { db, recordAuditEvent }: P2Rou
     }).from(documentVersions)
       .where(inArray(documentVersions.documentId, ids))
       .orderBy(asc(documentVersions.documentId), asc(documentVersions.versionNumber));
+    // Only a send_evidence version is ever cited by a SEND_EVIDENCE_REGISTERED event.
+    const sendVerification = await sendVerificationByVersion(versions.map((version) => version.versionId));
     const personIds = [...new Set([
       ...page.flatMap((row) => [row.createdByUserId, row.verifiedByUserId]),
       ...versions.map((version) => version.uploadedByUserId)
@@ -664,10 +671,47 @@ export function registerP2Routes(app: Hono<any>, { db, recordAuditEvent }: P2Rou
           byteSize: version.byteSize,
           detectedMimeType: version.detectedMimeType,
           uploadedAt: version.uploadedAt,
-          uploadedBy: person(version.uploadedByUserId)
+          uploadedBy: person(version.uploadedByUserId),
+          // p6 X3: a send_evidence version's send check, apart from the document check (null: not a send evidence, or not cited).
+          sendVerification: sendVerification.get(version.versionId) ?? null
         }))
       }))
     });
   });
+
+  /**
+   * p6 X3: the send check of each cited send-evidence version — the latest SEND_EVIDENCE_REGISTERED
+   * event that cites it: `auto_verified` (VERIFIED), `manual_pending` (PENDING_MANUAL_VERIFICATION
+   * with no manual check yet), `manual_confirmed` / `manual_rejected` (the latest manual check's
+   * result). Results only — never the reason, the checks or an address.
+   */
+  async function sendVerificationByVersion(versionIds: string[]): Promise<Map<string, SendVerificationState>> {
+    const out = new Map<string, SendVerificationState>();
+    // drizzle answers inArray([]) with `false`: an empty page reads nothing.
+    const events = await db.select({
+      id: makerPoEvents.id,
+      versionId: makerPoEvents.evidenceDocumentVersionId,
+      verificationStatus: makerPoEvents.verificationStatus
+    }).from(makerPoEvents)
+      .where(and(eq(makerPoEvents.eventType, 'SEND_EVIDENCE_REGISTERED'), inArray(makerPoEvents.evidenceDocumentVersionId, versionIds)))
+      .orderBy(asc(makerPoEvents.recordedAt), asc(makerPoEvents.id));
+    // A manual check is only ever recorded on a send that was not VERIFIED.
+    const eventIds = events.map((event) => event.id);
+    const checks = await db.select({
+      eventId: makerPoSendManualVerifications.makerPoEventId,
+      result: makerPoSendManualVerifications.result
+    }).from(makerPoSendManualVerifications)
+      .where(inArray(makerPoSendManualVerifications.makerPoEventId, eventIds))
+      .orderBy(asc(makerPoSendManualVerifications.recordedAt), asc(makerPoSendManualVerifications.id));
+    const latestCheck = new Map(checks.map((check) => [check.eventId, check.result]));
+    for (const event of events) {
+      // Every row cites one of versionIds (the where clause); an UNVERIFIED send cites no version at all.
+      const check = latestCheck.get(event.id);
+      out.set(event.versionId as string, event.verificationStatus === 'VERIFIED'
+        ? 'auto_verified'
+        : check === 'confirmed' ? 'manual_confirmed' : check === 'rejected' ? 'manual_rejected' : 'manual_pending');
+    }
+    return out;
+  }
 
 }

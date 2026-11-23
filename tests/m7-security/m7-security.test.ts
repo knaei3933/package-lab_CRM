@@ -665,7 +665,9 @@ describe('S3: the audit history answer is filtered by role, the rows never are',
       for (const stateKey of ['beforeState', 'afterState']) {
         const state = event[stateKey] as Record<string, unknown> | null | undefined;
         if (state && typeof state === 'object') {
-          expect(Object.keys(state).every((key) => ['status', 'readinessState', 'isReady', 'paymentTerms'].includes(key))).toBe(true);
+          // p6 H10: the order code joins the viewer answer on film / filling order rows only.
+          const orderRow = event.entityType === 'film_supply_order' || event.entityType === 'filling_order';
+          expect(Object.keys(state).every((key) => ['status', 'readinessState', 'isReady', 'paymentTerms', ...(orderRow ? ['code'] : [])].includes(key))).toBe(true);
         }
       }
     }

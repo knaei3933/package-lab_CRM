@@ -205,9 +205,9 @@ describe('E3: the 支払条件 is public, amounts are not (representative decisi
         }
       }
     }
-    // The viewer still reads no order code or id beside the status and the term.
+    // The viewer reads no id beside the status and the term — since p6 H10 the order code joins them.
     const viewerCreated = (await auditAs('viewer')).find((event) => event.action === 'FILM_SUPPLY_ORDER_CREATED' && event.entityId === orderId);
-    expect(Object.keys(viewerCreated?.afterState ?? {}).sort()).toEqual(['paymentTerms', 'status']);
+    expect(Object.keys(viewerCreated?.afterState ?? {}).sort()).toEqual(['code', 'paymentTerms', 'status']);
   });
 
   it('the workspace replays the latest term for every role (creation value replaced by the later record)', async () => {
@@ -220,9 +220,10 @@ describe('E3: the 支払条件 is public, amounts are not (representative decisi
       expect(untouched, role).toMatchObject({ paymentTerms: 'prepaid', paymentTermsHidden: false });
     }
     signIn('viewer');
-    // The viewer's other order details stay withheld.
-    expect((await loadWorkspace(projectId)).filmOrders.find((candidate) => candidate.id === orderId))
-      .toMatchObject({ code: HIDDEN_BY_ROLE_LABEL, detailsHidden: true });
+    // The viewer's other order details stay withheld; p6 H10: the code reads.
+    const viewerOrder = (await loadWorkspace(projectId)).filmOrders.find((candidate) => candidate.id === orderId);
+    expect(viewerOrder).toMatchObject({ detailsHidden: true });
+    expect(viewerOrder?.code).not.toBe(HIDDEN_BY_ROLE_LABEL);
   });
 
   it('/orders shows the 支払条件 column in Japanese to staff and viewer, never 閲覧権限なし there', async () => {

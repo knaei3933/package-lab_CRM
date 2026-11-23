@@ -93,8 +93,23 @@ export const STAFF_VISIBLE_STATE_KEYS: readonly string[] = [
  */
 export const VIEWER_VISIBLE_STATE_KEYS: readonly string[] = ['status', 'readinessState', 'isReady', 'paymentTerms'];
 
+/**
+ * p6 H10: mirror of VIEWER_ORDER_CODE_ENTITY_TYPES in apps/api/src/audit-view.ts — on these rows
+ * the viewer answer also carries the order code (pinned by tests/p6-int.test.ts).
+ */
+export const VIEWER_ORDER_CODE_ENTITY_TYPES: readonly string[] = ['film_supply_order', 'filling_order'];
+
 interface StateCarrier {
   afterState?: unknown;
+  /** The audit row's entity type, when the caller has it (decides whether a viewer answer may carry `code`). */
+  entityType?: string | undefined;
+}
+
+/** The keys a viewer answer of this row may carry (p6 H10: the order code on order rows). */
+function viewerKeysOf(event: StateCarrier): readonly string[] {
+  return VIEWER_ORDER_CODE_ENTITY_TYPES.includes(String(event.entityType))
+    ? [...VIEWER_VISIBLE_STATE_KEYS, 'code']
+    : VIEWER_VISIBLE_STATE_KEYS;
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -135,8 +150,9 @@ export function isFieldHiddenByRole(
   // every other key is withheld from it, never 「未記録」. A staff or admin
   // answer always carries an identifier (id, code, …) beside its status, so it
   // is not mistaken for one.
-  if (present.every((name) => VIEWER_VISIBLE_STATE_KEYS.includes(name))) {
-    return !VIEWER_VISIBLE_STATE_KEYS.includes(key);
+  const viewerKeys = viewerKeysOf(event);
+  if (present.every((name) => viewerKeys.includes(name))) {
+    return !viewerKeys.includes(key);
   }
   if (STAFF_VISIBLE_STATE_KEYS.includes(key)) return false;
   return present.every((name) => STAFF_VISIBLE_STATE_KEYS.includes(name));

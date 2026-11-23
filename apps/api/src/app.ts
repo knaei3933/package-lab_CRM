@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 import { expectedProjectMiddleware } from './project-context.js';
 import { orderFactsViewForRole, parseCalendarDate, registerP2Routes } from './p2-routes.js';
 import { registerP4Routes } from './p4-routes.js';
@@ -602,6 +603,34 @@ function makerPoActiveUniqueViolation(error: unknown): boolean {
 class ReceiptAssumptionStateConflict extends Error {}
 
 /** P4 server2 (web2a review M-2): the closure basis decided under the order lock refused the request. */
+/**
+ * p6 X3: the display name of an inline send-evidence .eml — the uploaded file's own name, as the
+ * documents intake keeps it. Display metadata only (the storage path never derives from it): the
+ * last path segment, control characters removed, trimmed, at most 200 characters. Anything else
+ * (absent, not a string, empty once cleaned) → null, and the version keeps the per-paper key name.
+ */
+export function sendEvidenceDisplayFilename(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const lastSegment = value.replace(/^[\s\S]*[\\/]/, '');
+  // p6 int round 2 (review L-4): every control (Cc: C0, DEL, C1) and format character (Cf: bidi
+  // overrides and isolates, zero-width, BOM) and the line / paragraph separators — none is visible, and
+  // a bidi override can make 「invoice‮lme.exe」 read as another name.
+  const cleaned = lastSegment.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, '').trim();
+  if (cleaned.length === 0) return null;
+  return Array.from(cleaned).slice(0, 200).join('');
+}
+
+/** p6 X5: staff's evidence-free closure while receipt evidence waits for the representative (decided under the lock). */
+class ReceiptEvidenceAwaitingRepresentative extends Error {}
+
+function receiptEvidenceAwaitingRefusal(from: unknown) {
+  return {
+    error: '受領証跡が代表の確認を待っています。証跡なしでの完了は代表だけが記録できます。代表の確認を待ってください',
+    code: 'RECEIPT_EVIDENCE_AWAITING_REPRESENTATIVE',
+    from
+  };
+}
+
 class ReceiptClosureRefusedUnderLock extends Error {
   constructor(readonly code: string, readonly refusal: string) {
     super(code);
@@ -797,6 +826,22 @@ function evidenceFromMakerPoSql() {
   return sql<boolean>`(${documents.makerPurchaseOrderId} is not null or exists (
     select 1 from document_versions mv join documents md on md.id = mv.document_id
     where md.project_id = ${documents.projectId} and md.maker_purchase_order_id is not null and mv.sha256 = ${documentVersions.sha256}))`;
+}
+
+/**
+ * P4 H14 / p6 X5: receipt evidence of a film order (acceptance_evidence of that
+ * order, not bound to a maker paper nor a same-bytes copy of a maker-bound one)
+ * uploaded by someone who is not the representative. With an unconfirmed
+ * delivery beside it, the representative's queue shows 「納品の確認」 (P-4: the
+ * uploader never confirms on it) — and, since p6 X5, staff may not close the
+ * order evidence-free while it waits. One definition for both.
+ */
+function nonAdminReceiptEvidenceExistsSql(filmSupplyOrderId: SQL) {
+  return sql`exists (select 1 from documents d join document_versions v on v.document_id = d.id join users u on u.id = v.created_by_user_id
+          where d.film_supply_order_id = ${filmSupplyOrderId} and d.document_type = 'acceptance_evidence'
+            and d.maker_purchase_order_id is null and u.role::text <> 'admin'
+            and not exists (select 1 from document_versions mv join documents md on md.id = mv.document_id
+              where md.project_id = d.project_id and md.maker_purchase_order_id is not null and mv.sha256 = v.sha256))`;
 }
 
 export function liveApprovedPaperOf(filmSupplyOrderIds: string[]) {
@@ -2897,6 +2942,28 @@ export function createApp({
   // and requestMetadata name the basis. Commission readiness (P-3) still reads
   // the confirmations only, and confirming deliveries stays the representative's
   // act on evidence the confirmer did not upload (P-4).
+  /**
+   * p6 X5 (conductor decision): true while the order has an unconfirmed film
+   * delivery and receipt evidence a non-representative uploaded for it — the
+   * representative's queue item 「納品の確認」 of this order. P-4 already keeps
+   * the uploader from confirming on it; while it waits, staff may not close the
+   * order 「証跡なしで問題なし」 either (409 RECEIPT_EVIDENCE_AWAITING_REPRESENTATIVE).
+   * The representative may. Amount-free: existence only.
+   */
+  async function receiptEvidenceAwaitsRepresentative(executor: MakerPoQueryExecutor, orderId: string): Promise<boolean> {
+    // p6 int round 2 (review L-1): an order moved to 納品済み without any delivery row has nothing
+    // the queue could list, yet its receipt evidence still waits — no delivery counts as unconfirmed.
+    const [row] = await executor.select({ id: filmSupplyOrders.id }).from(filmSupplyOrders)
+      .where(and(
+        eq(filmSupplyOrders.id, orderId),
+        nonAdminReceiptEvidenceExistsSql(sql`${filmSupplyOrders.id}`),
+        sql`(not exists (select 1 from film_deliveries fd where fd.film_supply_order_id = ${filmSupplyOrders.id})
+          or exists (select 1 from film_deliveries fd where fd.film_supply_order_id = ${filmSupplyOrders.id}
+            and not exists (select 1 from delivery_confirmations c where c.film_delivery_id = fd.id)))`
+      )).limit(1);
+    return row !== undefined;
+  }
+
   async function filmDeliveryConfirmationFacts(executor: MakerPoQueryExecutor, orderId: string) {
     const rows = await executor.select({
       deliveryId: filmDeliveries.id,
@@ -2960,6 +3027,8 @@ export function createApp({
     if (!evaluation.ok) {
       return context.json({ error: evaluation.message, code: evaluation.code, from: order.status }, 422);
     }
+    // p6 X5: decided once, under the order lock below (staff only; the representative may).
+    const staffActor = user.role !== 'admin';
 
     const now = new Date();
     const receiptAssumedAt = evaluation.receiptAssumedAt instanceof Date
@@ -2979,6 +3048,12 @@ export function createApp({
         if (!locked.ok) throw new ReceiptClosureRefusedUnderLock(locked.code, locked.message);
         const basis: FilmReceiptClosureBasis = locked.basis;
         const evidenceFree = basis === 'evidence_free_acknowledgment';
+        // p6 X5: staff do not close evidence-free while receipt evidence waits for the representative,
+        // decided on what is committed once the order row is locked (it needs an unconfirmed delivery, or
+        // none at all — round 2 L-1 — so a closure on confirmed deliveries is never refused here).
+        if (staffActor && await receiptEvidenceAwaitsRepresentative(tx, orderId)) {
+          throw new ReceiptEvidenceAwaitingRepresentative();
+        }
 
         const updated = await tx.update(filmSupplyOrders).set({
           status: evaluation.to,
@@ -3037,6 +3112,9 @@ export function createApp({
     } catch (error) {
       if (error instanceof ReceiptClosureRefusedUnderLock) {
         return context.json({ error: error.refusal, code: error.code, from: order.status }, 422);
+      }
+      if (error instanceof ReceiptEvidenceAwaitingRepresentative) {
+        return context.json(receiptEvidenceAwaitingRefusal(order.status), 409);
       }
       if (error instanceof ReceiptAssumptionStateConflict) {
         return context.json({ error: 'フィルム発注の状態が既に変わっています', code: 'RECEIPT_ASSUMPTION_STATE_CHANGED' }, 422);
@@ -3326,7 +3404,7 @@ export function createApp({
               ? { action: 'CLOSE_ORDER', label: '受領確認（問題なし）を記録する' }
               : null;
     let receiptAssumption: {
-      assumedAt: Date; assumedBy: { id: string; displayName: string | null }; note: string | null;
+      assumedAt: Date; assumedBy: { id: string; displayName: string | null }; note?: string | null;
       closureBasis: FilmReceiptClosureBasis;
     } | null = null;
     if (order.receiptAssumedAt && order.receiptAssumedByUserId) {
@@ -3345,7 +3423,10 @@ export function createApp({
       receiptAssumption = {
         assumedAt: order.receiptAssumedAt,
         assumedBy: { id: order.receiptAssumedByUserId, displayName: assumer?.displayName ?? null },
-        note: order.receiptAssumedNote,
+        // p6 int round 2 (review H-1): the closure note is free text — it cannot be proven amount- or
+        // address-free — so it is the representative's alone, like the manual check's reasonNote in the
+        // audit feed. Every other role gets no `note` key (the screens never drew it).
+        ...(user.role === 'admin' ? { note: order.receiptAssumedNote } : {}),
         closureBasis: closureRow?.basis === 'delivery_confirmations' ? 'delivery_confirmations' : 'evidence_free_acknowledgment'
       };
     }
@@ -3354,8 +3435,13 @@ export function createApp({
     // Receipt-evidence confirmations only, the same rule as the closure itself (review3 M-1).
     const confirmedCount = deliveries.filter((delivery) => delivery.confirmationId && delivery.evidenceFromMakerPo !== true).length;
     const closureBasisNow = filmReceiptClosureBasis({ total: deliveries.length, confirmed: confirmedCount });
+    // p6 X5: while receipt evidence waits for the representative, only the representative closes evidence-free.
     const receiptClosure = status === 'FILM_DELIVERED'
-      ? { basis: closureBasisNow, acknowledgeNoEvidenceRequired: closureBasisNow === 'evidence_free_acknowledgment' }
+      ? {
+          basis: closureBasisNow,
+          acknowledgeNoEvidenceRequired: closureBasisNow === 'evidence_free_acknowledgment',
+          receiptEvidenceAwaitingRepresentative: await receiptEvidenceAwaitsRepresentative(db, orderId)
+        }
       : null;
     return context.json({
       orderId,
@@ -7179,7 +7265,10 @@ export function createApp({
       sevenPurchaseOrderId: string | null;
       actorUserId: string;
       bytes: Buffer;
+      /** The logical document's key: one send_evidence document per paper (never the uploaded name). */
       filename: string;
+      /** p6 X3: the display name of this version (the uploaded .eml's own name); the key when absent. */
+      versionFilename?: string | null;
     }
   ): Promise<{ documentId: string; versionId: string; sha256: string }> {
     const sha256 = computeSha256(input.bytes);
@@ -7277,7 +7366,7 @@ export function createApp({
       sha256,
       byteSize: input.bytes.length,
       storagePath,
-      originalFilename: input.filename,
+      originalFilename: input.versionFilename ?? input.filename,
       declaredMimeType: MAKER_PO_SEND_EVIDENCE_MIME_TYPE,
       detectedMimeType: null,
       sizeCheckPassed: true,
@@ -8833,11 +8922,7 @@ export function createApp({
       .where(and(
         liveOrder,
         sql`not exists (select 1 from delivery_confirmations c where c.film_delivery_id = ${filmDeliveries.id})`,
-        sql`exists (select 1 from documents d join document_versions v on v.document_id = d.id join users u on u.id = v.created_by_user_id
-          where d.film_supply_order_id = ${filmDeliveries.filmSupplyOrderId} and d.document_type = 'acceptance_evidence'
-            and d.maker_purchase_order_id is null and u.role::text <> 'admin'
-            and not exists (select 1 from document_versions mv join documents md on md.id = mv.document_id
-              where md.project_id = d.project_id and md.maker_purchase_order_id is not null and mv.sha256 = v.sha256))`
+        nonAdminReceiptEvidenceExistsSql(sql`${filmDeliveries.filmSupplyOrderId}`)
       ))
       .orderBy(asc(filmDeliveries.createdAt), asc(filmDeliveries.id))
       .limit(limit + 1));
@@ -9265,7 +9350,9 @@ export function createApp({
             sevenPurchaseOrderId: order.sevenPurchaseOrderId,
             actorUserId: user.id,
             bytes: inlineEmlBytes,
-            filename: `maker-po-${poId}-send-evidence.eml`
+            filename: `maker-po-${poId}-send-evidence.eml`,
+            // p6 X3: the uploaded file's own name is the version's display name (the document key above stays per paper).
+            versionFilename: sendEvidenceDisplayFilename(body?.filename)
           });
           evidenceDocument = await loadMakerPoEvidenceDocument(tx, stored.versionId);
           evidenceDocumentVersionId = stored.versionId;

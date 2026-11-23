@@ -212,7 +212,11 @@ export function DeliveryReceiptStep({
         </ActionForm>
       ) : null}
 
-      {completed ? <ClosureLine closure={context.closure ?? null} /> : <CompletionForm order={order} projectCode={projectCode} unconfirmed={unconfirmed.length} closure={context.closure ?? null} />}
+      {completed
+        ? <ClosureLine closure={context.closure ?? null} />
+        : staffEvidenceFreeWithheld(role, context.closure ?? null, plan)
+          ? <EvidenceFreeWithheldNote />
+          : <CompletionForm order={order} projectCode={projectCode} unconfirmed={unconfirmed.length} closure={context.closure ?? null} />}
     </div>
   );
 }
@@ -271,6 +275,36 @@ function AlternativeReceiptForm({ order, projectCode, unconfirmed, evaluate, adm
         <ReceiptFields customer />
       </ActionForm>
     </RevealDetails>
+  );
+}
+
+/** p6 X5: what staff read where the 「証跡なしで問題なし」 form was, while receipt evidence waits for the representative. */
+export const EVIDENCE_FREE_WITHHELD_TEXT = {
+  ja: '受領証跡が代表の確認を待っているため、証跡なしでの完了は代表だけが記録できます。代表の確認を待ってください。',
+  ko: '수령 증빙이 대표 확인을 기다리고 있어 증빙 없는 완료는 대표만 기록할 수 있습니다. 대표 확인을 기다려 주세요.'
+} as const;
+
+/**
+ * p6 X5, pure: staff (not the representative) get no evidence-free completion while receipt evidence waits
+ * for the representative — the server's `receiptEvidenceAwaitingRepresentative` (409 otherwise). On an API that
+ * does not say it, the staff member's own evidence waiting for the representative (P-4) stands in for it.
+ */
+export function staffEvidenceFreeWithheld(role: string | null | undefined, closure: ReceiptClosureView | null, plan: ReceiptPlan): boolean {
+  if (normalizeRole(role) !== 'staff') return false;
+  const pending = closure?.pending ?? null;
+  if (pending && !pending.acknowledgeNoEvidenceRequired) return false;
+  const awaiting = pending?.awaitingRepresentative ?? null;
+  return awaiting ?? plan.kind === 'wait_representative';
+}
+
+function EvidenceFreeWithheldNote() {
+  return (
+    <div className="p4w2-fallback" data-closure="withheld">
+      <h3 className="p4w2-subtitle">受領の証跡がない場合</h3>
+      <p className="p1-note" data-evidence-free="withheld">
+        <Bilingual ja={EVIDENCE_FREE_WITHHELD_TEXT.ja} ko={EVIDENCE_FREE_WITHHELD_TEXT.ko} />
+      </p>
+    </div>
   );
 }
 
