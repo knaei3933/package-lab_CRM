@@ -633,7 +633,7 @@ describe('M18 / N11 / N4: representative queue item facts', () => {
   });
 });
 
-describe('N4: EML From domain against the organization registered domain (warn, never refuse)', () => {
+describe('N4: EML From domain against the organization registered domain (never refuse; N4(b) 2026-11-23: a mismatch waits for the manual check)', () => {
   it('pure check: match, subdomain, mismatch, no From, not an email, no registered domain', () => {
     const eml = (from: string) => Buffer.from(approvalEml({ from }), 'utf8');
     expect(evaluateEvidenceSenderDomain({ bytes: eml('a@customer-p4.example'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('match');
@@ -646,13 +646,14 @@ describe('N4: EML From domain against the organization registered domain (warn, 
     expect(evaluateEvidenceSenderDomain({ bytes: eml('a@customer-p4.example'), registeredContactEmail: null }).status).toBe('no_registered_domain');
   });
 
-  it('a mismatching From is recorded (201) with a warning; the approval counts exactly as without it', async () => {
+  it('a mismatching From is recorded (201) with a warning; since N4(b) (2026-11-23) it waits for the representative\'s manual check instead of counting', async () => {
     const chain = await orderWithRevision();
     const recorded = await recordApproval(chain, 'seven', approvalEml({ from: 'po@not-seven.example' }));
     expect(recorded.status, JSON.stringify(recorded.body)).toBe(201);
     expect(recorded.body).toMatchObject({
-      evidenceIdentifierStatus: 'verified_in_document',
-      countsTowardDualApproval: true,
+      evidenceIdentifierStatus: 'pending_manual_verification',
+      countsTowardDualApproval: false,
+      manualCheckReason: { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', message: '差出人のドメインが登録先と違います' },
       senderDomainCheck: { status: 'mismatch', fromAddress: 'po@not-seven.example', registeredDomain: 'seven-p4.example' },
       warnings: [{ code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', fromDomain: 'not-seven.example', registeredDomain: 'seven-p4.example' }]
     });

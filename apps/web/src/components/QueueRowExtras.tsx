@@ -14,13 +14,20 @@ export function QueueRowExtras({ task, now }: { task: RepresentativeTask; now: D
   const evidence = task.evidence ?? null;
   const warnings = task.warnings ?? [];
   const statusText = senderStatusText(evidence?.senderStatus ?? null);
-  if (!due && !evidence && warnings.length === 0) return null;
+  const reason = task.manualCheckReason ?? null;
+  if (!due && !evidence && warnings.length === 0 && !reason) return null;
   return (
     // One full-width line under the row (the row's own grid has four narrow cells).
     <div className="p4-inbox-extra">
       {due ? (
         <p className={`p4-inbox-line p4-inbox-due${due.late ? ' p4-inbox-due--late' : ''}`} data-due={due.late ? 'late' : 'ok'}>
           {due.late ? <span aria-hidden="true">⚠ </span> : null}{due.text}
+        </p>
+      ) : null}
+      {reason ? (
+        // N4(b) (2026-11-23): why this row waits for the representative — e.g. a mail from another domain.
+        <p className="p4-inbox-line p5-inbox-reason" data-reason="">
+          確認が必要な理由: {reason}
         </p>
       ) : null}
       {evidence ? (

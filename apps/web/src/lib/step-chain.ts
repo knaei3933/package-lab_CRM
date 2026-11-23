@@ -53,6 +53,11 @@ export interface ChainOptions {
   partialId?: ((answers: readonly unknown[]) => string | null) | undefined;
   /** Maps a refusal of one step to the operator's words (else the dictionary text). */
   refusal?: (code: string | null, stepIndex: number, data?: unknown) => ActionState | null;
+  /**
+   * P5 R6: said after the refusal of a later step, about what the earlier steps left behind (e.g. 「登録した書類は
+   * 証跡の一覧に残っています」). Wording only: the key and the settled rule are not touched.
+   */
+  partialNote?: ((answers: readonly unknown[], stepIndex: number) => string | null) | undefined;
 }
 
 export const CHAIN_KEY_SEPARATOR = '.';
@@ -123,9 +128,10 @@ export async function runChain(formData: FormData, steps: readonly ChainStep[], 
       const prefix = written > 0
         ? `「${step.label}」で止まりました（その前の手順は記録済みです）。`
         : '';
+      const left = written > 0 ? options.partialNote?.(answers, index) ?? null : null;
       return {
         ...base,
-        message: `${prefix}${base.message}`,
+        message: `${prefix}${base.message}${left ? ` ${left}` : ''}`,
         code: base.code ?? result.code ?? null,
         // A partly stored chain is never settled: the same key replays what was stored —
         // except an answer that ends it for good (RENEWS_KEY_AFTER_PARTIAL_CODES, p4/web4).

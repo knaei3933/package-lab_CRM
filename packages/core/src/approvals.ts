@@ -82,6 +82,11 @@ export interface EvidenceVerificationView {
   verifierName: string;
   verifiedAt: Date | string;
   recordedAt: Date | string;
+  /**
+   * P5 R1: what the human wrote as the basis of the decision (the stored
+   * reason_note). Optional so minimal fixtures keep working; the server fills it.
+   */
+  reasonNote?: string | null;
 }
 
 /** Content types whose bytes are (mostly) text and can be searched as text. */
@@ -234,7 +239,17 @@ export interface OrganizationApprovalState {
     verifierName: string;
     verifiedAt: Date | string;
     recordedAt: Date | string;
+    /** P5 R1: the reason the human recorded (null when the source row carries none). */
+    reasonNote: string | null;
   } | null;
+  /**
+   * P5 R1 (却下 dead end): the latest APPROVE was held for a manual check and the
+   * representative REJECTED it. Still not counted (pendingEvidenceIdentifier stays
+   * true, the gate stays closed), but it no longer waits for anyone's check: the
+   * organization's approval has to be recorded again on other evidence. A new
+   * APPROVE becomes the latest event and this flag drops with it.
+   */
+  rejected: boolean;
 }
 
 /**
@@ -304,7 +319,8 @@ export function resolveOrganizationApproval(
         result: manualVerificationRow.result,
         verifierName: manualVerificationRow.verifierName,
         verifiedAt: manualVerificationRow.verifiedAt,
-        recordedAt: manualVerificationRow.recordedAt
+        recordedAt: manualVerificationRow.recordedAt,
+        reasonNote: manualVerificationRow.reasonNote ?? null
       };
   const pendingEvidenceIdentifier =
     approval !== null
@@ -323,7 +339,8 @@ export function resolveOrganizationApproval(
       approval !== null && approval.approvedFileSha256 !== currentSha256,
     revoked: revoked && approval === null,
     pendingEvidenceIdentifier,
-    manualVerification
+    manualVerification,
+    rejected: pendingEvidenceIdentifier && manualVerification?.result === 'rejected'
   };
 }
 

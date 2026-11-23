@@ -86,6 +86,13 @@ export function EvidenceIssuerCheck({
           <dd><SenderWarningNotes warnings={warnings} className="p4w4-warning" /></dd>
         </div>
       ) : null}
+      {entry.manualCheckReason ? (
+        // N4(b) (2026-11-23): a mail from another domain is not counted by itself — this is why it is here.
+        <div data-manual-check-reason={entry.manualCheckReason.code}>
+          <dt>確認が必要な理由</dt>
+          <dd>{entry.manualCheckReason.message}</dd>
+        </div>
+      ) : null}
       <div>
         <dt>識別子</dt>
         <dd translate="no">{entry.evidenceIdentifier ?? '（記録なし）'}</dd>
@@ -144,18 +151,33 @@ export function PendingVerificationSection({
   return (
     <div className="sx-1f27ed4">
       <h3 className="sx-e6251b7">
-        承認証跡の手動確認（PDF・画像の識別子確認）— {pending.length}件
+        承認証跡の手動確認（PDF・画像の識別子確認、差出人のドメインが違うメール）— {pending.length}件
       </h3>
       <p className="ui-note">
         バイナリ証跡（PDF・画像）の承認は、識別子を自動検証できないため手動確認待ちとして記録されます。
+        差出人のドメインが登録先と違うメールも同じです（2026-11-23 決定）。
         確認が記録されるまで両組織の承認には算入されません。確認の記録は代表者だけです。
       </p>
-      {pending.map((entry) => (
-        <div className="sx-045aac8" key={entry.approvalEventId}>
+      {pending.map((entry) => {
+        // P5 R1: a check the representative REJECTED is decided — it is shown with its result, never with the
+        // 「確認」 form again (a later 「確認」 would turn the 却下 around without a new paper). The slot takes a new approval.
+        const rejected = entry.manualVerification?.result === 'rejected';
+        return (
+        <div className="sx-045aac8" key={entry.approvalEventId} data-check-state={rejected ? 'rejected' : 'open'}>
           <div className="ui-info sx-ab544d4">
-            <StatusBadge tone="waiting" label="手動確認待ち" /><KoGloss ko="수동 확인 대기" />{' '}
-            <strong>{organizationText(entry.organization)}</strong> の承認（デザイン {entry.designKey}／版
-            {entry.revisionNo}）は手動確認待ちです。
+            {rejected ? (
+              <>
+                <StatusBadge tone="blocked" label="却下済み" /><KoGloss ko="각하됨" />{' '}
+                <strong>{organizationText(entry.organization)}</strong> の承認（デザイン {entry.designKey}／版
+                {entry.revisionNo}）の証跡は却下されています。
+              </>
+            ) : (
+              <>
+                <StatusBadge tone="waiting" label="手動確認待ち" /><KoGloss ko="수동 확인 대기" />{' '}
+                <strong>{organizationText(entry.organization)}</strong> の承認（デザイン {entry.designKey}／版
+                {entry.revisionNo}）は手動確認待ちです。
+              </>
+            )}
             <EvidenceIssuerCheck entry={entry} organizationText={organizationText} />
             <div className="ui-note">
               原本証跡: {evidenceLabel(entry.evidenceDocumentVersionId)}
@@ -170,14 +192,20 @@ export function PendingVerificationSection({
                 <div>
                   前回の確認: {entry.manualVerification.result === 'confirmed' ? '確認' : '却下'} ／ 検証者{' '}
                   {entry.manualVerification.verifierName} ／ {formatTimestamp(entry.manualVerification.verifiedAt)}
+                  {entry.manualVerification.reasonNote ? <> ／ 理由: {entry.manualVerification.reasonNote}</> : null}
                 </div>
               ) : null}
             </div>
           </div>
-          {canVerify && !entry.recordedAsPending ? (
+          {canVerify && !entry.recordedAsPending && !rejected ? (
             <p className="role-notice">{REPLACEMENT_GUIDANCE}</p>
           ) : null}
-          {readOnly ? (
+          {rejected ? (
+            <p className="role-notice" data-rejected-guidance="">
+              却下した証跡は確認できません。この組織の承認は、担当者または代表が別の承認書類で記録し直します（手順6「校了」の押印欄）。
+              <KoGloss ko="각하한 증빙은 확인할 수 없습니다. 이 조직의 승인은 담당자 또는 대표가 다른 승인 서류로 다시 기록합니다(6단계 「교정 확정」의 날인란)." />
+            </p>
+          ) : readOnly ? (
             <p className="ui-note">
               {recordHref ? <a className="p4w3-target" href={recordHref}>発注の画面（手順6 校了）で確認を記録する</a> : '確認は発注の画面（手順6 校了）で記録します。'}
             </p>
@@ -219,7 +247,8 @@ export function PendingVerificationSection({
             </p>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

@@ -1,7 +1,11 @@
 import { parseEml } from './eml.js';
 
 /**
- * P4 N4 (conductor decision: display and warn only, never refuse). The step
+ * P4 N4, as amended by the 2026-11-23 decision N4(b) (docs/reports/CEO_DECISIONS):
+ * a mail whose From domain differs from the organization's registered one is
+ * never refused, but it no longer counts on its own either — like a PDF it waits
+ * for the representative's manual check (senderDomainRequiresManualVerification).
+ * Every other result stays a display / warning only. The step
  * slot an approval is recorded in decides its issuing organization (顧客 /
  * セブン化学), so the card's 「✓一致」 says "slot = organization", not "the file
  * came from that organization". For an EML evidence the server compares the
@@ -28,7 +32,7 @@ export type EvidenceSenderDomainStatus =
   | 'no_registered_domain'
   /** Same domain, or a subdomain of the registered one. */
   | 'match'
-  /** Another domain: shown as a warning, never a refusal. */
+  /** Another domain: never a refusal; held for the representative's manual check (N4(b)). */
   | 'mismatch';
 
 export interface EvidenceSenderDomainCheck {
@@ -57,6 +61,24 @@ export function evidenceSenderDomainWarning(check: EvidenceSenderDomainCheck | n
 
 export const EVIDENCE_SENDER_DOMAIN_MISMATCH_MESSAGE =
   '承認証跡メールの差出人のドメインが、発行元として登録されている取引先のドメインと一致しません。発行元を確かめてから確認してください';
+
+/**
+ * N4(b) (2026-11-23): the reason an approval whose mail came from another domain
+ * waits in the representative's manual-check queue.
+ */
+export const EVIDENCE_SENDER_DOMAIN_MANUAL_CHECK_REASON = '差出人のドメインが登録先と違います';
+
+/**
+ * N4(b) (2026-11-23): whether the sender check holds an APPROVE out of the dual
+ * approval until the representative's manual check — only a compared, differing
+ * domain does. An unreadable / missing / multiple From, an unregistered contact
+ * address and a non-mail evidence keep their old meaning (warning or neutral).
+ * Next to the staff approval-evidence choice contract: its fields and refusals
+ * are unchanged — only the counting condition is.
+ */
+export function senderDomainRequiresManualVerification(check: EvidenceSenderDomainCheck | null | undefined): boolean {
+  return check?.status === 'mismatch';
+}
 
 function domainOf(address: string | null | undefined): string | null {
   if (typeof address !== 'string') return null;
