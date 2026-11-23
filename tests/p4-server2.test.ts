@@ -14,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import {
   accounts,
+  auditEvents,
   createDatabase,
   filmSupplyOrders,
   makerPurchaseOrders,
@@ -25,6 +26,9 @@ import {
 } from '@kanei/db';
 import {
   approvalEvidenceDeclarationLine,
+  evaluateFilmReceiptAssumption,
+  evaluateFilmReceiptClosure,
+  filmReceiptClosureBasis,
   buildMakerPoSnapshot,
   computeMakerPoSnapshotSha256,
   makerPoSnapshotWithoutApprovalEvidence,
@@ -121,7 +125,7 @@ async function createOrder(paymentTerms: string, project = ids.projectA, options
     lines: [{ lineNumber: 1, description: '合成フィルムS2', orderedQuantity: 1000, unit: 'sheets' }]
   });
   expect(created.status, created.text).toBe(201);
-  return { orderId: created.body.id as string, code, sevenPoId: sevenPoId as string };
+  return { orderId: created.body.id as string, code, sevenPoId: sevenPoId as string, lineId: created.body.lines[0].id as string };
 }
 
 async function queue() {
@@ -943,5 +947,209 @@ describe('(4) approval card: each evidence carries the server\'s sender verdict 
         expect(answer.headers.get('cache-control'), `me ${role}`).toBe('private, no-store');
       }
     });
+  });
+});
+
+// ================================================================ (6) web2a review M-2 / L-1
+describe('(6) web2a review M-2: a closure on confirmed deliveries is never recorded as evidence-free', () => {
+  const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+  const closeUrl = (orderId: string) => `/api/film-supply-orders/${orderId}/receipt-assumption`;
+
+  async function uploadReceipt(order: { orderId: string; sevenPoId: string }, role: Role = 'staff', extra: Record<string, unknown> = {}) {
+    const uploaded = await post(role, `/api/projects/${ids.projectA}/documents`, {
+      documentType: 'acceptance_evidence', issuerEntity: 'kanei', filename: `s2-receipt-${tag()}.txt`, contentType: 'text/plain',
+      contentBase64: b64(`s2 receipt ${tag()}\n`), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, ...extra
+    });
+    expect(uploaded.status, uploaded.text).toBe(201);
+    return uploaded.body as { document: { id: string }; version: { id: string } };
+  }
+
+  /** A film order with `deliveries` delivery rows; the first `confirmed` of them confirmed by the representative on staff's verified receipt evidence. */
+  async function deliveredOrder(deliveries: number, confirmed: number, status = 'FILM_DELIVERED') {
+    const order = await createOrder('prepaid');
+    const rows: string[] = [];
+    for (let index = 0; index < deliveries; index += 1) {
+      const delivery = await post('staff', `/api/film-supply-orders/${order.orderId}/deliveries`, { filmSupplyOrderLineId: order.lineId, deliveredQuantity: 500, unit: 'sheets' });
+      expect(delivery.status, delivery.text).toBe(201);
+      rows.push(delivery.body.id);
+    }
+    const confirmations: string[] = [];
+    if (confirmed > 0) {
+      const receipt = await uploadReceipt(order);
+      expect((await post('admin', `/api/documents/${receipt.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+      for (const deliveryId of rows.slice(0, confirmed)) {
+        const confirmation = await post('admin', `/api/film-deliveries/${deliveryId}/confirmation`, { evidenceDocumentVersionId: receipt.version.id });
+        expect(confirmation.status, confirmation.text).toBe(201);
+        confirmations.push(confirmation.body.id ?? confirmation.body.confirmation?.id);
+      }
+    }
+    // The closure is recorded only from FILM_DELIVERED; the state is set directly (the closure reads state, not history).
+    await db.update(filmSupplyOrders).set({ status: status as any }).where(eq(filmSupplyOrders.id, order.orderId));
+    return { ...order, deliveryIds: rows, confirmations };
+  }
+
+  const closureAudit = async (orderId: string) => {
+    const rows = await db.select().from(auditEvents)
+      .where(sql`${auditEvents.entityId} = ${orderId} and ${auditEvents.action} = 'FILM_RECEIPT_ASSUMPTION_RECORDED'`);
+    expect(rows).toHaveLength(1);
+    return rows[0]!;
+  };
+
+  it('every delivery confirmed → closes without acknowledgeNoEvidence; answer and audit say delivery_confirmations, never evidence-free', async () => {
+    const order = await deliveredOrder(2, 2);
+    const closed = await post('staff', closeUrl(order.orderId), { note: '受領証跡で納品確認済み' });
+    expect(closed.status, closed.text).toBe(200);
+    expect(closed.body).toMatchObject({
+      status: 'FILM_RECEIPT_ASSUMED_NO_ISSUE', closureBasis: 'delivery_confirmations', evidenceFreeAcknowledgment: false,
+      deliveries: { total: 2, confirmed: 2 }
+    });
+    const audit = await closureAudit(order.orderId);
+    expect(audit.afterState).toMatchObject({
+      status: 'FILM_RECEIPT_ASSUMED_NO_ISSUE', closureBasis: 'delivery_confirmations', evidenceFreeAcknowledgment: false,
+      deliveries: { total: 2, confirmed: 2 }, requestAcknowledgedNoEvidence: false
+    });
+    expect((audit.afterState as any).deliveryConfirmations.map((entry: { deliveryId: string }) => entry.deliveryId).sort()).toEqual([...order.deliveryIds].sort());
+    for (const entry of (audit.afterState as any).deliveryConfirmations) expect(entry.confirmationId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(audit.requestMetadata).toEqual({
+      operation: 'film_order:close_receipt_on_confirmed_deliveries', closureBasis: 'delivery_confirmations', evidenceFreeAcknowledgment: false
+    });
+    const status = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
+    expect(status.body.receiptAssumption).toMatchObject({ closureBasis: 'delivery_confirmations', note: '受領証跡で納品確認済み' });
+    expect(status.body.receiptClosure).toBeNull();
+  });
+
+  it('an old client that still sends acknowledgeNoEvidence: true on confirmed deliveries is recorded truthfully (basis kept apart from the request)', async () => {
+    const order = await deliveredOrder(1, 1);
+    const closed = await post('staff', closeUrl(order.orderId), { note: '問題なし', acknowledgeNoEvidence: true });
+    expect(closed.status, closed.text).toBe(200);
+    expect(closed.body).toMatchObject({ closureBasis: 'delivery_confirmations', evidenceFreeAcknowledgment: false });
+    expect((await closureAudit(order.orderId)).afterState).toMatchObject({
+      closureBasis: 'delivery_confirmations', evidenceFreeAcknowledgment: false, requestAcknowledgedNoEvidence: true
+    });
+  });
+
+  it('a delivery not yet confirmed → evidence-free: refused without the acknowledgment (422), recorded as evidence-free with it', async () => {
+    const order = await deliveredOrder(2, 1);
+    const refused = await post('staff', closeUrl(order.orderId), { note: '一部未確認' });
+    expect(refused.status).toBe(422);
+    expect(refused.body.code).toBe('RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED');
+    const [still] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.orderId));
+    expect(still!.status).toBe('FILM_DELIVERED');
+    const closed = await post('staff', closeUrl(order.orderId), { note: '一部未確認', acknowledgeNoEvidence: true });
+    expect(closed.status, closed.text).toBe(200);
+    expect(closed.body).toMatchObject({ closureBasis: 'evidence_free_acknowledgment', evidenceFreeAcknowledgment: true, deliveries: { total: 2, confirmed: 1 } });
+    const audit = await closureAudit(order.orderId);
+    expect(audit.afterState).toMatchObject({ closureBasis: 'evidence_free_acknowledgment', evidenceFreeAcknowledgment: true, deliveryConfirmations: [] });
+    expect(audit.requestMetadata).toMatchObject({ operation: 'film_order:assume_receipt', evidenceFreeAcknowledgment: true });
+    expect((await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`)).body.receiptAssumption.closureBasis).toBe('evidence_free_acknowledgment');
+  });
+
+  it('no delivery at all stays the evidence-free acknowledgment (the earlier contract)', async () => {
+    const order = await deliveredOrder(0, 0);
+    expect((await post('staff', closeUrl(order.orderId), { note: '納品記録なし' })).body.code).toBe('RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED');
+    const closed = await post('staff', closeUrl(order.orderId), { note: '納品記録なし', acknowledgeNoEvidence: true });
+    expect(closed.body).toMatchObject({ closureBasis: 'evidence_free_acknowledgment', evidenceFreeAcknowledgment: true, deliveries: { total: 0, confirmed: 0 } });
+  });
+
+  it('the rest is unchanged on the confirmed basis: the note is required and only FILM_DELIVERED closes', async () => {
+    const order = await deliveredOrder(1, 1);
+    expect((await post('staff', closeUrl(order.orderId), { note: '   ' })).body.code).toBe('RECEIPT_ASSUMPTION_NOTE_REQUIRED');
+    const shipped = await deliveredOrder(1, 1, 'FILM_SHIPPED');
+    expect((await post('staff', closeUrl(shipped.orderId), { note: '早すぎる' })).body.code).toBe('RECEIPT_ASSUMPTION_ONLY_FROM_FILM_DELIVERED');
+    expect((await post('viewer', closeUrl(order.orderId), { note: 'x' })).status).toBe(403);
+  });
+
+  it('delivery-status tells the web which basis a closure would have now (receiptClosure)', async () => {
+    const partial = await deliveredOrder(2, 1);
+    expect((await get('staff', `/api/film-supply-orders/${partial.orderId}/delivery-status`)).body.receiptClosure)
+      .toEqual({ basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true });
+    const full = await deliveredOrder(1, 1);
+    const status = await get('staff', `/api/film-supply-orders/${full.orderId}/delivery-status`);
+    expect(status.body.receiptClosure).toEqual({ basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: false });
+    expect(status.body.nextAction).toMatchObject({ action: 'CLOSE_ORDER' });
+    const shipped = await deliveredOrder(1, 1, 'FILM_SHIPPED');
+    expect((await get('staff', `/api/film-supply-orders/${shipped.orderId}/delivery-status`)).body.receiptClosure).toBeNull();
+  });
+
+  it('race: a delivery committed while the closure waits for the order lock makes it evidence-free again → refused without the acknowledgment', async () => {
+    const order = await deliveredOrder(1, 1);
+    const client = await pool.connect();
+    let closing: Promise<any> | undefined;
+    try {
+      await client.query('begin');
+      await client.query('select id from film_supply_orders where id = $1 for update', [order.orderId]);
+      const holderPid = (await client.query('select pg_backend_pid() as pid')).rows[0].pid as number;
+      closing = post('staff', closeUrl(order.orderId), { note: '確認済みのはず' });
+      for (let attempt = 0; ; attempt += 1) {
+        const { rows } = await pool.query(
+          "select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and pid <> $1", [holderPid]
+        );
+        if (rows[0].n >= 1) break;
+        if (attempt > 200) throw new Error('the closure never waited for the order lock');
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      await client.query(
+        `insert into film_deliveries (id, film_supply_order_id, film_supply_order_line_id, unit, delivered_quantity, delivery_sequence, delivered_at)
+         values ($1, $2, $3, 'sheets', 100, 99, now())`, [uuidv7(), order.orderId, order.lineId]
+      );
+      await client.query('commit');
+    } finally {
+      client.release();
+    }
+    const answer = await closing!;
+    expect(answer.status, answer.text).toBe(422);
+    expect(answer.body.code).toBe('RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED');
+    const [still] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.orderId));
+    expect(still!.status).toBe('FILM_DELIVERED');
+  });
+
+  it('P-4 unchanged: staff still cannot confirm a delivery on evidence they uploaded', async () => {
+    const order = await deliveredOrder(1, 0);
+    const receipt = await uploadReceipt(order);
+    expect((await post('admin', `/api/documents/${receipt.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+    const self = await post('staff', `/api/film-deliveries/${order.deliveryIds[0]}/confirmation`, { evidenceDocumentVersionId: receipt.version.id });
+    expect(self.status).toBe(403);
+    expect(self.body.code).toBe('SELF_VERIFICATION_FORBIDDEN');
+  });
+
+  it('pure: the basis needs every delivery confirmed; the evidence-free evaluation keeps requiring the acknowledgment', () => {
+    expect(filmReceiptClosureBasis({ total: 0, confirmed: 0 })).toBe('evidence_free_acknowledgment');
+    expect(filmReceiptClosureBasis({ total: 2, confirmed: 1 })).toBe('evidence_free_acknowledgment');
+    expect(filmReceiptClosureBasis({ total: 2, confirmed: 2 })).toBe('delivery_confirmations');
+    const input = { currentStatus: 'FILM_DELIVERED', note: 'n', acknowledgeNoEvidence: undefined };
+    expect(evaluateFilmReceiptClosure({ ...input, deliveries: { total: 1, confirmed: 1 } })).toMatchObject({ ok: true, basis: 'delivery_confirmations' });
+    expect(evaluateFilmReceiptClosure({ ...input, deliveries: { total: 1, confirmed: 0 } })).toMatchObject({ ok: false, code: 'RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED' });
+    expect(evaluateFilmReceiptAssumption(input)).toMatchObject({ ok: false, code: 'RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED' });
+    expect(evaluateFilmReceiptClosure({ ...input, note: '', deliveries: { total: 1, confirmed: 1 } })).toMatchObject({ ok: false, code: 'RECEIPT_ASSUMPTION_NOTE_REQUIRED' });
+  });
+});
+
+describe('(6) web2a review L-1: the delivery_confirmation queue item counts receipt evidence only', () => {
+  const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+  const upload = async (order: { orderId: string; sevenPoId: string }, extra: Record<string, unknown> = {}) => {
+    const uploaded = await post('staff', `/api/projects/${ids.projectA}/documents`, {
+      documentType: 'acceptance_evidence', issuerEntity: 'kanei', filename: `s2-acc-${tag()}.txt`, contentType: 'text/plain',
+      contentBase64: b64(`s2 acceptance ${tag()}\n`), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, ...extra
+    });
+    expect(uploaded.status, uploaded.text).toBe(201);
+    return uploaded.body as { document: { id: string }; version: { id: string } };
+  };
+
+  it('a maker-PO acceptance evidence alone raises no 「納品の確認」; a receipt evidence does, and the item lists only receipt evidence', async () => {
+    const order = await createOrder('prepaid');
+    const delivery = await post('staff', `/api/film-supply-orders/${order.orderId}/deliveries`, { filmSupplyOrderLineId: order.lineId, deliveredQuantity: 500, unit: 'sheets' });
+    expect(delivery.status, delivery.text).toBe(201);
+    const paperId = uuidv7();
+    await db.insert(makerPurchaseOrders).values({
+      id: paperId, filmSupplyOrderId: order.orderId, snapshot: {}, snapshotSha256: '0'.repeat(64), status: 'DRAFT', createdByUserId: ids.admin
+    });
+    const makerAcceptance = await upload(order, { makerPurchaseOrderId: paperId });
+    const itemKey = `delivery_confirmation:${delivery.body.id}`;
+    expect((await queue()).items.find((item) => item.key === itemKey)).toBeUndefined();
+    const receipt = await upload(order);
+    const item = (await queue()).items.find((entry) => entry.key === itemKey)!;
+    expect(item).toBeDefined();
+    expect(item.detail.evidence.map((entry: { documentId: string }) => entry.documentId)).toEqual([receipt.document.id]);
+    expect(JSON.stringify(item)).not.toContain(makerAcceptance.document.id);
   });
 });
