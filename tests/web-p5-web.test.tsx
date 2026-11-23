@@ -16,7 +16,8 @@ const session = vi.hoisted(() => ({
   user: null as { id: string; role: string; displayName?: string | null } | null,
   projects: [] as Array<{ id: string; code: string; name: string; status: string }>,
   cookies: new Map<string, string>(),
-  cookieWrites: [] as Array<{ op: 'set' | 'delete'; name: string; value?: string; options?: Record<string, unknown> }>
+  cookieWrites: [] as Array<{ op: 'set' | 'delete'; name: string; value?: string; options?: Record<string, unknown> }>,
+  path: '/' as string
 }));
 const callApi = vi.hoisted(() => vi.fn());
 const revalidatePath = vi.hoisted(() => vi.fn());
@@ -44,7 +45,7 @@ vi.mock('next/headers', () => ({
       session.cookieWrites.push({ op: 'delete', name });
     }
   }),
-  headers: async () => ({ get: () => null })
+  headers: async () => ({ get: (name: string) => (name === 'x-kanei-request-path' ? session.path : null) })
 }));
 vi.mock('next/navigation', () => ({
   redirect: () => undefined,
@@ -152,6 +153,7 @@ beforeEach(() => {
   session.projects = [];
   session.cookies = new Map();
   session.cookieWrites = [];
+  session.path = '/';
 });
 // ------------------------------------------------------------------------------------------------
 // shared fixtures
@@ -293,6 +295,13 @@ describe('M16 left: 「デザインキー」 / 「製造先」 are gone from the
     expect(html).toContain('メーカー発注準備完了');
   });
 
+  it('modernizeLegacyWords replaces every legacy word and nothing else', async () => {
+    const { modernizeLegacyWords } = await import('../apps/web/src/lib/terms.js');
+    expect(modernizeLegacyWords('デザインキー')).toBe('デザイン名');
+    expect(modernizeLegacyWords('製造先送信済み')).toBe('メーカー送信済み');
+    expect(modernizeLegacyWords('メーカー発注準備完了')).toBe('メーカー発注準備完了');
+  });
+
   it('the legacy-word scan knows 「デザインキー」, and covers the documents list and the status page sources', async () => {
     const terms = await import('../apps/web/src/lib/terms.js');
     const words = terms.LEGACY_TERMS.map(([word]: readonly [string, string]) => word);
@@ -332,6 +341,13 @@ describe('R15 / M4 the 記録 list names the registered file and shows the memo'
     expect(list).toContain('メモ: ');
     expect(list).toContain('&lt;b&gt;x&lt;/b&gt;最終データ');
     expect(list).not.toContain('<b>x</b>');
+  });
+
+  it('M4: only a transition\'s memo is a memo — an evidenceNote key on another kind of record is not drawn', async () => {
+    serveOrder('admin', 'FILM_SHIPPED', { events: [{ ...events[2], afterState: { documentType: 'proof', filename: 'omote.pdf', filmSupplyOrderId: 'order-1', evidenceNote: '別の記録のメモ' } }] });
+    const list = records(await orderScreen());
+    expect(list).toContain('omote.pdf');
+    expect(list).not.toContain('別の記録のメモ');
   });
 
   it('M4: the real memo of the base fixture shows, and a record without a memo or file shows neither label', async () => {
@@ -464,6 +480,20 @@ describe('R7 / T-8 staff, viewer and auditor read no Korean on the guide, the no
     expect((await displayLanguage(null)).showKorean).toBe(false);
     session.cookies.set('kanei_web_lang', 'u-admin.ja-ko');
     expect((await displayLanguage(null)).showKorean).toBe(true);
+  });
+
+  it('the root layout hands the display language to the notice of a lost session (cookie → Korean line; none → Japanese only)', async () => {
+    session.user = null;
+    session.path = '/home';
+    const { default: RootLayout } = await import('../apps/web/src/app/layout.js');
+    const layout = async () => renderToStaticMarkup(await RootLayout({ children: <p>screen</p> })).replaceAll('<!-- -->', '');
+    expect(await layout()).not.toMatch(HANGUL);
+    session.cookies.set('kanei_web_lang', 'u-admin.ja-ko');
+    const html = await layout();
+    expect(html).toContain('session-notice');
+    expect(html).toMatch(HANGUL);
+    session.cookies.set('kanei_web_lang', 'u-staff.ja');
+    expect(await layout()).not.toMatch(HANGUL);
   });
 
   it.each(['site', 'project'] as const)('the 404 (%s) with the Korean line off: no Hangul', async (scope) => {
