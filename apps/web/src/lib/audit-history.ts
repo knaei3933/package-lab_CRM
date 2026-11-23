@@ -80,12 +80,19 @@ const CLOSURE_OPERATIONS: Readonly<Record<string, ReceiptClosureBasis>> = {
  */
 export function receiptClosureOf(event: Pick<AuditEventView, 'action' | 'afterState' | 'requestMetadata'>): { basis: ReceiptClosureBasis } | null {
   if (event.action !== RECEIPT_CLOSURE_ACTION) return null;
+  return { basis: statedClosureBasis(event) ?? 'evidence_free_acknowledgment' };
+}
+
+/**
+ * The basis a 完了 row SAYS (its own closureBasis, else its operation name); null when the feed of this role says nothing (a
+ * viewer's feed carries neither) — there the caller must not guess. Pre-P4 closures say neither but are all evidence-free:
+ * that default belongs to `receiptClosureOf`, for the feeds that do carry the operation.
+ */
+export function statedClosureBasis(event: Pick<AuditEventView, 'afterState' | 'requestMetadata'>): ReceiptClosureBasis | null {
   const stated = event.afterState?.closureBasis;
+  if (stated === 'delivery_confirmations' || stated === 'evidence_free_acknowledgment') return stated;
   const operation = text(event.requestMetadata?.operation);
-  const basis: ReceiptClosureBasis = stated === 'delivery_confirmations' || stated === 'evidence_free_acknowledgment'
-    ? stated
-    : (operation ? CLOSURE_OPERATIONS[operation] : undefined) ?? 'evidence_free_acknowledgment';
-  return { basis };
+  return operation ? CLOSURE_OPERATIONS[operation] ?? null : null;
 }
 
 /** p6 R3: the row's name by what the completion rests on (the shared 「問題なしで完了を記録」 said nothing about it). */

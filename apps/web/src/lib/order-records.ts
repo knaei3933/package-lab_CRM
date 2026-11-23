@@ -1,3 +1,4 @@
+import { receiptClosureActionLabel, statedClosureBasis } from './audit-history';
 import { ACTION_LABELS } from './dashboard';
 import type { AuditEventView } from './project-data';
 import { DOCUMENT_TYPE_LABELS } from './vocabulary';
@@ -7,8 +8,10 @@ import { DOCUMENT_TYPE_LABELS } from './vocabulary';
  * screens' words, with the new state for a transition. Never an amount (the
  * audit read is the role's own answer; amounts are not read from it).
  */
-export function orderRecordText(event: Pick<AuditEventView, 'action' | 'entityType' | 'afterState'>, stateLabel: (key: string) => string): string {
-  const base = ACTION_LABELS[event.action] ?? '記録';
+export function orderRecordText(event: Pick<AuditEventView, 'action' | 'entityType' | 'afterState'> & Partial<Pick<AuditEventView, 'requestMetadata'>>, stateLabel: (key: string) => string): string {
+  // p6 review L-3: a 完了 is named by what it rests on, as the auditor's 監査履歴 names it — only when this role's feed SAYS so.
+  const closure = event.action === 'FILM_RECEIPT_ASSUMPTION_RECORDED' ? statedClosureBasis({ afterState: event.afterState, requestMetadata: event.requestMetadata ?? null }) : null;
+  const base = closure ? receiptClosureActionLabel(closure) : ACTION_LABELS[event.action] ?? '記録';
   const status = event.afterState && typeof event.afterState.status === 'string' ? event.afterState.status : null;
   // P2: a delivery-date record carries the order's status but does not move it.
   if (event.entityType === 'film_supply_order' && status && event.action !== 'FILM_SUPPLY_ORDER_CREATED' && event.action !== 'FILM_SUPPLY_ORDER_DELIVERY_DATES_UPDATED') {

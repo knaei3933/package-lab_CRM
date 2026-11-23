@@ -9,6 +9,15 @@
   outline-offset: 4px;
 }
 
+/* review L-2: a link followed through the router does not set :target — components/FocusOnAnchor marks the landing instead (same outline,
+   on the same elements as p4-web3's :target rules and on the step panel's anchor above). */
+.p6-terms-anchor[data-landed],
+.p4w3-anchor[data-landed] > .p4-terms-change,
+.p4w3-lock[data-landed] {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+}
+
 @media (max-width: 640px) {
   /* X4: the links inside a 監査履歴 card (the project code, 「証跡の一覧で見る」) are touch targets (WIG 44px), not 16px lines. */
   .p6-audit-link {

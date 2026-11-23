@@ -4,6 +4,7 @@ import { Bilingual } from './Bilingual';
 import { KoGloss } from './RenderedContext';
 import { webErrorText } from '../lib/error-dictionary';
 import { PAYMENT_TERMS_ANCHOR } from '../lib/project-route';
+import { FocusOnAnchor } from './FocusOnAnchor';
 import { DateTextField, SelectField, TextField } from './fields';
 import { updateFilmPaymentTermsAction } from '../app/actions';
 import { saveOrderAmountAction, saveOrderQuantityAction, updateDeliveryDatesAction } from '../app/order-terms-actions';
@@ -126,12 +127,14 @@ export function PaymentTermsChange({ order, role, cancelled, locked = false }: {
       <p id={PAYMENT_TERMS_ANCHOR} className="field-warning p4w3-lock" data-lock="payment-terms">
         <span aria-hidden="true">⚠</span> 支払条件は「未定」のままですが、いまは変更できません。{lock.message}
         <KoGloss ko={lock.messageKo} />
+        <FocusOnAnchor anchorId={PAYMENT_TERMS_ANCHOR} />
       </p>
     );
   }
   return (
     // p4/web3 (c): the anchor the home 「止まっている」 row opens (#payment-terms).
     <div id={PAYMENT_TERMS_ANCHOR} className="p4w3-anchor">
+    <FocusOnAnchor anchorId={PAYMENT_TERMS_ANCHOR} />
     <details className="p4-terms-change" open={undecided || undefined}>
       <summary className="p4-terms-change-summary">
         <Bilingual ja="支払条件を変更する" ko="결제 조건 변경" />

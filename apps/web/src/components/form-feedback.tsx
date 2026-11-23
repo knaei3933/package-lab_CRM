@@ -27,7 +27,8 @@ import { IN_PROGRESS_CODE, KEY_REUSED_CODE, OUTCOME_UNKNOWN_CODE } from '../lib/
 import { IN_PROGRESS_HINT, KEY_REUSED_CHECKED_KO, KEY_REUSED_CHECKED_LABEL, LOGIN_OTHER_TAB_KO, LOGIN_OTHER_TAB_LABEL, OUTCOME_UNKNOWN_CHECKED_KO, OUTCOME_UNKNOWN_CHECKED_LABEL, OUTCOME_UNKNOWN_LINE, RELOAD_KO, RELOAD_LABEL } from '../lib/idempotency-notice';
 import { loginHrefFor } from '../lib/return-path';
 import { forget as forgetUnsaved, markDirty } from '../lib/unsaved-guard';
-import { noteSubmitIntent, withdrawSubmitIntent } from '../lib/submit-intent';
+import type { LabelledButton } from '../lib/submit-intent';
+import { labelOfButton, noteSubmitIntent, resultDetailOf, withdrawSubmitIntent } from '../lib/submit-intent';
 import { installUnsavedGuard } from './unsaved-guard-dom';
 import { RenderedProjectField, useRenderedContext } from './RenderedContext';
 
@@ -631,8 +632,9 @@ export function FeedbackForm({ action, state, pending, onReset, confirm, dialogD
   /** Runs the action with this submit's FormData (React then skips its own dispatch and reset). */
   function dispatch(form: HTMLFormElement, submitter: HTMLElement | null): void {
     if (!inFlight.acquire(state)) return;
-    noteSubmitIntent(intentLabel ?? null);
     const formData = formDataFor(form, submitter);
+    // p6 review M-1 / L-4: the form's own label, else the pressed button's words; a 手動確認 also says what was chosen.
+    noteSubmitIntent(intentLabel ?? labelOfButton(submitter as unknown as LabelledButton | null), resultDetailOf(formData.get('result')));
     startTransition(() => action(formData));
   }
 

@@ -59,6 +59,12 @@ vi.mock('../apps/web/src/components/FocusOnMount.js', () => ({
   focusHeadingIfIdle: () => false,
   FocusOnMount: ({ targetId, signal }: { targetId: string; signal?: string }) => <span data-focus-on-mount={targetId} data-focus-signal={signal} />
 }));
+/** FocusOnAnchor renders nothing (its work is an effect): the double leaves a marker; landOnAnchor itself is tested with importActual. */
+vi.mock('../apps/web/src/components/FocusOnAnchor.js', () => ({
+  LANDED_ATTRIBUTE: 'data-landed',
+  landOnAnchor: () => false,
+  FocusOnAnchor: ({ anchorId }: { anchorId: string }) => <span data-focus-on-anchor={anchorId} />
+}));
 const board = vi.hoisted(() => ({ value: null as unknown }));
 const workspaceFixture = vi.hoisted(() => ({ value: null as unknown }));
 vi.mock('../apps/web/src/lib/maker-po-data.js', async (importOriginal) => ({
@@ -534,21 +540,23 @@ describe('X6 the status line after a submit is the action that was submitted', (
 
   it('the memory: noted at submit, taken once, withdrawn on a refusal, forgotten by an unlabeled form and after a minute', async () => {
     const lib = await import('../apps/web/src/lib/submit-intent.js');
-    lib.noteSubmitIntent('手動確認を記録する', 1_000);
-    expect(lib.takeSubmitIntent(2_000)).toBe('手動確認を記録する');
+    lib.noteSubmitIntent('手動確認を記録する', null, 1_000);
+    expect(lib.takeSubmitIntent(2_000)).toEqual({ label: '手動確認を記録する', detail: null });
     expect(lib.takeSubmitIntent(2_000)).toBeNull(); // taken once
-    lib.noteSubmitIntent('顧客の承認を記録する', 1_000);
+    lib.noteSubmitIntent('顧客の承認を記録する', null, 1_000);
     lib.withdrawSubmitIntent(); // refused
     expect(lib.takeSubmitIntent(2_000)).toBeNull();
-    lib.noteSubmitIntent('顧客の承認を記録する', 1_000);
-    lib.noteSubmitIntent(null, 1_500); // another form without a label submitted
+    lib.noteSubmitIntent('顧客の承認を記録する', null, 1_000);
+    lib.noteSubmitIntent(null, null, 1_500); // another form without a label submitted
     expect(lib.takeSubmitIntent(2_000)).toBeNull();
-    lib.noteSubmitIntent('納期を保存する', 1_000);
+    lib.noteSubmitIntent('納期を保存する', null, 1_000);
     expect(lib.takeSubmitIntent(1_000 + lib.SUBMIT_INTENT_TTL_MS + 1)).toBeNull();
-    lib.noteSubmitIntent('納期を保存する', 1_000);
-    expect(lib.takeSubmitIntent(1_000 + lib.SUBMIT_INTENT_TTL_MS)).toBe('納期を保存する');
-    lib.noteSubmitIntent('   ', 1_000);
+    lib.noteSubmitIntent('納期を保存する', null, 1_000);
+    expect(lib.takeSubmitIntent(1_000 + lib.SUBMIT_INTENT_TTL_MS)).toEqual({ label: '納期を保存する', detail: null });
+    lib.noteSubmitIntent('   ', null, 1_000);
     expect(lib.takeSubmitIntent(1_001)).toBeNull();
+    lib.noteSubmitIntent('手動確認を記録する', '却下', 1_000);
+    expect(lib.takeSubmitIntent(1_001)).toEqual({ label: '手動確認を記録する', detail: '却下' });
   });
 
   it('wiring: ActionForm hands its button label to the form shell (which notes it when the submit goes out)', async () => {
@@ -570,7 +578,7 @@ describe('X6 the status line after a submit is the action that was submitted', (
 
   it('wiring: the shell notes the intent when a submit goes out and withdraws it on a refusal; the status region takes it', () => {
     const shell = readSrc('components/form-feedback.tsx');
-    expect(shell).toMatch(/if \(!inFlight\.acquire\(state\)\) return;\s*noteSubmitIntent\(intentLabel \?\? null\);/);
+    expect(shell).toMatch(/noteSubmitIntent\(intentLabel \?\? labelOfButton\(submitter as unknown as LabelledButton \| null\), resultDetailOf\(formData\.get\('result'\)\)\);\s*startTransition\(\(\) => action\(formData\)\);/);
     expect(shell).toMatch(/if \(state !== null && !state\.ok\) withdrawSubmitIntent\(\);/);
     expect(readSrc('components/StepAnnouncer.tsx')).toContain('announcementText({ intent: takeSubmitIntent(), latest, now })');
   });
@@ -605,5 +613,180 @@ describe('R7 left / T-8 the 404 of staff, viewer and auditor, in the real layout
     session.user = { id: 'u-admin', role: 'admin' };
     const pages = await notFoundPages();
     expect(HANGUL.test(await page(pages.site, '/zzz-not-exist'))).toBe(true);
+  });
+});
+
+// ================================================================================================
+// review round (REVIEW.md of p6-web-review): L-2, L-3, L-4, L-6 and the web half of M-1
+// ================================================================================================
+describe('review L-2: a router-followed #payment-terms link marks the landing and moves the focus (landOnAnchor)', () => {
+  type Fake = {
+    attrs: Map<string, string>; focused: Array<{ preventScroll?: boolean } | undefined>; inner: Map<string, Fake | null>;
+    setAttribute(n: string, v: string): void; removeAttribute(n: string): void; querySelector(s: string): Fake | null; focus(o?: { preventScroll?: boolean }): void;
+  };
+  const el = (inner: Record<string, Fake | null> = {}): Fake => {
+    const f: Fake = {
+      attrs: new Map(), focused: [], inner: new Map(Object.entries(inner)),
+      setAttribute(n, v) { f.attrs.set(n, v); }, removeAttribute(n) { f.attrs.delete(n); },
+      querySelector(s) { return f.inner.get(s) ?? null; }, focus(o) { f.focused.push(o); }
+    };
+    return f;
+  };
+  const SEL = 'select, input:not([type="hidden"]), textarea, button';
+  const docOf = (target: Fake | null, others: Fake[] = [], active: unknown = 'BODY') => ({
+    activeElement: active, body: 'BODY', documentElement: 'HTML',
+    getElementById: (id: string) => (id === 'payment-terms' ? target : null),
+    querySelectorAll: () => others
+  });
+  const load = async () => (await vi.importActual<typeof import('../apps/web/src/components/FocusOnAnchor.js')>('../apps/web/src/components/FocusOnAnchor.js'));
+
+  it('the address names it: the element is marked, the first field takes the focus WITHOUT scrolling', async () => {
+    const { landOnAnchor } = await load();
+    const field = el(); const target = el({ [SEL]: field });
+    expect(landOnAnchor(docOf(target) as never, 'payment-terms', '#payment-terms')).toBe(true);
+    expect(target.attrs.get('data-landed')).toBe('true');
+    expect(field.focused).toEqual([{ preventScroll: true }]);
+  });
+
+  it('another address, or none: nothing is marked, the focus is not moved, and an earlier mark is cleared', async () => {
+    const { landOnAnchor } = await load();
+    const field = el(); const target = el({ [SEL]: field }); const stale = el(); stale.attrs.set('data-landed', 'true');
+    expect(landOnAnchor(docOf(target, [stale]) as never, 'payment-terms', '#order-terms')).toBe(false);
+    expect(landOnAnchor(docOf(target, [stale]) as never, 'payment-terms', '')).toBe(false);
+    expect(stale.attrs.has('data-landed')).toBe(false);
+    expect(target.attrs.has('data-landed')).toBe(false);
+    expect(field.focused).toEqual([]);
+  });
+
+  it('the focus stays where the operator already is (a field, a button), but the landing is still marked', async () => {
+    const { landOnAnchor } = await load();
+    const field = el(); const target = el({ [SEL]: field });
+    expect(landOnAnchor(docOf(target, [], { id: 'some-field' }) as never, 'payment-terms', '#payment-terms')).toBe(false);
+    expect(target.attrs.get('data-landed')).toBe('true');
+    expect(field.focused).toEqual([]);
+  });
+
+  it('an anchor without a field (the locked 未定 notice) takes the focus itself; a collapsed 「支払条件を変更する」 is opened', async () => {
+    const { landOnAnchor } = await load();
+    const lock = el();
+    expect(landOnAnchor(docOf(lock) as never, 'payment-terms', '#payment-terms')).toBe(true);
+    expect(lock.attrs.get('tabindex')).toBe('-1');
+    expect(lock.focused).toEqual([{ preventScroll: true }]);
+    const details = el(); const field = el(); const wrapper = el({ 'details:not([open])': details, [SEL]: field });
+    landOnAnchor(docOf(wrapper) as never, 'payment-terms', '#payment-terms');
+    expect(details.attrs.get('open')).toBe('');
+    expect(wrapper.attrs.has('tabindex')).toBe(false);
+  });
+
+  it('no element with that id: nothing happens', async () => {
+    const { landOnAnchor } = await load();
+    expect(landOnAnchor(docOf(null) as never, 'payment-terms', '#payment-terms')).toBe(false);
+  });
+
+  const undetermined = { paymentTerms: 'undetermined', paymentTermsUndetermined: true, paymentTermsEditable: true };
+  it('wiring: the step panel\'s anchor, the 「発注の条件」 anchor and the locked notice each carry the landing component', async () => {
+    serveOrder('admin', 'MAKER_PO_READY', { orderOver: undetermined });
+    expect(await orderScreen()).toMatch(/id="payment-terms"[^>]*><span data-focus-on-anchor="payment-terms"><\/span>/);
+    serveOrder('admin', 'SEVEN_PO_VERIFIED', { orderOver: undetermined });
+    expect(await orderScreen()).toMatch(/id="payment-terms" class="p4w3-anchor"><span data-focus-on-anchor="payment-terms"><\/span><details/);
+    serveOrder('admin', 'SEVEN_PO_VERIFIED', { orderOver: { ...undetermined, paymentTermsEditable: false } });
+    expect(await orderScreen()).toMatch(/data-lock="payment-terms"[\s\S]*?<span data-focus-on-anchor="payment-terms"><\/span>/);
+  });
+
+  it('the stylesheet gives the marked landing the same outline as :target (step panel anchor, 「発注の条件」 details, locked notice)', () => {
+    const css = readSrc('app/p6-web.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(css).toMatch(/\.p6-terms-anchor\[data-landed\],\s*\.p4w3-anchor\[data-landed\] > \.p4-terms-change,\s*\.p4w3-lock\[data-landed\]\s*\{[^}]*outline:\s*2px solid var\(--primary\)/);
+  });
+});
+
+describe('review L-3: the order screen\'s 記録 list names a 完了 by what it rests on, where the role\'s feed says so', () => {
+  const row = (operation: string | null, closureBasis?: string) => ({
+    id: 'r1', action: 'FILM_RECEIPT_ASSUMPTION_RECORDED', entityType: 'film_supply_order', entityId: 'order-1', beforeState: null,
+    afterState: { status: 'FILM_RECEIPT_ASSUMED_NO_ISSUE', ...(closureBasis ? { closureBasis } : {}) }, occurredAt: new Date('2026-11-22T01:00:00Z'),
+    requestMetadata: operation ? { operation, closureBasis } : null, actor: { id: 'u', displayName: '代表', role: 'admin' }
+  });
+  const feed = (role: 'admin' | 'staff' | 'viewer' | 'auditor', r: unknown) => JSON.parse(JSON.stringify(apiAuditView.buildAuditViewForRole(role, [r] as never)))[0];
+  const stateLabel = (key: string) => `状態:${key}`;
+
+  it.each(['admin', 'staff', 'auditor'] as const)('%s: confirmed deliveries / consent alone get their own words (and the new state stays)', async (role) => {
+    const { orderRecordText } = await import('../apps/web/src/lib/order-records.js');
+    expect(orderRecordText(feed(role, row('film_order:close_receipt_on_confirmed_deliveries', 'delivery_confirmations')), stateLabel)).toBe('確認済みの納品で完了を記録（→「状態:FILM_RECEIPT_ASSUMED_NO_ISSUE」）');
+    expect(orderRecordText(feed(role, row('film_order:assume_receipt', 'evidence_free_acknowledgment')), stateLabel)).toBe('証跡なしで完了を記録（→「状態:FILM_RECEIPT_ASSUMED_NO_ISSUE」）');
+  });
+
+  it('viewer: its feed says nothing about the basis, so the list keeps the neutral 「問題なしで完了を記録」 — never a guess', async () => {
+    const { orderRecordText } = await import('../apps/web/src/lib/order-records.js');
+    const viewer = feed('viewer', row('film_order:close_receipt_on_confirmed_deliveries', 'delivery_confirmations'));
+    expect(viewer.requestMetadata).toBeUndefined();
+    expect(orderRecordText(viewer, stateLabel)).toBe('問題なしで完了を記録（→「状態:FILM_RECEIPT_ASSUMED_NO_ISSUE」）');
+  });
+
+  it('a record without a request metadata (older API) and any other action keep the shared label', async () => {
+    const { orderRecordText } = await import('../apps/web/src/lib/order-records.js');
+    expect(orderRecordText({ action: 'FILM_RECEIPT_ASSUMPTION_RECORDED', entityType: 'film_supply_order', afterState: { status: 'X' } }, stateLabel)).toBe('問題なしで完了を記録（→「状態:X」）');
+    expect(orderRecordText({ action: 'DOCUMENT_CREATED', entityType: 'document', afterState: null, requestMetadata: { operation: 'film_order:assume_receipt' } }, stateLabel)).toBe('書類を登録');
+  });
+
+  it('the order screen draws it (staff): the 記録 list row says 「証跡なしで完了を記録」', async () => {
+    serveOrder('staff', 'FILM_RECEIPT_ASSUMED_NO_ISSUE', { events: [feed('staff', row('film_order:assume_receipt', 'evidence_free_acknowledgment'))] });
+    const html = await orderScreen();
+    expect(visibleText(html)).toContain('証跡なしで完了を記録');
+    expect(visibleText(html)).not.toContain('問題なしで完了を記録');
+  });
+});
+
+describe('review L-4 / L-6 / M-1: the status line carries the result, the proof button is a sentence, an unlabeled form is named by its button', () => {
+  it('resultDetailOf: confirmed → 確認, rejected → 却下; anything else says nothing', async () => {
+    const { resultDetailOf } = await import('../apps/web/src/lib/submit-intent.js');
+    expect(resultDetailOf('confirmed')).toBe('確認');
+    expect(resultDetailOf('rejected')).toBe('却下');
+    expect(resultDetailOf('verified')).toBeNull();
+    expect(resultDetailOf(null)).toBeNull();
+    expect(resultDetailOf(new File([], 'x'))).toBeNull();
+  });
+
+  it('announcementText: 「手動確認を記録しました（却下）。いまの手順: …」 — the result after the action, then what is next', async () => {
+    const { announcementText } = await import('../apps/web/src/lib/submit-intent.js');
+    expect(announcementText({ intent: { label: '手動確認を記録する', detail: '却下' }, latest: '書類を登録', now: '6 校了' })).toBe('手動確認を記録しました（却下）。いまの手順: 6 校了');
+    expect(announcementText({ intent: { label: '手動確認を記録する', detail: null }, latest: null, now: '6 校了' })).toBe('手動確認を記録しました。いまの手順: 6 校了');
+  });
+
+  it('labelOfButton: the pressed button\'s words without the Korean gloss and the screen-reader-only record name', async () => {
+    const { labelOfButton } = await import('../apps/web/src/lib/submit-intent.js');
+    const button = (parts: Array<{ text: string; drop?: boolean }>) => {
+      const make = (list: typeof parts): never => ({
+        cloneNode: () => make(list.map((p) => ({ ...p }))),
+        querySelectorAll: () => list.filter((p) => p.drop).map((p) => ({ remove: () => { p.text = ''; } })),
+        get textContent() { return list.map((p) => p.text).join(''); }
+      }) as never;
+      return make(parts);
+    };
+    expect(labelOfButton(button([{ text: '送信を記録する' }, { text: '송신을 기록', drop: true }, { text: '（RE-A-FILM-1）', drop: true }]))).toBe('送信を記録する');
+    expect(labelOfButton(button([{ text: '  \n ' }]))).toBeNull();
+    expect(labelOfButton(null)).toBeNull();
+  });
+
+  it('ActionForm: an explicit intentLabel wins over the button\'s words (the proof step: 「校正を登録する」)', async () => {
+    const seen: Array<string | undefined> = [];
+    vi.resetModules();
+    vi.doMock('../apps/web/src/components/form-feedback.js', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../apps/web/src/components/form-feedback.js')>()),
+      FeedbackForm: (props: { intentLabel?: string; children: ReactNode }) => { seen.push(props.intentLabel); return <form>{props.children}</form>; }
+    }));
+    try {
+      const { ActionForm } = await import('../apps/web/src/components/ActionForm.js');
+      render(<ActionForm action={(async () => ({ ok: true })) as never} submitLabel="校正を登録して校了の確認へ" intentLabel="校正を登録する"><span /></ActionForm>);
+      render(<ActionForm action={(async () => ({ ok: true })) as never} submitLabel="手動確認を記録する"><span /></ActionForm>);
+      expect(seen).toEqual(['校正を登録する', '手動確認を記録する']);
+    } finally {
+      vi.doUnmock('../apps/web/src/components/form-feedback.js');
+      vi.resetModules();
+    }
+  });
+
+  it('the proof step passes 「校正を登録する」 and the shell falls back to the pressed button when a form has no label (wiring)', () => {
+    expect(readSrc('components/StepPanel.tsx')).toMatch(/submitLabel="校正を登録して校了の確認へ"\s*intentLabel="校正を登録する"/);
+    expect(readSrc('components/ActionForm.tsx')).toContain('intentLabel={intentLabel ?? submitLabel}');
+    expect(readSrc('components/form-feedback.tsx')).toContain('labelOfButton(submitter as unknown as LabelledButton | null)');
   });
 });

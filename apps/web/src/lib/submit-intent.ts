@@ -13,11 +13,11 @@
  */
 export const SUBMIT_INTENT_TTL_MS = 60_000;
 
-let current: { label: string; at: number } | null = null;
+let current: { label: string; detail: string | null; at: number } | null = null;
 
 /** A submit goes out. A form without a label (null) clears the memory: its success must not be named after an older submit. */
-export function noteSubmitIntent(label: string | null, now: number = Date.now()): void {
-  current = label && label.trim().length > 0 ? { label: label.trim(), at: now } : null;
+export function noteSubmitIntent(label: string | null, detail: string | null = null, now: number = Date.now()): void {
+  current = label && label.trim().length > 0 ? { label: label.trim(), detail, at: now } : null;
 }
 
 /** The action was refused or failed: nothing was recorded, so nothing is announced. */
@@ -26,11 +26,43 @@ export function withdrawSubmitIntent(): void {
 }
 
 /** The status region takes the label once (null when there is none, or it is older than the TTL). */
-export function takeSubmitIntent(now: number = Date.now()): string | null {
+export function takeSubmitIntent(now: number = Date.now()): SubmitIntent | null {
   const taken = current;
   current = null;
   if (!taken || now - taken.at > SUBMIT_INTENT_TTL_MS) return null;
-  return taken.label;
+  return { label: taken.label, detail: taken.detail };
+}
+
+export interface SubmitIntent {
+  label: string;
+  /** What the operator chose when the form asked for a result (「却下」/「確認」), else null. */
+  detail: string | null;
+}
+
+const RESULT_WORDS: Readonly<Record<string, string>> = { confirmed: '確認', rejected: '却下' };
+
+/** p6 review L-4: the result a 手動確認 form was submitted with, in the screens' words; null for a form without one. */
+export function resultDetailOf(value: unknown): string | null {
+  return typeof value === 'string' ? RESULT_WORDS[value] ?? null : null;
+}
+
+/** The part of a button the label is read from (structural, so it needs no browser to be tested). */
+export interface LabelledButton {
+  cloneNode(deep: boolean): LabelledButton;
+  querySelectorAll(selector: string): Iterable<{ remove(): void }>;
+  textContent: string | null;
+}
+
+/**
+ * p6 review M-1: a form that does not name its action (it uses the shell directly) is named by the button that was pressed —
+ * without the Korean gloss and the screen-reader-only record name (「（RE-A-FILM-1）」) that ride inside the button.
+ */
+export function labelOfButton(button: LabelledButton | null): string | null {
+  if (!button) return null;
+  const copy = button.cloneNode(true);
+  for (const extra of copy.querySelectorAll('.p1-ko, .visually-hidden')) extra.remove();
+  const text = (copy.textContent ?? '').replace(/\s+/g, ' ').trim();
+  return text.length > 0 ? text : null;
 }
 
 /**
@@ -51,7 +83,8 @@ export function pastTenseOf(label: string): string {
  * The line the status region reads after the progress changed: the submit's own action when it is known, else the
  * newest record (the old reading, still right for a change made by someone else), then what to do now.
  */
-export function announcementText(input: { intent: string | null; latest: string | null; now: string | null }): string {
-  const done = input.intent ? `${pastTenseOf(input.intent)}。` : `記録しました${input.latest ? `（${input.latest}）` : ''}。`;
+export function announcementText(input: { intent: SubmitIntent | string | null; latest: string | null; now: string | null }): string {
+  const intent = typeof input.intent === 'string' ? { label: input.intent, detail: null } : input.intent;
+  const done = intent ? `${pastTenseOf(intent.label)}${intent.detail ? `（${intent.detail}）` : ''}。` : `記録しました${input.latest ? `（${input.latest}）` : ''}。`;
   return `${done}${input.now ? `いまの手順: ${input.now}` : 'この発注の手順はすべて終わりました。'}`;
 }

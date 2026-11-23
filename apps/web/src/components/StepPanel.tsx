@@ -29,6 +29,7 @@ import { PAYMENT_TERMS_ANCHOR, projectPath } from '../lib/project-route';
 import { formatTimestamp, formatTimestampSeconds, sendApprovalGapText, unitLabel } from '../lib/vocabulary';
 import { formatQuantity } from '../lib/number-format';
 import { SevenPoChecklistForm, SevenPoRegisterForm } from './SevenPoForms';
+import { FocusOnAnchor } from './FocusOnAnchor';
 import { MANUAL_CHECK_KINDS, PendingVerificationSection } from './EvidenceVerificationSection';
 import { CancellationReviewForm, ChangeReviewResumeForm, HoldReleaseForm } from './OrderExceptionForms';
 import { DeliveryReceiptStep, RECEIPT_ISSUER_CHOICES } from './DeliveryReceiptStep';
@@ -126,6 +127,7 @@ export function StepPanelView(props: StepPanelProps) {
           // p6 X1: the home 「支払条件を決める」 link opens #payment-terms. The 「発注の条件」 form that used to carry the id is hidden
           // while this one is on screen (OrderDetailScreen, R13), so the id lives here — exactly one element per page.
           <div id={PAYMENT_TERMS_ANCHOR} className="p4w3-anchor p6-terms-anchor">
+          <FocusOnAnchor anchorId={PAYMENT_TERMS_ANCHOR} />
           <ActionForm
             action={updateFilmPaymentTermsAction}
             submitLabel="支払条件を記録する"
@@ -419,6 +421,7 @@ function ProofStep({ order, projectCode, po, designKeys }: StepPanelProps & { de
     <ActionForm
       action={submitProofStepAction}
       submitLabel="校正を登録して校了の確認へ"
+      intentLabel="校正を登録する"
       hint="メーカーの校正ゲラ（PDF・画像）を選びます。版の登録と、校了の確認待ちへの切り替えまでこの1回で行います。"
     >
       <OrderFields order={order} projectCode={projectCode} />
