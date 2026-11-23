@@ -1,6 +1,7 @@
 import { ActionForm } from './ActionForm';
 import { DateTextField, SelectField, TextareaField, TextField } from './fields';
 import { Bilingual } from './Bilingual';
+import { MobileFold } from './MobileFold';
 import { EvidenceLineText, hasEvidenceWarning, SenderFromLine, SenderStatusNote, SenderWarningNotes } from './EvidenceFacts';
 import { approveFromCardAction, recordRequestedDeliveryDateAction, returnMakerPoAction } from '../app/approval-actions';
 import { approvalCardNeeds, approvalEvidenceStamp, declarationLineOf } from '../lib/approval-card';
@@ -117,6 +118,37 @@ function ApprovalStopNotice({ notice, status }: { notice: ApprovalNotice | null 
   );
 }
 
+/** p5 R2: a one-line summary of the folded evidence, so the folded card still says what stands. */
+function FoldSummary({ card }: { card: ApprovalCardView }) {
+  const first = card.designs[0] ?? null;
+  const say = (organization: CardOrganization | null) => SEAL_TEXT[organization?.state ?? 'missing'].ja;
+  return (
+    <>
+      <Bilingual ja="明細・校了した版・押印・送信先" ko="명세·확정된 판·날인·송신처" />
+      <span className="p1-muted-inline"> ／ 顧客 {say(first?.customer ?? null)}・セブン化学 {say(first?.seven ?? null)}</span>
+    </>
+  );
+}
+
+/**
+ * p5 R2: the evidence stays open on a phone when anything in it needs the representative's eyes — a warning on a stamp (or on another
+ * design's), a stamp that is not an approval, a typed recipient outside the maker master or no address, a セブン化学発注書 not checked,
+ * an artwork file that differs from the approved version.
+ */
+export function foldMustStayOpen(card: ApprovalCardView, otherDesignWarningCount: number): boolean {
+  if (otherDesignWarningCount > 0) return true;
+  const first = card.designs[0] ?? null;
+  for (const organization of [first?.customer ?? null, first?.seven ?? null]) {
+    if ((organization?.state ?? 'missing') !== 'approved') return true;
+    const evidence = organization?.evidence ?? null;
+    if (hasEvidenceWarning(declarationLineOf(evidence), evidence ?? {})) return true;
+  }
+  if (card.recipient.address && (!card.recipient.isEmail || card.recipient.inMakerMaster === false)) return true;
+  if (card.sevenPo && card.sevenPo.verificationStatus !== 'verified') return true;
+  if (card.artworkFiles.some((file) => file.matchesApprovedRevision === false)) return true;
+  return false;
+}
+
 export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean: boolean }) {
   const paperName = card.displayNumber ? `メーカー発注書 ${card.displayNumber}` : `${card.orderCode} のメーカー発注書`;
   const terms = card.paymentTerms ? PAYMENT_TERMS_LABELS[card.paymentTerms] ?? card.paymentTerms : '未記録';
@@ -130,7 +162,7 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
         <Bilingual ja={`${paperName}を代表承認`} ko="대표 승인" />
       </h3>
       <ApprovalStopNotice notice={card.notice} status={card.status} />
-      <dl className="p1-facts">
+      <dl className="p1-facts p5-card-facts">
         <dt><Bilingual ja="金額" ko="금액" /></dt>
         <dd className="p1-figure">{card.amountDisplay ?? '未入力'}</dd>
         <dt><Bilingual ja="支払条件" ko="결제 조건" /></dt>
@@ -144,7 +176,7 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
           emptyHint={<span className="p1-muted-inline">（承認前に<a href="#order-terms">発注の条件</a>で記録できます）</span>}
         />
       </dl>
-      <p className="p1-note p2-terms-fix">
+      <p className="p1-note p2-terms-fix p5-card-fix">
         {card.status === 'DRAFT' ? (
           <Bilingual
             ja="承認すると、この納期・数量で固定されます。変えるにはメーカー発注書を取り消して作り直します。"
@@ -154,6 +186,11 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
           <Bilingual ja="納期・数量は代表承認で固定されています。" ko="납기·수량은 대표 승인으로 고정되어 있습니다." />
         )}
       </p>
+      {/* p5 R2 / M12: the long evidence folds on a phone (open on a wide screen); the inputs and the buttons below stay outside. */}
+      <MobileFold
+        keepOpen={foldMustStayOpen(card, elsewhere.length)}
+        summary={<FoldSummary card={card} />}
+      >
       <dl className="p1-facts">
         <dt><Bilingual ja="明細" ko="명세" /></dt>
         <dd>
@@ -225,9 +262,10 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
           ) : null}
         </dd>
       </dl>
+      </MobileFold>
 
       {needs.amount || needs.requestedDeliveryDate ? (
-        <div className="p4-needs" role="group" aria-label="承認の前に入力するもの">
+        <div className="p4-needs p5-card-needs" role="group" aria-label="承認の前に入力するもの">
           <p className="p4-needs-title">
             <Bilingual ja="承認の前に、次を入力してください" ko="승인 전에 다음을 입력하세요" />
           </p>
@@ -252,7 +290,7 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
         </div>
       ) : null}
       {needs.otherBlockers.length > 0 ? (
-        <div className="p1-blocked" role="group" aria-label="承認できない理由">
+        <div className="p1-blocked p5-card-needs" role="group" aria-label="承認できない理由">
           <p className="p1-blocked-title"><span aria-hidden="true">✕ </span><Bilingual ja="承認できません" ko="승인할 수 없습니다" /></p>
           <ul className="p1-plain-list">
             {needs.otherBlockers.map((blocker) => {
@@ -268,16 +306,16 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
         </div>
       ) : null}
       {card.warnings.filter((warning) => warning.code !== 'MAKER_PO_AMOUNT_MISSING').map((warning) => (
-        <p key={warning.code} className="field-warning"><span aria-hidden="true">⚠</span> {noteText(warning.code, warning.message)}</p>
+        <p key={warning.code} className="field-warning p5-card-needs"><span aria-hidden="true">⚠</span> {noteText(warning.code, warning.message)}</p>
       ))}
 
-      <p className="p1-note">
+      <p className="p1-note p5-card-confirm-note">
         <Bilingual
           ja="承認すると取り消せません。内容を直すときは「差し戻す」を使います。"
           ko="승인 후에는 되돌릴 수 없습니다. 고칠 내용이 있으면 「差し戻す(반려)」를 누르세요."
         />
       </p>
-      <div className="p1-card-actions">
+      <div className="p1-card-actions p5-card-actions">
         {needs.requestedDeliveryDate && card.status === 'DRAFT' && card.orderId ? (
           <ActionForm
             action={recordRequestedDeliveryDateAction}

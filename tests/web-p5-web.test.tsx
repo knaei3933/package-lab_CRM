@@ -587,3 +587,75 @@ describe('R12 the draft of a form that was submitted is dropped even when the fo
     expect(lifecycle.dropOnUnmount()).toBe(false);
   });
 });
+
+// ================================================================================================
+// R2 / M12 — the approval card at 390px: what the representative types and the approve button first, the long evidence folded
+// ================================================================================================
+describe('R2 / M12 the approval card folds its long evidence and keeps the approval inputs outside the fold', () => {
+  const seal = (state: string, evidence: Record<string, unknown> | null = null) => ({ state, eventTime: '2026-11-20T01:00:00Z', approvalEventId: 'ev', evidence });
+  const clean = (over: Record<string, unknown> = {}) => ({
+    source: 'server', poId: 'mpo-1', orderId: 'order-1', displayNumber: 'MPO-2026-0001', status: 'DRAFT', orderCode: 'FSO-1', paymentTerms: 'prepaid', amountDisplay: null,
+    items: [{ lineNumber: 1, description: '合成フィルム', quantityDisplay: '500 m' }],
+    artworkFiles: [{ designKey: '表面A', revisionNo: 1, sha256: SHA, filename: 'omote.pdf', matchesApprovedRevision: true }],
+    recipient: { address: 'order@maker.example', isEmail: true, inMakerMaster: true },
+    deliveryTerms: { requestedDeliveryDate: '2026-12-15', plannedDeliveryDate: null, sevenPo: { quantityDisplay: '500 メートル', amountDisplay: null } },
+    sevenPo: { poNumber: 'SC-1', officialRegisteredAt: '2026-11-01', verificationStatus: 'verified' },
+    designs: [{ designKey: '表面A', currentRevisionNo: 1, customer: seal('approved'), seven: seal('approved') }], dualApproved: true,
+    blockers: [], warnings: [], canApprove: true, canReturn: true, expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA, ...over
+  });
+  const fold = (html: string) => /<details class="p5-fold"[\s\S]*?<\/details>/.exec(html)?.[0] ?? '';
+  const cardHtml = (card: unknown) => render(<ApprovalCard card={card as never} korean={false} />);
+
+  it('the fold holds the lines, the approved file, the 押印欄, the セブン化学発注書 and the recipient — all of it, nothing dropped', () => {
+    const html = cardHtml(clean());
+    const folded = fold(html);
+    expect(folded).not.toBe('');
+    for (const text of ['明細', '合成フィルム', '校了した版', 'omote.pdf', '承認の押印欄', 'セブン化学発注書', 'SC-1', '送信先', 'order@maker.example']) {
+      expect(folded, text).toContain(text);
+    }
+    // The summary names the stamps, so a folded card still says what stands.
+    expect(/<summary[^>]*>([\s\S]*?)<\/summary>/.exec(folded)?.[1] ?? '').toMatch(/顧客[^<]*承認[\s\S]*セブン化学[^<]*承認/);
+  });
+
+  it('what the representative types and presses stays OUTSIDE the fold: the amount field, the approve button, the 希望納期 form', () => {
+    const html = cardHtml(clean());
+    const outside = html.replace(fold(html), '');
+    expect(outside).toContain('name="totalAmount"');
+    expect(outside).toContain('承認の前に、次を入力してください');
+    expect(outside).toContain('MPO-2026-0001 を代表承認する');
+    expect(fold(html)).not.toContain('name="totalAmount"');
+    expect(fold(html)).not.toContain('代表承認する');
+    const needsDate = cardHtml(clean({ blockers: [{ code: 'DELIVERY_DATE_REQUIRED', message: 'x' }] }));
+    expect(needsDate.replace(fold(needsDate), '')).toContain('name="requestedDeliveryDate"');
+    expect(fold(needsDate)).not.toContain('name="requestedDeliveryDate"');
+  });
+
+  it('a clean card may close on a phone (data-keep-open="false"); any warning keeps it open', () => {
+    expect(fold(cardHtml(clean()))).toContain('data-keep-open="false"');
+    const warned = { evidence: { filename: 'x.eml', issuerEntity: 'customer_generated', evidenceSource: 'email', declarationLine: { code: 'sender_domain_mismatch', tone: 'warning', label: '申告は承認組織と一致・差出人のドメインは不一致' }, warnings: [{ code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', ja: '差出人のドメインが登録先と一致しません' }] } };
+    const cases: Array<[string, unknown]> = [
+      ['a sender-domain warning on a stamp', clean({ designs: [{ designKey: '表面A', currentRevisionNo: 1, customer: seal('approved', warned.evidence), seven: seal('approved') }] })],
+      ['a stamp that is not an approval', clean({ designs: [{ designKey: '表面A', currentRevisionNo: 1, customer: seal('approved'), seven: seal('pending_manual_verification') }], dualApproved: false })],
+      ['a typed recipient outside the maker master', clean({ recipient: { address: 'x@maker.example', isEmail: true, inMakerMaster: false } })],
+      ['a recipient that is no e-mail address', clean({ recipient: { address: 'not-mail', isEmail: false, inMakerMaster: null } })],
+      ['a セブン化学発注書 not checked', clean({ sevenPo: { poNumber: 'SC-1', officialRegisteredAt: null, verificationStatus: null } })],
+      ['an artwork file that differs from the approved version', clean({ artworkFiles: [{ designKey: '表面A', revisionNo: 1, sha256: SHA, filename: 'omote.pdf', matchesApprovedRevision: false }] })],
+      ['a second design whose evidence carries a warning', clean({ designs: [{ designKey: '表面A', currentRevisionNo: 1, customer: seal('approved'), seven: seal('approved') }, { designKey: '裏面B', currentRevisionNo: 1, customer: seal('approved', warned.evidence), seven: seal('approved') }] })]
+    ];
+    for (const [name, card] of cases) expect(fold(cardHtml(card)), name).toContain('data-keep-open="true"');
+  });
+
+  it('the fold is closed on a phone and open elsewhere, unless something must be seen (pure rule the component applies)', async () => {
+    const { foldOpenState } = await import('../apps/web/src/components/MobileFold.js');
+    expect(foldOpenState({ narrow: true, keepOpen: false })).toBe(false);
+    expect(foldOpenState({ narrow: true, keepOpen: true })).toBe(true);
+    expect(foldOpenState({ narrow: false, keepOpen: false })).toBe(true);
+    expect(foldOpenState({ narrow: false, keepOpen: true })).toBe(true);
+  });
+
+  it('the Korean mode keeps its lines inside the fold (the card is read the same way)', () => {
+    const html = render(<ApprovalCard card={clean() as never} korean />, true);
+    expect(fold(html)).toMatch(HANGUL);
+    expect(html).not.toContain('class="p5-fold" open=""></details>');
+  });
+});

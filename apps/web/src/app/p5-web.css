@@ -1,0 +1,35 @@
+/*
+ * p5/web. Loaded last, unlayered, like p4-web2a…4. Existing tokens only (no new colours).
+ * R2 / M12 — the representative's approval card at 390px: what is typed and the approve button come first; the long evidence
+ * (lines, approved file, 押印欄, セブン化学発注書, recipient) is one folded block (components/MobileFold). On a wide screen the card
+ * reads exactly as before: the block is open, its summary is not drawn, the order is the markup's.
+ */
+@media (min-width: 601px) {
+  .p5-fold > .p5-fold-summary { display: none; }
+}
+
+@media (max-width: 600px) {
+  /* The card is a grid: `order` moves the blocks without touching the markup. Title and a stopped-approval notice stay first. */
+  .p1-card > .p5-card-facts { order: 10; }
+  .p1-card > .p5-card-fix { order: 11; }
+  .p1-card > .p5-card-needs { order: 20; }
+  .p1-card > .p5-card-confirm-note { order: 30; }
+  .p1-card > .p5-card-actions { order: 40; }
+  .p1-card > .p5-fold { order: 50; }
+
+  .p5-fold-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px 8px;
+    min-height: 44px;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: var(--surface);
+    cursor: pointer;
+    font-weight: 700;
+  }
+  .p5-fold[open] > .p5-fold-summary { margin-bottom: var(--space-3); }
+}

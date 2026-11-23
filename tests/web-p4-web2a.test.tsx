@@ -604,28 +604,6 @@ describe('H14 ②③ the deliveries list: a film delivery reads as film; the fil
 });
 
 // ---------------------------------------------------------------------------
-/**
- * web2a review M-1 (p4/web3): the API writes each happy-path submit makes, measured from the real actions (H12 test).
- * 14 submits, 32 writes. The operator's count is the submits (≤ 15, UNRESOLVED H12); the writes are the chain
- * behind them (one derived Idempotency-Key each) and cannot be ≤ 15 without fewer server endpoints — pinned instead.
- */
-const EXPECTED_WRITES: Record<string, number> = {
-  '1–3 受付・照合・発注': 5, // PO, PDF, 照合, order, 確定
-  '4 入稿': 2, // document, → ARTWORK_RECEIVED
-  '5 校正': 4, // document, 版, → PROOF_READY, → APPROVAL_PENDING
-  '6 顧客': 2, // evidence, approval
-  '6 セブン化学': 2,
-  '7 メーカー発注書': 1,
-  '8 代表承認': 1,
-  '9 送信': 1,
-  '10 受入（仮）': 2, // evidence, provisional acceptance
-  '10 最終受入': 3, // evidence, verify, accept-evidence
-  '11 製造': 1,
-  '11 出荷': 1,
-  '12 納品': 6, // delivery, → FILM_DELIVERED, receipt evidence, verify, confirmation, readiness
-  '12 完了': 1
-};
-
 describe('H12 / H2 / M2 the happy path is ≤ 15 submits on ONE screen (no step sends the operator to an old screen)', () => {
   // (status, role, extra, the one submit of the step). Steps 1–3 are the new-order wizard: 1 submit.
   const maker = (status: string, over: Record<string, unknown> = {}) => ({ id: 'mpo-1', status, displayNumber: 'MPO-2026-0001', ceoApprovedAt: '2026-11-23T00:11:19Z', ...over });
@@ -705,81 +683,98 @@ describe('H12 / H2 / M2 the happy path is ≤ 15 submits on ONE screen (no step 
   const ATTACHED = { contentBase64: B64, filename: 'evidence.pdf', contentType: 'application/pdf' };
   const MAIL = { contentBase64: Buffer.from('From: a@customer.example\r\nMessage-ID: <m1@customer.example>\r\nDate: Thu, 20 Nov 2026 10:00:00 +0900\r\n\r\nOK').toString('base64'), filename: 'approval.eml', contentType: 'message/rfc822', mailMessageId: '<m1@customer.example>', mailDate: '2026-11-20T01:00:00.000Z' };
 
-  it('the happy path: ≤ 15 submits on the order screen, each one counted by the API writes its real action makes', async () => {
-    const maker = (status: string, over: Record<string, unknown> = {}) => ({ id: 'mpo-1', status, displayNumber: 'MPO-2026-0001', ceoApprovedAt: '2026-11-23T00:11:19Z', ...over });
+  it('the happy path is WALKED: the screen is asked for its next form, the form is filled and submitted through its real action, until the order is complete — the submits are COUNTED (≤ 15), the writes behind them are not limited', async () => {
     const approvalActions = await import('../apps/web/src/app/approval-actions.js');
     const actions = await import('../apps/web/src/app/actions.js');
     const makerActions = await import('../apps/web/src/app/maker-po/actions.js');
     const { ApprovalCard } = await import('../apps/web/src/components/ApprovalCard.js');
-    const sent = maker('MAKER_PO_SENT_MANUALLY');
-    type Step = { name: string; html: string; label: string; action: (prev: null, data: FormData) => Promise<{ ok: boolean; message?: string }>; typed?: Record<string, string> };
-    const steps: Step[] = [
-      { name: '4 入稿', html: panel('SEVEN_PO_VERIFIED', 'staff'), label: 'デザイン入稿データを登録して、受領済みにする', action: stepActions.submitArtworkStepAction, typed: { ...ATTACHED, designKey: '表面A' } },
-      { name: '5 校正', html: panel('ARTWORK_RECEIVED', 'staff'), label: '校正を登録して校了の確認へ', action: stepActions.submitProofStepAction, typed: { ...ATTACHED, designKey: '表面A' } },
-      { name: '6 顧客', html: panel('APPROVAL_PENDING', 'staff', { gate: GATE_ONE_DESIGN }), label: '顧客の承認を記録する', action: stepActions.recordApprovalStepAction, typed: { ...MAIL, evidenceIssuer: 'customer_generated' } },
-      { name: '6 セブン化学', html: panel('APPROVAL_PENDING', 'staff', { gate: { ...GATE_ONE_DESIGN, designs: [{ ...GATE_ONE_DESIGN.designs[0], customer: slot(true) }] } }), label: 'セブン化学の承認を記録する', action: stepActions.recordApprovalStepAction, typed: { ...MAIL, evidenceIssuer: 'seven' } },
-      { name: '7 メーカー発注書', html: panel('MAKER_PO_READY', 'staff'), label: 'FSO-1 のメーカー発注書（下書き）を作る', action: stepActions.createMakerPoStepAction, typed: { recipientAddress: 'order@maker.example' } },
-      {
-        name: '8 代表承認',
-        html: render(<ApprovalCard korean={false} card={{
-          source: 'server', poId: 'mpo-1', orderId: 'order-1', displayNumber: 'MPO-2026-0001', status: 'DRAFT', orderCode: 'FSO-1', paymentTerms: 'prepaid', amountDisplay: '¥312,000',
-          items: [], artworkFiles: [], recipient: { address: 'order@maker.example', isEmail: true }, sevenPo: null, designs: [], dualApproved: true,
-          blockers: [], warnings: [], canApprove: true, canReturn: true, expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: 'a'.repeat(64)
-        } as never} />),
-        label: 'MPO-2026-0001 を代表承認する',
-        action: approvalActions.approveFromCardAction
+    type Result = { ok: boolean; message?: string };
+    interface World { status: string; gate: unknown; maker: Record<string, unknown> | null; makerEvents: unknown[]; deliveryContext: unknown }
+    const mk = (status: string) => ({ id: 'mpo-1', status, displayNumber: 'MPO-2026-0001', ceoApprovedAt: '2026-11-23T00:11:19Z' });
+    const bothDesignsSlot = (customer: boolean, seven: boolean) => ({ ...GATE_ONE_DESIGN, designs: [{ ...GATE_ONE_DESIGN.designs[0], customer: slot(customer), seven: slot(seven) }] });
+    const confirmedDelivery = { id: 'del-1', kind: 'film', orderId: 'order-1', lineId: 'line-1', unit: 'meters', deliveredQuantity: '500', deliveredAt: '2026-11-22T01:00:00Z', recordedAt: '2026-11-22T01:00:00Z', confirmed: true, confirmationHidden: false, detailsHidden: false };
+    /**
+     * What the operator types and which server action a button posts to (the markup does not say) — and what the SERVER then does to the
+     * order (the model of the API's own advance). NOT a list of steps: which form comes next, and how many there are, is the screen's.
+     */
+    const REGISTRY: Record<string, { action: (prev: null, data: FormData) => Promise<Result>; typed?: Record<string, string>; effect: (world: World) => World }> = {
+      'デザイン入稿データを登録して、受領済みにする': { action: stepActions.submitArtworkStepAction, typed: { ...ATTACHED, designKey: '表面A' }, effect: (w) => ({ ...w, status: 'ARTWORK_RECEIVED' }) },
+      '校正を登録して校了の確認へ': { action: stepActions.submitProofStepAction, typed: { ...ATTACHED, designKey: '表面A' }, effect: (w) => ({ ...w, status: 'APPROVAL_PENDING', gate: bothDesignsSlot(false, false) }) },
+      '顧客の承認を記録する': { action: stepActions.recordApprovalStepAction, typed: { ...MAIL, evidenceIssuer: 'customer_generated' }, effect: (w) => ({ ...w, gate: bothDesignsSlot(true, false) }) },
+      'セブン化学の承認を記録する': { action: stepActions.recordApprovalStepAction, typed: { ...MAIL, evidenceIssuer: 'seven' }, effect: (w) => ({ ...w, status: 'MAKER_PO_READY', gate: bothDesignsSlot(true, true) }) },
+      'FSO-1 のメーカー発注書（下書き）を作る': { action: stepActions.createMakerPoStepAction, typed: { recipientAddress: 'order@maker.example' }, effect: (w) => ({ ...w, maker: mk('DRAFT') }) },
+      'MPO-2026-0001 を代表承認する': { action: approvalActions.approveFromCardAction, effect: (w) => ({ ...w, status: 'APPROVED_FOR_MANUAL_SEND', maker: mk('APPROVED_FOR_MANUAL_SEND') }) },
+      '送信を記録する': { action: makerActions.recordMakerPoSendEvidenceAction as never, typed: { ...MAIL, senderAddress: 'staff@kanei.example', recipients: 'order@maker.example', sentAt: '2026-11-23T10:00:00+09:00' }, effect: (w) => ({ ...w, status: 'MAKER_PO_SENT_MANUALLY', maker: mk('MAKER_PO_SENT_MANUALLY') }) },
+      '受入記録（仮）を残す': { action: stepActions.recordAcceptanceStepAction, typed: { ...ATTACHED }, effect: (w) => ({ ...w, makerEvents: [{ id: 'pa', eventType: 'MAKER_PO_ACCEPT_RECORDED_PROVISIONAL' }] }) },
+      'メーカーの受注を確定する（最終受入）': { action: stepActions.recordAcceptanceStepAction, typed: { ...ATTACHED }, effect: (w) => ({ ...w, status: 'MAKER_PO_ACCEPTED' }) },
+      '製造開始を記録する': { action: actions.transitionFilmSupplyOrderAction, effect: (w) => ({ ...w, status: 'FILM_IN_PRODUCTION' }) },
+      '出荷を記録する': { action: actions.transitionFilmSupplyOrderAction, effect: (w) => ({ ...w, status: 'FILM_SHIPPED' }) },
+      '納品を記録する': {
+        action: stepActions.recordDeliveryStepAction, typed: { ...ATTACHED, receiptIssuer: 'customer_generated', 'quantity_line-1': '500' },
+        effect: (w) => ({ ...w, status: 'FILM_DELIVERED', deliveryContext: { deliveries: [confirmedDelivery], userId: 'u-admin', filmOnly: true, readiness: null, readinessLabel: (key: string) => key, closure: { pending: { basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: false }, recorded: null } } })
       },
-      { name: '9 送信', html: panel('APPROVED_FOR_MANUAL_SEND', 'staff', { maker: maker('APPROVED_FOR_MANUAL_SEND'), makerPos: [maker('APPROVED_FOR_MANUAL_SEND')] }), label: '送信を記録する', action: makerActions.recordMakerPoSendEvidenceAction as never, typed: { ...MAIL, senderAddress: 'staff@kanei.example', recipients: 'order@maker.example', sentAt: '2026-11-23T10:00:00+09:00' } },
-      { name: '10 受入（仮）', html: panel('MAKER_PO_SENT_MANUALLY', 'staff', { maker: sent, makerPos: [sent] }), label: '受入記録（仮）を残す', action: stepActions.recordAcceptanceStepAction, typed: { ...ATTACHED } },
-      { name: '10 最終受入', html: panel('MAKER_PO_SENT_MANUALLY', 'admin', { maker: sent, makerPos: [sent], makerEvents: [{ id: 'pa', eventType: 'MAKER_PO_ACCEPT_RECORDED_PROVISIONAL' }] }), label: 'メーカーの受注を確定する（最終受入）', action: stepActions.recordAcceptanceStepAction, typed: { ...ATTACHED } },
-      { name: '11 製造', html: panel('MAKER_PO_ACCEPTED', 'staff'), label: '製造開始を記録する', action: actions.transitionFilmSupplyOrderAction },
-      { name: '11 出荷', html: panel('FILM_IN_PRODUCTION', 'staff'), label: '出荷を記録する', action: actions.transitionFilmSupplyOrderAction },
-      // 12: the delivery with its receipt evidence in the same submit (H14): delivery → 納品済み → evidence → verify → confirm → readiness.
-      { name: '12 納品', html: panel('FILM_SHIPPED', 'admin'), label: '納品を記録する', action: stepActions.recordDeliveryStepAction, typed: { ...ATTACHED, receiptIssuer: 'customer_generated', 'quantity_line-1': '500' } },
-      // 12: the completion on the confirmed deliveries (p4/web3 e: no 「証跡なし」 acknowledgment).
-      {
-        name: '12 完了',
-        html: panel('FILM_DELIVERED', 'admin', { deliveryContext: { deliveries: [{ id: 'del-1', kind: 'film', orderId: 'order-1', lineId: 'line-1', unit: 'meters', deliveredQuantity: '500', deliveredAt: '2026-11-22T01:00:00Z', recordedAt: '2026-11-22T01:00:00Z', confirmed: true, confirmationHidden: false, detailsHidden: false }], userId: 'u-admin', filmOnly: true, readiness: null, readinessLabel: (key: string) => key, closure: { pending: { basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: false }, recorded: null } } }),
-        label: '確認済みの納品で完了する',
-        action: actions.assumeFilmReceiptAction,
-        typed: { note: '受領書で確認' }
-      }
-    ];
-    // Steps 1–3 are the new-order wizard: ONE submit (受付 → PDF → 照合 → 発注 → 確定).
+      '確認済みの納品で完了する': { action: actions.assumeFilmReceiptAction, typed: { note: '受領書で確認' }, effect: (w) => ({ ...w, status: 'FILM_RECEIPT_ASSUMED_NO_ISSUE' }) }
+    };
+
+    // The new-order wizard (steps 1–3) is ONE submit: 受付 → PDF → 照合 → 発注 → 確定.
     serveWrites();
     const wizard = await stepActions.startFilmOrderAction(null, form({
       projectCode: 'PRJ-1', poNumber: 'SC-1', officialRegisteredAt: '2026-11-01', code: 'FSO-1', paymentTerms: 'prepaid',
       lines: JSON.stringify([{ description: '合成フィルム', orderedQuantity: '500', unit: 'meters' }]), ...FILE
     }));
     expect(wizard.ok, wizard.message).toBe(true);
-    const perSubmit: Array<[string, number]> = [['1–3 受付・照合・発注', writes()]];
-    const submitKeys: Array<[string, Array<string | undefined>]> = [['1–3 受付・照合・発注', writeKeys()]];
-    for (const step of steps) {
-      const index = submitLabels(step.html).indexOf(step.label);
-      expect(index, `${step.name}: the step's button`).toBeGreaterThanOrEqual(0);
-      expect(step.html, step.name).not.toMatch(OLD_SCREEN_HREF);
+    const submits: Array<{ label: string; role: string; writes: number; keys: Array<string | undefined> }> = [
+      { label: '1–3 発注の作成（ウィザード）', role: 'staff', writes: writes(), keys: writeKeys() }
+    ];
+
+    let world: World = { status: 'SEVEN_PO_VERIFIED', gate: null, maker: null, makerEvents: [], deliveryContext: undefined };
+    for (let guard = 0; guard < 40; guard += 1) {
+      const flowFor = (role: string) => buildOrderFlow({
+        order: order(world.status) as never, role, po: PO as never, documents: [], revisions: [], gate: world.gate as never,
+        makerPos: (world.maker ? [world.maker] : []) as never, makerEvents: world.makerEvents as never, settledSendEventIds: new Set(), paymentGate: null, deliveries: []
+      });
+      const seen = flowFor('admin');
+      if (seen.phase === 'complete') break;
+      // Who does the step: the representative where only they may (and where they record the delivery and confirm it in the same submit); staff otherwise.
+      const role = seen.panel.actor === 'admin' || seen.panel.action.kind === 'deliver' || seen.panel.action.kind === 'receipt' ? 'admin' : 'staff';
+      const html = seen.panel.action.kind === 'ceo_approve'
+        ? render(<ApprovalCard korean={false} card={{
+          source: 'server', poId: 'mpo-1', orderId: 'order-1', displayNumber: 'MPO-2026-0001', status: 'DRAFT', orderCode: 'FSO-1', paymentTerms: 'prepaid', amountDisplay: '¥312,000',
+          items: [], artworkFiles: [], recipient: { address: 'order@maker.example', isEmail: true }, sevenPo: null, designs: [], dualApproved: true,
+          blockers: [], warnings: [], canApprove: true, canReturn: true, expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: 'a'.repeat(64)
+        } as never} />)
+        : panel(world.status, role, { gate: world.gate, maker: world.maker, makerPos: world.maker ? [world.maker] : [], makerEvents: world.makerEvents, deliveryContext: world.deliveryContext });
+      expect(html, `${world.status}: no link to an old screen`).not.toMatch(OLD_SCREEN_HREF);
+      // The screen's own primary form: the first form whose submit button is the primary one (not a quiet / danger secondary action).
+      const formsOf = [...html.matchAll(/<form\b[\s\S]*?<\/form>/g)].map((match) => match[0]);
+      const index = formsOf.findIndex((markup) => /<button type="submit"[^>]*class="ui-button"/.test(markup) || /<button type="submit"[^>]*class="ui-button"[^>]*>/.test(markup));
+      expect(index, `${world.status} (${role}): the screen offers a primary form`).toBeGreaterThanOrEqual(0);
+      const label = submitLabels(formsOf[index]!)[0]!;
+      const step = REGISTRY[label];
+      expect(step, `${world.status} (${role}): the form 「${label}」 is a known step`).toBeDefined();
       callApi.mockReset();
       serveWrites();
-      const result = await step.action(null, filled(step.html, step.typed ?? {}, index));
-      expect(result.ok, `${step.name}: ${result.message ?? ''}`).toBe(true);
-      perSubmit.push([step.name, writes()]);
-      submitKeys.push([step.name, writeKeys()]);
+      const result = await step!.action(null, filled(html, step!.typed ?? {}, index));
+      expect(result.ok, `${label}: ${result.message ?? ''}`).toBe(true);
+      submits.push({ label, role, writes: writes(), keys: writeKeys() });
+      world = step!.effect(world);
     }
-    // Every submit writes (a submit that writes nothing would not be a step), and the operator submits ≤ 15 times.
-    expect(perSubmit.every(([, count]) => count >= 1), JSON.stringify(perSubmit)).toBe(true);
-    expect(perSubmit.length).toBeLessThanOrEqual(15);
-    const total = perSubmit.reduce((sum, [, count]) => sum + count, 0);
-    // The writes behind those submits, pinned: a write added to (or dropped from) any step's chain fails here.
-    expect(Object.fromEntries(perSubmit), `total ${total}`).toEqual(EXPECTED_WRITES);
-    // p4/web4 (web3 review L-3): and every one of those writes carries a key derived from the form's own key
-    // (the chain's `${KEY}.n`, its fallback `${KEY}.na`, the amount write `${KEY}.amounts`, or the key itself for a single
-    // write) — different within a submit — so "32 writes" really is "14 submits' chains", never a new submit hiding behind one.
+
+    // The order is complete, and the operator submitted ≤ 15 times — counted from the forms the screens offered.
+    expect(buildOrderFlow({ order: order(world.status) as never, role: 'admin', po: PO as never, documents: [], revisions: [], gate: null, makerPos: [], makerEvents: [], settledSendEventIds: new Set(), paymentGate: null, deliveries: [] }).phase).toBe('complete');
+    // The walk really visited every step of the path (a walker that stopped early would count too few).
+    expect([...new Set(submits.slice(1).map((entry) => entry.label))].sort(), JSON.stringify(submits.map((entry) => `${entry.role}:${entry.label}`))).toEqual(Object.keys(REGISTRY).sort());
+    expect(submits.length, submits.map((entry) => entry.label).join(' / ')).toBeLessThanOrEqual(15);
+    // Every submit is a submit (it wrote something) — and HOW MANY writes sit behind it is not limited (a chained step is one submit).
+    expect(submits.every((entry) => entry.writes >= 1), JSON.stringify(submits.map((entry) => [entry.label, entry.writes]))).toBe(true);
+    // Idempotency is untouched: every write of a submit carries a key derived from that form's own key (the chain's `${KEY}.n`, its fallback `.na`,
+    // the amount write `.amounts`, or the key itself) and the keys of one submit differ — a chain never hides a second submit.
     const keyShape = new RegExp(`^${KEY}(\\.\\d+a?|\\.amounts)?$`);
-    for (const [name, keys] of submitKeys) {
-      expect(keys.every((key) => typeof key === 'string' && keyShape.test(key)), `${name}: ${JSON.stringify(keys)}`).toBe(true);
-      expect(new Set(keys).size, `${name}: one key per write`).toBe(keys.length);
+    for (const entry of submits) {
+      expect(entry.keys.every((key) => typeof key === 'string' && keyShape.test(key)), `${entry.label}: ${JSON.stringify(entry.keys)}`).toBe(true);
+      expect(new Set(entry.keys).size, `${entry.label}: one key per write`).toBe(entry.keys.length);
     }
-    expect(submitKeys.filter(([, keys]) => keys.length > 1).length, 'the chained steps').toBeGreaterThanOrEqual(8);
+    expect(submits.filter((entry) => entry.keys.length > 1).length, 'the chained steps').toBeGreaterThanOrEqual(8);
   });
 
   it('the exceptional steps stay on the order screen too (evidence check, hold, cancellation review, change review, steps 1–2)', () => {

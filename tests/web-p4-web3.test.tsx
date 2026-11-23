@@ -656,7 +656,7 @@ describe('web2b review Lows', () => {
   it('L-6: 「外す」 is announced by the panel\'s status line (always on the page, filled after the removal)', async () => {
     const directory = { candidates: [{ userId: USER_B, displayName: '鈴木', role: 'viewer' }], truncated: false, error: null };
     const before = inContext(<ProjectAssignmentsPanel view={assignmentsView([{ userId: USER_A, displayName: '佐藤' }]) as never} directory={directory} />);
-    expect(before).toContain('<p class="p4w3-status" role="status"></p>');
+    expect(before).toContain('<p id="assignment-status" tabindex="-1" class="p4w3-status" role="status"></p>');
     callApi.mockResolvedValue(ok({}));
     const removed = await assignmentActions.removeAssignmentAction(null, form({ userId: USER_B }));
     expect(removed.ok).toBe(true);
@@ -664,7 +664,7 @@ describe('web2b review Lows', () => {
     const notice = decodeAssignmentNotice(state.cookies.get('kanei_assignment_notice'), 'proj-1');
     expect(notice?.userId).toBe(USER_B);
     const after = inContext(<ProjectAssignmentsPanel view={assignmentsView([{ userId: USER_A, displayName: '佐藤' }]) as never} directory={directory} notice={notice} />);
-    expect(after).toMatch(/<p class="p4w3-status" role="status" data-assignment-notice="removed">鈴木 を担当から外しました/);
+    expect(after).toMatch(/<p id="assignment-status" tabindex="-1" class="p4w3-status" role="status" data-assignment-notice="removed">鈴木 を担当から外しました/);
     expect(decodeAssignmentNotice(state.cookies.get('kanei_assignment_notice'), 'proj-2')).toBeNull();
   });
 
@@ -677,7 +677,7 @@ describe('web2b review Lows', () => {
     expect(notice).toMatchObject({ kind: 'added', userId: USER_B });
     const after = inContext(<ProjectAssignmentsPanel view={assignmentsView([{ userId: USER_B, displayName: '鈴木', role: 'viewer' }]) as never} directory={{ candidates: [], truncated: false, error: null }} notice={notice} />);
     expect(after).not.toContain('担当者に割り当てる');
-    expect(after).toMatch(/<p class="p4w3-status" role="status" data-assignment-notice="added">鈴木 を担当者に割り当てました/);
+    expect(after).toMatch(/<p id="assignment-status" tabindex="-1" class="p4w3-status" role="status" data-assignment-notice="added">鈴木 を担当者に割り当てました/);
   });
 
   it('L-6: the request block is an h2 (it sits under the screen\'s h1)', () => {
