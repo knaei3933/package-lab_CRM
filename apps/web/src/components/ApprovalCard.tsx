@@ -173,7 +173,7 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
           planned={cells.planned}
           quantity={cells.quantity}
           amount={cells.amount}
-          emptyHint={<span className="p1-muted-inline">（承認前に<a href="#order-terms">発注の条件</a>で記録できます）</span>}
+          emptyHint={<span className="p1-muted-inline p5-card-hint">（承認前に<a href="#order-terms">発注の条件</a>で記録できます）</span>}
         />
       </dl>
       <p className="p1-note p2-terms-fix p5-card-fix">

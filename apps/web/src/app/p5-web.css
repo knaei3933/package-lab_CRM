@@ -11,11 +11,26 @@
 @media (max-width: 600px) {
   /* The card is a grid: `order` moves the blocks without touching the markup. Title and a stopped-approval notice stay first. */
   .p1-card > .p5-card-facts { order: 10; }
-  .p1-card > .p5-card-fix { order: 11; }
+  /* The reminder that approving fixes the terms follows the approve button; the 「取り消せません」 note stays right above it. */
+  .p1-card > .p5-card-fix { order: 45; }
   .p1-card > .p5-card-needs { order: 20; }
   .p1-card > .p5-card-confirm-note { order: 30; }
   .p1-card > .p5-card-actions { order: 40; }
   .p1-card > .p5-fold { order: 50; }
+
+  /* The facts read as table rows (label left, value right) instead of one stacked pair per fact: 6 facts were 560px. */
+  .p1-card > .p5-card-facts { grid-template-columns: minmax(0, 40%) minmax(0, 1fr); column-gap: var(--space-3); row-gap: 0; align-items: start; }
+  .p5-card-facts > dt,
+  .p5-card-facts > dd { margin: 0; padding-block: 6px; border-top: 1px solid var(--line); }
+  /* A fact nobody recorded says so once; the way to record it is the 「発注の条件」 link of the header. */
+  .p5-card-facts > dd > .p5-card-hint { display: none; }
+  /* The list under 「承認の前に、次を入力してください」 already says what to type; its title is not repeated. */
+  .p5-card-needs > .p4-needs-title { display: none; }
+  /* The currency and the amount side by side: one line of input before the approve button. */
+  .p5-card-actions .p1-row { display: grid; grid-template-columns: minmax(0, 40%) minmax(0, 1fr); gap: var(--space-2); }
+  .p5-card-actions .p1-row > .field { min-width: 0; }
+  .p5-card-actions .p1-row select,
+  .p5-card-actions .p1-row input { width: 100%; max-width: none; box-sizing: border-box; }
 
   .p5-fold-summary {
     display: flex;
