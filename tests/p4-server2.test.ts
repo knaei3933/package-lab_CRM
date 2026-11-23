@@ -23,7 +23,16 @@ import {
   users,
   uuidv7
 } from '@kanei/db';
-import { PAYMENT_TERMS_ATTENTION_CLOSED_STATES, paymentTermsAttention } from '@kanei/core';
+import {
+  approvalEvidenceDeclarationLine,
+  evidenceSenderVerdict,
+  parseStoredEvidenceSenderDomainCheck,
+  PAYMENT_TERMS_ATTENTION_CLOSED_STATES,
+  paymentTermsAttention
+} from '@kanei/core';
+import { mkdtemp } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { createApp } from '../apps/api/src/app.js';
 import { issueToken, SESSION_COOKIE, sessionTokenHashForRole } from '../apps/api/src/auth.js';
 
@@ -36,8 +45,8 @@ const { db, pool } = createDatabase(databaseUrl);
 const ids = {
   admin: uuidv7(), admin2: uuidv7(), staff: uuidv7(), staff2: uuidv7(), staffOff: uuidv7(), staffDeleted: uuidv7(),
   viewer: uuidv7(), auditor: uuidv7(), auditorOff: uuidv7(),
-  customer: uuidv7(), seven: uuidv7(), maker: uuidv7(),
-  projectA: uuidv7(), projectB: uuidv7(), projectGone: uuidv7()
+  customer: uuidv7(), customerNoMail: uuidv7(), seven: uuidv7(), maker: uuidv7(),
+  projectA: uuidv7(), projectB: uuidv7(), projectGone: uuidv7(), projectC: uuidv7()
 };
 const DISPLAY = {
   admin: '合成代表者S2', admin2: '合成副代表S2', staff: '合成担当者S2', staff2: '合成担当二S2',
@@ -69,7 +78,7 @@ async function send(role: Role | null, method: string, url: string, body?: unkno
   const text = await response.text();
   let parsed: any = null;
   try { parsed = JSON.parse(text); } catch { parsed = text; }
-  return { status: response.status, body: parsed, text };
+  return { status: response.status, body: parsed, text, headers: response.headers };
 }
 const get = (role: Role | null, url: string) => send(role, 'GET', url);
 const post = (role: Role | null, url: string, body: unknown) => send(role, 'POST', url, body);
@@ -101,15 +110,15 @@ async function sevenPo(project = ids.projectA) {
  * A new film order. With a verified seven PO it starts at SEVEN_PO_VERIFIED
  * (auto-advance); `{ sevenPo: false }` keeps it at DRAFT, the very first state.
  */
-async function createOrder(paymentTerms: string, project = ids.projectA, options: { sevenPo?: boolean } = {}) {
+async function createOrder(paymentTerms: string, project = ids.projectA, options: { sevenPo?: boolean; extra?: Record<string, unknown> } = {}) {
   const sevenPoId = options.sevenPo === false ? null : await sevenPo(project);
   const code = `FSO-S2-${tag()}`;
   const created = await post('staff', `/api/projects/${project}/film-supply-orders`, {
-    code, paymentTerms, ...(sevenPoId ? { sevenPurchaseOrderId: sevenPoId } : {}),
+    code, paymentTerms, ...(sevenPoId ? { sevenPurchaseOrderId: sevenPoId } : {}), ...(options.extra ?? {}),
     lines: [{ lineNumber: 1, description: '合成フィルムS2', orderedQuantity: 1000, unit: 'sheets' }]
   });
   expect(created.status, created.text).toBe(201);
-  return { orderId: created.body.id as string, code };
+  return { orderId: created.body.id as string, code, sevenPoId: sevenPoId as string };
 }
 
 async function queue() {
@@ -129,6 +138,7 @@ function allKeys(value: unknown, out: string[] = []): string[] {
 }
 
 beforeAll(async () => {
+  process.env.DOCUMENT_STORAGE_DIR = await mkdtemp(path.join(os.tmpdir(), 'kanei-p4-server2-'));
   app = createApp({ db });
   await db.execute(sql`
     truncate table audit_events, delivery_confirmations, film_deliveries, filling_deliveries,
@@ -156,14 +166,18 @@ beforeAll(async () => {
   ] as any);
   await db.insert(accounts).values([
     { id: ids.customer, name: '合成S2顧客', role: 'end_customer', externalCode: 'S2-CUST', contactEmail: 'approvals@customer-s2.example' },
+    { id: ids.customerNoMail, name: '合成S2顧客（連絡先なし）', role: 'end_customer', externalCode: 'S2-CUST-NOMAIL' },
     { id: ids.seven, name: '合成S2セブン', role: 'seven', externalCode: 'S2-SEVEN', contactEmail: 'po@seven-s2.example' },
     { id: ids.maker, name: '合成S2メーカー', role: 'maker', externalCode: 'S2-MAKER' }
   ]);
   const now = new Date();
-  for (const [id, code] of [[ids.projectA, 'S2-A'], [ids.projectB, 'S2-B'], [ids.projectGone, 'S2-GONE']] as const) {
+  for (const [id, code, customer] of [
+    [ids.projectA, 'S2-A', ids.customer], [ids.projectB, 'S2-B', ids.customer],
+    [ids.projectGone, 'S2-GONE', ids.customer], [ids.projectC, 'S2-C', ids.customerNoMail]
+  ] as const) {
     await db.insert(projects).values({
       id, code, name: `合成${code}`, businessUnit: 'F1', route: 'F1', leadSource: 'KANEI', status: 'DRAFT',
-      endCustomerAccountId: ids.customer, sevenAccountId: ids.seven, makerAccountId: ids.maker, createdByUserId: ids.admin,
+      endCustomerAccountId: customer, sevenAccountId: ids.seven, makerAccountId: ids.maker, createdByUserId: ids.admin,
       createdAt: now, updatedAt: now
     });
   }
@@ -171,6 +185,7 @@ beforeAll(async () => {
     { id: uuidv7(), userId: ids.staff, projectId: ids.projectA },
     { id: uuidv7(), userId: ids.staff, projectId: ids.projectB },
     { id: uuidv7(), userId: ids.staff, projectId: ids.projectGone },
+    { id: uuidv7(), userId: ids.staff, projectId: ids.projectC },
     { id: uuidv7(), userId: ids.viewer, projectId: ids.projectA },
     { id: uuidv7(), userId: ids.auditor, projectId: ids.projectA }
   ]);
@@ -451,7 +466,7 @@ describe('(3) /api/me carries the caller\'s own displayName', () => {
     const me = await get('admin', '/api/me');
     expect(me.body).toEqual({ id: ids.admin, role: 'admin', displayName: DISPLAY.admin, assignedProjectIds: [], displayLanguage: 'ja' });
     const staff = await get('staff', '/api/me');
-    expect([...staff.body.assignedProjectIds].sort()).toEqual([ids.projectA, ids.projectB, ids.projectGone].sort());
+    expect([...staff.body.assignedProjectIds].sort()).toEqual([ids.projectA, ids.projectB, ids.projectGone, ids.projectC].sort());
   });
 
   it('answers 401 AUTH_REQUIRED without a session or with a revoked one', async () => {
@@ -460,5 +475,224 @@ describe('(3) /api/me carries the caller\'s own displayName', () => {
     expect(anonymous.body).toEqual({ error: '認証が必要です', code: 'AUTH_REQUIRED' });
     const response = await app.request('/api/me', { headers: { cookie: `${SESSION_COOKIE}=not-a-session` } });
     expect(response.status).toBe(401);
+  });
+});
+
+// ================================================================ server2 review L-1 / I-3
+describe('server2 review L-1: a cancelled or deleted approved paper does not lock the term (queue = list = PATCH)', () => {
+  async function undeterminedReadyOrderWithApprovedPaper() {
+    const order = await createOrder('undetermined');
+    await db.update(filmSupplyOrders).set({ status: 'MAKER_PO_READY' }).where(eq(filmSupplyOrders.id, order.orderId));
+    const paperId = uuidv7();
+    // Pre-gate data shape (direct insert): a paper carrying the representative's approval stamp.
+    await db.insert(makerPurchaseOrders).values({
+      id: paperId, filmSupplyOrderId: order.orderId, snapshot: {}, snapshotSha256: '0'.repeat(64), status: 'DRAFT',
+      ceoApprovedAt: new Date(), ceoApprovedByUserId: ids.admin, createdByUserId: ids.admin
+    });
+    expect(await blockedRowOf(order.orderId)).toMatchObject({ paymentTermsEditable: false, paymentTermsLock: { reason: 'ceo_approved' } });
+    return { ...order, paperId };
+  }
+
+  async function expectUnlocked(orderId: string) {
+    expect(await blockedRowOf(orderId)).toMatchObject({ paymentTermsEditable: true, paymentTermsLock: null });
+    const list = await get('staff', `/api/projects/${ids.projectA}/film-supply-orders`);
+    expect(list.body.orders.find((row: { id: string }) => row.id === orderId).paymentTermsEditable).toBe(true);
+    // The flag tells the truth: the PATCH the row links to goes through.
+    const fixed = await patch('staff', `/api/film-supply-orders/${orderId}/payment-terms`, { paymentTerms: 'prepaid' });
+    expect(fixed.status, fixed.text).toBe(200);
+    expect(await blockedRowOf(orderId)).toBeUndefined();
+  }
+
+  it('after the approved paper is cancelled: editable in the queue and the list, and the PATCH answers 200', async () => {
+    const order = await undeterminedReadyOrderWithApprovedPaper();
+    await db.update(makerPurchaseOrders).set({ status: 'CANCELLED' }).where(eq(makerPurchaseOrders.id, order.paperId));
+    await expectUnlocked(order.orderId);
+  });
+
+  it('after the approved paper is logically deleted: editable in the queue and the list, and the PATCH answers 200', async () => {
+    const order = await undeterminedReadyOrderWithApprovedPaper();
+    await db.update(makerPurchaseOrders).set({ deletedAt: new Date() }).where(eq(makerPurchaseOrders.id, order.paperId));
+    await expectUnlocked(order.orderId);
+  });
+
+  it('a live paper without the approval stamp does not lock either', async () => {
+    const order = await createOrder('undetermined');
+    await db.update(filmSupplyOrders).set({ status: 'MAKER_PO_READY' }).where(eq(filmSupplyOrders.id, order.orderId));
+    await db.insert(makerPurchaseOrders).values({
+      id: uuidv7(), filmSupplyOrderId: order.orderId, snapshot: {}, snapshotSha256: '0'.repeat(64), status: 'DRAFT', createdByUserId: ids.admin
+    });
+    await expectUnlocked(order.orderId);
+  });
+});
+
+describe('server2 review I-3: GET /api/assignable-users is never cached', () => {
+  it('answers 200, 401 and 403 with Cache-Control: private, no-store', async () => {
+    for (const role of ['admin', null, 'staff'] as const) {
+      const answer = await get(role, '/api/assignable-users');
+      expect(answer.status, String(role)).toBe(role === 'admin' ? 200 : role === null ? 401 : 403);
+      expect(answer.headers.get('cache-control'), String(role)).toBe('private, no-store');
+    }
+  });
+});
+
+// ================================================================ (4) web2b review M-1
+describe('(4) approval card: each evidence carries the server\'s sender verdict (display and warning only)', () => {
+  const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+  const CARD_SENDER_KEYS = ['declarationLine', 'fromAddress', 'senderDomainCheck', 'senderVerdict', 'uploadedAt', 'uploadedBy', 'warnings'];
+
+  function approvalEml(fromLines: string[], stamp = tag()): string {
+    return [
+      ...fromLines.map((address) => `From: 承認者 <${address}>`),
+      'To: KANEI 担当 <staff@kanei.example>', `Subject: 校正承認 ${stamp}`, 'Date: Mon, 16 Nov 2026 01:00:00 +0000',
+      `Message-ID: <approval-${stamp}@mail.example>`, 'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', '',
+      `承認します（${stamp}）`, ''
+    ].join('\r\n');
+  }
+
+  async function uploadEvidence(chain: { sevenPoId: string; orderId: string }, project: string, organization: 'customer' | 'seven', content: string) {
+    const uploaded = await post('staff', `/api/projects/${project}/documents`, {
+      documentType: 'approval_evidence', issuerEntity: organization === 'customer' ? 'customer_generated' : 'seven',
+      filename: `s2-${organization}-${tag()}.eml`, contentType: 'text/plain', contentBase64: b64(content),
+      sevenPurchaseOrderId: chain.sevenPoId, filmSupplyOrderId: chain.orderId, designKey: 'label-front'
+    });
+    expect(uploaded.status, uploaded.text).toBe(201);
+    return uploaded.body as { document: { id: string }; version: { id: string } };
+  }
+
+  /** An order (prepaid, with 希望納期) at MAKER_PO_READY through two recorded approvals, and its paper with an amount. */
+  async function cardFor(project: string, evidence: { customer: string; seven: string }) {
+    const order = await createOrder('prepaid', project, { extra: { requestedDeliveryDate: '2027-04-30' } });
+    expect((await post('staff', `/api/film-supply-orders/${order.orderId}/transitions`, { to: 'ARTWORK_RECEIVED' })).status).toBe(200);
+    const proof = await post('staff', `/api/projects/${project}/documents`, {
+      documentType: 'proof', issuerEntity: 'kanei', filename: `s2-proof-${tag()}.txt`, contentType: 'text/plain',
+      contentBase64: b64(`s2 artwork ${tag()}\n`), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, designKey: 'label-front'
+    });
+    expect(proof.status, proof.text).toBe(201);
+    const revision = await post('staff', `/api/film-supply-orders/${order.orderId}/artwork-revisions`, { designKey: 'label-front', fileDocumentVersionId: proof.body.version.id });
+    expect(revision.status, revision.text).toBe(201);
+    const recorded: Record<string, any> = {};
+    for (const organization of ['customer', 'seven'] as const) {
+      const doc = await uploadEvidence(order, project, organization, evidence[organization]);
+      const approval = await post('staff', `/api/artwork-revisions/${revision.body.id}/approvals`, {
+        organization, decision: 'APPROVE', evidenceSource: 'email', eventTime: '2026-11-15T10:00:00.000Z',
+        evidenceIdentifier: `S2-ID-${tag()}`, evidenceDocumentVersionId: doc.version.id
+      });
+      expect(approval.status, approval.text).toBe(201);
+      recorded[organization] = approval.body;
+    }
+    const paper = await post('admin', `/api/film-supply-orders/${order.orderId}/maker-purchase-orders`, {
+      recipientAddress: 'maker-po-s2@example.com', amounts: { currency: 'JPY', totalAmount: '480000' }
+    });
+    expect(paper.status, paper.text).toBe(201);
+    const card = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
+    expect(card.status, card.text).toBe(200);
+    const organizations = card.body.approvals.designs[0].organizations;
+    return { order, paperId: paper.body.id as string, card: card.body, customer: organizations.customer.evidence, seven: organizations.seven.evidence, recorded };
+  }
+
+  it('a foreign-domain EML that counted automatically is a warning on the card, never 「申告どおり」; the matching one is', async () => {
+    const { card, customer, seven, recorded } = await cardFor(ids.projectA, {
+      customer: approvalEml(['boss@evil-s2.example']),
+      seven: approvalEml(['po@seven-s2.example'])
+    });
+    // The web2b review M-1 shape: the mismatch counted (verified in the document) and the order moved on.
+    expect(recorded.customer).toMatchObject({ countsTowardDualApproval: true, senderDomainCheck: { status: 'mismatch' } });
+    expect(customer).toMatchObject({
+      issuerMatchesOrganization: true,
+      filename: expect.stringMatching(/^s2-customer-/),
+      uploadedBy: { id: ids.staff, displayName: DISPLAY.staff },
+      uploadedAt: expect.any(String),
+      fromAddress: 'boss@evil-s2.example',
+      senderDomainCheck: { status: 'mismatch', fromAddress: 'boss@evil-s2.example', fromDomain: 'evil-s2.example', registeredDomain: 'customer-s2.example' },
+      senderVerdict: { code: 'mismatch', tone: 'warning' },
+      declarationLine: { code: 'sender_domain_mismatch', tone: 'warning' },
+      warnings: [{ code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', fromDomain: 'evil-s2.example', registeredDomain: 'customer-s2.example' }]
+    });
+    expect(customer.declarationLine.label).not.toContain('申告どおり');
+    expect(seven).toMatchObject({
+      fromAddress: 'po@seven-s2.example',
+      senderDomainCheck: { status: 'match', registeredDomain: 'seven-s2.example' },
+      senderVerdict: { code: 'match', tone: 'ok' },
+      declarationLine: { code: 'declared_and_sender_match', tone: 'ok', label: '申告どおり（差出人のドメインも一致）' },
+      warnings: []
+    });
+    expect(Object.keys(customer.uploadedBy).sort()).toEqual(['displayName', 'id']);
+    for (const name of CARD_SENDER_KEYS) expect(seven, name).toHaveProperty(name);
+    // Display only: no new blocker, and the card still approves.
+    expect(card.blockers.map((entry: { code: string }) => entry.code).filter((code: string) => code.startsWith('EVIDENCE_'))).toEqual([]);
+    expect(card.canApprove).toBe(true);
+  });
+
+  it('the warning never refuses: the approval goes through, and the frozen snapshot / its hash carry no sender data', async () => {
+    const { paperId, card } = await cardFor(ids.projectA, {
+      customer: approvalEml(['boss@evil-s2.example']),
+      seven: approvalEml(['po@other-s2.example'])
+    });
+    const hash = card.makerPurchaseOrder.approvalSnapshotSha256;
+    const approved = await post('admin', `/api/maker-purchase-orders/${paperId}/ceo-approval`, { expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: hash });
+    expect(approved.status, approved.text).toBe(200);
+    const [row] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, paperId));
+    expect(row!.snapshotSha256).toBe(hash);
+    expect(JSON.stringify(row!.snapshot)).not.toMatch(/senderDomainCheck|fromAddress|senderVerdict|declarationLine|evil-s2/);
+  });
+
+  it('two From headers → unverifiable (warning); a customer without a registered address → not compared (neutral)', async () => {
+    const two = await cardFor(ids.projectA, {
+      customer: approvalEml(['boss@customer-s2.example', 'x@evil-s2.example']),
+      seven: approvalEml(['po@seven-s2.example'])
+    });
+    expect(two.customer).toMatchObject({
+      senderDomainCheck: { status: 'multiple_from' },
+      senderVerdict: { code: 'unverifiable', tone: 'warning' },
+      declarationLine: { code: 'sender_unverifiable', tone: 'warning' },
+      warnings: [{ code: 'EVIDENCE_SENDER_UNVERIFIABLE' }]
+    });
+    expect(two.customer.declarationLine.label).not.toContain('申告どおり');
+    const none = await cardFor(ids.projectC, {
+      customer: approvalEml(['boss@customer-s2.example']),
+      seven: approvalEml(['po@seven-s2.example'])
+    });
+    expect(none.customer).toMatchObject({
+      senderDomainCheck: { status: 'no_registered_domain', registeredDomain: null },
+      senderVerdict: { code: 'no_registered_domain', tone: 'neutral' },
+      declarationLine: { code: 'declared_only', tone: 'neutral' },
+      warnings: []
+    });
+    expect(none.customer.declarationLine.label).not.toContain('申告どおり');
+  });
+
+  it('the sender data is the representative\'s: staff, viewer and auditor get 403 CEO_ONLY for the card', async () => {
+    const { paperId } = await cardFor(ids.projectA, { customer: approvalEml(['boss@evil-s2.example']), seven: approvalEml(['po@seven-s2.example']) });
+    for (const role of ['staff', 'viewer', 'auditor'] as const) {
+      const refused = await get(role, `/api/maker-purchase-orders/${paperId}/approval-card`);
+      expect(refused.status, role).toBe(403);
+      expect(refused.body.code, role).toBe('CEO_ONLY');
+      expect(refused.text, role).not.toMatch(/evil-s2|senderDomainCheck|480000/);
+    }
+  });
+
+  it('pure rules: every check status has one verdict, and 「申告どおり」 only for a declared issuer with a matching From', () => {
+    const check = (status: string) => ({ status, fromAddress: 'a@b.example', fromDomain: 'b.example', registeredDomain: 'c.example' }) as any;
+    expect(evidenceSenderVerdict(check('match')).code).toBe('match');
+    expect(evidenceSenderVerdict(check('mismatch'))).toMatchObject({ code: 'mismatch', tone: 'warning' });
+    expect(evidenceSenderVerdict(check('from_missing'))).toMatchObject({ code: 'unverifiable', tone: 'warning' });
+    expect(evidenceSenderVerdict(check('multiple_from'))).toMatchObject({ code: 'unverifiable', tone: 'warning' });
+    expect(evidenceSenderVerdict(check('no_registered_domain'))).toMatchObject({ code: 'no_registered_domain', tone: 'neutral' });
+    expect(evidenceSenderVerdict(check('not_email'))).toMatchObject({ code: 'not_email', tone: 'neutral' });
+    expect(evidenceSenderVerdict(null)).toMatchObject({ code: 'not_recorded', tone: 'neutral' });
+    const line = (issuerMatchesOrganization: boolean, status: string | null, sharedEvidence = false) =>
+      approvalEvidenceDeclarationLine({ issuerMatchesOrganization, sharedEvidence, senderDomainCheck: status ? check(status) : null });
+    expect(line(true, 'match').code).toBe('declared_and_sender_match');
+    for (const status of ['mismatch', 'from_missing', 'multiple_from', 'no_registered_domain', 'not_email', null]) {
+      expect(line(true, status).label, String(status)).not.toContain('申告どおり');
+    }
+    expect(line(false, 'match')).toMatchObject({ code: 'issuer_differs', tone: 'warning' });
+    expect(line(false, 'match', true)).toMatchObject({ code: 'shared_evidence', tone: 'warning' });
+    expect(line(true, 'not_email').code).toBe('declared_only');
+    // Stored values are read back defensively: anything malformed is "not recorded".
+    expect(parseStoredEvidenceSenderDomainCheck({ status: 'match', fromAddress: 'a@b.example', fromDomain: 'b.example', registeredDomain: 'b.example' }))
+      .toEqual({ status: 'match', fromAddress: 'a@b.example', fromDomain: 'b.example', registeredDomain: 'b.example' });
+    for (const bad of [null, 'match', { status: 'trusted' }, { status: 7 }, []]) expect(parseStoredEvidenceSenderDomainCheck(bad)).toBeNull();
+    expect(parseStoredEvidenceSenderDomainCheck({ status: 'mismatch', fromAddress: 5 })).toEqual({ status: 'mismatch', fromAddress: null, fromDomain: null, registeredDomain: null });
   });
 });
