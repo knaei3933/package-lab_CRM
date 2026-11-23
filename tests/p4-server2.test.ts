@@ -25,6 +25,9 @@ import {
 } from '@kanei/db';
 import {
   approvalEvidenceDeclarationLine,
+  buildMakerPoSnapshot,
+  computeMakerPoSnapshotSha256,
+  makerPoSnapshotWithoutApprovalEvidence,
   evidenceSenderVerdict,
   parseStoredEvidenceSenderDomainCheck,
   PAYMENT_TERMS_ATTENTION_CLOSED_STATES,
@@ -563,9 +566,10 @@ describe('(4) approval card: each evidence carries the server\'s sender verdict 
   async function cardFor(project: string, evidence: { customer: string; seven: string }) {
     const order = await createOrder('prepaid', project, { extra: { requestedDeliveryDate: '2027-04-30' } });
     expect((await post('staff', `/api/film-supply-orders/${order.orderId}/transitions`, { to: 'ARTWORK_RECEIVED' })).status).toBe(200);
+    const artwork = `s2 artwork ${tag()}\n`;
     const proof = await post('staff', `/api/projects/${project}/documents`, {
       documentType: 'proof', issuerEntity: 'kanei', filename: `s2-proof-${tag()}.txt`, contentType: 'text/plain',
-      contentBase64: b64(`s2 artwork ${tag()}\n`), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, designKey: 'label-front'
+      contentBase64: b64(artwork), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, designKey: 'label-front'
     });
     expect(proof.status, proof.text).toBe(201);
     const revision = await post('staff', `/api/film-supply-orders/${order.orderId}/artwork-revisions`, { designKey: 'label-front', fileDocumentVersionId: proof.body.version.id });
@@ -587,7 +591,10 @@ describe('(4) approval card: each evidence carries the server\'s sender verdict 
     const card = await get('admin', `/api/maker-purchase-orders/${paper.body.id}/approval-card`);
     expect(card.status, card.text).toBe(200);
     const organizations = card.body.approvals.designs[0].organizations;
-    return { order, paperId: paper.body.id as string, card: card.body, customer: organizations.customer.evidence, seven: organizations.seven.evidence, recorded };
+    return {
+      order, paperId: paper.body.id as string, card: card.body, customer: organizations.customer.evidence, seven: organizations.seven.evidence,
+      recorded, revisionId: revision.body.id as string, artwork, project
+    };
   }
 
   it('a foreign-domain EML that counted automatically is a warning on the card, never 「申告どおり」; the matching one is', async () => {
@@ -694,5 +701,247 @@ describe('(4) approval card: each evidence carries the server\'s sender verdict 
       .toEqual({ status: 'match', fromAddress: 'a@b.example', fromDomain: 'b.example', registeredDomain: 'b.example' });
     for (const bad of [null, 'match', { status: 'trusted' }, { status: 7 }, []]) expect(parseStoredEvidenceSenderDomainCheck(bad)).toBeNull();
     expect(parseStoredEvidenceSenderDomainCheck({ status: 'mismatch', fromAddress: 5 })).toEqual({ status: 'mismatch', fromAddress: null, fromDomain: null, registeredDomain: null });
+  });
+
+  // ============================================================ (5) review2 M-1 / L-1
+  describe('(5) review2 M-1: the CEO approval is pinned to the approval evidence set the card showed', () => {
+    type Chain = Awaited<ReturnType<typeof cardFor>>;
+    const cardOf = async (paperId: string) => {
+      const card = await get('admin', `/api/maker-purchase-orders/${paperId}/approval-card`);
+      expect(card.status, card.text).toBe(200);
+      return card.body;
+    };
+    const approve = (paperId: string, hash: string) =>
+      post('admin', `/api/maker-purchase-orders/${paperId}/ceo-approval`, { expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: hash });
+    /** staff records one more 顧客 decision with a new evidence file (the review2 E2 step). */
+    async function recordCustomer(chain: Chain, decision: 'APPROVE' | 'REVOKE', content: string) {
+      const doc = await uploadEvidence(chain.order, chain.project, 'customer', content);
+      return await post('staff', `/api/artwork-revisions/${chain.revisionId}/approvals`, {
+        organization: 'customer', decision, evidenceSource: 'email', eventTime: '2026-11-16T10:00:00.000Z',
+        evidenceIdentifier: `S2-ID-${tag()}`, evidenceDocumentVersionId: doc.version.id
+      });
+    }
+    const foreign = () => approvalEml(['boss@evil-s2.example']);
+    const fresh = () => cardFor(ids.projectA, { customer: approvalEml(['boss@customer-s2.example']), seven: approvalEml(['po@seven-s2.example']) });
+    async function expectNotApproved(paperId: string) {
+      const [row] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, paperId));
+      expect(row!.status).toBe('DRAFT');
+      expect(row!.ceoApprovedAt).toBeNull();
+    }
+
+    it('review2 E2: revoke + re-approval with a foreign-domain mail after the card → the card\'s hash is refused 409 MAKER_PO_SNAPSHOT_CHANGED', async () => {
+      const chain = await fresh();
+      expect(chain.customer.declarationLine.code).toBe('declared_and_sender_match');
+      const shownHash = chain.card.makerPurchaseOrder.approvalSnapshotSha256;
+      expect((await recordCustomer(chain, 'REVOKE', approvalEml(['boss@customer-s2.example']))).status).toBe(201);
+      const again = await recordCustomer(chain, 'APPROVE', foreign());
+      expect(again.status, again.text).toBe(201);
+      expect(again.body).toMatchObject({ countsTowardDualApproval: true, senderDomainCheck: { status: 'mismatch' } });
+      const reread = await cardOf(chain.paperId);
+      expect(reread.makerPurchaseOrder.approvalSnapshotSha256).not.toBe(shownHash);
+      expect(reread.approvals.designs[0].organizations.customer.evidence.declarationLine.code).toBe('sender_domain_mismatch');
+      const refused = await approve(chain.paperId, shownHash);
+      expect(refused.status, refused.text).toBe(409);
+      expect(refused.body).toMatchObject({
+        code: 'MAKER_PO_SNAPSHOT_CHANGED', expectedSnapshotSha256: shownHash, snapshotSha256: reread.makerPurchaseOrder.approvalSnapshotSha256
+      });
+      await expectNotApproved(chain.paperId);
+      // After re-reading the card (which now shows the warning) the approval goes through, frozen on that set.
+      const approved = await approve(chain.paperId, reread.makerPurchaseOrder.approvalSnapshotSha256);
+      expect(approved.status, approved.text).toBe(200);
+      const [row] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, chain.paperId));
+      expect(row!.snapshotSha256).toBe(reread.makerPurchaseOrder.approvalSnapshotSha256);
+      const frozen = (row!.snapshot as any).approvalEvidence as Array<Record<string, string>>;
+      const shown = reread.approvals.designs[0].organizations;
+      expect(frozen).toEqual([
+        { designKey: 'label-front', organization: 'customer', approvalEventId: shown.customer.approvalEventId,
+          evidenceDocumentVersionId: shown.customer.evidence.documentVersionId, evidenceSha256: shown.customer.evidence.sha256 },
+        { designKey: 'label-front', organization: 'seven', approvalEventId: shown.seven.approvalEventId,
+          evidenceDocumentVersionId: shown.seven.evidence.documentVersionId, evidenceSha256: shown.seven.evidence.sha256 }
+      ]);
+      expect(shown.customer.approvalEventId).toBe(again.body.approvalEvent.id);
+      // Only ids and content hashes are frozen: no verdict wording, no From address.
+      expect(JSON.stringify(row!.snapshot)).not.toMatch(/senderVerdict|declarationLine|senderDomainCheck|fromAddress|evil-s2/);
+    });
+
+    it('a second APPROVE (no revoke) with another file also moves the hash; an unchanged set keeps it (re-reading is stable)', async () => {
+      const chain = await fresh();
+      const shownHash = chain.card.makerPurchaseOrder.approvalSnapshotSha256;
+      expect((await cardOf(chain.paperId)).makerPurchaseOrder.approvalSnapshotSha256).toBe(shownHash);
+      expect((await recordCustomer(chain, 'APPROVE', foreign())).status).toBe(201);
+      expect((await approve(chain.paperId, shownHash)).body.code).toBe('MAKER_PO_SNAPSHOT_CHANGED');
+      await expectNotApproved(chain.paperId);
+    });
+
+    it('a revoke alone right before the approval is never approved over', async () => {
+      const chain = await fresh();
+      const shownHash = chain.card.makerPurchaseOrder.approvalSnapshotSha256;
+      expect((await recordCustomer(chain, 'REVOKE', approvalEml(['boss@customer-s2.example']))).status).toBe(201);
+      const refused = await approve(chain.paperId, shownHash);
+      expect([409, 422]).toContain(refused.status);
+      await expectNotApproved(chain.paperId);
+    });
+
+    it('the representative\'s amount entry is pinned the same way (409 MAKER_PO_SNAPSHOT_CHANGED, nothing written)', async () => {
+      const chain = await fresh();
+      const shownHash = chain.card.makerPurchaseOrder.approvalSnapshotSha256;
+      expect((await recordCustomer(chain, 'APPROVE', foreign())).status).toBe(201);
+      const refused = await patch('admin', `/api/maker-purchase-orders/${chain.paperId}/amounts`, {
+        amounts: { currency: 'JPY', totalAmount: '510000' }, expectedSnapshotSha256: shownHash
+      });
+      expect(refused.status, refused.text).toBe(409);
+      expect(refused.body.code).toBe('MAKER_PO_SNAPSHOT_CHANGED');
+      const [row] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, chain.paperId));
+      expect((row!.snapshot as any).amounts.totalAmount).toBe('480000');
+    });
+
+    /** Holds the film order row lock in a separate session until release() (the lock approval record / revoke and the CEO approval both take). */
+    async function holdOrderLock(orderId: string) {
+      const client = await pool.connect();
+      await client.query('begin');
+      await client.query('select id from film_supply_orders where id = $1 for update', [orderId]);
+      const holderPid = (await client.query('select pg_backend_pid() as pid')).rows[0].pid as number;
+      return {
+        /** Waits until `count` other sessions wait on a lock; fails with the answer of any request that finished instead of waiting. */
+        async waiters(count: number, requests: Array<Promise<any>> = []) {
+          const done: any[] = [];
+          requests.forEach((request, index) => { void request.then((answer) => { done[index] = answer; }); });
+          for (let attempt = 0; attempt < 200; attempt += 1) {
+            const finished = done.find((answer) => answer !== undefined);
+            if (finished) throw new Error(`a request finished instead of waiting: ${finished.status} ${finished.text}`);
+            // Polled outside the holder's transaction: pg_stat_activity is snapshotted once per transaction.
+            const { rows } = await pool.query(
+              "select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and pid <> $1",
+              [holderPid]
+            );
+            if (rows[0].n >= count) return;
+            await new Promise((resolve) => setTimeout(resolve, 25));
+          }
+          throw new Error(`expected ${count} lock waiters`);
+        },
+        async release() {
+          await client.query('rollback');
+          client.release();
+        }
+      };
+    }
+
+    it('race: a re-approval that wins the order lock just before the approval → the approval answers 409 (never a mix)', async () => {
+      const chain = await fresh();
+      const shownHash = chain.card.makerPurchaseOrder.approvalSnapshotSha256;
+      const doc = await uploadEvidence(chain.order, chain.project, 'customer', foreign());
+      const lock = await holdOrderLock(chain.order.orderId);
+      let staff: Promise<any>; let ceo: Promise<any>;
+      try {
+        staff = post('staff', `/api/artwork-revisions/${chain.revisionId}/approvals`, {
+          organization: 'customer', decision: 'APPROVE', evidenceSource: 'email', eventTime: '2026-11-16T10:00:00.000Z',
+          evidenceIdentifier: `S2-ID-${tag()}`, evidenceDocumentVersionId: doc.version.id
+        });
+        await lock.waiters(1, [staff]);
+        ceo = approve(chain.paperId, shownHash);
+        await lock.waiters(2, [staff, ceo]);
+      } finally {
+        await lock.release();
+      }
+      const [recorded, approval] = await Promise.all([staff!, ceo!]);
+      expect(recorded.status, recorded.text).toBe(201);
+      expect(approval.status, approval.text).toBe(409);
+      expect(approval.body.code).toBe('MAKER_PO_SNAPSHOT_CHANGED');
+      await expectNotApproved(chain.paperId);
+    });
+
+    it('race: an approval that wins the order lock first freezes exactly the set the card showed; the later re-approval is recorded after it', async () => {
+      const chain = await fresh();
+      const shownHash = chain.card.makerPurchaseOrder.approvalSnapshotSha256;
+      const doc = await uploadEvidence(chain.order, chain.project, 'customer', foreign());
+      const lock = await holdOrderLock(chain.order.orderId);
+      let staff: Promise<any>; let ceo: Promise<any>;
+      try {
+        ceo = approve(chain.paperId, shownHash);
+        await lock.waiters(1, [ceo]);
+        staff = post('staff', `/api/artwork-revisions/${chain.revisionId}/approvals`, {
+          organization: 'customer', decision: 'APPROVE', evidenceSource: 'email', eventTime: '2026-11-16T10:00:00.000Z',
+          evidenceIdentifier: `S2-ID-${tag()}`, evidenceDocumentVersionId: doc.version.id
+        });
+        await lock.waiters(2, [ceo, staff]);
+      } finally {
+        await lock.release();
+      }
+      const [approval, recorded] = await Promise.all([ceo!, staff!]);
+      expect(approval.status, approval.text).toBe(200);
+      const [row] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, chain.paperId));
+      expect(row!.snapshotSha256).toBe(shownHash);
+      const frozenCustomer = ((row!.snapshot as any).approvalEvidence as Array<Record<string, string>>).find((entry) => entry.organization === 'customer')!;
+      expect(frozenCustomer.approvalEventId).toBe(chain.card.approvals.designs[0].organizations.customer.approvalEventId);
+      // Whatever the later recording answers, it is not part of what was approved.
+      if (recorded.status === 201) expect(frozenCustomer.approvalEventId).not.toBe(recorded.body.approvalEvent.id);
+    });
+
+    it('G10 unchanged: evidence recorded after the approval never voids the approved paper (the frozen set is carried, not recomputed)', async () => {
+      const chain = await fresh();
+      expect((await approve(chain.paperId, chain.card.makerPurchaseOrder.approvalSnapshotSha256)).status).toBe(200);
+      const later = await recordCustomer(chain, 'APPROVE', foreign());
+      const boundary = '----s2-send-boundary';
+      const eml = [
+        'From: KANEI <staff@kanei.example>', 'To: Maker <maker-po-s2@example.com>', `Subject: 製造先発注書 ${chain.order.code}`,
+        `Date: ${new Date().toUTCString()}`, `Message-ID: <s2-send-${tag()}@mail.kanei.example>`,
+        'MIME-Version: 1.0', `Content-Type: multipart/mixed; boundary="${boundary}"`, '',
+        `--${boundary}`, 'Content-Type: text/plain; charset=UTF-8', '', `発注コード ${chain.order.code}`, '',
+        `--${boundary}`, 'Content-Type: text/plain; name="po.txt"', 'Content-Disposition: attachment; filename="po.txt"',
+        'Content-Transfer-Encoding: base64', '', b64(chain.artwork), '', `--${boundary}--`, ''
+      ].join('\r\n');
+      const sent = await post('staff', `/api/maker-purchase-orders/${chain.paperId}/send-evidence`, {
+        contentBase64: b64(eml), senderAddress: 'staff@kanei.example', recipients: ['maker-po-s2@example.com'], sentAt: new Date().toISOString()
+      });
+      expect(sent.status, `${later.status} ${sent.text}`).toBe(200);
+      const [row] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, chain.paperId));
+      expect(row!.status).not.toBe('SNAPSHOT_VOIDED');
+    });
+
+    it('a fresh paper\'s card shows no drift warning (the evidence set is not 明細・版); nothing moved → creation = card = approval digest', async () => {
+      const chain = await fresh();
+      expect(chain.card.warnings.map((entry: { code: string }) => entry.code)).not.toContain('MAKER_PO_SNAPSHOT_DRIFTED');
+      const [created] = await db.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, chain.paperId));
+      expect(created!.snapshotSha256).toBe(chain.card.makerPurchaseOrder.approvalSnapshotSha256);
+      expect((created!.snapshot as any).approvalEvidence).toHaveLength(2);
+      expect((await recordCustomer(chain, 'APPROVE', foreign())).status).toBe(201);
+      expect((await cardOf(chain.paperId)).warnings.map((entry: { code: string }) => entry.code)).not.toContain('MAKER_PO_SNAPSHOT_DRIFTED');
+    });
+
+    it('pure: absent set keeps the old digest; the set is order-independent; any id or content hash moves it', () => {
+      const base = {
+        order: { id: 'o', code: 'C', sevenPoNumber: null }, items: [{ lineNumber: 1, description: 'd', orderedQuantity: '1', unit: 'sheets' }],
+        artworkFiles: [], amounts: null, recipientAddress: 'm@example.com'
+      };
+      const legacy = buildMakerPoSnapshot(base);
+      expect(legacy).not.toHaveProperty('approvalEvidence');
+      expect(computeMakerPoSnapshotSha256(buildMakerPoSnapshot({ ...base, approvalEvidence: undefined } as any))).toBe(computeMakerPoSnapshotSha256(legacy));
+      const a = { designKey: 'back', organization: 'seven', approvalEventId: 'e2', evidenceDocumentVersionId: 'v2', evidenceSha256: 'b'.repeat(64) };
+      const b = { designKey: 'back', organization: 'customer', approvalEventId: 'e1', evidenceDocumentVersionId: 'v1', evidenceSha256: 'a'.repeat(64) };
+      const c = { designKey: 'front', organization: 'customer', approvalEventId: 'e3', evidenceDocumentVersionId: null, evidenceSha256: null };
+      const hash = (set: any[]) => computeMakerPoSnapshotSha256(buildMakerPoSnapshot({ ...base, approvalEvidence: set }));
+      expect(hash([a, b, c])).toBe(hash([c, b, a]));
+      expect(buildMakerPoSnapshot({ ...base, approvalEvidence: [a, c, b] }).approvalEvidence!.map((entry) => entry.approvalEventId)).toEqual(['e1', 'e2', 'e3']);
+      for (const changed of [{ ...a, evidenceSha256: 'c'.repeat(64) }, { ...a, approvalEventId: 'e9' }, { ...a, evidenceDocumentVersionId: 'v9' }]) {
+        expect(hash([changed, b, c])).not.toBe(hash([a, b, c]));
+      }
+      expect(hash([])).not.toBe(computeMakerPoSnapshotSha256(legacy));
+      expect(makerPoSnapshotWithoutApprovalEvidence(buildMakerPoSnapshot({ ...base, approvalEvidence: [a] }))).toEqual(legacy);
+    });
+
+    it('review2 L-1: the approval card and /api/me answer Cache-Control: private, no-store (200, 401, 403)', async () => {
+      const chain = await fresh();
+      const url = `/api/maker-purchase-orders/${chain.paperId}/approval-card`;
+      for (const [role, status] of [['admin', 200], [null, 401], ['staff', 403]] as const) {
+        const answer = await get(role, url);
+        expect(answer.status, String(role)).toBe(status);
+        expect(answer.headers.get('cache-control'), `card ${role}`).toBe('private, no-store');
+      }
+      for (const [role, status] of [['staff', 200], [null, 401]] as const) {
+        const answer = await get(role, '/api/me');
+        expect(answer.status, String(role)).toBe(status);
+        expect(answer.headers.get('cache-control'), `me ${role}`).toBe('private, no-store');
+      }
+    });
   });
 });
