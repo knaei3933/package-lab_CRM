@@ -57,7 +57,7 @@ export default async function DashboardPage() {
         <VStack as="section" gap={5}>
           <Heading level={1}>ダッシュボード</Heading>
           {/* ui/fix-project-select: choose here, not in the header — one big card per project. */}
-          <ProjectChooser selection={selection} role={role} />
+          <ProjectChooser selection={selection} role={role} requester={{ id: user.id, role: user.role, ...(user.displayName ? { displayName: user.displayName } : {}) }} />
           {queue ? (
             <Card>
               <VStack gap={3}>

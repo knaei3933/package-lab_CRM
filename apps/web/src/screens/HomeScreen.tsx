@@ -14,7 +14,8 @@ import type { EvidenceRef } from '../lib/audit-history';
 import { loadEvidenceMetadata } from '../lib/evidence-data';
 import { roleLabel } from '../lib/session-display';
 import { isRouteCode, orderPath, projectPath } from '../lib/project-route';
-import { loadRepresentativeQueue, taskWorkKo } from '../lib/representative-queue';
+import { loadRepresentativeQueue, queueRowSuffixKo, queueRowTitle, taskWorkKo } from '../lib/representative-queue';
+import { QueueRowExtras } from '../components/QueueRowExtras';
 import type { RepresentativeQueue, RepresentativeTask } from '../lib/representative-queue';
 import { formatTimestamp } from '../lib/vocabulary';
 
@@ -87,9 +88,17 @@ function taskHref(task: RepresentativeTask): string {
   return isRouteCode(task.projectCode) ? projectPath(task.projectCode) : '/dashboard';
 }
 
+/** The Korean line of a row's title: the work in Korean plus the organization (a design name is never translated). */
+function koTitle(task: RepresentativeTask): string | null {
+  const work = taskWorkKo(task);
+  const suffix = queueRowSuffixKo(task);
+  return work ? (suffix ? `${work} ${suffix}` : work) : null;
+}
+
 async function AdminInbox({ projects }: { projects: ProjectSummary[] }) {
   const queue: RepresentativeQueue = await loadRepresentativeQueue(projects, { server: true });
   const tasks = queue.tasks;
+  const now = new Date();
   const blocked = queue.blocked ?? [];
   return (
     <>
@@ -103,8 +112,8 @@ async function AdminInbox({ projects }: { projects: ProjectSummary[] }) {
       ) : (
         <ul className="p1-inbox" aria-label="承認箱">
           {tasks.map((task) => (
-            <li key={`${task.kind ?? task.status}-${task.projectId}-${task.orderId}`} className="p1-inbox-item">
-              <p className="p1-inbox-work">{task.work}<KoGloss ko={taskWorkKo(task)} /></p>
+            <li key={`${task.kind ?? task.status}-${task.projectId}-${task.orderId}-${task.organization ?? ''}-${task.designKey ?? ''}`} className="p1-inbox-item">
+              <p className="p1-inbox-work">{queueRowTitle(task)}<KoGloss ko={koTitle(task)} /></p>
               <p className="p1-inbox-target">
                 <span translate="no">{task.orderCode}</span>
                 <span className="p1-muted-inline"> ・ <span translate="no">{task.projectCode}</span></span>
@@ -129,7 +138,7 @@ async function AdminInbox({ projects }: { projects: ProjectSummary[] }) {
           <h2 id="inbox-blocked-title" className="p1-section-title">止まっている（代表が直せるもの）</h2>
           <ul className="p1-inbox" aria-label="止まっている">
             {blocked.map((task) => (
-              <li key={`b-${task.kind}-${task.orderId}`} className="p1-inbox-item p1-inbox-item--blocked">
+              <li key={`b-${task.kind}-${task.orderId}-${task.organization ?? ''}-${task.designKey ?? ''}`} className="p1-inbox-item p1-inbox-item--blocked">
                 <p className="p1-inbox-work"><span translate="no">{task.orderCode}</span></p>
                 <p className="p1-inbox-target">{task.blockedReason ?? task.work}<KoGloss ko={taskWorkKo(task)} /></p>
                 <Link className="p1-button p1-button--quiet p1-inbox-go" href={taskHref(task)}><Bilingual ja="直す" ko="고치기" /><span className="visually-hidden">（{task.orderCode}）</span></Link>

@@ -1,5 +1,7 @@
 import { DataTable } from './DataTable';
 import { isRouteCode, orderPath, projectPath } from '../lib/project-route';
+import { QueueRowExtras } from './QueueRowExtras';
+import { queueRowTitle } from '../lib/representative-queue';
 import type { RepresentativeQueue } from '../lib/representative-queue';
 import { noteStyle, tdStyle, thStyle } from '../lib/ui';
 
@@ -10,10 +12,12 @@ import { noteStyle, tdStyle, thStyle } from '../lib/ui';
  */
 export function RepresentativeQueuePanel({
   queue,
-  currentProjectId
+  currentProjectId,
+  now = new Date()
 }: {
   queue: RepresentativeQueue;
   currentProjectId: string | null;
+  now?: Date | undefined;
 }) {
   const notes = [
     queue.unreadProjects.length > 0 ? `読み込めなかった案件: ${queue.unreadProjects.join('、')}。` : null,
@@ -38,10 +42,13 @@ export function RepresentativeQueuePanel({
           </thead>
           <tbody>
             {queue.tasks.map((task) => (
-              <tr key={`${task.projectId}-${task.orderId}`}>
+              <tr key={`${task.kind ?? task.status}-${task.projectId}-${task.orderId}-${task.organization ?? ''}-${task.designKey ?? ''}`}>
                 <td style={tdStyle}>{task.projectLabel}</td>
                 <td style={tdStyle} translate="no">{task.orderCode}</td>
-                <td style={tdStyle}>{task.work}</td>
+                <td style={tdStyle}>
+                  {queueRowTitle(task)}
+                  <QueueRowExtras task={task} now={now} />
+                </td>
                 <td style={tdStyle}>
                   {task.projectId === currentProjectId ? (
                     <span style={noteStyle}>この案件です（下に表示）</span>

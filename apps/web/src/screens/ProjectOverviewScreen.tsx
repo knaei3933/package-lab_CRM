@@ -5,11 +5,13 @@ import { Heading } from '@astryxdesign/core/Heading';
 import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import { AstryxIsland } from '../components/AstryxIsland';
+import { ProjectAssignmentsPanel } from '../components/ProjectAssignmentsPanel';
 import { ProjectUnavailable } from '../components/ProjectUnavailable';
 import { RepresentativeQueuePanel } from '../components/RepresentativeQueue';
 import { DashboardFlow, DashboardItemList, DashboardActivity } from '../components/DashboardParts';
 import { ProjectOrderList } from '../components/ProjectOrderList';
 import { loadSessionUser } from '../lib/api';
+import { loadAssignmentCandidates, loadProjectAssignments } from '../lib/assignments';
 import { buildDashboard, OTHERS_TITLE, STALE_AFTER_DAYS, STALE_BASIS, STALLED_TITLE, TODO_SCOPE, TODO_TITLE } from '../lib/dashboard';
 import { loadDashboardData } from '../lib/dashboard-data';
 import { canRoleOperate, isAuditorRole, normalizeRole } from '../lib/permissions';
@@ -26,6 +28,13 @@ async function representativeQueueFor(openProjectId: string | null) {
   return loadRepresentativeQueue(list.projects.filter((project) => project.id !== openProjectId), { server: true });
 }
 
+/** P4 N1: the 担当者 of the open project and the people who could be added (representative only). */
+async function assignmentsFor(projectId: string) {
+  const [view, list] = await Promise.all([loadProjectAssignments(projectId), loadSelectableProjectList()]);
+  const candidates = view.error || list.error ? [] : await loadAssignmentCandidates(projectId, view.assignments, list.projects);
+  return { view, candidates };
+}
+
 /**
  * P1 R20: /p/{案件コード} — the project's overview (the former dashboard of the
  * selected project). Its film orders are listed first, each a link to the
@@ -37,9 +46,10 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
   if (!user) return null;
   const role = normalizeRole(user.role);
 
-  const [data, queue] = await Promise.all([
+  const [data, queue, assignments] = await Promise.all([
     loadDashboardData(projectId),
-    role === 'admin' ? representativeQueueFor(projectId) : Promise.resolve(null)
+    role === 'admin' ? representativeQueueFor(projectId) : Promise.resolve(null),
+    role === 'admin' ? assignmentsFor(projectId) : Promise.resolve(null)
   ]);
   const { workspace, boards } = data.board;
   if (workspace.projectRefused) return <ProjectUnavailable title="案件" reason={workspace.error} returnTo="/dashboard" />;
@@ -121,6 +131,8 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
             <DashboardItemList projectCode={projectCode} items={view.others} label={OTHERS_TITLE[role]} empty="ほかの人の作業待ちはありません。" />
           </VStack>
         </Card>
+
+        {assignments ? <ProjectAssignmentsPanel view={assignments.view} candidates={assignments.candidates} /> : null}
 
         {queue ? (
           <Card>

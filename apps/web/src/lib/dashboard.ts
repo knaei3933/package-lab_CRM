@@ -241,7 +241,7 @@ const WAITING_ON: Readonly<Record<string, string>> = {
   APPROVED_FOR_MANUAL_SEND: 'メーカーへのメール送信と送信の記録',
   MAKER_PO_SENT_MANUALLY: 'メーカーの受入',
   MAKER_PO_ACCEPTED: 'メーカーの製造開始',
-  FILM_DELIVERED: '受領確認'
+  FILM_DELIVERED: '納品の確認'
 };
 
 /**

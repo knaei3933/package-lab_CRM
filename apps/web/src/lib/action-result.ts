@@ -1,4 +1,5 @@
 import type { ApiResult } from './api';
+import { withExistingBinding } from './binding-conflict';
 import type { ActionState } from './types';
 
 /**
@@ -63,10 +64,11 @@ export function refreshesListOn(code: string | null | undefined): boolean {
   return code === KEY_REUSED_CODE || code === OUTCOME_UNKNOWN_CODE;
 }
 
-export function refusalState(result: Pick<ApiResult, 'error' | 'errorKo' | 'code' | 'status' | 'failure'>): ActionState {
+export function refusalState(result: Pick<ApiResult, 'error' | 'errorKo' | 'code' | 'status' | 'failure'> & { data?: unknown }): ActionState {
   return {
     ok: false,
-    message: result.error ?? '予期しないエラーです。画面を再読み込みしても続く場合は代表者へ連絡してください。',
+    // P4 N13: a file refused because it is filed elsewhere says where (existing order code / design).
+    message: withExistingBinding(result.error ?? '予期しないエラーです。画面を再読み込みしても続く場合は代表者へ連絡してください。', result.code, result.data),
     messageKo: result.errorKo ?? null,
     code: result.code ?? null,
     // P0 review H1: only an answered 4xx ends the submit (the key is then renewed).

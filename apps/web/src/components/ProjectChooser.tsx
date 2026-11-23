@@ -1,6 +1,8 @@
 import type { ProjectSummary } from '../lib/project-data';
 import type { ProjectSelection } from '../lib/project-selection';
 import { projectPath } from '../lib/project-route';
+import { AssignmentRequest } from './AssignmentRequest';
+import type { AssignmentRequester } from './AssignmentRequest';
 
 /**
  * ui/fix-project-select: the dashboard before a project is open. Several
@@ -42,10 +44,13 @@ export const LIST_FAILED_NEXT = '少し待ってから、この画面を再読�
 
 export function ProjectChooser({
   selection,
-  role
+  role,
+  requester
 }: {
   selection: Exclude<ProjectSelection, { kind: 'open' }>;
   role: string;
+  /** P4 N1: who is asking — an assignable role with no project gets 「代表者に割り当てを依頼」. */
+  requester?: AssignmentRequester | undefined;
 }) {
   if (selection.kind === 'choose') {
     return (
@@ -75,6 +80,7 @@ export function ProjectChooser({
       <h2 id="project-chooser-title" className="project-chooser-title">{message.title}</h2>
       <p className="project-chooser-lead">{message.text}</p>
       <p className="project-chooser-next"><strong>次にやること:</strong> {message.next}</p>
+      {selection.kind === 'none' && requester && requester.role !== 'admin' ? <AssignmentRequest requester={requester} /> : null}
       <p><a className="dash-next-link" href="/dashboard">再読み込み</a></p>
       {message.detail ? <p className="project-chooser-detail">理由（システムの応答）: {message.detail}</p> : null}
     </section>

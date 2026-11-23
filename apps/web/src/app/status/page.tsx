@@ -29,7 +29,7 @@ interface StatusLabelsPayload {
 }
 
 const sectionTitles: Array<{ heading: string; note: string; key: keyof StatusLabelsPayload }> = [
-  { heading: 'フィルム発注の状態', note: '発注から納品・受領確認までのF1フィルム商材の流れ', key: 'filmSupplyOrderStates' },
+  { heading: 'フィルム発注の状態', note: '発注から納品の確認までのF1フィルム商材の流れ', key: 'filmSupplyOrderStates' },
   { heading: 'メーカー発注書の状態', note: 'メーカー発注書の承認・送信・受領の状態', key: 'makerPurchaseOrderStatuses' },
   { heading: '校了の組織', note: 'デザインごとの校了（承認）組織', key: 'approvalOrganizations' },
   { heading: '充填製品納品の確認状態', note: '納品行ごとの納品証跡確認状態', key: 'fillingDeliveryConfirmationStates' },

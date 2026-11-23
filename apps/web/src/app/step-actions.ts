@@ -6,7 +6,10 @@ import { FILM_UNITS } from '@kanei/core';
 import { refuseIfProjectSwitched, writeProjectOf } from '../lib/project-guard';
 import { offsetDateTimeField } from '../lib/datetime';
 import { isRouteCode, orderPath } from '../lib/project-route';
-import { alreadyAt, answeredOrderStatus, answerId, AUTO_TRANSITION_CODES, autoAdvanceRequest, runChain, uploadedVersionId, withAnswer } from '../lib/step-chain';
+import { alreadyAt, answeredOrderStatus, answerId, AUTO_TRANSITION_CODES, autoAdvanceRequest, chainKey, runChain, uploadedVersionId, withAnswer } from '../lib/step-chain';
+import { idempotencyKeyOf } from '../lib/project-context';
+import { webErrorText } from '../lib/error-dictionary';
+import { senderWarningSentence, senderWarningsOf } from '../lib/sender-check';
 import type { ChainStep } from '../lib/step-chain';
 import { RECIPIENT_EMAIL_INVALID_MESSAGE } from '../lib/form-messages';
 import { isPlainAmount, normalizeAmountText } from '../lib/amount';
@@ -134,7 +137,14 @@ export async function startFilmOrderAction(_prev: ActionState | null, formData: 
     if (poNumber.length === 0) return missing('セブン化学発注書の発注番号を入力してください。');
     if (registeredAt.length === 0) return missing('本登録日を入力してください。');
   }
-  if (code.length === 0) return missing('発注コードを入力してください。');
+  // P4 H7②: an empty 発注コード is numbered by the server ({案件コード}-FILM-001…). That path needs the
+  // Idempotency-Key (the server answers 400 without it — a keyless double submit would create two orders),
+  // so a form without a usable key stops here with the dictionary's words instead of reaching the API.
+  const autoCode = code.length === 0;
+  if (autoCode && !chainKey(idempotencyKeyOf(formData), 3)) {
+    const text = webErrorText('IDEMPOTENCY_KEY_REQUIRED');
+    return { ok: false, message: text.message, messageKo: text.messageKo, code: 'IDEMPOTENCY_KEY_REQUIRED', settled: false };
+  }
   if (!['prepaid', 'on_delivery', 'undetermined'].includes(paymentTerms)) return missing('支払条件を選んでください（前払い・納品後払い・未定）。');
   const lines = parseLines(field(formData, 'lines'));
   if (!Array.isArray(lines)) return lines;
@@ -194,7 +204,8 @@ export async function startFilmOrderAction(_prev: ActionState | null, formData: 
       label: 'フィルム発注の作成',
       request: (answers) => withAnswer(poIdOf(answers), (poId) => ({
         path: `/api/projects/${id(projectId)}/film-supply-orders`,
-        body: { code, lines, sevenPurchaseOrderId: poId, paymentTerms, ...dates.body }
+        // An empty code is not sent: the server numbers it (codeSource 'auto').
+        body: { ...(autoCode ? {} : { code }), lines, sevenPurchaseOrderId: poId, paymentTerms, ...dates.body }
       }))
     },
     {
@@ -207,8 +218,17 @@ export async function startFilmOrderAction(_prev: ActionState | null, formData: 
     }
   ];
   const projectCode = field(formData, 'projectCode');
+  const answersOut: unknown[] = [];
+  // The order's code: the typed one, or the one the server numbered (read from the creation answer).
+  const createdCode = (answers: readonly unknown[]): string => {
+    const answered = typeof answers[3] === 'object' && answers[3] !== null ? (answers[3] as { code?: unknown }).code : null;
+    return autoCode ? (typeof answered === 'string' && answered.length > 0 ? answered : code) : code;
+  };
   const result = await runChain(formData, steps, {
-    success: `フィルム発注 ${code} を作成し、発注内容を確定しました。`,
+    answersOut,
+    success: (answers) => autoCode && createdCode(answers).length > 0
+      ? `フィルム発注 ${createdCode(answers)} を作成し、発注内容を確定しました（発注コードは自動で付けました）。`
+      : `フィルム発注 ${createdCode(answers)} を作成し、発注内容を確定しました。`,
     // P4 N3: a stop after the PO was registered hands its id back (the wizard re-opens on it).
     partialId: (answers) => (existingPoId ? null : answerId(answers[0])),
     // P4 H7①: a number that is already registered says where (a link to the record), not only 「登録済み」.
@@ -221,7 +241,8 @@ export async function startFilmOrderAction(_prev: ActionState | null, formData: 
       : STEP_REFUSALS(refusedCode)
   });
   // The order's own screen is the next place to work (R21); a refusal stays on the wizard.
-  if (result.ok && isRouteCode(projectCode) && isRouteCode(code)) redirect(`${orderPath(projectCode, code)}?started=1`);
+  const openedCode = createdCode(answersOut);
+  if (result.ok && isRouteCode(projectCode) && isRouteCode(openedCode)) redirect(`${orderPath(projectCode, openedCode)}?started=1`);
   return result;
 }
 
@@ -362,9 +383,11 @@ export async function recordApprovalStepAction(_prev: ActionState | null, formDa
   ];
   const name = organization === 'customer' ? '顧客' : 'セブン化学';
   return runChain(formData, steps, {
-    success: isMail
+    // P4 N4: the server's sender check only warns (it never refuses); the warning is said on the success line.
+    success: (answers) => (isMail
       ? `${name}の承認を記録しました（メールの識別子は原本で確認されます）。`
-      : `${name}の承認を記録しました。PDF・画像の証跡は代表の確認を待ちます。`,
+      : `${name}の承認を記録しました。PDF・画像の証跡は代表の確認を待ちます。`)
+      + senderWarningSentence(senderWarningsOf(typeof answers[1] === 'object' && answers[1] !== null ? (answers[1] as { warnings?: unknown }).warnings : null)),
     refusal: STEP_REFUSALS
   });
 }

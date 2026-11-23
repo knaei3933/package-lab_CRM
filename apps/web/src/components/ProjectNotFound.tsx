@@ -1,5 +1,7 @@
 import type { ProjectSummary } from '../lib/project-data';
 import { projectPath } from '../lib/project-route';
+import { AssignmentRequest } from './AssignmentRequest';
+import type { AssignmentRequester } from './AssignmentRequest';
 
 /**
  * P1 R20 (K1): an address whose 案件コード this operator cannot open — a typo,
@@ -13,11 +15,14 @@ export const PROJECT_NOT_FOUND_TITLE = 'この案件は見つかりません';
 export function ProjectNotFound({
   code,
   projects,
-  listError
+  listError,
+  requester
 }: {
   code: string | null;
   projects: readonly ProjectSummary[];
   listError: string | null;
+  /** P4 N1: who is asking; with no project to open, an assignable role gets 「代表者に割り当てを依頼」. */
+  requester?: AssignmentRequester | undefined;
 }) {
   return (
     <section className="p1-notfound" aria-labelledby="p1-notfound-title">
@@ -31,7 +36,10 @@ export function ProjectNotFound({
             存在しないか、あなたの担当ではありません。開ける案件から選んでください。
           </p>
           {projects.length === 0 ? (
-            <p className="p1-lead">あなたが開ける案件はありません。担当の割り当てを代表者に依頼してください。</p>
+            <>
+              <p className="p1-lead">あなたが開ける案件はありません。担当の割り当てを代表者に依頼してください。</p>
+              {requester && requester.role !== 'admin' ? <AssignmentRequest requester={requester} /> : null}
+            </>
           ) : (
             <ul className="p1-link-list" aria-label="開ける案件">
               {projects.map((project) => (

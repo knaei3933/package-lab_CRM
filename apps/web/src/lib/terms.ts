@@ -94,7 +94,10 @@ export const LEGACY_TERMS: ReadonlyArray<readonly [string, string]> = [
   ['ダブル承認', '顧客の承認とセブン化学の承認（両組織の承認）'],
   ['二重承認', '顧客の承認とセブン化学の承認（両組織の承認）'],
   ['手動送信', '送信の記録'],
-  ['受領確認（問題なしとみなす）', '問題なしで完了']
+  ['受領確認（問題なしとみなす）', '問題なしで完了'],
+  // P4 web2b M16 remainder: one 「確認」 — 納品確認 (the receipt evidence is 受領証跡) — in the guide, status and dashboard.
+  ['受領確認済', '納品済み'],
+  ['納品・受領確認', '納品の確認']
 ];
 
 /** P4 M16: Korean words that split from the standard (§9 uses 제조사 for メーカー, never 제조처). */

@@ -130,16 +130,23 @@ describe('approveFromCardAction', () => {
   });
 });
 
-describe('approveFromCardAction: a paper without an amount (P1 integration)', () => {
-  it('refuses without the explicit 「金額未入力のまま承認する」 check and makes no API call', async () => {
-    const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA, amountMissing: 'true' }));
-    expect(result.ok).toBe(false);
-    expect(result.message).toContain('金額未入力のまま承認する');
+describe('approveFromCardAction: a paper without an amount (P4 H4①: the amount is required)', () => {
+  it('refuses with AMOUNT_REQUIRED when the card needs an amount and none is typed, and makes no API call', async () => {
+    const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA, amountRequired: 'true' }));
+    expect(result).toMatchObject({ ok: false, code: 'AMOUNT_REQUIRED' });
+    expect(result.message).toContain('金額');
+    expect(result.message).not.toContain('金額未入力のまま承認する');
     expect(callApi).not.toHaveBeenCalled();
   });
 
-  it('approves with the check (the API only warns about the amount)', async () => {
-    const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA, amountMissing: 'true', acknowledgeMissingAmount: 'on' }));
+  it('a check box value no longer lets a paper without an amount through', async () => {
+    const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA, amountRequired: 'true', acknowledgeMissingAmount: 'on' }));
+    expect(result).toMatchObject({ ok: false, code: 'AMOUNT_REQUIRED' });
+    expect(callApi).not.toHaveBeenCalled();
+  });
+
+  it('approves a paper that already has its amount (nothing typed, nothing required)', async () => {
+    const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA }));
     expect(result.ok).toBe(true);
     expect(approvalCall()[0]).toBe('/api/maker-purchase-orders/mpo-1/ceo-approval');
   });
@@ -156,7 +163,7 @@ describe('approveFromCardAction: review M2 — the representative types the amou
   it('saves the amount pinned to the rendered hash, then approves with the hash the API answers for it', async () => {
     const NEW = '9f'.repeat(32);
     callApi.mockImplementation(async (path: string) => (String(path).endsWith('/amounts') ? ok({ approvalSnapshotSha256: NEW }) : ok()));
-    const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA, amountMissing: 'true', totalAmount: '312,000', currency: 'JPY' }));
+    const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA, amountRequired: 'true', totalAmount: '312,000', currency: 'JPY' }));
     expect(result.ok).toBe(true);
     expect(callApi.mock.calls[0]![0]).toBe('/api/maker-purchase-orders/mpo-1/amounts');
     expect(callApi.mock.calls[0]![1]).toMatchObject({ method: 'PATCH', body: { amounts: { currency: 'JPY', totalAmount: '312000' }, expectedSnapshotSha256: SHA } });

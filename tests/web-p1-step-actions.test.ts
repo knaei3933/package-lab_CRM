@@ -393,7 +393,7 @@ describe('input validation: nothing reaches the API', () => {
       await refuse(run, startForm({ poNumber: '' }), '発注番号');
       await refuse(run, startForm({ officialRegisteredAt: '' }), '本登録日');
     });
-    it('refuses a missing order code', async () => { await refuse(run, startForm({ code: '' }), '発注コード'); });
+    // P4 H7②: an empty order code is not refused here — the server numbers it (tests/web-p4-web2b.test.tsx).
     it.each(['', 'later', 'Prepaid'])('refuses payment terms %j', async (paymentTerms) => {
       await refuse(run, startForm({ paymentTerms }), '支払条件');
     });
@@ -489,7 +489,7 @@ describe('H7① / N3 the new-order wizard: where a duplicate is, and what a stop
     const result = await stepActions.startFilmOrderAction(null, form(startForm()));
     expect(result.ok).toBe(false);
     expect(result.code).toBe('DUPLICATE');
-    expect(result.link).toEqual({ href: '/p/PRJ-1/orders#seven-po-po-existing', label: '登録済みのセブン化学発注書を開く' });
+    expect(result.link).toEqual({ href: '/p/PRJ-1/orders#seven-po-po-existing', label: '登録済みのセブン化学発注書 PO-100 を開く' });
     expect(result.settled).toBe(true);
   });
 
@@ -497,7 +497,7 @@ describe('H7① / N3 the new-order wizard: where a duplicate is, and what a stop
     callApi.mockResolvedValueOnce(ok()).mockResolvedValueOnce(ok()).mockResolvedValueOnce(ok()).mockResolvedValueOnce(duplicate({ id: 'ord-existing', projectId: RENDERED, projectCode: 'PRJ-1' }));
     const result = await stepActions.startFilmOrderAction(null, form({ ...startForm(), contentBase64: B64, filename: 'a.pdf', contentType: 'application/pdf' }));
     expect(result.code).toBe('DUPLICATE');
-    expect(result.link).toEqual({ href: '/p/PRJ-1/o/FSO-NEW', label: '登録済みのフィルム発注を開く' });
+    expect(result.link).toEqual({ href: '/p/PRJ-1/o/FSO-NEW', label: '登録済みのフィルム発注 FSO-NEW を開く' });
     expect(result.settled).toBe(false);
   });
 

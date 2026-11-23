@@ -2,6 +2,7 @@
 
 import { useActionState } from 'react';
 import type { ReactNode } from 'react';
+import { DraftAutosave } from './DraftAutosave';
 import { KoGloss } from './RenderedContext';
 import { FeedbackForm, FormErrorSummary, FormResult, resolverFromOptions, SubmitLock } from './form-feedback';
 import type { ConfirmOptions, FormTone } from './form-feedback';
@@ -32,6 +33,11 @@ interface ActionFormProps {
    * hidden) — for lists that repeat the same button text on every row.
    */
   submitContext?: string | undefined;
+  /**
+   * P4 R-1: a form on an order screen keeps what was typed while it is typed (sessionStorage), so a
+   * 「戻る」 the page cannot ask about (no Navigation API, or not cancelable) does not lose it. false: no draft.
+   */
+  draft?: boolean | undefined;
 }
 
 /**
@@ -43,7 +49,7 @@ interface ActionFormProps {
  * after a success, so a refused submit keeps its values (review H1); with a
  * confirm dialog the button stays disabled until hydration (review M1).
  */
-export function ActionForm({ action, submitLabel, children, hint, hintKo, submitLabelKo, confirm, tone, successHint, submitContext }: ActionFormProps) {
+export function ActionForm({ action, submitLabel, children, hint, hintKo, submitLabelKo, confirm, tone, successHint, submitContext, draft = true }: ActionFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   // P4 H13: a class, not an inline style — an inline style beat the 44px target and the hover of p3-polish.
   const buttonClass = tone === 'danger' ? 'ui-button--danger' : 'ui-button';
@@ -56,6 +62,7 @@ export function ActionForm({ action, submitLabel, children, hint, hintKo, submit
       dialogDefaults={confirm ? { options: confirm, confirmLabel: confirm.confirmLabel ?? submitLabel } : undefined}
       style={{ display: 'grid', gap: 10 }}
     >
+      {draft ? <DraftAutosave name={`step:${submitLabel}${submitContext ? `:${submitContext}` : ''}`} orderScreenOnly /> : null}
       {children}
       {hint ? <p style={noteStyle}>{hint}<KoGloss ko={hintKo} /></p> : null}
       <div className="form-actions">

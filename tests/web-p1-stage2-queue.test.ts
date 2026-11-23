@@ -50,7 +50,8 @@ describe('taskFromServerItem', () => {
     expect(taskFromServerItem(item())).toEqual({
       projectId: 'p1', projectCode: 'PRS-A', orderId: 'o1', projectLabel: 'PRS-A（案件A）', orderCode: 'FSO-1',
       status: 'MAKER_PO_READY', work: '代表承認', kind: 'maker_po_ceo_approval', step: 8, amount: '¥312,000',
-      waitingSince: '2026-11-20T01:00:00Z', requestedBy: '佐藤', blockedReason: null
+      waitingSince: '2026-11-20T01:00:00Z', requestedBy: '佐藤', blockedReason: null,
+      requestedDeliveryDate: null, plannedDeliveryDate: null, organization: null, designKey: null, evidence: null, warnings: []
     });
   });
 

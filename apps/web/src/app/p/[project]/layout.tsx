@@ -25,8 +25,12 @@ export default async function ProjectLayout({
   // Without a usable session the root layout shows its notice instead of this tree.
   if (route.kind === 'no-session') return <RouteGate route={route} />;
   if (route.kind === 'list-failed') return <ProjectNotFound code={null} projects={[]} listError={route.error} />;
-  if (route.kind === 'not-found') return <ProjectNotFound code={route.code} projects={route.projects} listError={null} />;
   const user = await loadSessionUser();
+  if (route.kind === 'not-found') {
+    // P4 N1: with nothing to open, the person can ask the representative to assign them (the request carries their 利用者ID).
+    const requester = user ? { id: user.id, role: user.role, ...(user.displayName ? { displayName: user.displayName } : {}) } : undefined;
+    return <ProjectNotFound code={route.code} projects={route.projects} listError={null} requester={requester} />;
+  }
   const display = await displayLanguage(user);
   return (
     <RenderedContextProvider

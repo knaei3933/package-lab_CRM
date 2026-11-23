@@ -41,7 +41,7 @@ function form(entries: Record<string, string>): FormData {
   for (const [name, value] of Object.entries(entries)) data.set(name, value);
   return data;
 }
-const base = { poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA, amountMissing: 'true', acknowledgeMissingAmount: 'on' };
+const base = { poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA, };
 const approvals = () => callApi.mock.calls.filter((call) => String(call[0]).endsWith('/ceo-approval'));
 
 beforeEach(() => {

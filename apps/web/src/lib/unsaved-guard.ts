@@ -41,7 +41,9 @@ export function forget(form: object): void {
  *   closing and reloading by beforeunload.
  * - A traversal the browser does not let a page cancel (`cancelable: false`: no history-action
  *   activation, or a browser without the API) is NOT asked about — a question that cannot be acted on
- *   would be false. The typed input still survives through DraftAutosave.
+ *   would be false. P4 R-1: the typed input then survives only for a form that keeps a draft
+ *   (DraftAutosave: the new-order wizard, the old screens' long forms, and — since P4 web2b — every
+ *   ActionForm on an order screen, i.e. the step forms). A form without a draft loses it.
  */
 export function decideTraverse(
   event: { navigationType: string; cancelable: boolean },
@@ -89,6 +91,25 @@ export function draftValues(controls: ReadonlyArray<{ name: string; type: string
 /** The sessionStorage key of a draft: the screen path and the form's own name (案件・発注・手順 are in the path). */
 export function draftKey(pathname: string, formName: string): string {
   return `kanei-draft:${pathname}:${formName}`;
+}
+
+/** P4 R-1: an order's own screen, /p/{案件}/o/{発注} (the step forms live here). */
+export function isOrderScreenPath(pathname: string): boolean {
+  return /^\/p\/[^/]+\/o\/[^/]+\/?$/.test(pathname);
+}
+
+/** P4 R-1: the hidden fields that say WHICH record a form is about (not the per-render keys and hashes). */
+export const DRAFT_IDENTITY_FIELDS: readonly string[] = ['orderId', 'poId', 'sevenPurchaseOrderId', 'revisionId', 'designKey', 'organization', 'lineId'];
+
+/**
+ * P4 R-1: a suffix for a draft name so two forms with the same button on one screen (one per design or
+ * organization) keep separate drafts. Pure: built from the identity fields' values only.
+ */
+export function draftIdentity(controls: ReadonlyArray<{ name: string; value: string }>): string {
+  const parts = DRAFT_IDENTITY_FIELDS
+    .map((field) => controls.find((control) => control.name === field)?.value ?? '')
+    .filter((value) => value !== '');
+  return parts.length > 0 ? `#${parts.join('|')}` : '';
 }
 
 /** Every draft key of one screen path (ClearDrafts). */

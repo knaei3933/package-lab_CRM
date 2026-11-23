@@ -178,7 +178,15 @@ export function NewOrderForm({
 
       <fieldset className="p1-fieldset">
         <legend className="p1-legend"><span className="p1-legend-no">3</span>発注内容</legend>
-        <TextField name="code" label="発注コード" required width={260} autoComplete="off" spellCheck={false} placeholder="PRS-A-FILM-003" />
+        {/* P4 H7②: an empty code is numbered by the server — {案件コード}-FILM-001, 002… */}
+        <TextField
+          name="code"
+          label="発注コード（空欄なら自動で付けます）"
+          width={300}
+          autoComplete="off"
+          spellCheck={false}
+          hint={`空欄のままにすると「${projectCode}-FILM-001」の形で、続きの番号を自動で付けます。決まった番号がある場合だけ入れます。`}
+        />
         <div className="p1-lines">
           <p className="p1-field-label">明細（説明・数量・単位）</p>
           {lines.map((line, index) => (

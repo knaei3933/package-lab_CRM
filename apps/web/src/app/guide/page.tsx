@@ -44,10 +44,10 @@ export default async function GuidePage() {
         <VStack gap={2}>
           <Heading level={1}>使い方ガイド</Heading>
           <Text as="p" type="supporting">
-            KANEI CRM（F1）は、セブン化学発注書の受付から納品・受領確認・手数料準備までのフィルム発注を記録する台帳です。メールや発注は人が送り、CRMにはその証跡を残します。
+            KANEI CRM（F1）は、セブン化学発注書の受付から納品の確認・手数料準備までのフィルム発注を記録する台帳です。メールや発注は人が送り、CRMにはその証跡を残します。
           </Text>
           <KoreanNote>
-            <p>KANEI CRM(F1)은 セブン化学発注書 접수부터 납품·수령 확인·수수료 준비까지의 필름 발주를 기록하는 장부입니다. 메일·발주는 사람이 직접 보내고, CRM에는 그 증빙을 남깁니다.</p>
+            <p>KANEI CRM(F1)은 セブン化学発注書 접수부터 납품 확인·수수료 준비까지의 필름 발주를 기록하는 장부입니다. 메일·발주는 사람이 직접 보내고, CRM에는 그 증빙을 남깁니다.</p>
           </KoreanNote>
         </VStack>
 
