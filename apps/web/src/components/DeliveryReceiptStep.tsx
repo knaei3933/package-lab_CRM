@@ -146,7 +146,10 @@ export function DeliveryReceiptStep({
     <div className="p4w2-receipt">
       {context.notice && unconfirmed.length > 0 ? <ReceiptStopNotice notice={context.notice} /> : null}
       <DeliveryLines deliveries={context.deliveries} evidenceKinds={context.evidenceKinds ?? {}} readOnly={!canConfirm} />
-      {unconfirmed.length === 0 ? (
+      {context.deliveries.length === 0 ? (
+        // p6/rc (c): no delivery row (FILM_DELIVERED recorded without one) — nothing was confirmed, so no ✓.
+        <p className="p1-note" data-deliveries="none">{NO_DELIVERY_ROWS_TEXT}</p>
+      ) : unconfirmed.length === 0 ? (
         <p className="p1-done">
           <span aria-hidden="true">✓ </span>この発注の納品: {FILM_DELIVERY_CONFIRMATION_LABELS.CONFIRMED.ja}
           {context.deliveries.some((delivery) => context.evidenceKinds?.[delivery.id] === 'maker_po_acceptance')
@@ -215,7 +218,7 @@ export function DeliveryReceiptStep({
       {completed
         ? <ClosureLine closure={context.closure ?? null} />
         : staffEvidenceFreeWithheld(role, context.closure ?? null, plan)
-          ? <EvidenceFreeWithheldNote />
+          ? <EvidenceFreeWithheldNote noDeliveries={context.deliveries.length === 0} />
           : <CompletionForm order={order} projectCode={projectCode} unconfirmed={unconfirmed.length} closure={context.closure ?? null} />}
     </div>
   );
@@ -297,12 +300,26 @@ export function staffEvidenceFreeWithheld(role: string | null | undefined, closu
   return awaiting ?? plan.kind === 'wait_representative';
 }
 
-function EvidenceFreeWithheldNote() {
+/** p6/rc (c): an order with no delivery row says so instead of 「✓ 納品確認済み」. */
+export const NO_DELIVERY_ROWS_TEXT = 'この発注には納品の記録がありません（数量は確認されていません）。';
+
+/**
+ * p6/rc (c), p6-int-review L-R2-3: with no delivery row the order is not in the representative's 承認箱 (the queue's
+ * 「納品の確認」 lists deliveries), so 「待ってください」 alone would wait for nothing. This screen has no delivery form at
+ * this step, so staff are told to tell the representative, who completes it on this order screen.
+ */
+export const EVIDENCE_FREE_WITHHELD_NO_DELIVERY_TEXT = {
+  ja: '受領証跡が代表の確認を待っているため、証跡なしでの完了は代表だけが記録できます。この発注には納品の記録がないため、代表の承認箱には出ません。代表にこの発注の画面で完了を記録するよう知らせてください。',
+  ko: '수령 증빙이 대표 확인을 기다리고 있어 증빙 없는 완료는 대표만 기록할 수 있습니다. 이 발주에는 납품 기록이 없어 대표의 승인함에 나타나지 않습니다. 대표에게 이 발주 화면에서 완료를 기록하도록 알려 주세요.'
+} as const;
+
+function EvidenceFreeWithheldNote({ noDeliveries }: { noDeliveries: boolean }) {
+  const text = noDeliveries ? EVIDENCE_FREE_WITHHELD_NO_DELIVERY_TEXT : EVIDENCE_FREE_WITHHELD_TEXT;
   return (
     <div className="p4w2-fallback" data-closure="withheld">
       <h3 className="p4w2-subtitle">受領の証跡がない場合</h3>
-      <p className="p1-note" data-evidence-free="withheld">
-        <Bilingual ja={EVIDENCE_FREE_WITHHELD_TEXT.ja} ko={EVIDENCE_FREE_WITHHELD_TEXT.ko} />
+      <p className="p1-note" data-evidence-free="withheld" data-deliveries={noDeliveries ? 'none' : undefined}>
+        <Bilingual ja={text.ja} ko={text.ko} />
       </p>
     </div>
   );

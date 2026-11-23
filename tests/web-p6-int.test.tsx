@@ -178,6 +178,26 @@ describe('X5: no 「証跡なしで問題なし」 form for staff while receipt 
     expect(told).toContain('name="acknowledgeNoEvidence"');
   });
 
+  it('p6/rc (c): no delivery row → no 「✓ 確認済み」, and staff are told the order is not in the 承認箱 (tell the representative)', () => {
+    const staff = panel('staff', 'u-staff', { closure: closure(true), documents: [receiptDoc('u-other')], deliveries: [] });
+    expect(staff).toContain(receiptStep.NO_DELIVERY_ROWS_TEXT);
+    expect(staff).not.toContain('✓ </span>この発注の納品');
+    expect(staff).toContain(receiptStep.EVIDENCE_FREE_WITHHELD_NO_DELIVERY_TEXT.ja);
+    expect(staff).not.toContain(receiptStep.EVIDENCE_FREE_WITHHELD_TEXT.ja);
+    expect(staff).not.toContain('name="acknowledgeNoEvidence"');
+    expect(staff).not.toMatch(HANGUL);
+    expect(panel('staff', 'u-staff', { closure: closure(true), deliveries: [], showKorean: true })).toContain(receiptStep.EVIDENCE_FREE_WITHHELD_NO_DELIVERY_TEXT.ko);
+    // With a delivery row the X5 wording is unchanged.
+    const withRow = panel('staff', 'u-staff', { closure: closure(true), documents: [receiptDoc('u-other')] });
+    expect(withRow).toContain(receiptStep.EVIDENCE_FREE_WITHHELD_TEXT.ja);
+    expect(withRow).not.toContain(receiptStep.NO_DELIVERY_ROWS_TEXT);
+    // The representative keeps the completion form with no delivery row (completes it here).
+    session.user = { id: 'u-admin', role: 'admin' };
+    const admin = panel('admin', 'u-admin', { closure: closure(true), deliveries: [] });
+    expect(admin).toContain(receiptStep.NO_DELIVERY_ROWS_TEXT);
+    expect(admin).toContain('name="acknowledgeNoEvidence"');
+  });
+
   it('every delivery confirmed: the confirmed-deliveries completion stays for staff, whatever the flag says', () => {
     const html = panel('staff', 'u-staff', { closure: closure(true, false), deliveries: [delivery('del-1', true)] });
     expect(html).toContain('確認済みの納品で完了する');
@@ -343,8 +363,11 @@ describe('H10: the viewer\'s overview names the order beside its stage', () => {
     expect(workspace.filmOrders[0]).toMatchObject({ code: 'FSO-H10-1', status: 'ARTWORK_RECEIVED', statusHidden: false, detailsHidden: true, paymentTerms: 'prepaid' });
     expect(workspace.fillingOrders[0]).toMatchObject({ code: 'FIL-H10-1', detailsHidden: true });
     expect(workspace.documents[0]).toMatchObject({ filename: redaction.HIDDEN_BY_ROLE_LABEL, detailsHidden: true });
-    const html = render(<ProjectOrderList workspace={workspace} projectCode="PRJ-H10" loadFailed={false} />);
+    const html = render(<ProjectOrderList workspace={workspace} projectCode="PRJ-H10" loadFailed={false} role="viewer" />);
     expect(html).toContain('FSO-H10-1');
+    // p6/rc (a): code and stage only — the viewer is refused the order screen, so the row is no link to it.
+    expect(html).not.toContain('/o/');
+    expect(html).not.toContain('開く');
     expect(html).toContain('デザイン受領');
     expect(html).not.toContain(redaction.HIDDEN_BY_ROLE_LABEL + '</span><span class="p1-order-row-state"');
     for (const secret of ['98765', '社内メモH10', 'quote_', 'MPO-H10', 'DOC-H10']) expect(JSON.stringify(workspace), secret).not.toContain(secret);
