@@ -9,7 +9,7 @@ import type { WorkGroup, WorkRow } from '../lib/my-work';
 import { isAuditorRole, normalizeRole } from '../lib/permissions';
 import { loadSelectableProjectList } from '../lib/project-data';
 import type { AuditEventView, ProjectSummary } from '../lib/project-data';
-import { evidenceCell, evidenceIndex, eventTargets } from '../lib/audit-history';
+import { AUDIT_ACTION_LABELS, auditBasisOf, contactChangeOf, decisionOf, evidenceCell, evidenceIndex, eventTargets } from '../lib/audit-history';
 import type { EvidenceRef } from '../lib/audit-history';
 import { loadEvidenceMetadata } from '../lib/evidence-data';
 import { roleLabel } from '../lib/session-display';
@@ -43,7 +43,11 @@ const HISTORY_ACTIONS = [
   'FILM_RECEIPT_ASSUMPTION_RECORDED',
   'FILM_SUPPLY_ORDER_HOLD_RELEASED',
   'FILM_SUPPLY_ORDER_CANCELLATION_REVIEW_RESOLVED',
-  'MAKER_PO_CANCELLED'
+  'MAKER_PO_CANCELLED',
+  // P5 R3: 納品の確認 is a representative decision with its own evidence too.
+  'FILM_DELIVERY_CONFIRMED',
+  // P5 round 2 (M-2): the project's customer / セブン化学 contact address (the server lists it for admin / auditor only).
+  'PARTNER_CONTACT_EMAIL_UPDATED'
 ];
 
 export async function HomeScreen() {
@@ -263,7 +267,7 @@ async function ViewerHistory({ projects }: { projects: ProjectSummary[] }) {
                 <tr key={event.id}>
                   <td className="p1-figure">{formatTimestamp(event.occurredAt)}</td>
                   <td>{event.actor?.displayName ?? '—'}</td>
-                  <td>{ACTION_LABELS[event.action] ?? '記録'}</td>
+                  <td>{AUDIT_ACTION_LABELS[event.action] ?? ACTION_LABELS[event.action] ?? '記録'}</td>
                   <td><Link href={projectPath(project.code)} translate="no">{project.code}</Link></td>
                 </tr>
               ))}
@@ -278,15 +282,31 @@ async function ViewerHistory({ projects }: { projects: ProjectSummary[] }) {
 
 const AUDIT_COLUMNS = ['誰が', 'いつ', '何を', '根拠'] as const;
 
-function EvidenceCellView({ cell }: { cell: ReturnType<typeof evidenceCell> }) {
-  if (cell.kind === 'none') return <>記録のみ（証跡なし）</>;
-  if (cell.kind === 'unreadable') return <>証跡の情報を読み込めませんでした</>;
+function EvidenceCellView({ cell, decision }: { cell: ReturnType<typeof evidenceCell>; decision: ReturnType<typeof decisionOf> }) {
+  // P5 R3: a manual check / document check says what was decided (確認 / 却下) and on what reason.
+  const decided = decision ? (
+    <span className="p2-audit-sub p5-audit-decision" data-decision={decision.result}>
+      {/* Round 2 (H-2): 監査履歴 is the auditor's screen — the written reason is never drawn here, even if sent. */}
+      結果: {decision.result}{decision.result === '却下' ? <>（理由は代表にご確認ください）</> : null}
+    </span>
+  ) : null;
+  if (cell.kind === 'none') return <>記録のみ（証跡なし）{decided}</>;
+  if (cell.kind === 'unreadable') return <>証跡の情報を読み込めませんでした{decided}</>;
+  if (cell.kind === 'paper') {
+    return (
+      <>
+        <span>メーカー発注書の内容（承認時のスナップショット）</span>
+        {cell.displayNumber ? <span className="p2-audit-sub p1-figure" translate="no">{cell.displayNumber}</span> : null}
+      </>
+    );
+  }
   const evidence: EvidenceRef = cell.evidence;
   return (
     <>
       <span>{evidence.label}</span>
       <span className="p2-audit-sub p1-muted-inline" translate="no">{evidence.filename ?? 'ファイル名は非表示'}</span>
       {evidence.hash ? <span className="p2-audit-sub p1-hash" translate="no">SHA-256 {evidence.hash}</span> : null}
+      {decided}
     </>
   );
 }
@@ -317,7 +337,8 @@ async function AuditorHistory({ projects }: { projects: ProjectSummary[] }) {
   rows.sort((a, b) => b.event.occurredAt.localeCompare(a.event.occurredAt));
   const shown = rows.slice(0, 20);
   // Evidence is read only for the projects whose shown rows cite a file version.
-  const needing = new Set(shown.filter(({ event }) => typeof event.afterState?.evidenceDocumentVersionId === 'string').map(({ project }) => project.id));
+  const needing = new Set(shown.filter(({ event }) => typeof event.afterState?.evidenceDocumentVersionId === 'string'
+    || Boolean(auditBasisOf(event)?.evidenceDocumentVersionId)).map(({ project }) => project.id));
   const evidence = new Map<string, Map<string, EvidenceRef> | null>();
   await Promise.all([...needing].map(async (projectId) => {
     const answer = await loadEvidenceMetadata(projectId, { limit: 500 });
@@ -348,7 +369,7 @@ async function AuditorHistory({ projects }: { projects: ProjectSummary[] }) {
                     </td>
                     <td role="cell" data-label="いつ" className="p1-figure">{formatTimestamp(event.occurredAt)}</td>
                     <td role="cell" data-label="何を">
-                      <span>{ACTION_LABELS[event.action] ?? '記録'}</span>
+                      <span>{AUDIT_ACTION_LABELS[event.action] ?? ACTION_LABELS[event.action] ?? '記録'}</span>
                       <span className="p2-audit-sub p1-muted-inline">
                         <Link href={projectPath(project.code)} translate="no">{project.code}</Link>
                         {targets.orderCode ? <> ・ <span translate="no">{targets.orderCode}</span></> : null}
@@ -356,7 +377,11 @@ async function AuditorHistory({ projects }: { projects: ProjectSummary[] }) {
                       </span>
                     </td>
                     <td role="cell" data-label="根拠">
-                      <EvidenceCellView cell={cell} />
+                      {contactChangeOf(event) ? (
+                        <span data-contact-change="">連絡先: <span translate="no">{contactChangeOf(event)!.before ?? '未登録'}</span> → <span translate="no">{contactChangeOf(event)!.after ?? '消去'}</span></span>
+                      ) : (
+                        <EvidenceCellView cell={cell} decision={decisionOf(event)} />
+                      )}
                       {evidenceDocumentId ? (
                         <span className="p2-audit-sub">
                           <Link href={`${projectPath(project.code, 'evidence')}#doc-${encodeURIComponent(evidenceDocumentId)}`}>証跡の一覧で見る</Link>

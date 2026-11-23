@@ -181,14 +181,18 @@ async function recordApproval(chain: { sevenPoId: string; orderId: string; revis
   });
 }
 
-/** Both organizations approved through text evidence → MAKER_PO_READY. */
+/**
+ * Both organizations approved → MAKER_PO_READY. P5 round 3 (p5-int review2 H-R2-1, conductor decision): both
+ * organizations of projectA have a registered contact, so a plain text evidence (`p4 approval\nidentifier: …`)
+ * no longer counts by itself — the fixture records the legitimate path, a mail from the registered domain.
+ */
 async function approvedOrder(extra?: Record<string, unknown>) {
   const chain = await orderWithRevision(ids.projectA, extra);
   for (const [organization, issuer] of [['customer', 'customer_generated'], ['seven', 'seven']] as const) {
-    const identifier = `MSG-P4-${organization.toUpperCase()}-${nextTag()}`;
+    const identifier = `<msg-p4-${organization}-${nextTag()}@mail.example>`;
     const doc = await uploadOk(chain.sevenPoId, chain.orderId, {
       documentType: 'approval_evidence', issuerEntity: issuer, designKey: 'label-front',
-      contentBase64: b64(`p4 approval\nidentifier: ${identifier}\n`)
+      contentBase64: b64(approvalEml({ from: organization === 'customer' ? CUSTOMER_MAIL : SEVEN_MAIL, messageId: identifier }))
     });
     const approval = await post('staff', `/api/artwork-revisions/${chain.revisionId}/approvals`, {
       organization, decision: 'APPROVE', evidenceSource: 'email', eventTime: '2026-11-15T10:00:00.000Z',
@@ -633,11 +637,12 @@ describe('M18 / N11 / N4: representative queue item facts', () => {
   });
 });
 
-describe('N4: EML From domain against the organization registered domain (warn, never refuse)', () => {
+describe('N4: EML From domain against the organization registered domain (never refuse; N4(b) 2026-11-23: a mismatch waits for the manual check)', () => {
   it('pure check: match, subdomain, mismatch, no From, not an email, no registered domain', () => {
     const eml = (from: string) => Buffer.from(approvalEml({ from }), 'utf8');
     expect(evaluateEvidenceSenderDomain({ bytes: eml('a@customer-p4.example'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('match');
-    expect(evaluateEvidenceSenderDomain({ bytes: eml('a@mail.customer-p4.example'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('match');
+    // P5 round 2 (p5-int review H-1, conductor decision): exact domain only — a subdomain is not the registered domain.
+    expect(evaluateEvidenceSenderDomain({ bytes: eml('a@mail.customer-p4.example'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('mismatch');
     expect(evaluateEvidenceSenderDomain({ bytes: eml('a@customer-p4.example.evil'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('mismatch');
     expect(evaluateEvidenceSenderDomain({ bytes: eml('a@evilcustomer-p4.example'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('mismatch');
     expect(evaluateEvidenceSenderDomain({ bytes: Buffer.from('From: \r\nDate: Mon, 16 Nov 2026 01:00:00 +0000\r\n\r\nx'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('from_missing');
@@ -646,13 +651,14 @@ describe('N4: EML From domain against the organization registered domain (warn, 
     expect(evaluateEvidenceSenderDomain({ bytes: eml('a@customer-p4.example'), registeredContactEmail: null }).status).toBe('no_registered_domain');
   });
 
-  it('a mismatching From is recorded (201) with a warning; the approval counts exactly as without it', async () => {
+  it('a mismatching From is recorded (201) with a warning; since N4(b) (2026-11-23) it waits for the representative\'s manual check instead of counting', async () => {
     const chain = await orderWithRevision();
     const recorded = await recordApproval(chain, 'seven', approvalEml({ from: 'po@not-seven.example' }));
     expect(recorded.status, JSON.stringify(recorded.body)).toBe(201);
     expect(recorded.body).toMatchObject({
-      evidenceIdentifierStatus: 'verified_in_document',
-      countsTowardDualApproval: true,
+      evidenceIdentifierStatus: 'pending_manual_verification',
+      countsTowardDualApproval: false,
+      manualCheckReason: { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', message: '差出人のドメインが登録先と違います' },
       senderDomainCheck: { status: 'mismatch', fromAddress: 'po@not-seven.example', registeredDomain: 'seven-p4.example' },
       warnings: [{ code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', fromDomain: 'not-seven.example', registeredDomain: 'seven-p4.example' }]
     });
@@ -915,7 +921,7 @@ describe('P4 review L-1: From shapes that cannot be compared become warnings (ne
     expect(evidenceSenderDomainWarning(null)).toBeNull();
   });
 
-  it('API: an approval mail with two From headers is recorded (201) with the UNVERIFIABLE warning; counting is unchanged', async () => {
+  it('API: an approval mail with two From headers is recorded (201) with the UNVERIFIABLE warning; since P5 round 2 (H-1) it waits for the manual check', async () => {
     const chain = await orderWithRevision();
     const tag = nextTag();
     const eml = [
@@ -926,10 +932,11 @@ describe('P4 review L-1: From shapes that cannot be compared become warnings (ne
     const recorded = await recordApproval(chain, 'customer', eml);
     expect(recorded.status, JSON.stringify(recorded.body)).toBe(201);
     expect(recorded.body).toMatchObject({
-      evidenceIdentifierStatus: 'verified_in_document',
-      countsTowardDualApproval: true,
+      evidenceIdentifierStatus: 'pending_manual_verification',
+      countsTowardDualApproval: false,
       senderDomainCheck: { status: 'multiple_from' },
-      warnings: [{ code: 'EVIDENCE_SENDER_UNVERIFIABLE' }]
+      warnings: [{ code: 'EVIDENCE_SENDER_UNVERIFIABLE' }],
+      manualCheckReason: { code: 'EVIDENCE_SENDER_UNVERIFIABLE' }
     });
   });
 });

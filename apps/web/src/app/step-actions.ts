@@ -397,12 +397,23 @@ export async function recordApprovalStepAction(_prev: ActionState | null, formDa
   ];
   const name = organization === 'customer' ? '顧客' : 'セブン化学';
   return runChain(formData, steps, {
-    // P4 N4: the server's sender check only warns (it never refuses); the warning is said on the success line.
-    success: (answers) => (isMail
-      ? `${name}の承認を記録しました（メールの識別子は原本で確認されます）。`
-      : `${name}の承認を記録しました。PDF・画像の証跡は代表の確認を待ちます。`)
-      + senderWarningSentence(senderWarningsOf(typeof answers[1] === 'object' && answers[1] !== null ? (answers[1] as { warnings?: unknown }).warnings : null)),
-    refusal: STEP_REFUSALS
+    // P4 N4: the server's sender check never refuses; the warning is said on the success line. N4(b) (2026-11-23):
+    // a mail from another domain is held for the representative's check like a PDF — the line says so.
+    success: (answers) => {
+      const recorded = typeof answers[1] === 'object' && answers[1] !== null ? (answers[1] as { warnings?: unknown; countsTowardDualApproval?: unknown }) : null;
+      const held = recorded?.countsTowardDualApproval === false;
+      return (isMail
+        ? held
+          ? `${name}の承認を記録しました。差出人のドメインが登録先と違うため、代表の確認を待ちます（まだ承認には数えられません）。`
+          : `${name}の承認を記録しました（メールの識別子は原本で確認されます）。`
+        : `${name}の承認を記録しました。PDF・画像の証跡は代表の確認を待ちます。`)
+        + senderWarningSentence(senderWarningsOf(recorded?.warnings ?? null));
+    },
+    refusal: STEP_REFUSALS,
+    // P5 R6: the evidence was registered before the approval was refused — say where it is and that it was not used.
+    partialNote: (_answers, stepIndex) => (stepIndex === 1
+      ? `登録した書類「${file.filename}」は証跡の一覧に残っています（この承認には使われていません）。`
+      : null)
   });
 }
 

@@ -56,7 +56,9 @@ export type Operation =
   // P2 P-2: evidence metadata (file name, hash, issuer, who uploaded/verified, when) — never bytes.
   | 'evidence_metadata:read'
   // P4 N1: list, add and remove the users assigned to a project (representative only).
-  | 'project_assignment:manage';
+  | 'project_assignment:manage'
+  // P5 R5: the registered contact address of a customer / セブン化学 account (representative only).
+  | 'partner_contact:manage';
 
 export interface AuthenticatedActor {
   id: string;
@@ -106,7 +108,10 @@ const P2_ADMIN_ONLY_OPERATIONS: readonly Operation[] = [
   'maker_master:manage',
   // P4 N1: the assignment decides what staff, viewer and auditor may open, so
   // granting or removing it is the representative's decision.
-  'project_assignment:manage'
+  'project_assignment:manage',
+  // P5 R5: the registered domain decides which approval mails count by
+  // themselves (N4(b)), so setting it is the representative's decision.
+  'partner_contact:manage'
 ];
 
 /**

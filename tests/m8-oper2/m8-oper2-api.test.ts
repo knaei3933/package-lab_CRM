@@ -462,7 +462,7 @@ describe('M8-OPER2 FIX 1: the G6 terms are enterable end to end', () => {
 });
 
 describe('M8-OPER2 FIX 2: the evidence manual verification workflow', () => {
-  it('verifies a pending PDF approval: rejected first keeps the gate closed, then confirmation completes it', async () => {
+  it('verifies a pending PDF approval: rejected first keeps the gate closed; P5 round 2: the 却下 is final for that paper, a replacement confirmed completes it', async () => {
     const chain = await reachApprovalPending(`VERIFY-${nextTag()}`);
     const pending = await recordPendingPdfApproval({ chain, organization: 'customer' });
     expect(pending.approvalEvent.evidenceIdentifierStatus).toBe('pending_manual_verification');
@@ -535,8 +535,24 @@ describe('M8-OPER2 FIX 2: the evidence manual verification workflow', () => {
       .where(eq(artworkApprovalEvents.id, pending.approvalEvent.id)).limit(1);
     expect(approvalRow?.evidenceIdentifierStatus).toBe('pending_manual_verification');
 
-    // ...and a confirmation afterwards is the record that completes the gate.
-    const confirmed = await postAs(adminToken, `/api/artwork-approval-events/${pending.approvalEvent.id}/verification`, {
+    // P5 round 2 (p5-int review L-1, conductor decision 2026-11-23): a 却下 is never
+    // turned into a 「確認」 on the same paper — 422, nothing written.
+    const flipped = await postAs(adminToken, `/api/artwork-approval-events/${pending.approvalEvent.id}/verification`, {
+      result: 'confirmed',
+      verifierName: '合成代表者',
+      verifiedAt: '2026-11-14T11:00:00.000Z',
+      reasonNote: '原本PDFの署名ブロックに同一識別子を確認（再確認）'
+    });
+    expect(flipped.status).toBe(422);
+    expect((flipped.body as { code: string }).code).toBe('EVIDENCE_ALREADY_REJECTED');
+    expect(await db.select().from(evidenceManualVerifications)
+      .where(eq(evidenceManualVerifications.approvalEventId, pending.approvalEvent.id))).toHaveLength(1);
+
+    // ...the organization's approval is recorded again on another paper, and its
+    // confirmation is the record that completes the gate.
+    const replacement = await recordPendingPdfApproval({ chain, organization: 'customer' });
+    expect(replacement.countsTowardDualApproval).toBe(false);
+    const confirmed = await postAs(adminToken, `/api/artwork-approval-events/${replacement.approvalEvent.id}/verification`, {
       result: 'confirmed',
       verifierName: '合成代表者',
       verifiedAt: '2026-11-14T11:00:00.000Z',
@@ -564,27 +580,29 @@ describe('M8-OPER2 FIX 2: the evidence manual verification workflow', () => {
     ));
     expect(dualRows).toHaveLength(1);
 
-    // Two append-only rows exist; the latest (confirmed) is the one that counts.
+    // Append-only rows: the 却下 stays on the first paper, the 確認 on the replacement.
     const verificationRows = await db.select().from(evidenceManualVerifications)
       .where(eq(evidenceManualVerifications.approvalEventId, pending.approvalEvent.id));
-    expect(verificationRows).toHaveLength(2);
+    expect(verificationRows.map((row) => row.result)).toEqual(['rejected']);
+    expect((await db.select().from(evidenceManualVerifications)
+      .where(eq(evidenceManualVerifications.approvalEventId, replacement.approvalEvent.id))).map((row) => row.result)).toEqual(['confirmed']);
 
     // The audit trail: the verification is a NEW record of type evidence manual
     // verification naming the original approval event, never an UPDATE of it.
     const verifications = await db.select().from(auditEvents).where(and(
       eq(auditEvents.action, 'EVIDENCE_MANUAL_VERIFICATION_RECORDED'),
-      eq(auditEvents.entityId, pending.approvalEvent.id)
+      eq(auditEvents.entityId, replacement.approvalEvent.id)
     ));
-    expect(verifications).toHaveLength(2);
+    expect(verifications).toHaveLength(1);
     const lastAudit = verifications[verifications.length - 1]?.afterState as Record<string, unknown>;
     expect(lastAudit.result).toBe('confirmed');
     expect(lastAudit.verificationType).toBe('evidence_manual_verification');
-    expect(lastAudit.approvalEventId).toBe(pending.approvalEvent.id);
+    expect(lastAudit.approvalEventId).toBe(replacement.approvalEvent.id);
 
     // A confirmed verification is final: nothing can flip it afterwards. The
     // append-only correction path for a wrong approval is the organization's
     // own REVOKE, not a second verification.
-    const again = await postAs(adminToken, `/api/artwork-approval-events/${pending.approvalEvent.id}/verification`, {
+    const again = await postAs(adminToken, `/api/artwork-approval-events/${replacement.approvalEvent.id}/verification`, {
       result: 'rejected',
       verifierName: '合成代表者',
       verifiedAt: '2026-11-14T12:00:00.000Z',

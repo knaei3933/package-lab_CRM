@@ -116,7 +116,8 @@ describe('sidebar menu by role (A)', () => {
     // P2: the representative's maker master (/makers, R33) and the evidence list (/evidence, P-2).
     // P4 §0: the operators' menu keeps the lists only — the old screens are read-only lists
     // reached from 発注の一覧 and the order screen, every record is made on the order screen.
-    expect(navHrefsForRole('admin')).toEqual(['/home', '/dashboard', '/orders', '/evidence', '/makers', '/guide', '/status']);
+    // P5 R5: 取引先の連絡先 (admin only) joins 設定 after メーカーの宛先.
+    expect(navHrefsForRole('admin')).toEqual(['/home', '/dashboard', '/orders', '/evidence', '/makers', '/partners', '/guide', '/status']);
     expect(navHrefsForRole('staff')).toEqual(['/home', '/dashboard', '/orders', '/evidence', '/guide', '/status']);
     expect(navGroupsForRole('admin').map((group) => group.key)).toEqual(['home', 'lists', 'master', 'help']);
   });

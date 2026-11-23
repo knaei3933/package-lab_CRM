@@ -49,6 +49,8 @@ const READERS: readonly NavRole[] = ['admin', 'staff', 'viewer', 'auditor'];
 
 /** P2 R33: the representative's maker master (メーカーと送信先メール). */
 export const MAKERS_PATH = '/makers';
+/** P5 R5: the registered contact address of the customers / セブン化学 (the sender check reads it). */
+export const PARTNERS_PATH = '/partners';
 /** P2 P-2: the evidence metadata list of a project (GET …/evidence-metadata). */
 export const EVIDENCE_PATH = '/evidence';
 
@@ -95,7 +97,10 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     key: 'master',
     step: null,
     title: '設定',
-    items: [{ href: MAKERS_PATH, label: 'メーカーの宛先', ko: '제조사 수신처', roles: ['admin'] }]
+    items: [
+      { href: MAKERS_PATH, label: 'メーカーの宛先', ko: '제조사 수신처', roles: ['admin'] },
+      { href: PARTNERS_PATH, label: '取引先の連絡先', ko: '거래처 연락처', roles: ['admin'] }
+    ]
   },
   {
     key: 'help',
@@ -202,6 +207,12 @@ export const SCREEN_GUIDES: Readonly<Record<string, ScreenGuide>> = {
     phase: 'メーカー発注',
     doHere: 'メーカーと、メーカー発注書の送信先メールアドレスを登録します。既定の宛先は発注書の作成時に最初から選ばれます（代表者のみ）。',
     next: { href: '/maker-po', label: 'メーカー発注', text: '宛先を登録したら、メーカー発注書の作成で宛先を選べます。' }
+  },
+  [PARTNERS_PATH]: {
+    step: null,
+    phase: '設定',
+    doHere: '顧客とセブン化学の連絡先メールアドレスを登録します。承認メールの差出人のドメインをこれと照合し、違うメールは代表の確認に回ります（代表者のみ）。',
+    next: null
   },
   [EVIDENCE_PATH]: {
     step: null,

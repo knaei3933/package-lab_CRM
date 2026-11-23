@@ -1,9 +1,9 @@
 import { loadMakerPoBoard, loadMakerPoDetail } from './maker-po-data';
 import type { MakerPoEventRow } from './maker-po-data';
-import { buildOrderFlow, liveMakerPo, ORDER_STEPS } from './order-flow';
+import { buildOrderFlow, liveMakerPo, ORDER_STEPS, rejectedSlots } from './order-flow';
 import type { OrderFlowView } from './order-flow';
 import type { ProjectSummary } from './project-data';
-import { knownStatus, labelLookup } from './project-data';
+import { knownStatus, labelLookup, loadApprovalGate } from './project-data';
 
 /**
  * P1 R26 (REDESIGN §5-2): the staff home 「自分の作業」 across the operator's
@@ -50,6 +50,14 @@ export function workText(flow: OrderFlowView, group: WorkGroup, stateLabel: (key
   if (flow.panel.blocked) return flow.panel.blocked.reason;
   if (flow.phase === 'exception' && flow.status) return `${stateLabel(flow.status)}（解除・再開の判断待ち）`;
   const step = flow.current ? ORDER_STEPS[flow.current - 1] : null;
+  // P5 R1: a slot whose evidence the representative rejected is this role's work — said as such, with which one.
+  if (flow.panel.action.kind === 'approvals' && flow.panel.canAct) {
+    const rejected = rejectedSlots(flow.panel.action.designs);
+    if (rejected.length > 0) {
+      const which = rejected.map((slot) => `${slot.organization === 'customer' ? '顧客' : 'セブン化学'}・デザイン ${slot.designKey}`).join('、');
+      return `却下された承認証跡を差し替える（${which}）`;
+    }
+  }
   if (group === 'waiting') return flow.panel.actor === 'admin' ? '代表の確認・承認待ち' : '担当者の記録待ち';
   return step ? `${step.title}を進める` : '状態を確認する';
 }
@@ -77,6 +85,8 @@ export async function loadMyWork(projects: readonly ProjectSummary[], role: stri
       const maker = liveMakerPo(entry.makerPurchaseOrders);
       // The send / acceptance steps depend on the paper's events (who recorded what).
       const events: MakerPoEventRow[] = maker && status && EVENT_STATES.has(status) ? (await loadMakerPoDetail(maker.id)).events : [];
+      // P5 R1: at 校了 the slots decide the row (a rejected evidence is this role's work, not 「待ち」).
+      const gate = status === 'APPROVAL_PENDING' ? await loadApprovalGate(order.id) : null;
       const po = order.sevenPurchaseOrderId
         ? board.workspace.sevenPurchaseOrders.find((candidate) => candidate.id === order.sevenPurchaseOrderId) ?? null
         : null;
@@ -86,7 +96,7 @@ export async function loadMyWork(projects: readonly ProjectSummary[], role: stri
         po,
         documents: board.workspace.documents,
         revisions: board.workspace.revisions,
-        gate: null,
+        gate,
         makerPos: entry.makerPurchaseOrders,
         makerEvents: events,
         settledSendEventIds: new Set(),

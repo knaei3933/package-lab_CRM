@@ -317,6 +317,16 @@ export const ERROR_MESSAGES_JA: Readonly<Record<string, string>> = {
   SEVEN_PO_AMOUNT_ADMIN_ONLY: 'セブン化学発注書の金額は代表者だけが入力できます',
   MAKER_ACCOUNT_INVALID: '製造先の名前（200 文字まで）を入力してください。取引先コードは 64 文字までです',
   MAKER_ACCOUNT_NOT_FOUND: '製造先が見つかりません',
+  // ---- P5 R5: 取引先の連絡先
+  PARTNER_ACCOUNT_NOT_FOUND: '取引先が見つかりません',
+  PARTNER_CONTACT_EMAIL_INVALID: '連絡先はメールアドレスの形式で入力してください（例: approvals@customer.example.jp）',
+  // ---- P5 R1: a rejected approval evidence (representative queue, stuck)
+  APPROVAL_EVIDENCE_REJECTED: '却下された承認証跡があります。別の承認書類で承認を記録し直してください',
+  // ---- P5 round 3 (p5-int review2 H-R2-1): not a code a request is refused with — the reason a held evidence waits
+  EVIDENCE_NOT_A_MAIL: 'メールとして確認できないため、代表の確認が必要です',
+  // ---- P5 round 2 (p5-int review L-1 / L-2)
+  EVIDENCE_ALREADY_REJECTED: 'この承認証跡はすでに却下されています。却下を確認に変えることはできません。別の承認書類で承認を記録し直してください',
+  EVIDENCE_VERIFICATION_TARGET_SUPERSEDED: 'この承認はすでに新しい承認に置き換えられているため、確認を記録できません。最新の承認を確認してください',
   MAKER_RECIPIENT_ADDRESS_INVALID: '宛先の表示名は 100 文字まで、既定・使用中は「はい」か「いいえ」で指定してください',
   MAKER_RECIPIENT_ADDRESS_NOT_FOUND: '宛先が見つかりません',
   MAKER_RECIPIENT_ADDRESS_UNAVAILABLE: '選んだ送信先は使用できません（この案件の製造先の使用中の宛先ではありません）。送信先を選び直してください',

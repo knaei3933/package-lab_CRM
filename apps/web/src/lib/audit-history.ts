@@ -18,7 +18,55 @@ export interface EvidenceRef {
 export type EvidenceCell =
   | { kind: 'none' }
   | { kind: 'unreadable' }
-  | { kind: 'found'; evidence: EvidenceRef };
+  | { kind: 'found'; evidence: EvidenceRef }
+  /** P5 R3: the 代表承認 of a maker paper rests on the paper itself (its content snapshot), not on a file. */
+  | { kind: 'paper'; displayNumber: string | null };
+
+/** P5 R3: the feed's `basis` of one row (server: auditBasisFor) — the cited version, the result, the reason, the paper. */
+export interface AuditBasis {
+  evidenceDocumentVersionId: string | null;
+  result: string | null;
+  makerPurchaseOrder: { displayNumber: string | null } | null;
+}
+
+export function auditBasisOf(event: Pick<AuditEventView, 'basis'>): AuditBasis | null {
+  const raw = event.basis;
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const basis = raw as Record<string, unknown>;
+  const paper = typeof basis.makerPurchaseOrder === 'object' && basis.makerPurchaseOrder !== null ? basis.makerPurchaseOrder as Record<string, unknown> : null;
+  return {
+    evidenceDocumentVersionId: text(basis.evidenceDocumentVersionId),
+    result: text(basis.result),
+    // Round 2 (p5-int review H-2): a written reason is never read here (the 監査履歴 is not the representative's screen).
+    makerPurchaseOrder: paper ? { displayNumber: text(paper.displayNumber) } : null
+  };
+}
+
+const DECISION_RESULT_LABELS: Readonly<Record<string, string>> = {
+  confirmed: '確認',
+  rejected: '却下',
+  verified: '確認済み',
+  needs_review: '要確認'
+};
+
+/**
+ * P5 R3: the decision a manual-check / document-check row recorded — 「確認」/「却下」. Round 2 (H-2): the reason the
+ * representative wrote is not part of it (the server sends it to the representative only). Null when the row is
+ * not such a decision.
+ */
+export function decisionOf(event: Pick<AuditEventView, 'basis'>): { result: string } | null {
+  const basis = auditBasisOf(event);
+  if (!basis?.result) return null;
+  return { result: DECISION_RESULT_LABELS[basis.result] ?? basis.result };
+}
+
+/** P5 R3: the 監査履歴 asks for 納品の確認 too; its words (the shared ACTION_LABELS has none). */
+export const AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
+  FILM_DELIVERY_CONFIRMED: '納品の確認を記録',
+  // Round 2 (p5-int review M-2): a change of this project's customer / セブン化学 contact address.
+  PARTNER_CONTACT_EMAIL_UPDATED: '取引先の連絡先を変更',
+  FILLING_DELIVERY_CONFIRMED: '充填製品納品の確認を記録'
+};
 
 export function evidenceIndex(documents: readonly EvidenceDocumentView[]): Map<string, EvidenceRef> {
   const index = new Map<string, EvidenceRef>();
@@ -42,12 +90,23 @@ function text(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-/** 根拠: no evidence id on the record, the matching evidence, or an honest "could not read". */
+/**
+ * 根拠: no evidence id on the record, the matching evidence, or an honest "could not read". P5 R3: the
+ * representative's decisions cite their evidence through the feed's `basis` (送信確認・最終受入・書類確認 and the
+ * manual checks); a 代表承認 rests on its paper.
+ */
 export function evidenceCell(event: AuditEventView, index: Map<string, EvidenceRef> | null): EvidenceCell {
-  const versionId = text(event.afterState?.evidenceDocumentVersionId);
-  if (!versionId) return { kind: 'none' };
+  const basis = auditBasisOf(event);
+  const versionId = basis?.evidenceDocumentVersionId ?? text(event.afterState?.evidenceDocumentVersionId);
+  if (!versionId) return basis?.makerPurchaseOrder ? { kind: 'paper', displayNumber: basis.makerPurchaseOrder.displayNumber } : { kind: 'none' };
   const found = index?.get(versionId);
   return found ? { kind: 'found', evidence: found } : { kind: 'unreadable' };
+}
+
+/** Round 2 (M-2): 「連絡先: 前 → 後」 of a PARTNER_CONTACT_EMAIL_UPDATED row (null for any other row). */
+export function contactChangeOf(event: AuditEventView): { before: string | null; after: string | null } | null {
+  if (event.action !== 'PARTNER_CONTACT_EMAIL_UPDATED') return null;
+  return { before: text(event.beforeState?.contactEmail), after: text(event.afterState?.contactEmail) };
 }
 
 /** 何を: the order code and the maker paper number the record carries, if any. */

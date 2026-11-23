@@ -133,10 +133,28 @@ export interface ApprovalSlotDesign {
   revisionNo: number;
   customer: ApprovalSlotState;
   seven: ApprovalSlotState;
+  /** P5 R1: who rejected a 'rejected' slot's evidence, when, and why (absent for every other state). */
+  rejections?: Partial<Record<'customer' | 'seven', SlotRejection>> | undefined;
 }
 
-/** One organization's 押印 slot: approved (valid), waiting for the representative's check, or open. */
-export type ApprovalSlotState = 'approved' | 'pending_check' | 'open';
+/**
+ * Round 2 (p5-int review H-2): what staff / viewer / auditor read in place of the 却下 reason. The reason is the
+ * representative's free text and is never sent to them (the API leaves it out); the screens never draw one for them.
+ */
+export const REJECTION_REASON_WITHHELD = '却下されました。理由は代表にご確認ください';
+
+/** P5 R1: the representative's 却下 of one slot's evidence, as the gate answers it. */
+export interface SlotRejection {
+  verifierName: string | null;
+  verifiedAt: string | null;
+  reasonNote: string | null;
+}
+
+/**
+ * One organization's 押印 slot: approved (valid), waiting for the representative's check, rejected by the
+ * representative (P5 R1: the approval is recorded again on other evidence — the slot takes a new one), or open.
+ */
+export type ApprovalSlotState = 'approved' | 'pending_check' | 'rejected' | 'open';
 
 export interface StepPanel {
   action: StepAction;
@@ -198,21 +216,61 @@ export function designsOf(revisions: readonly ArtworkRevisionView[], orderId: st
   return keys;
 }
 
-function slotState(state: { valid: boolean; pendingEvidenceIdentifier: boolean } | undefined): ApprovalSlotState {
+type SlotSource = {
+  valid: boolean;
+  pendingEvidenceIdentifier: boolean;
+  rejected?: boolean | undefined;
+  manualVerification?: { result: string; verifierName?: string | null; verifiedAt?: string | null; reasonNote?: string | null | undefined } | null | undefined;
+};
+
+/** P5 R1: the held approval was REJECTED (the core flag; an older API: the latest manual check's result). */
+function isRejected(state: SlotSource): boolean {
+  return state.rejected === true || (state.pendingEvidenceIdentifier && state.manualVerification?.result === 'rejected');
+}
+
+function slotState(state: SlotSource | undefined): ApprovalSlotState {
   if (!state) return 'open';
   if (state.valid) return 'approved';
+  if (isRejected(state)) return 'rejected';
   return state.pendingEvidenceIdentifier ? 'pending_check' : 'open';
+}
+
+function rejectionOf(state: SlotSource | undefined): SlotRejection | null {
+  if (!state || slotState(state) !== 'rejected') return null;
+  const check = state.manualVerification ?? null;
+  const textOf = (value: string | null | undefined) => (typeof value === 'string' && value.length > 0 && value !== '—' ? value : null);
+  return { verifierName: textOf(check?.verifierName), verifiedAt: textOf(check?.verifiedAt), reasonNote: textOf(check?.reasonNote) };
 }
 
 export function approvalSlots(gate: ApprovalGateView | null): ApprovalSlotDesign[] {
   if (!gate) return [];
-  return gate.designs.map((design) => ({
-    designKey: design.designKey,
-    revisionId: design.currentRevisionId,
-    revisionNo: design.currentRevisionNo,
-    customer: slotState(design.customer),
-    seven: slotState(design.seven)
-  }));
+  return gate.designs.map((design) => {
+    const rejections: Partial<Record<'customer' | 'seven', SlotRejection>> = {};
+    for (const organization of ['customer', 'seven'] as const) {
+      const rejection = rejectionOf(design[organization]);
+      if (rejection) rejections[organization] = rejection;
+    }
+    return {
+      designKey: design.designKey,
+      revisionId: design.currentRevisionId,
+      revisionNo: design.currentRevisionNo,
+      customer: slotState(design.customer),
+      seven: slotState(design.seven),
+      ...(Object.keys(rejections).length > 0 ? { rejections } : {})
+    };
+  });
+}
+
+/** P5 R1: the slots whose evidence the representative rejected (staff 「自分の作業」 and the order screen say so). */
+export function rejectedSlots(designs: readonly ApprovalSlotDesign[]): Array<{ designKey: string; organization: 'customer' | 'seven' }> {
+  return designs.flatMap((design) => (['customer', 'seven'] as const)
+    .filter((organization) => design[organization] === 'rejected')
+    .map((organization) => ({ designKey: design.designKey, organization })));
+}
+
+/** P5 R1: a manual check still to be made — a rejected one is decided (its form is not offered again). */
+export function isOpenManualCheck(entry: { manualVerification: { result: string } | null }): boolean {
+  return entry.manualVerification?.result !== 'rejected';
 }
 
 const UNDETERMINED = 'undetermined';
@@ -322,8 +380,10 @@ function activePanel(input: OrderFlowInput, status: string, step: number, maker:
       }, both, role);
     case 'APPROVAL_PENDING': {
       const designs = approvalSlots(input.gate);
-      const pending = input.gate?.pendingManualVerifications.length ?? 0;
-      const openSlots = designs.some((design) => design.customer === 'open' || design.seven === 'open');
+      // P5 R1: a rejected check is decided — it never makes the panel a check list; its slot takes a new approval.
+      const pending = input.gate?.pendingManualVerifications.filter(isOpenManualCheck).length ?? 0;
+      const openSlots = designs.some((design) => design.customer === 'open' || design.seven === 'open'
+        || design.customer === 'rejected' || design.seven === 'rejected');
       if (!openSlots && pending > 0) return panel({ kind: 'evidence_check', count: pending }, 'admin', role);
       return panel({ kind: 'approvals', designs }, both, role);
     }

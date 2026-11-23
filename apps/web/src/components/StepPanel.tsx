@@ -22,11 +22,11 @@ import { EVIDENCE_NOTE_FIELD } from '../lib/transition-evidence';
 import { makerPoNumberOf, PAYMENT_TERMS_LABELS } from '../lib/maker-po-data';
 import type { RecipientChoices } from '../lib/maker-master';
 import type { MakerPoEventRow, MakerPoViewRow } from '../lib/maker-po-data';
-import { waitingText } from '../lib/order-flow';
-import type { ApprovalSlotDesign, ApprovalSlotState, OrderFlowView } from '../lib/order-flow';
+import { REJECTION_REASON_WITHHELD, waitingText } from '../lib/order-flow';
+import type { ApprovalSlotDesign, ApprovalSlotState, OrderFlowView, SlotRejection } from '../lib/order-flow';
 import type { ApprovalGateView, DocumentView, FilmSupplyOrderView, SevenPurchaseOrderView } from '../lib/project-data';
 import { projectPath } from '../lib/project-route';
-import { formatTimestampSeconds, sendApprovalGapText, unitLabel } from '../lib/vocabulary';
+import { formatTimestamp, formatTimestampSeconds, sendApprovalGapText, unitLabel } from '../lib/vocabulary';
 import { formatQuantity } from '../lib/number-format';
 import { SevenPoChecklistForm, SevenPoRegisterForm } from './SevenPoForms';
 import { PendingVerificationSection } from './EvidenceVerificationSection';
@@ -181,7 +181,7 @@ export function StepPanelView(props: StepPanelProps) {
       // P4 §0: the representative's check is recorded here (it used to open the old 承認 screen).
       return (
         <>
-          <p><Bilingual ja={`PDF・画像の承認証跡が ${action.count} 件、代表の確認を待っています。発行元と識別子を確かめて記録します。`} ko={`PDF·이미지 승인 증빙 ${action.count}건이 대표 확인을 기다립니다. 발행처와 식별자를 확인해 기록합니다.`} /></p>
+          <p><Bilingual ja={`承認証跡が ${action.count} 件、代表の確認を待っています（PDF・画像、または差出人のドメインが登録先と違うメール）。発行元と識別子を確かめて記録します。`} ko={`승인 증빙 ${action.count}건이 대표 확인을 기다립니다(PDF·이미지, 또는 발신 도메인이 등록처와 다른 메일). 발행처와 식별자를 확인해 기록합니다.`} /></p>
           <PendingVerificationSection
             pending={props.gate?.pendingManualVerifications ?? []}
             role={props.role}
@@ -355,7 +355,7 @@ function waitDetail(action: OrderFlowView['panel']['action']): string {
     case 'ceo_approve':
       return '（メーカー発注書の代表承認）';
     case 'evidence_check':
-      return '（PDF・画像の承認証跡の確認）';
+      return '（承認証跡の確認: PDF・画像、差出人のドメインが違うメール）';
     case 'send_verify':
       return '（送信メールの確認）';
     case 'accept':
@@ -437,8 +437,39 @@ function ProofStep({ order, projectCode, po, designKeys }: StepPanelProps & { de
 const SLOT_TEXT: Record<ApprovalSlotState, string> = {
   approved: '承認',
   pending_check: '代表の確認待ち',
+  rejected: '却下（差し替えが必要）',
   open: '未承認'
 };
+
+/**
+ * P5 R1 (却下 dead end): the representative rejected this slot's evidence. The slot says so — why, who and
+ * when — and takes the organization's approval again on another paper (the form below it). The new
+ * APPROVE becomes the latest event, and the old 却下 no longer decides the slot.
+ */
+function SlotRejectedNotice({ name, rejection, role }: { name: string; rejection: SlotRejection | undefined; role: string | null | undefined }) {
+  const who = rejection?.verifierName ?? '代表';
+  const when = rejection?.verifiedAt ? formatTimestamp(rejection.verifiedAt) : '日時不明';
+  // Round 2 (p5-int review H-2): the written reason is the representative's alone — every other role reads the
+  // fixed sentence, even if an older API sent the text (a free text cannot be proven amount-free).
+  if (role !== 'admin') {
+    return (
+      <p className="field-warning p5-slot-rejected" role="note" data-slot-state="rejected">
+        <span aria-hidden="true">⚠ </span>
+        {`${name}の承認証跡は${REJECTION_REASON_WITHHELD}（${who}・${when}）。別の承認書類を登録してください。`}
+      </p>
+    );
+  }
+  const reason = rejection?.reasonNote ?? '記録なし';
+  return (
+    <p className="field-warning p5-slot-rejected" role="note" data-slot-state="rejected">
+      <span aria-hidden="true">⚠ </span>
+      <Bilingual
+        ja={`${name}の承認証跡は却下されました（理由: ${reason}／${who}・${when}）。別の承認書類を登録してください。`}
+        ko={`${name === '顧客' ? '고객' : '세븐화학'} 승인 증빙이 각하되었습니다(사유: ${reason}／${who}・${when}). 다른 승인 서류를 등록하세요.`}
+      />
+    </p>
+  );
+}
 
 /**
  * p4/web3 review L-1 / p4/web4: the representative's check of this slot's evidence is offered once every approval of the
@@ -448,8 +479,11 @@ const SLOT_TEXT: Record<ApprovalSlotState, string> = {
  */
 function pendingCheckText(design: ApprovalSlotDesign, organization: 'customer' | 'seven', designs: readonly ApprovalSlotDesign[]): string {
   const other = organization === 'customer' ? 'seven' : 'customer';
-  if (design[other] === 'open') return `証跡の確認が必要です。${other === 'customer' ? '顧客' : 'セブン化学'}の承認が記録されると、この画面で確認できます`;
-  if (designs.some((one) => one !== design && (one.customer === 'open' || one.seven === 'open'))) {
+  const otherName = other === 'customer' ? '顧客' : 'セブン化学';
+  if (design[other] === 'open') return `証跡の確認が必要です。${otherName}の承認が記録されると、この画面で確認できます`;
+  // P5 R1: a rejected slot is recorded again first (on another paper); the check list comes after it.
+  if (design[other] === 'rejected') return `証跡の確認が必要です。${otherName}の承認が別の書類で記録し直されると、この画面で確認できます`;
+  if (designs.some((one) => one !== design && (one.customer === 'open' || one.seven === 'open' || one.customer === 'rejected' || one.seven === 'rejected'))) {
     return '証跡の確認が必要です。ほかのデザインの承認が記録されると、この画面で確認できます';
   }
   return '証跡の確認が必要です。確認の欄が出ないときは、画面を再読み込みしてください';
@@ -476,7 +510,13 @@ function ApprovalSlots({ order, projectCode, po, designs, role }: StepPanelProps
                   ) : state === 'pending_check' ? (
                     <Waiting text={role === 'admin' ? pendingCheckText(design, organization, designs) : '代表の確認を待っています'} />
                   ) : (
-                    <ActionForm action={recordApprovalStepAction} submitLabel={`${name}の承認を記録する`} submitContext={`${order.code}・デザイン ${design.designKey}・${name}`}>
+                    <>
+                    {state === 'rejected' ? <SlotRejectedNotice name={name} rejection={design.rejections?.[organization]} role={role} /> : null}
+                    <ActionForm
+                      action={recordApprovalStepAction}
+                      submitLabel={state === 'rejected' ? `別の書類で${name}の承認を記録し直す` : `${name}の承認を記録する`}
+                      submitContext={`${order.code}・デザイン ${design.designKey}・${name}`}
+                    >
                       <OrderFields order={order} projectCode={projectCode} />
                       <input type="hidden" readOnly name="sevenPurchaseOrderId" value={po.id} />
                       <input type="hidden" readOnly name="revisionId" value={design.revisionId} />
@@ -488,6 +528,7 @@ function ApprovalSlots({ order, projectCode, po, designs, role }: StepPanelProps
                       />
                       <TextField name="evidenceIdentifier" label="PDF・画像のとき: 承認証跡の識別子（8文字以上）" width={320} autoComplete="off" spellCheck={false} />
                     </ActionForm>
+                    </>
                   )}
                   <p className="p1-seal-state">{SLOT_TEXT[state]}</p>
                 </div>

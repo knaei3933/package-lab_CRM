@@ -570,6 +570,25 @@ describe('(4) approval card: each evidence carries the server\'s sender verdict 
     return uploaded.body as { document: { id: string }; version: { id: string } };
   }
 
+  /**
+   * 2026-11-23 decision N4(b) (docs/reports/CEO_DECISIONS_20261123.md): a mail from another domain is recorded
+   * but held for the representative's manual check — it no longer counts by itself. The card tests below are
+   * about what the card SAYS of such a mail, so the fixture takes it through that check (「確認」) the way the
+   * representative does; the hold itself is pinned in tests/p5-int.test.ts.
+   */
+  async function confirmIfHeld(recorded: { status: number; body: any }) {
+    if (recorded.status !== 201 || recorded.body?.countsTowardDualApproval !== false || !recorded.body?.manualCheckReason) return;
+    // P5 round 2 (H-1): an unreadable sender (two From lines …) waits as well, with its own sentence.
+    expect([
+      { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', message: '差出人のドメインが登録先と違います' },
+      { code: 'EVIDENCE_SENDER_UNVERIFIABLE', message: '差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）' }
+    ]).toContainEqual(recorded.body.manualCheckReason);
+    const confirmed = await post('admin', `/api/artwork-approval-events/${recorded.body.approvalEvent.id}/verification`, {
+      result: 'confirmed', reasonNote: '差出人のドメイン違いを取引先に電話で確認した（合成）'
+    });
+    expect(confirmed.status, confirmed.text).toBe(201);
+  }
+
   /** An order (prepaid, with 希望納期) at MAKER_PO_READY through two recorded approvals, and its paper with an amount. */
   async function cardFor(project: string, evidence: { customer: string; seven: string }) {
     const order = await createOrder('prepaid', project, { extra: { requestedDeliveryDate: '2027-04-30' } });
@@ -591,6 +610,7 @@ describe('(4) approval card: each evidence carries the server\'s sender verdict 
       });
       expect(approval.status, approval.text).toBe(201);
       recorded[organization] = approval.body;
+      await confirmIfHeld(approval);
     }
     const paper = await post('admin', `/api/film-supply-orders/${order.orderId}/maker-purchase-orders`, {
       recipientAddress: 'maker-po-s2@example.com', amounts: { currency: 'JPY', totalAmount: '480000' }
@@ -610,8 +630,12 @@ describe('(4) approval card: each evidence carries the server\'s sender verdict 
       customer: approvalEml(['boss@evil-s2.example']),
       seven: approvalEml(['po@seven-s2.example'])
     });
-    // The web2b review M-1 shape: the mismatch counted (verified in the document) and the order moved on.
-    expect(recorded.customer).toMatchObject({ countsTowardDualApproval: true, senderDomainCheck: { status: 'mismatch' } });
+    // The web2b review M-1 shape, as amended by N4(b) (2026-11-23): the mismatch no longer counts by itself — it
+    // waited for the representative's check (confirmed in the fixture), and the card still warns about it.
+    expect(recorded.customer).toMatchObject({
+      countsTowardDualApproval: false, evidenceIdentifierStatus: 'pending_manual_verification', senderDomainCheck: { status: 'mismatch' },
+      manualCheckReason: { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH' }
+    });
     expect(customer).toMatchObject({
       issuerMatchesOrganization: true,
       filename: expect.stringMatching(/^s2-customer-/),
@@ -724,10 +748,13 @@ describe('(4) approval card: each evidence carries the server\'s sender verdict 
     /** staff records one more 顧客 decision with a new evidence file (the review2 E2 step). */
     async function recordCustomer(chain: Chain, decision: 'APPROVE' | 'REVOKE', content: string) {
       const doc = await uploadEvidence(chain.order, chain.project, 'customer', content);
-      return await post('staff', `/api/artwork-revisions/${chain.revisionId}/approvals`, {
+      const recorded = await post('staff', `/api/artwork-revisions/${chain.revisionId}/approvals`, {
         organization: 'customer', decision, evidenceSource: 'email', eventTime: '2026-11-16T10:00:00.000Z',
         evidenceIdentifier: `S2-ID-${tag()}`, evidenceDocumentVersionId: doc.version.id
       });
+      // N4(b): a foreign-domain re-approval waits for the representative's 「確認」 before it counts (and moves the set).
+      await confirmIfHeld(recorded);
+      return recorded;
     }
     const foreign = () => approvalEml(['boss@evil-s2.example']);
     const fresh = () => cardFor(ids.projectA, { customer: approvalEml(['boss@customer-s2.example']), seven: approvalEml(['po@seven-s2.example']) });
@@ -744,7 +771,7 @@ describe('(4) approval card: each evidence carries the server\'s sender verdict 
       expect((await recordCustomer(chain, 'REVOKE', approvalEml(['boss@customer-s2.example']))).status).toBe(201);
       const again = await recordCustomer(chain, 'APPROVE', foreign());
       expect(again.status, again.text).toBe(201);
-      expect(again.body).toMatchObject({ countsTowardDualApproval: true, senderDomainCheck: { status: 'mismatch' } });
+      expect(again.body).toMatchObject({ countsTowardDualApproval: false, senderDomainCheck: { status: 'mismatch' }, manualCheckReason: { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH' } });
       const reread = await cardOf(chain.paperId);
       expect(reread.makerPurchaseOrder.approvalSnapshotSha256).not.toBe(shownHash);
       expect(reread.approvals.designs[0].organizations.customer.evidence.declarationLine.code).toBe('sender_domain_mismatch');

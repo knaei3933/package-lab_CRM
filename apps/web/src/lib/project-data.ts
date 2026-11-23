@@ -46,6 +46,8 @@ export interface AuditEventView {
   occurredAt: string;
   requestMetadata: Record<string, unknown> | null;
   actor: { id: string; displayName: string; role: string } | null;
+  /** P5 R3: what the decision rests on, as the audit feed answers it (absent for the viewer and on an older API). */
+  basis?: unknown;
 }
 
 export interface LabelEntry {
@@ -374,7 +376,15 @@ export interface OrganizationApprovalStateView {
     verifierName: string;
     verifiedAt: string;
     recordedAt: string;
+    /** P5 R1: the reason the representative wrote (masked for staff / auditor, null for the viewer or an older API). */
+    reasonNote?: string | null | undefined;
   } | null;
+  /**
+   * P5 R1: the representative REJECTED the held approval — it waits for nobody's check any more; the
+   * organization's approval is recorded again on other evidence. An older API without the flag: read
+   * from the manual verification's result.
+   */
+  rejected?: boolean | undefined;
 }
 
 /** M8-OPER2 FIX 2: one pending evidence verification the representative can act on. */
@@ -420,6 +430,27 @@ export interface PendingManualVerificationView {
   senderVerdict?: EvidenceLine | null | undefined;
   declarationLine?: EvidenceLine | null | undefined;
   warnings?: SenderWarning[] | undefined;
+  /** N4(b) (2026-11-23): why a mail waits here like a PDF (「差出人のドメインが登録先と違います」), or null. */
+  manualCheckReason?: { code: string; message: string } | null | undefined;
+  /** Round 2 (p5-int review M-1): the same paper (version or bytes) the representative already rejected, sent again. */
+  previouslyRejected?: PreviousRejectionView | null | undefined;
+}
+
+/** Round 2 (M-1): an earlier 却下 of the same paper (the representative's answer only). */
+export interface PreviousRejectionView {
+  matchedOn: 'same_version' | 'same_content';
+  verifierName: string | null;
+  rejectedAt: string | null;
+  reasonNote: string | null;
+}
+
+/** Round 2 (M-1): the server's previouslyRejected, or null. Plain text, bounded. */
+export function previousRejectionOf(value: unknown): PreviousRejectionView | null {
+  if (!isRecord(value)) return null;
+  const matchedOn = value.matchedOn === 'same_version' || value.matchedOn === 'same_content' ? value.matchedOn : null;
+  if (!matchedOn) return null;
+  const str = (key: string) => (typeof value[key] === 'string' && (value[key] as string).length > 0 ? (value[key] as string).slice(0, 500) : null);
+  return { matchedOn, verifierName: str('verifierName'), rejectedAt: str('rejectedAt'), reasonNote: str('reasonNote') };
 }
 
 export interface DesignApprovalGateView {
@@ -1140,7 +1171,9 @@ export async function loadApprovalGate(orderId: string): Promise<ApprovalGateVie
             senderStatus: senderStatusOf(entry.senderDomainCheck),
             senderVerdict: evidenceLineFrom(entry.senderVerdict),
             declarationLine: evidenceLineFrom(entry.declarationLine),
-            warnings: senderWarningsOf(entry.warnings)
+            warnings: senderWarningsOf(entry.warnings),
+            manualCheckReason: manualCheckReasonOf(entry.manualCheckReason),
+            previouslyRejected: previousRejectionOf(entry.previouslyRejected)
           }))
       : []
   };
@@ -1154,8 +1187,17 @@ function toManualVerification(value: unknown): OrganizationApprovalStateView['ma
     result,
     verifierName: requiredText(record, 'verifierName', '—'),
     verifiedAt: requiredText(record, 'verifiedAt', '—'),
-    recordedAt: requiredText(record, 'recordedAt', '—')
+    recordedAt: requiredText(record, 'recordedAt', '—'),
+    reasonNote: text(record, 'reasonNote')
   };
+}
+
+/** N4(b): the server's reason a mail waits for the manual check ({ code, message }), else null. Plain text only. */
+function manualCheckReasonOf(value: unknown): { code: string; message: string } | null {
+  if (!isRecord(value)) return null;
+  const code = text(value, 'code');
+  const message = text(value, 'message');
+  return code && message ? { code, message: message.slice(0, 200) } : null;
 }
 
 function toOrganizationState(value: unknown, organization: string): OrganizationApprovalStateView {
@@ -1167,7 +1209,8 @@ function toOrganizationState(value: unknown, organization: string): Organization
     revoked: bool(record, 'revoked'),
     invalidatedByNewerRevision: bool(record, 'invalidatedByNewerRevision'),
     pendingEvidenceIdentifier: bool(record, 'pendingEvidenceIdentifier'),
-    manualVerification: toManualVerification(record.manualVerification)
+    manualVerification: toManualVerification(record.manualVerification),
+    rejected: bool(record, 'rejected')
   };
 }
 

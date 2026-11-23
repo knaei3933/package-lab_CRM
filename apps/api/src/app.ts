@@ -3,10 +3,11 @@ import { deleteCookie, setCookie } from 'hono/cookie';
 import { randomBytes } from 'node:crypto';
 import { lstat, readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 import { expectedProjectMiddleware } from './project-context.js';
 import { orderFactsViewForRole, parseCalendarDate, registerP2Routes } from './p2-routes.js';
 import { registerP4Routes } from './p4-routes.js';
+import { registerP5Routes } from './p5-routes.js';
 import {
   buildMakerPoSnapshot,
   canPerform,
@@ -36,6 +37,8 @@ import {
   CEO_APPROVAL_FACT_MESSAGES,
   evaluateEvidenceSenderDomain,
   evidenceSenderDomainWarning,
+  senderDomainRequiresManualVerification,
+  senderManualCheckReason,
   parseStoredEvidenceSenderDomainCheck,
   approvalEvidenceSenderFacts,
   type EvidenceSenderDomainCheck,
@@ -3401,7 +3404,10 @@ export function createApp({
     }
     // An unknown project is 404 before the assignment check: staff of this
     // company learn nothing about a project that does not exist.
-    const [project] = await db.select({ id: projects.id, deletedAt: projects.deletedAt }).from(projects)
+    const [project] = await db.select({
+      id: projects.id, deletedAt: projects.deletedAt,
+      endCustomerAccountId: projects.endCustomerAccountId, sevenAccountId: projects.sevenAccountId
+    }).from(projects)
       .where(eq(projects.id, projectId)).limit(1);
     if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません', code: 'PROJECT_NOT_FOUND' }, 404);
     const decision = canPerform(toActor(user), 'audit_history:read', 'F1', projectId);
@@ -3423,7 +3429,8 @@ export function createApp({
     // (DOCUMENT_VERSION_VIEWED, written on every evidence Message-ID read) piled up
     // in the oldest-first 500-row window and pushed newer uploads out of the list.
     const actionNames = typeof query.action === 'string' && query.action.length > 0
-      ? query.action.split(',').map((name) => name.trim()).filter((name) => /^[A-Z][A-Z0-9_]{2,79}$/.test(name)).slice(0, 10)
+      // P5 R3: up to 20 codes (監査履歴 asks for 11: the decisions plus 納品の確認).
+      ? query.action.split(',').map((name) => name.trim()).filter((name) => /^[A-Z][A-Z0-9_]{2,79}$/.test(name)).slice(0, 20)
       : [];
     const actionFilter = actionNames.length > 0 ? inArray(auditEvents.action, actionNames) : undefined;
     // P0 review M3: the reverse narrowing (reads left out) and newest-first, for the
@@ -3448,7 +3455,22 @@ export function createApp({
       actorRole: users.role
     }).from(auditEvents)
       .leftJoin(users, eq(users.id, auditEvents.actorUserId))
-      .where(and(eq(auditEvents.projectId, projectId), entityTypeFilter, entityIdFilter, actionFilter, excludeFilter))
+      .where(and(
+        // P5 round 2 (p5-int review M-2): a change of this project's customer /
+        // セブン化学 contact address (stored without a project — the account is
+        // company-wide) is part of this project's history for the representative
+        // and the auditor: it decides which approval mails count by themselves.
+        user.role === 'admin' || user.role === 'auditor'
+          ? or(
+              eq(auditEvents.projectId, projectId),
+              and(
+                isNull(auditEvents.projectId),
+                eq(auditEvents.action, 'PARTNER_CONTACT_EMAIL_UPDATED'),
+                inArray(auditEvents.entityId, [project.endCustomerAccountId, project.sevenAccountId].filter((id): id is string => typeof id === 'string'))
+              )
+            )
+          : eq(auditEvents.projectId, projectId),
+        entityTypeFilter, entityIdFilter, actionFilter, excludeFilter))
       .orderBy(...(newestFirst ? [desc(auditEvents.occurredAt), desc(auditEvents.id)] : [auditEvents.occurredAt, auditEvents.id]))
       .limit(limit);
 
@@ -3469,12 +3491,102 @@ export function createApp({
         : null
     }));
 
+    // P5 R3: 根拠 — what each decision rests on, read from the records it
+    // names (the role-shaped rows above are left exactly as they are).
+    const views = buildAuditViewForRole(user.role, selectedRows);
+    const basis = user.role === 'viewer' ? new Map<string, AuditBasis>() : await auditBasisFor(selectedRows, user.role);
     return context.json({
       projectId,
       count: selectedRows.length,
-      events: buildAuditViewForRole(user.role, selectedRows)
+      events: views.map((view) => (basis.has(view.id) ? { ...view, basis: basis.get(view.id)! } : view))
     });
   });
+
+  /**
+   * P5 R3 (audit44b REMAINING §1): the evidence a decision cites, for the
+   * 監査履歴's 根拠 column. The representative's decisions used to read
+   * 「記録のみ（証跡なし）」 although they rest on a stored file:
+   * - 承認証跡の手動確認 / 送信の手動確認: the cited version, the result
+   *   (確認 / 却下) and the written reason;
+   * - 最終受入: the acceptance evidence version (nested in the stored event);
+   * - 書類の確認: the version of the document that was current when it was checked;
+   * - 代表承認: the maker paper it approved (its MPO number; the snapshot and
+   *   its digest stay out — they hold amounts);
+   * - 承認（校了）・納品の確認: the version they already carry.
+   * Never an amount: round 2 (p5-int review H-2) — the written reason is the
+   * representative's alone. Every other role gets no `reasonNote` key at all
+   * (the old masking is gone: a free text cannot be proven amount-free), and the
+   * viewer gets no basis at all.
+   */
+  type AuditBasis = {
+    evidenceDocumentVersionId: string | null;
+    result?: string | null;
+    reasonNote?: string | null;
+    makerPurchaseOrder?: { id: string; displayNumber: string | null } | null;
+  };
+  async function auditBasisFor(rows: readonly AuditHistoryRow[], role: string): Promise<Map<string, AuditBasis>> {
+    const out = new Map<string, AuditBasis>();
+    const after = (row: AuditHistoryRow) => (row.afterState && typeof row.afterState === 'object' ? row.afterState as Record<string, unknown> : {});
+    const text = (value: unknown) => (typeof value === 'string' && value.length > 0 ? value : null);
+    const withReason = (value: unknown): { reasonNote?: string | null } => (role === 'admin' ? { reasonNote: text(value) } : {});
+    const makerEventIds = rows
+      .filter((row) => row.action === 'MAKER_PO_SEND_MANUAL_VERIFICATION_RECORDED' || row.action === 'MAKER_PO_CEO_APPROVED')
+      .map((row) => row.entityId).filter((id) => isUuid(id));
+    const makerEvents = makerEventIds.length === 0 ? [] : await db.select({
+      id: makerPoEvents.id,
+      makerPurchaseOrderId: makerPoEvents.makerPurchaseOrderId,
+      evidenceDocumentVersionId: makerPoEvents.evidenceDocumentVersionId,
+      displayNumber: makerPoDisplayNumbers.displayNumber
+    }).from(makerPoEvents)
+      .leftJoin(makerPoDisplayNumbers, eq(makerPoDisplayNumbers.makerPurchaseOrderId, makerPoEvents.makerPurchaseOrderId))
+      .where(inArray(makerPoEvents.id, makerEventIds));
+    const makerEvent = new Map(makerEvents.map((event) => [event.id, event]));
+    const documentIds = rows.filter((row) => row.action === 'DOCUMENT_VERIFICATION_RECORDED').map((row) => row.entityId).filter((id) => isUuid(id));
+    const versions = documentIds.length === 0 ? [] : await db.select({
+      id: documentVersions.id, documentId: documentVersions.documentId, createdAt: documentVersions.createdAt
+    }).from(documentVersions).where(inArray(documentVersions.documentId, documentIds))
+      .orderBy(asc(documentVersions.createdAt), asc(documentVersions.id));
+    for (const row of rows) {
+      const state = after(row);
+      switch (row.action) {
+        case 'ARTWORK_APPROVAL_RECORDED':
+        case 'FILM_DELIVERY_CONFIRMED':
+        case 'FILLING_DELIVERY_CONFIRMED':
+          out.set(row.id, { evidenceDocumentVersionId: text(state.evidenceDocumentVersionId) });
+          break;
+        case 'EVIDENCE_MANUAL_VERIFICATION_RECORDED':
+          out.set(row.id, { evidenceDocumentVersionId: text(state.evidenceDocumentVersionId), result: text(state.result), ...withReason(state.reasonNote) });
+          break;
+        case 'MAKER_PO_SEND_MANUAL_VERIFICATION_RECORDED': {
+          const event = makerEvent.get(row.entityId);
+          out.set(row.id, { evidenceDocumentVersionId: event?.evidenceDocumentVersionId ?? null, result: text(state.result), ...withReason(state.reasonNote) });
+          break;
+        }
+        case 'MAKER_PO_ACCEPT_EVIDENCE_REGISTERED': {
+          const event = state.event && typeof state.event === 'object' ? state.event as Record<string, unknown> : {};
+          out.set(row.id, { evidenceDocumentVersionId: text(event.evidenceDocumentVersionId) });
+          break;
+        }
+        case 'DOCUMENT_VERIFICATION_RECORDED': {
+          const at = new Date(row.occurredAt).getTime();
+          const current = versions.filter((version) => version.documentId === row.entityId && new Date(version.createdAt).getTime() <= at).at(-1);
+          out.set(row.id, { evidenceDocumentVersionId: current?.id ?? null, result: text(state.verificationStatus) });
+          break;
+        }
+        case 'MAKER_PO_CEO_APPROVED': {
+          const event = makerEvent.get(row.entityId);
+          out.set(row.id, {
+            evidenceDocumentVersionId: null,
+            makerPurchaseOrder: event ? { id: event.makerPurchaseOrderId, displayNumber: event.displayNumber ?? null } : null
+          });
+          break;
+        }
+        default:
+          break;
+      }
+    }
+    return out;
+  }
 
   // ------------------------------------------------ M1: filling orders (design
   // section 5). Units are filling vocabulary only.
@@ -4697,7 +4809,9 @@ export function createApp({
         result: evidenceManualVerifications.result,
         verifierName: evidenceManualVerifications.verifierName,
         verifiedAt: evidenceManualVerifications.verifiedAt,
-        recordedAt: evidenceManualVerifications.recordedAt
+        recordedAt: evidenceManualVerifications.recordedAt,
+        // P5 R1: the basis the representative wrote — the staff slot of a 却下 says why.
+        reasonNote: evidenceManualVerifications.reasonNote
       }).from(evidenceManualVerifications)
         .where(inArray(evidenceManualVerifications.artworkRevisionId, revisionIds)) as EvidenceVerificationView[];
     // result is a text column held to the EvidenceVerificationResult vocabulary by
@@ -5690,6 +5804,7 @@ export function createApp({
       designKey: documents.designKey,
       storagePath: documentVersions.storagePath,
       declaredMimeType: documentVersions.declaredMimeType,
+      originalFilename: documentVersions.originalFilename,
       documentId: documents.id,
       issuerEntity: documents.issuerEntity,
       sha256: documentVersions.sha256
@@ -5817,8 +5932,9 @@ export function createApp({
     if (!identifierCheck.ok) {
       return context.json({ error: identifierCheck.message, code: identifierCheck.code }, 422);
     }
-    // P4 N4 (display and warn only): the mail's own From domain against the
-    // issuing organization's registered contact address. Never a refusal.
+    // P4 N4: the mail's own From domain against the issuing organization's
+    // registered contact address. Never a refusal; since N4(b) (2026-11-23) a
+    // compared, differing domain holds the approval for the manual check below.
     const [issuingAccount] = await db.select({ contactEmail: accounts.contactEmail }).from(accounts)
       .innerJoin(projects, eq(
         accounts.id,
@@ -5827,10 +5943,13 @@ export function createApp({
       .where(eq(projects.id, order.projectId)).limit(1);
     const senderDomainCheck = evaluateEvidenceSenderDomain({
       bytes: evidenceBytes,
-      registeredContactEmail: issuingAccount?.contactEmail ?? null
+      registeredContactEmail: issuingAccount?.contactEmail ?? null,
+      // Round 2 (H-1): a declared mail stays a mail even when its headers are broken.
+      declaredMimeType: evidence.declaredMimeType,
+      filename: evidence.originalFilename
     });
     // Mismatch → EVIDENCE_SENDER_DOMAIN_MISMATCH; no / several / unreadable
-    // From → EVIDENCE_SENDER_UNVERIFIABLE (review L-1). Warnings only.
+    // From → EVIDENCE_SENDER_UNVERIFIABLE (review L-1). Shown as warnings.
     const senderWarning = evidenceSenderDomainWarning(senderDomainCheck);
     const approvalWarnings = senderWarning ? [senderWarning] : [];
     // A revocation never contributes to an approval, so its status reads
@@ -5838,10 +5957,14 @@ export function createApp({
     // still checked above and an invented one is refused.
     // P0 R02: a declared shared evidence never completes an approval by itself;
     // the representative's manual verification is required even for an EML.
+    // N4(b) (2026-11-23): neither does a mail from a domain other than the
+    // organization's registered one — it is recorded (never refused) and waits
+    // for the representative's check exactly like a PDF.
+    const senderHold = decisionCheck.value === 'APPROVE' && senderDomainRequiresManualVerification(senderDomainCheck);
     const evidenceIdentifierStatus: EvidenceIdentifierStatus =
       decisionCheck.value !== 'APPROVE'
         ? 'not_applicable'
-        : issuerCheck.requiresManualVerification ? 'pending_manual_verification' : identifierCheck.status;
+        : issuerCheck.requiresManualVerification || senderHold ? 'pending_manual_verification' : identifierCheck.status;
     const countsTowardDualApproval =
       decisionCheck.value === 'APPROVE' && evidenceIdentifierStatus !== 'pending_manual_verification';
 
@@ -5995,6 +6118,8 @@ export function createApp({
       // P4 N4: the From-domain comparison and, on a mismatch, a warning.
       senderDomainCheck,
       warnings: approvalWarnings,
+      // N4(b): why this approval waits for the representative's check (null: it does not for this reason).
+      manualCheckReason: senderHold ? senderManualCheckReason(senderDomainCheck) : null,
       orderStatus: recordedOrderStatus,
       dualApproved: gateAfter.dualApproved,
       missingApprovals: gateAfter.missingApprovals,
@@ -6309,6 +6434,17 @@ export function createApp({
     }
 
     const approvalContext = await loadApprovalContext(order.id);
+    // P5 round 2 (p5-int review L-2): only the organization's latest event on the
+    // design's current revision is checked — a replaced (older) approval decides
+    // nothing, so a verification of it would only leave a misleading record.
+    const targetGate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events, approvalContext.verifications)
+      .designs.find((design) => design.currentRevisionId === target.artworkRevisionId);
+    if (!targetGate || targetGate[target.organization as ApprovalOrganization].latestEventId !== target.id) {
+      return context.json({
+        error: 'この承認はすでに新しい承認に置き換えられているため、確認を記録できません。最新の承認を確認してください',
+        code: 'EVIDENCE_VERIFICATION_TARGET_SUPERSEDED'
+      }, 422);
+    }
     const selfDecision = await selfVerificationFacts(user, [target.evidenceDocumentVersionId], [target.recordedByUserId]);
     if ('refusal' in selfDecision) return context.json(selfDecision.refusal, 403);
     const selfCheck = selfDecision.facts;
@@ -6358,6 +6494,19 @@ export function createApp({
       if (racingVerification) {
         return { kind: 'duplicateVerification' as const };
       }
+      // P5 round 2 (p5-int review L-1): a 却下 is not turned into a 「確認」 on the
+      // same paper — the organization's approval is recorded again on another
+      // document, exactly as the screen says (a second 却下 stays possible).
+      // Judged here, under the order lock, so a 却下 that committed while this
+      // 「確認」 waited is never flipped either.
+      if (verification.result === 'confirmed') {
+        const [latestLocked] = await tx.select({ result: evidenceManualVerifications.result })
+          .from(evidenceManualVerifications)
+          .where(eq(evidenceManualVerifications.approvalEventId, target.id))
+          .orderBy(desc(evidenceManualVerifications.recordedAt), desc(evidenceManualVerifications.id))
+          .limit(1);
+        if (latestLocked?.result === 'rejected') return { kind: 'alreadyRejected' as const };
+      }
       await tx.insert(evidenceManualVerifications).values(verification);
       // Medium-C: the promotion gate is recomputed from rows visible only after
       // the row lock. A confirmation queued behind a REVOKE cannot complete a
@@ -6404,6 +6553,12 @@ export function createApp({
       design.currentRevisionId === target.artworkRevisionId);
     const targetState = targetDesign ? targetDesign[target.organization] : null;
 
+    if (outcome?.kind === 'alreadyRejected') {
+      return context.json({
+        error: 'この承認証跡はすでに却下されています。却下を確認に変えることはできません。別の承認書類で承認を記録し直してください',
+        code: 'EVIDENCE_ALREADY_REJECTED'
+      }, 422);
+    }
     if (outcome?.kind === 'duplicateVerification') {
       return context.json({
         error: 'この承認イベントはすでに手動確認が記録されています。訂正は組織の承認取消（REVOKE）として記録してください',
@@ -6501,6 +6656,43 @@ export function createApp({
         eq(artworkApprovalEvents.evidenceIdentifierStatus, 'pending_manual_verification')
       ));
     const storedPendingIds = new Set(storedPending.map((row) => row.id));
+    /**
+     * Round 2 (p5-int review M-1): an earlier APPROVE of the same organization on
+     * the same revision that cited the same document version or the same bytes,
+     * and whose latest manual check was 却下 — the representative is told so,
+     * with that 却下 (admin answer only: this list is the representative's).
+     */
+    const byRecording = (left: ApprovalEventView, right: ApprovalEventView) =>
+      new Date(left.recordedAt).getTime() - new Date(right.recordedAt).getTime() || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
+    const previouslyRejectedOf = (eventId: string) => {
+      const me = approvalContext.events.find((event) => event.id === eventId);
+      if (!me) return null;
+      const mySha = integrity.get(me.id)?.sha256 ?? null;
+      const earlier = approvalContext.events
+        .filter((event) => event.id !== me.id && event.decision === 'APPROVE'
+          && event.artworkRevisionId === me.artworkRevisionId && event.organization === me.organization
+          && byRecording(event, me) < 0
+          && (event.evidenceDocumentVersionId === me.evidenceDocumentVersionId
+            || (mySha !== null && integrity.get(event.id)?.sha256 === mySha)))
+        .sort(byRecording)
+        .reverse();
+      for (const event of earlier) {
+        const latest = approvalContext.verifications
+          .filter((verification) => verification.approvalEventId === event.id)
+          .sort((a, b) => new Date(a.recordedAt).getTime() - new Date(b.recordedAt).getTime() || (a.id < b.id ? -1 : 1))
+          .at(-1);
+        if (latest?.result === 'rejected') {
+          return {
+            approvalEventId: event.id,
+            matchedOn: event.evidenceDocumentVersionId === me.evidenceDocumentVersionId ? 'same_version' as const : 'same_content' as const,
+            verifierName: latest.verifierName,
+            rejectedAt: latest.recordedAt,
+            reasonNote: latest.reasonNote ?? null
+          };
+        }
+      }
+      return null;
+    };
     const pendingWithIssuer = await Promise.all(pendingManualVerifications.map(async (item) => {
       const facts = item.evidenceDocumentVersionId
         ? await loadApprovalEvidenceIssuerFacts(item.approvalEventId, item.evidenceDocumentVersionId)
@@ -6533,9 +6725,25 @@ export function createApp({
           issuerMatchesOrganization,
           sharedEvidence: facts.sharedEvidenceException !== null,
           senderDomainCheck: facts.senderDomainCheck
-        })
+        }),
+        // N4(b): a mail from another domain waits here like a PDF — the row says why.
+        manualCheckReason: senderManualCheckReason(facts.senderDomainCheck),
+        // Round 2 (p5-int review M-1): the same paper the representative already rejected, sent again.
+        previouslyRejected: previouslyRejectedOf(item.approvalEventId)
       };
     }));
+
+    // P5 R1 / round 2 (p5-int review H-2): the 却下 reason is free text the
+    // representative wrote, and only the representative reads it. Every other
+    // role gets the manual verification WITHOUT a reasonNote key (the screen says
+    // 「却下されました。理由は代表にご確認ください」); a free text cannot be proven
+    // amount-free, so it is never sent to staff / viewer / auditor.
+    const withReason = (state: (typeof gate.designs)[number]['customer']) => {
+      if (!state.manualVerification || user.role === 'admin') return state;
+      const { reasonNote: _withheld, ...rest } = state.manualVerification;
+      return { ...state, manualVerification: rest };
+    };
+    const designs = gate.designs.map((design) => ({ ...design, customer: withReason(design.customer), seven: withReason(design.seven) }));
 
     return context.json({
       orderId,
@@ -6543,7 +6751,7 @@ export function createApp({
       dualApproved: gate.dualApproved,
       requiredDesignKeys: gate.requiredDesignKeys,
       missingApprovals: gate.missingApprovals,
-      designs: gate.designs,
+      designs,
       pendingManualVerifications: pendingWithIssuer
     });
   });
@@ -8259,7 +8467,22 @@ export function createApp({
       evidenceFilename: sql<string | null>`(select v.original_filename from document_versions v where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`,
       evidenceUploadedAt: sql<string | null>`(select v.created_at from document_versions v where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`,
       evidenceUploaderId: sql<string | null>`(select v.created_by_user_id::text from document_versions v where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`,
-      evidenceUploaderName: sql<string | null>`(select u.display_name from document_versions v join users u on u.id = v.created_by_user_id where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`
+      evidenceUploaderName: sql<string | null>`(select u.display_name from document_versions v join users u on u.id = v.created_by_user_id where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`,
+      // Round 2 (p5-int review M-1): the same paper (same version or same bytes) was rejected before.
+      previousRejection: sql<{ approvalEventId: string; matchedOn: string; verifierName: string; rejectedAt: string; reasonNote: string | null } | null>`(
+        select json_build_object('approvalEventId', e3.id, 'verifierName', v3.verifier_name, 'rejectedAt', v3.recorded_at, 'reasonNote', v3.reason_note,
+          'matchedOn', case when e3.evidence_document_version_id = ${artworkApprovalEvents.evidenceDocumentVersionId} then 'same_version' else 'same_content' end)
+        from artwork_approval_events e3
+        join document_versions d3 on d3.id = e3.evidence_document_version_id
+        join lateral (select v.result, v.verifier_name, v.recorded_at, v.reason_note from evidence_manual_verifications v
+          where v.approval_event_id = e3.id order by v.recorded_at desc, v.id desc limit 1) v3 on true
+        where e3.artwork_revision_id = ${artworkApprovalEvents.artworkRevisionId} and e3.organization = ${artworkApprovalEvents.organization}
+          and e3.decision::text = 'APPROVE' and e3.id <> ${artworkApprovalEvents.id}
+          and (e3.recorded_at, e3.id) < (${artworkApprovalEvents.recordedAt}, ${artworkApprovalEvents.id})
+          and v3.result = 'rejected'
+          and (e3.evidence_document_version_id = ${artworkApprovalEvents.evidenceDocumentVersionId}
+            or d3.sha256 = (select d4.sha256 from document_versions d4 where d4.id = ${artworkApprovalEvents.evidenceDocumentVersionId}))
+        order by e3.recorded_at desc, e3.id desc limit 1)`
     }).from(artworkApprovalEvents)
       .innerJoin(artworkRevisions, eq(artworkRevisions.id, artworkApprovalEvents.artworkRevisionId))
       .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, artworkRevisions.filmSupplyOrderId))
@@ -8317,7 +8540,7 @@ export function createApp({
           sharedEvidenceException,
           confirmable: row.evidenceIssuerEntity === expectedIssuerEntity || sharedEvidenceException !== null,
           // P4 N4: the file, who uploaded it and — for an EML — its From check.
-          // A mismatch is a warning only; `confirmable` does not change.
+          // `confirmable` does not change; N4(b): a mismatch is why the row is here.
           evidence: {
             documentVersionId: row.evidenceVersionId,
             filename: row.evidenceFilename,
@@ -8329,8 +8552,15 @@ export function createApp({
           warnings: (() => {
             const warning = evidenceSenderDomainWarning(senderDomainCheck);
             return warning ? [warning] : [];
-          })()
+          })(),
+          manualCheckReason: senderManualCheckReason(senderDomainCheck),
+          // Round 2 (M-1): 「前回却下した書類と同じ内容です」 — this queue is the representative's (admin only).
+          previouslyRejected: row.previousRejection ?? null
         },
+        // N4(b): the queue's one-line reason (「差出人のドメインが登録先と違います」), when it is the sender.
+        ...(senderManualCheckReason(senderDomainCheck)
+          ? { reason: senderManualCheckReason(senderDomainCheck)! }
+          : {}),
         deepLink: link('approval', row, {
           subjectId: row.eventId,
           action: { method: 'POST', path: `/api/artwork-approval-events/${row.eventId}/verification` }
@@ -8616,6 +8846,8 @@ export function createApp({
       orderId: documents.filmSupplyOrderId,
       documentId: documents.id,
       verificationStatus: sql<string>`${documents.verificationStatus}::text`,
+      // P5 R8: the issuer the uploader declared (顧客・セブン化学・…), as on every evidence row.
+      issuerEntity: sql<string | null>`${documents.issuerEntity}::text`,
       versionId: documentVersions.id,
       filename: documentVersions.originalFilename,
       uploadedAt: documentVersions.createdAt,
@@ -8663,9 +8895,13 @@ export function createApp({
             code: 'SELF_VERIFICATION_FORBIDDEN',
             message: '受領証跡を登録した担当者は自分で納品を確認できません。代表者が確認してください'
           },
+          // P5 R8: the declared issuer of the receipt the row waits on (the latest staff
+          // upload), in the same field as the 承認証跡の確認 row — the web draws it as given.
+          evidenceIssuerEntity: latest?.issuerEntity ?? null,
           evidence: evidence.map((candidate) => ({
             documentId: candidate.documentId,
             documentVersionId: candidate.versionId,
+            issuerEntity: candidate.issuerEntity,
             filename: candidate.filename,
             verificationStatus: candidate.verificationStatus,
             uploadedAt: candidate.uploadedAt,
@@ -8699,7 +8935,7 @@ export function createApp({
       .from(makerPurchaseOrders)
       .where(liveApprovedPaperOf(blockedRows.map((row) => row.orderId)));
     const blockedApprovedOrderIds = new Set(blockedApprovedPapers.map((paper) => paper.filmSupplyOrderId));
-    const blocked = blockedRows
+    const blocked: Array<Record<string, unknown>> = blockedRows
       .map((row) => {
         const termsChange = evaluatePaymentTermsChange({
           orderStatus: row.orderStatus,
@@ -8724,6 +8960,73 @@ export function createApp({
           })
         };
       });
+
+    // P5 R1 (却下 dead end): an approval the representative REJECTED at the
+    // manual check leaves the work list above (nothing waits for a check), but
+    // the order cannot move until that organization's approval is recorded
+    // again on other evidence — by staff or by the representative. Listed here
+    // as stuck with the reason and who rejected it, never silently dropped.
+    // The latest event of that organization on the current revision is the
+    // rejected APPROVE itself (a newer event — the replacement — removes the row).
+    const latestVerification = (column: string) => sql.raw(`(select v.${column} from evidence_manual_verifications v where v.approval_event_id = artwork_approval_events.id order by v.recorded_at desc, v.id desc limit 1)`);
+    const rejectedRows = await db.select({
+      ...orderColumns,
+      eventId: artworkApprovalEvents.id,
+      revisionId: artworkApprovalEvents.artworkRevisionId,
+      organization: sql<string>`${artworkApprovalEvents.organization}::text`,
+      designKey: artworkRevisions.designKey,
+      revisionNo: artworkRevisions.revisionNo,
+      rejectedAt: sql<string | null>`${latestVerification('recorded_at')}`,
+      verifierName: sql<string | null>`${latestVerification('verifier_name')}`,
+      reasonNote: sql<string | null>`${latestVerification('reason_note')}`,
+      evidenceIssuerEntity: sql<string | null>`(select d.issuer_entity::text from document_versions v join documents d on d.id = v.document_id where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`,
+      evidenceFilename: sql<string | null>`(select v.original_filename from document_versions v where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`
+    }).from(artworkApprovalEvents)
+      .innerJoin(artworkRevisions, eq(artworkRevisions.id, artworkApprovalEvents.artworkRevisionId))
+      .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, artworkRevisions.filmSupplyOrderId))
+      .innerJoin(projects, eq(projects.id, filmSupplyOrders.projectId))
+      .where(and(
+        eq(artworkApprovalEvents.evidenceIdentifierStatus, 'pending_manual_verification'),
+        eq(artworkApprovalEvents.decision, 'APPROVE'),
+        sql`${latestVerification('result')} = 'rejected'`,
+        sql`${artworkRevisions.revisionNo} = (select max(r2.revision_no) from artwork_revisions r2 where r2.film_supply_order_id = ${artworkRevisions.filmSupplyOrderId} and r2.design_key = ${artworkRevisions.designKey})`,
+        sql`not exists (select 1 from artwork_approval_events e2 where e2.artwork_revision_id = ${artworkApprovalEvents.artworkRevisionId} and e2.organization = ${artworkApprovalEvents.organization} and (e2.recorded_at, e2.id) > (${artworkApprovalEvents.recordedAt}, ${artworkApprovalEvents.id}))`,
+        liveOrder
+      ))
+      .orderBy(asc(artworkApprovalEvents.recordedAt), asc(artworkApprovalEvents.id))
+      .limit(limit);
+    for (const row of rejectedRows) {
+      const organization = row.organization as ApprovalOrganization;
+      const organizationName = organization === 'customer' ? '顧客' : 'セブン化学';
+      blocked.push({
+        key: `approval_evidence_rejected:${row.eventId}`,
+        kind: 'approval_evidence_rejected',
+        label: '却下した承認証跡の差し替え',
+        organization,
+        designKey: row.designKey,
+        project: projectOf(row),
+        order: orderOf(row),
+        reason: {
+          code: 'APPROVAL_EVIDENCE_REJECTED',
+          message: `${organizationName}の承認証跡（デザイン ${row.designKey}）は却下されました。別の承認書類で${organizationName}の承認を記録し直すまで進めません`
+        },
+        fixableBy: ['admin', 'staff'],
+        waitingSince: row.rejectedAt,
+        detail: {
+          designKey: row.designKey,
+          revisionNo: row.revisionNo,
+          organization,
+          rejection: { verifierName: row.verifierName, rejectedAt: row.rejectedAt, reasonNote: row.reasonNote },
+          // The rejected file, with its declared issuer (the same field the check row uses — the web draws it as given).
+          evidenceIssuerEntity: row.evidenceIssuerEntity,
+          evidence: { filename: row.evidenceFilename }
+        },
+        deepLink: link('approval', row, {
+          subjectId: row.eventId,
+          action: { method: 'POST', path: `/api/artwork-revisions/${row.revisionId}/approvals` }
+        })
+      });
+    }
 
     // P4 N11/M13: every item names its organization and design (null when the
     // kind is not about one), so the web never has to dig them out of detail.
@@ -10607,6 +10910,7 @@ export function createApp({
   registerP2Routes(app, { db, recordAuditEvent });
   // P4 N1: project assignments (admin only, audited). See p4-routes.ts.
   registerP4Routes(app, { db, recordAuditEvent });
+  registerP5Routes(app, { db, recordAuditEvent });
 
   return app;
 }

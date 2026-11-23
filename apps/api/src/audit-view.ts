@@ -166,7 +166,10 @@ const AUDITOR_STATE_KEYS: readonly string[] = [
   'readinessState',
   'isReady',
   'requestedDeliveryDate',
-  'plannedDeliveryDate'
+  'plannedDeliveryDate',
+  // P5 round 2 (M-2): the registered contact address of a customer / セブン化学
+  // (PARTNER_CONTACT_EMAIL_UPDATED before → after). An address, never an amount.
+  'contactEmail'
 ];
 
 /** The auditor sees which operation produced the event and whether it was automatic. */
