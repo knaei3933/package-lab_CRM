@@ -1,0 +1,81 @@
+/*
+ * P4 web 2b. Loaded last, unlayered, like p4-web1.css. Sizes, wrapping and focus only — no new colours.
+ */
+
+/* H4①: what the card still needs from the representative (an input to make, not a warning to accept). */
+.p4-needs {
+  border-left: 4px solid var(--primary);
+  padding: 8px 12px;
+  margin: 12px 0;
+}
+
+.p4-needs-title {
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+/* N1: 担当者 */
+.p4-assignment-list {
+  list-style: none;
+  margin: 8px 0 16px;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.p4-assignment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.p4-assignment-name {
+  font-weight: 600;
+}
+
+.p4-assignment-request {
+  margin: 16px 0;
+  max-width: 640px;
+}
+
+.p4-assignment-request-label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.p4-assignment-request-text {
+  width: 100%;
+  font: inherit;
+  font-size: 16px;
+  padding: 8px;
+  box-sizing: border-box;
+}
+
+/* M18 / N11 / N4: the extra lines of an 承認箱 row — one full-width block under the row's four cells. */
+.p1-inbox-item > .p4-inbox-extra {
+  grid-column: 1 / -1;
+  order: 1;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.p4-inbox-line {
+  margin: 0;
+  font-size: var(--t-table);
+  color: var(--ink-sub);
+  overflow-wrap: anywhere;
+}
+
+.p4-inbox-line.field-warning {
+  color: inherit;
+}
+
+.p4-inbox-due--late {
+  font-weight: 600;
+  color: var(--ink);
+}

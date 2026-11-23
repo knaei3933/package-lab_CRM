@@ -38,6 +38,17 @@ const LINK_LABEL: Record<DuplicateKind, string> = {
   filling_order: '登録済みの充填発注を開く'
 };
 
+/**
+ * P4 H7②: the link names the registered record — its 発注コード (or 発注番号), not only its kind — so the
+ * operator can tell it is the one they meant before opening it.
+ */
+export function duplicateLinkLabel(kind: DuplicateKind, value: string | null | undefined): string {
+  const name = value?.trim() ?? '';
+  if (name.length === 0 || name.length > 64) return LINK_LABEL[kind];
+  const head = kind === 'seven_po' ? '登録済みのセブン化学発注書' : kind === 'film_order' ? '登録済みのフィルム発注' : '登録済みの充填発注';
+  return `${head} ${name} を開く`;
+}
+
 /** The registered record with this number in the workspace (visible numbers only). Pure. */
 export function findRegistered(workspace: Pick<Workspace, 'sevenPurchaseOrders' | 'filmOrders' | 'fillingOrders'>, kind: DuplicateKind, value: string): string | null {
   const wanted = value.trim();
@@ -77,7 +88,7 @@ export function duplicateState(kind: DuplicateKind, existingId: string | null, s
     message: text.message,
     messageKo: text.messageKo,
     code: DUPLICATE_CODE,
-    link: existingId ? { href: duplicateHref(kind, existingId, scope), label: LINK_LABEL[kind] } : null,
+    link: existingId ? { href: duplicateHref(kind, existingId, scope), label: duplicateLinkLabel(kind, scope.value) } : null,
     // The number is registered: the submit is over (a new key for the next one).
     settled: true
   };

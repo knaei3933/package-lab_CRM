@@ -227,7 +227,7 @@ describe('H7① a duplicate says where the registered record is', () => {
     const { duplicateFromAnswer } = await import('../apps/web/src/lib/duplicate-check.js');
     const scope = { projectId: 'proj-A', projectCode: 'PRJ-1', value: 'FSO-7' };
     const same = duplicateFromAnswer('film_order', { code: 'DUPLICATE', existing: { id: 'o1', projectId: 'proj-A', projectCode: 'PRJ-1' } }, scope);
-    expect(same.link).toEqual({ href: '/p/PRJ-1/o/FSO-7', label: '登録済みのフィルム発注を開く' });
+    expect(same.link).toEqual({ href: '/p/PRJ-1/o/FSO-7', label: '登録済みのフィルム発注 FSO-7 を開く' });
     expect(same.code).toBe('DUPLICATE');
     const other = duplicateFromAnswer('film_order', { code: 'DUPLICATE', existing: { id: 'o2', projectId: 'proj-B', projectCode: 'PRJ-2' } }, scope);
     expect(other.link ?? null).toBeNull();

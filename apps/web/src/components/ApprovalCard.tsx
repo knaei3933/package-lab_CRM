@@ -1,11 +1,13 @@
 import { ActionForm } from './ActionForm';
-import { CheckboxField, SelectField, TextareaField, TextField } from './fields';
+import { DateTextField, SelectField, TextareaField, TextField } from './fields';
 import { Bilingual } from './Bilingual';
-import { approveFromCardAction, returnMakerPoAction } from '../app/approval-actions';
+import { approveFromCardAction, recordRequestedDeliveryDateAction, returnMakerPoAction } from '../app/approval-actions';
+import { approvalCardNeeds } from '../lib/approval-card';
 import type { ApprovalCardView, CardOrganization, SealState } from '../lib/approval-card';
 import { PAYMENT_TERMS_LABELS } from '../lib/maker-po-data';
 import { ISSUER_ENTITY_LABELS, EVIDENCE_SOURCE_LABELS, formatTimestamp } from '../lib/vocabulary';
 import { webErrorText } from '../lib/error-dictionary';
+import { ISSUER_DECLARED_LABEL } from '../lib/sender-check';
 import { ERROR_DICTIONARY } from '../lib/error-dictionary-data';
 import { dateCell, DeliveryTermsRows } from './OrderTermsSection';
 import type { TermCell } from './OrderTermsSection';
@@ -64,11 +66,12 @@ function Seal({ name, ko, organization }: { name: string; ko: string; organizati
       {evidence ? (
         <p className="p1-seal-state">
           {EVIDENCE_SOURCE_LABELS[evidence.evidenceSource as keyof typeof EVIDENCE_SOURCE_LABELS] ?? '証跡'}
-          {' ・ 発行元 '}
+          {' ・ '}{ISSUER_DECLARED_LABEL}{' '}
           {ISSUER_ENTITY_LABELS[evidence.issuerEntity as keyof typeof ISSUER_ENTITY_LABELS] ?? '不明'}
-          {mismatch ? ' ✕ 承認組織と不一致' : evidence.issuerMatchesOrganization ? ' ✓' : ''}
+          {mismatch ? ' ✕ 承認組織と不一致' : evidence.issuerMatchesOrganization ? ' ✓ 申告どおり' : ''}
         </p>
       ) : null}
+      {evidence?.filename ? <p className="p1-seal-state p4-seal-file">ファイル <span translate="no">{evidence.filename}</span></p> : null}
     </div>
   );
 }
@@ -77,6 +80,7 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
   const paperName = card.displayNumber ? `メーカー発注書 ${card.displayNumber}` : `${card.orderCode} のメーカー発注書`;
   const terms = card.paymentTerms ? PAYMENT_TERMS_LABELS[card.paymentTerms] ?? card.paymentTerms : '未記録';
   const cells = termCells(card);
+  const needs = approvalCardNeeds(card);
   return (
     <section className="p1-card" aria-labelledby="approval-card-title" data-korean={korean ? 'on' : undefined}>
       <h3 id="approval-card-title" className="p1-card-title">
@@ -175,11 +179,36 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
         </dd>
       </dl>
 
-      {card.blockers.length > 0 ? (
+      {needs.amount || needs.requestedDeliveryDate ? (
+        <div className="p4-needs" role="group" aria-label="承認の前に入力するもの">
+          <p className="p4-needs-title">
+            <Bilingual ja="承認の前に、次を入力してください" ko="승인 전에 다음을 입력하세요" />
+          </p>
+          <ul className="p1-plain-list">
+            {needs.requestedDeliveryDate ? (
+              <li data-need="requestedDeliveryDate">
+                <Bilingual
+                  ja="希望納期が記録されていません。下の欄に入れて「希望納期を記録する」を押すと、この画面が更新されます。"
+                  ko="희망 납기가 기록되어 있지 않습니다. 아래 칸에 입력하고 「希望納期を記録する」를 누르면 이 화면이 갱신됩니다."
+                />
+              </li>
+            ) : null}
+            {needs.amount ? (
+              <li data-need="amount">
+                <Bilingual
+                  ja="金額が入力されていません。承認ボタンの上の「金額」に入れると承認できます。"
+                  ko="금액이 입력되지 않았습니다. 승인 버튼 위의 「金額」에 입력하면 승인할 수 있습니다."
+                />
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
+      {needs.otherBlockers.length > 0 ? (
         <div className="p1-blocked" role="group" aria-label="承認できない理由">
           <p className="p1-blocked-title"><span aria-hidden="true">✕ </span><Bilingual ja="承認できません" ko="승인할 수 없습니다" /></p>
           <ul className="p1-plain-list">
-            {card.blockers.map((blocker) => {
+            {needs.otherBlockers.map((blocker) => {
               const text = webErrorText(blocker.code);
               return (
                 <li key={blocker.code}>
@@ -191,7 +220,7 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
           </ul>
         </div>
       ) : null}
-      {card.warnings.map((warning) => (
+      {card.warnings.filter((warning) => warning.code !== 'MAKER_PO_AMOUNT_MISSING').map((warning) => (
         <p key={warning.code} className="field-warning"><span aria-hidden="true">⚠</span> {noteText(warning.code, warning.message)}</p>
       ))}
 
@@ -202,26 +231,39 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
         />
       </p>
       <div className="p1-card-actions">
-        {card.canApprove && card.expectedPaymentTerms ? (
+        {needs.requestedDeliveryDate && card.status === 'DRAFT' && card.orderId ? (
+          <ActionForm
+            action={recordRequestedDeliveryDateAction}
+            submitLabel="希望納期を記録する"
+            hint="お客様が希望する納品日です。記録すると承認カードが読み込み直され、金額の入力と承認に進めます。"
+            hintKo="고객이 희망하는 납품일입니다. 기록하면 승인 카드가 다시 로드되어 금액 입력과 승인으로 진행할 수 있습니다."
+          >
+            <input type="hidden" readOnly name="orderId" value={card.orderId} />
+            <DateTextField name="requestedDeliveryDate" label="希望納期" required hint="例 2026/12/01（日本時間の日付）" />
+          </ActionForm>
+        ) : null}
+        {needs.canSubmitApproval && card.expectedPaymentTerms ? (
           <ActionForm action={approveFromCardAction} submitLabel={`${card.displayNumber ?? card.orderCode} を代表承認する`}>
             <input type="hidden" readOnly name="poId" value={card.poId} />
             <input type="hidden" readOnly name="expectedPaymentTerms" value={card.expectedPaymentTerms} />
             {card.expectedSnapshotSha256 ? <input type="hidden" readOnly name="expectedSnapshotSha256" value={card.expectedSnapshotSha256} /> : null}
             {/* P2 verifier M1: the 納期・数量 this card showed (re-checked before the approval). */}
             {card.termsStamp ? <input type="hidden" readOnly name="expectedTermsStamp" value={card.termsStamp} /> : null}
-            {/* The API only warns about a paper without an amount; approving one is a deliberate, recorded choice. */}
-            {/* Review M2: the representative enters or corrects the amount here (saved into the paper,
-                pinned to the content this card shows); left empty, a missing amount needs the check. */}
+            {/* P4 H4①: a paper without an amount cannot be approved (the API refuses it, AMOUNT_REQUIRED) — the
+                amount is typed here, saved into the paper pinned to the content this card shows, and approved with it. */}
+            {needs.amount ? <input type="hidden" readOnly name="amountRequired" value="true" /> : null}
             <div className="p1-row">
               <SelectField name="currency" label="通貨" choices={[{ value: 'JPY', label: '日本円（JPY）' }, { value: 'USD', label: '米ドル（USD）' }, { value: 'CNY', label: '人民元（CNY）' }, { value: 'KRW', label: '韓国ウォン（KRW）' }]} defaultValue="JPY" width={180} />
-              <TextField name="totalAmount" label={card.amountDisplay ? '金額を直す（数字のみ・任意）' : '金額（数字のみ）'} width={200} autoComplete="off" placeholder="480000" inputMode="decimal" />
+              <TextField
+                name="totalAmount"
+                label={needs.amount ? '金額（数字のみ）' : '金額を直す（数字のみ・任意）'}
+                required={needs.amount}
+                width={200}
+                autoComplete="off"
+                placeholder="480000"
+                inputMode="decimal"
+              />
             </div>
-            {card.amountDisplay ? null : (
-              <>
-                <input type="hidden" readOnly name="amountMissing" value="true" />
-                <CheckboxField name="acknowledgeMissingAmount" label="金額未入力のまま承認する" />
-              </>
-            )}
           </ActionForm>
         ) : null}
         {card.canReturn ? (

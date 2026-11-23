@@ -1,6 +1,8 @@
 import { callApi } from './api';
 import { isMissingRoute } from './approval-card';
 import { formatAmount } from './number-format';
+import { senderStatusOf, senderWarningsOf } from './sender-check';
+import type { SenderCheckStatus, SenderWarning } from './sender-check';
 import type { AuditEventView, ProjectSummary } from './project-data';
 
 /**
@@ -43,10 +45,27 @@ export interface RepresentativeTask {
   /** Set on a blocked row: why it cannot move, in one sentence. */
   blockedReason?: string | null | undefined;
   /**
-   * P4 M13 / N11: what of the order the row is about — 「顧客／表面A」 (the server item's
-   * organization and designKey), 「明細1・500 m」 for a delivery; null when the item has none.
+   * P4 M13 / N11 (web2a): what of the order the row is about — 「顧客／デザイン 表面A」 (the server item's
+   * organization and designKey), 「明細1／500 m」 for a delivery; null when the item has none.
    */
   target?: string | null | undefined;
+  /** P4 M18: the order's 希望納期 / 納品予定日 (`YYYY-MM-DD`), when the queue item carries them. */
+  requestedDeliveryDate?: string | null | undefined;
+  plannedDeliveryDate?: string | null | undefined;
+  /** P4 N11/M13: which organization and design the row is about (null: the row is about the whole order). */
+  organization?: 'customer' | 'seven' | null | undefined;
+  designKey?: string | null | undefined;
+  /** P4 N4: the approval-evidence file of an 承認証跡の確認 row: name, From, uploader, the sender check. */
+  evidence?: QueueEvidence | null | undefined;
+  /** P4 N4: the sender warnings of that evidence (EVIDENCE_SENDER_DOMAIN_MISMATCH / …_UNVERIFIABLE). */
+  warnings?: SenderWarning[] | undefined;
+}
+
+export interface QueueEvidence {
+  filename: string | null;
+  fromAddress: string | null;
+  uploadedBy: string | null;
+  senderStatus: SenderCheckStatus | null;
 }
 
 export interface RepresentativeQueue {
@@ -117,6 +136,54 @@ function str(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+const DUE_DATE_FORMAT = new Intl.DateTimeFormat('ja-JP', { month: 'numeric', day: 'numeric', timeZone: 'UTC' });
+
+function calendarDate(value: unknown): string | null {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
+
+const ORGANIZATION_JA: Readonly<Record<string, string>> = { customer: '顧客', seven: 'セブン化学' };
+const ORGANIZATION_KO: Readonly<Record<string, string>> = { customer: '고객', seven: '세븐화학' };
+
+/**
+ * P4 N11/M13: 「承認証跡の確認（顧客／表面A）」 — the row's title names the organization and the design, so two
+ * rows of the same order are told apart (they used to read the same). A row about the whole order is unchanged.
+ */
+export function queueRowTitle(task: Pick<RepresentativeTask, 'work' | 'organization' | 'designKey'> & Partial<Pick<RepresentativeTask, 'target'>>): string {
+  const parts = [task.organization ? ORGANIZATION_JA[task.organization] : null, task.designKey ?? null].filter((part): part is string => Boolean(part));
+  if (parts.length > 0) return `${task.work}（${parts.join('／')}）`;
+  // p4/web3 merge: web2a's delivery target 「明細1／500 m」 (a row with no organization / design) stays in the title.
+  return task.target ? `${task.work}（${task.target}）` : task.work;
+}
+
+/** P4 N11/M13: a row's React key — two rows of one order (customer / seven, each design) must not share one. */
+export function queueRowKey(task: Pick<RepresentativeTask, 'kind' | 'status' | 'projectId' | 'orderId' | 'organization' | 'designKey'> & Partial<Pick<RepresentativeTask, 'target'>>, prefix = ''): string {
+  // p4/web3 merge: web2a's key also carried the target (two delivery lines of one order are two rows).
+  return `${prefix}${task.kind ?? task.status}-${task.projectId}-${task.orderId}-${task.organization ?? ''}-${task.designKey ?? ''}-${task.target ?? ''}`;
+}
+
+/** The Korean twin of the suffix (the organization only; a design name is never translated). */
+export function queueRowSuffixKo(task: Pick<RepresentativeTask, 'organization' | 'designKey'>): string | null {
+  const parts = [task.organization ? ORGANIZATION_KO[task.organization] : null, task.designKey ?? null].filter((part): part is string => Boolean(part));
+  return parts.length > 0 ? `(${parts.join('／')})` : null;
+}
+
+/**
+ * P4 M18: 「希望納期 12/15（あと22日）」 — the date the customer wants the goods and how many days are left, in
+ * Japan time. Past the date: 「（3日超過）」; the day itself: 「（今日）」. Null when the row has no 希望納期.
+ */
+export function queueDueText(task: Pick<RepresentativeTask, 'requestedDeliveryDate'>, now: Date): { text: string; late: boolean } | null {
+  const date = task.requestedDeliveryDate;
+  if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  const today = new Date(now.getTime() + 9 * 3_600_000).toISOString().slice(0, 10);
+  const left = Math.round((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
+  if (Number.isNaN(left)) return null;
+  const shown = DUE_DATE_FORMAT.format(new Date(`${date}T00:00:00Z`));
+  if (left > 0) return { text: `希望納期 ${shown}（あと${left}日）`, late: false };
+  if (left === 0) return { text: `希望納期 ${shown}（今日）`, late: false };
+  return { text: `希望納期 ${shown}（${-left}日超過）`, late: true };
+}
+
 /** Pure: one row of GET /api/representative-queue (p1-server API_CONTRACT §3) in the screen's shape. */
 export function taskFromServerItem(item: unknown, blocked = false): RepresentativeTask | null {
   const row = record(item);
@@ -130,6 +197,9 @@ export function taskFromServerItem(item: unknown, blocked = false): Representati
   const orderCode = str(order.code) ?? str(deepLink.orderCode);
   if (!projectCode || !orderCode) return null;
   const kind = str(row.kind) ?? 'unknown';
+  const detail = record(row.detail);
+  const evidence = record(detail.evidence);
+  const organization = str(row.organization);
   return {
     projectId: str(project.id) ?? '',
     projectCode,
@@ -145,7 +215,20 @@ export function taskFromServerItem(item: unknown, blocked = false): Representati
     requestedBy: str(record(row.requestedBy).displayName),
     displayNumber: str(paper.displayNumber) ?? undefined,
     blockedReason: blocked ? str(reason.message) : null,
-    target: queueTarget(row) ?? undefined
+    target: queueTarget(row) ?? undefined,
+    requestedDeliveryDate: calendarDate(order.requestedDeliveryDate),
+    plannedDeliveryDate: calendarDate(order.plannedDeliveryDate),
+    organization: organization === 'customer' || organization === 'seven' ? organization : null,
+    designKey: str(row.designKey),
+    evidence: Object.keys(evidence).length > 0
+      ? {
+          filename: str(evidence.filename),
+          fromAddress: str(evidence.fromAddress),
+          uploadedBy: str(record(evidence.uploadedBy).displayName),
+          senderStatus: senderStatusOf(evidence.senderDomainCheck)
+        }
+      : null,
+    warnings: senderWarningsOf(detail.warnings)
   };
 }
 

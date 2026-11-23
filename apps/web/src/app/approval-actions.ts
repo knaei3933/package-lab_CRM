@@ -6,6 +6,9 @@ import { isPlainAmount, normalizeAmountText } from '../lib/amount';
 import { deliveryTermsStamp, isMissingRoute, TERMS_CHANGED_MESSAGE, TERMS_UNREADABLE_MESSAGE } from '../lib/approval-card';
 import { callApi } from '../lib/api';
 import { isSettledRefusal, refusalState } from '../lib/action-result';
+import { AMOUNT_REQUIRED_CODE, DELIVERY_DATE_REQUIRED_CODE } from '../lib/approval-card';
+import { deliveryDatesFromForm } from '../lib/delivery-dates';
+import { webErrorText } from '../lib/error-dictionary';
 import { idempotencyKeyOf } from '../lib/project-context';
 import { revalidatePath } from 'next/cache';
 import type { ActionState } from '../lib/types';
@@ -71,12 +74,11 @@ export async function approveFromCardAction(_prev: ActionState | null, formData:
     const next = saved.data?.approvalSnapshotSha256;
     if (typeof next !== 'string' || !/^[0-9a-f]{64}$/.test(next)) return { ok: false, message: SNAPSHOT_UNREADABLE_MESSAGE };
     hash = next;
-  } else {
-    // A paper without an amount is approved only with the explicit confirmation on the card.
-    const ack = formData.get('acknowledgeMissingAmount');
-    if (field(formData, 'amountMissing') === 'true' && ack !== 'on' && ack !== 'true') {
-      return { ok: false, message: '金額が入力されていません。金額を入力するか、「金額未入力のまま承認する」にチェックを入れてください。' };
-    }
+  } else if (field(formData, 'amountRequired') === 'true') {
+    // P4 H4①: a paper without an amount is not approved (the API refuses it too: 422 AMOUNT_REQUIRED).
+    // The old 「金額未入力のまま承認する」 check is gone: the amount is entered here.
+    const text = webErrorText(AMOUNT_REQUIRED_CODE);
+    return { ok: false, message: text.message, messageKo: text.messageKo, code: AMOUNT_REQUIRED_CODE };
   }
   const body: Record<string, unknown> = { expectedPaymentTerms, expectedSnapshotSha256: hash };
   const result = await callApi(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/ceo-approval`, {
@@ -84,9 +86,40 @@ export async function approveFromCardAction(_prev: ActionState | null, formData:
     body,
     idempotencyKey: idempotencyKeyOf(formData), expectedProjectId: writeProjectOf(formData)
   });
-  if (!result.ok) return refusalState(result);
+  if (!result.ok) {
+    // P4 H4①: the API says what is still missing (AMOUNT_REQUIRED / DELIVERY_DATE_REQUIRED): the card is drawn again with that input.
+    if (result.code === AMOUNT_REQUIRED_CODE || result.code === DELIVERY_DATE_REQUIRED_CODE) revalidatePath('/', 'layout');
+    return refusalState(result);
+  }
   revalidatePath('/', 'layout');
   return { ok: true, message: '代表承認を記録しました。担当者がメーカーへ送信します。', changedId: poId };
+}
+
+/**
+ * P4 H4①: the 希望納期 of the order, recorded from the approval card (PATCH …/delivery-dates, the same
+ * write as the order screen's 「発注の条件」). It is part of the frozen paper, so the card is drawn
+ * again afterwards (revalidate) — the approval never sends a hash read at submit (review H1).
+ */
+export async function recordRequestedDeliveryDateAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await refuseIfProjectSwitched(formData);
+  if (switched) return switched;
+  const orderId = field(formData, 'orderId');
+  if (orderId.length === 0) return { ok: false, message: 'フィルム発注が見つかりません。画面を再読み込みしてください。' };
+  const dates = deliveryDatesFromForm(formData);
+  if ('error' in dates) return { ok: false, message: dates.error };
+  if (typeof dates.body.requestedDeliveryDate !== 'string') {
+    const text = webErrorText(DELIVERY_DATE_REQUIRED_CODE);
+    return { ok: false, message: text.message, messageKo: text.messageKo, code: DELIVERY_DATE_REQUIRED_CODE };
+  }
+  const result = await callApi(`/api/film-supply-orders/${encodeURIComponent(orderId)}/delivery-dates`, {
+    method: 'PATCH',
+    body: { requestedDeliveryDate: dates.body.requestedDeliveryDate },
+    idempotencyKey: idempotencyKeyOf(formData),
+    expectedProjectId: writeProjectOf(formData)
+  });
+  if (!result.ok) return refusalState(result);
+  revalidatePath('/', 'layout');
+  return { ok: true, message: '希望納期を記録しました。承認カードを読み込み直しています。', changedId: orderId };
 }
 
 export async function returnMakerPoAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {

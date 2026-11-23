@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { draftKey, draftValues, markDirty } from '../lib/unsaved-guard';
+import { draftIdentity, draftKey, draftValues, isOrderScreenPath, markDirty } from '../lib/unsaved-guard';
 
 /**
  * P1 R34 (M9): a long form keeps a draft in sessionStorage while it is typed
@@ -41,7 +41,12 @@ function write(key: string, values: Record<string, string> | null): void {
 /** P4 N15: asked before the restored draft is thrown away. */
 export const DISCARD_CONFIRM_MESSAGE = '復元した入力を破棄します。元に戻せません。破棄しますか？';
 
-export function DraftAutosave({ name }: { name: string }) {
+/**
+ * `orderScreenOnly` (P4 R-1): the step forms of an order screen keep a draft too (ActionForm mounts this
+ * on every form). It acts only on /p/{案件}/o/{発注} and names the draft by the form's button AND the record
+ * it is about (orderId, designKey, …), so two forms with the same button do not share one.
+ */
+export function DraftAutosave({ name, orderScreenOnly = false }: { name: string; orderScreenOnly?: boolean }) {
   const anchor = useRef<HTMLSpanElement>(null);
   const [restored, setRestored] = useState(false);
   const keyRef = useRef('');
@@ -49,7 +54,11 @@ export function DraftAutosave({ name }: { name: string }) {
   useEffect(() => {
     const form = anchor.current?.closest('form');
     if (!form) return undefined;
-    const key = draftKey(window.location.pathname, name);
+    if (orderScreenOnly && !isOrderScreenPath(window.location.pathname)) return undefined;
+    const identity = orderScreenOnly
+      ? draftIdentity([...form.elements].filter((element): element is HTMLInputElement => element instanceof HTMLInputElement && element.type === 'hidden').map((input) => ({ name: input.name, value: input.value })))
+      : '';
+    const key = draftKey(window.location.pathname, `${name}${identity}`);
     keyRef.current = key;
     const saved = read(key);
     if (saved) {
@@ -95,7 +104,7 @@ export function DraftAutosave({ name }: { name: string }) {
       form.removeEventListener('change', save);
       form.removeEventListener('reset', drop);
     };
-  }, [name]);
+  }, [name, orderScreenOnly]);
 
   function discard(): void {
     // P4 N15: 「破棄」 deletes what was typed — asked first (it used to delete at once).

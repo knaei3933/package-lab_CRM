@@ -94,16 +94,16 @@ describe('ApprovalCard: facts', () => {
     expect(html).not.toMatch(/税込|税抜/);
   });
 
-  it('shows 未入力 and the explicit 「金額未入力のまま承認する」 check when there is no amount', () => {
+  it('shows 未入力 and asks for the amount (P4 H4①: no 「金額未入力のまま承認する」 check any more)', () => {
     const html = render(card({ amountDisplay: null, canApprove: false }));
     expect(html).toContain('未入力');
     expect(html).not.toMatch(/税込|税抜/);
     const approvable = render(card({ amountDisplay: null, canApprove: true, expectedPaymentTerms: 'prepaid' }));
-    expect(approvable).toContain('金額未入力のまま承認する');
-    expect(approvable).toContain('name="acknowledgeMissingAmount"');
-    // Review M2: the representative can type the amount instead (admin-only card).
+    expect(approvable).not.toContain('金額未入力のまま承認する');
+    expect(approvable).not.toContain('acknowledgeMissingAmount');
+    // Review M2: the representative types the amount instead (admin-only card) — and it is required.
     expect(approvable).toContain('name="totalAmount"');
-    expect(approvable).toContain('name="amountMissing" value="true"');
+    expect(approvable).toContain('name="amountRequired" value="true"');
   });
 
   it('shows lines, payment terms label, the recipient and the seven PO', () => {

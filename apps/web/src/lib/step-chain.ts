@@ -44,7 +44,10 @@ export interface ChainStep {
 }
 
 export interface ChainOptions {
-  success: string;
+  /** The success line; a function reads the answers (P4 H7②: the order code the server numbered). */
+  success: string | ((answers: readonly unknown[]) => string);
+  /** P4 H7②: receives the answers of the chain (the caller reads what the server created). */
+  answersOut?: unknown[] | undefined;
   link?: ActionState['link'];
   /** P4 N3: the id of the record the chain had already written when it stopped (from the answers so far). */
   partialId?: ((answers: readonly unknown[]) => string | null) | undefined;
@@ -134,7 +137,13 @@ export async function runChain(formData: FormData, steps: readonly ChainStep[], 
     lastId = recordIdOf(result.data) ?? lastId;
   }
   revalidatePath('/', 'layout');
-  return { ok: true, message: options.success, changedId: lastId, link: options.link ?? null };
+  if (options.answersOut) options.answersOut.push(...answers);
+  return {
+    ok: true,
+    message: typeof options.success === 'function' ? options.success(answers) : options.success,
+    changedId: lastId,
+    link: options.link ?? null
+  };
 }
 
 /** The id of a document version in an upload answer ({ document, version }). */

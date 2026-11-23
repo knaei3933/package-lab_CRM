@@ -44,6 +44,8 @@ export interface CardDesign {
 export interface ApprovalCardView {
   source: 'server' | 'web';
   poId: string;
+  /** P4 H4①: the film order's id (the 希望納期 is recorded on the order). Null when the card did not carry it. */
+  orderId?: string | null | undefined;
   displayNumber: string | null;
   status: string;
   orderCode: string;
@@ -176,6 +178,7 @@ export function cardFromServer(poId: string, data: unknown): ApprovalCardView | 
   return {
     source: 'server',
     poId,
+    orderId: text(order.id),
     displayNumber: text(paper.displayNumber),
     status: text(paper.status) ?? 'DRAFT',
     orderCode: text(order.code) ?? '',
@@ -238,6 +241,7 @@ function organizationFromGate(state: OrganizationApprovalStateView | undefined):
 export function cardFromWeb(input: {
   paper: MakerPoViewRow;
   orderCode: string;
+  orderId?: string | null | undefined;
   paymentTerms: string | null;
   gate: ApprovalGateView | null;
   sevenPo: SevenPurchaseOrderView | null;
@@ -257,6 +261,7 @@ export function cardFromWeb(input: {
   return {
     source: 'web',
     poId: paper.id,
+    orderId: input.orderId ?? null,
     displayNumber: null,
     status: paper.status,
     orderCode: input.orderCode,
@@ -303,6 +308,38 @@ export function cardFromWeb(input: {
   };
 }
 
+/** P4 H4① (server rule): a 代表承認 needs both facts; the API answers a blocker with these codes. */
+export const AMOUNT_REQUIRED_CODE = 'AMOUNT_REQUIRED';
+export const DELIVERY_DATE_REQUIRED_CODE = 'DELIVERY_DATE_REQUIRED';
+
+export interface ApprovalCardNeeds {
+  /** 金額 is not on the paper: the representative types it on the card (no way to approve without it). */
+  amount: boolean;
+  /** 希望納期 is not on the order: it is recorded first, then the card is read again (it is part of the frozen paper). */
+  requestedDeliveryDate: boolean;
+  /** Blockers that are not one of the two inputs above (shown as 「承認できません」). */
+  otherBlockers: Array<{ code: string; message: string }>;
+  /** The approve form is shown: nothing but the amount (typed in the form itself) stands in the way. */
+  canSubmitApproval: boolean;
+}
+
+/**
+ * P4 H4①: what the card still needs from the representative. The old 「金額未入力のまま承認する」
+ * check is gone — a missing amount or 希望納期 is something to enter, not something to accept.
+ * Pure; the API decides the approval itself (422 AMOUNT_REQUIRED / DELIVERY_DATE_REQUIRED).
+ */
+export function approvalCardNeeds(card: Pick<ApprovalCardView, 'blockers' | 'amountDisplay' | 'status' | 'canApprove' | 'expectedPaymentTerms'>): ApprovalCardNeeds {
+  const amount = card.blockers.some((blocker) => blocker.code === AMOUNT_REQUIRED_CODE) || card.amountDisplay === null;
+  const requestedDeliveryDate = card.blockers.some((blocker) => blocker.code === DELIVERY_DATE_REQUIRED_CODE);
+  const otherBlockers = card.blockers.filter((blocker) => blocker.code !== AMOUNT_REQUIRED_CODE && blocker.code !== DELIVERY_DATE_REQUIRED_CODE);
+  const canSubmitApproval = card.status === 'DRAFT'
+    && otherBlockers.length === 0
+    && !requestedDeliveryDate
+    && card.expectedPaymentTerms !== null
+    && (card.canApprove || amount);
+  return { amount, requestedDeliveryDate, otherBlockers, canSubmitApproval };
+}
+
 export async function loadApprovalCard(input: {
   paper: MakerPoViewRow;
   orderId: string;
@@ -322,5 +359,5 @@ export async function loadApprovalCard(input: {
     loadApprovalGate(input.orderId)
   ]);
   const paper = detail?.purchaseOrder ?? input.paper;
-  return cardFromWeb({ paper, orderCode: input.orderCode, paymentTerms: input.paymentTerms, gate, sevenPo: input.sevenPo });
+  return cardFromWeb({ paper, orderCode: input.orderCode, orderId: input.orderId, paymentTerms: input.paymentTerms, gate, sevenPo: input.sevenPo });
 }

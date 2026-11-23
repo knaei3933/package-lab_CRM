@@ -11,7 +11,7 @@ export async function approvalSnapshotFor(poId: string): Promise<string | null> 
   return (await approvalCardFacts(poId)).hash;
 }
 
-/** The hash and whether the frozen paper has no amount (the approval then needs an explicit confirmation). */
+/** The hash and whether the frozen paper has no amount (P4 H4①: the approval then needs the amount typed). */
 export async function approvalCardFacts(poId: string): Promise<{ hash: string | null; amountMissing: boolean }> {
   const card = await callApi<{ makerPurchaseOrder?: { approvalSnapshotSha256?: unknown }; snapshot?: { amounts?: unknown } }>(
     `/api/maker-purchase-orders/${encodeURIComponent(poId)}/approval-card`
@@ -22,7 +22,5 @@ export async function approvalCardFacts(poId: string): Promise<{ hash: string | 
     amountMissing: card.ok && (card.data?.snapshot?.amounts === null || card.data?.snapshot?.amounts === undefined)
   };
 }
-
-export const AMOUNT_MISSING_CONFIRM_MESSAGE = 'このメーカー発注書には金額が入力されていません。発注の画面の承認カードで「金額未入力のまま承認する」にチェックを入れて承認してください。';
 
 export const SNAPSHOT_UNREADABLE_MESSAGE = '承認カードを読み込めなかったため、承認を止めました。画面を再読み込みしてから承認してください。';
