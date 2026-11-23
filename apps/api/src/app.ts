@@ -31,7 +31,7 @@ import {
   evaluateCeoApprovalFacts,
   CEO_APPROVAL_FACT_MESSAGES,
   evaluateEvidenceSenderDomain,
-  EVIDENCE_SENDER_DOMAIN_MISMATCH_MESSAGE,
+  evidenceSenderDomainWarning,
   type EvidenceSenderDomainCheck,
   evaluateRevisionRegistrationGate,
   evaluateSevenPoChecklist,
@@ -460,6 +460,13 @@ async function allocateFilmOrderCode(tx: MakerPoTxExecutor, projectCode: string)
     if (/^\d{3,9}$/.test(rest)) max = Math.max(max, Number(rest));
   }
   return `${prefix}${String(max + 1).padStart(3, '0')}`;
+}
+
+/** P4 review M-1: the send time the evidence was judged by lies too far ahead of the server clock. */
+class SentAtInFutureUnderEvidence extends Error {
+  constructor(readonly gate: Extract<ReturnType<typeof evaluateMakerPoSentAtCurrency>, { ok: false }>) {
+    super('judged sentAt in the future');
+  }
 }
 
 /** P4 H4①: the approval card / queue blockers for missing 金額・希望納期 (one per fact). */
@@ -5679,14 +5686,10 @@ export function createApp({
       bytes: evidenceBytes,
       registeredContactEmail: issuingAccount?.contactEmail ?? null
     });
-    const approvalWarnings = senderDomainCheck.status === 'mismatch'
-      ? [{
-          code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH',
-          message: EVIDENCE_SENDER_DOMAIN_MISMATCH_MESSAGE,
-          fromDomain: senderDomainCheck.fromDomain,
-          registeredDomain: senderDomainCheck.registeredDomain
-        }]
-      : [];
+    // Mismatch → EVIDENCE_SENDER_DOMAIN_MISMATCH; no / several / unreadable
+    // From → EVIDENCE_SENDER_UNVERIFIABLE (review L-1). Warnings only.
+    const senderWarning = evidenceSenderDomainWarning(senderDomainCheck);
+    const approvalWarnings = senderWarning ? [senderWarning] : [];
     // A revocation never contributes to an approval, so its status reads
     // not_applicable regardless of the evidence kind — the identifier itself is
     // still checked above and an invented one is refused.
@@ -8078,14 +8081,10 @@ export function createApp({
             fromAddress: senderDomainCheck?.fromAddress ?? null,
             senderDomainCheck
           },
-          warnings: senderDomainCheck?.status === 'mismatch'
-            ? [{
-                code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH',
-                message: EVIDENCE_SENDER_DOMAIN_MISMATCH_MESSAGE,
-                fromDomain: senderDomainCheck.fromDomain,
-                registeredDomain: senderDomainCheck.registeredDomain
-              }]
-            : []
+          warnings: (() => {
+            const warning = evidenceSenderDomainWarning(senderDomainCheck);
+            return warning ? [warning] : [];
+          })()
         },
         deepLink: link('approval', row, {
           subjectId: row.eventId,
@@ -8807,6 +8806,19 @@ export function createApp({
           };
         }
 
+        // P4 review M-1 (fail closed): the EML Date original value (N2) can be
+        // up to the skew tolerance away from the declared sentAt, so the M8-HARDEN
+        // FIX C2 future gate that already ran on the declared value runs again on
+        // the time this send is judged by and stored with. A send dated more than
+        // the allowed skew ahead of the server clock is refused exactly as before
+        // (422 SENT_AT_IN_FUTURE); throwing rolls the whole registration back,
+        // the inline evidence document included.
+        if (evaluation.verificationStatus !== 'UNVERIFIED') {
+          const judgedSentAt = typeof evaluation.sentAt === 'string' ? new Date(evaluation.sentAt) : evaluation.sentAt;
+          const judgedCurrency = evaluateMakerPoSentAtCurrency({ sentAt: judgedSentAt, now });
+          if (!judgedCurrency.ok) throw new SentAtInFutureUnderEvidence(judgedCurrency);
+        }
+
         // M8-HARDEN FIX C1: only a VERIFIED send moves the paper. A pending one
         // leaves the paper where it is — the send is recorded with its failed
         // checks and a corrected .eml can be registered afterwards; an
@@ -8995,6 +9007,14 @@ export function createApp({
       if (error instanceof MakerPoStateConflict) {
 
         return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
+      }
+      if (error instanceof SentAtInFutureUnderEvidence) {
+        return context.json({
+          error: error.gate.message,
+          code: error.gate.code,
+          serverNow: error.gate.serverNow,
+          sentAt: error.gate.sentAt
+        }, 422);
       }
       throw error;
     }

@@ -333,6 +333,7 @@ export const ERROR_MESSAGES_JA: Readonly<Record<string, string>> = {
   DELIVERY_DATE_REQUIRED: '希望納期が記録されていないため代表承認できません。発注の「希望納期」を入力してから承認してください',
   IDEMPOTENCY_KEY_REQUIRED: '発注コードを自動で付けるには送信の識別キーが必要です。画面を再読み込みしてからやり直してください',
   EVIDENCE_SENDER_DOMAIN_MISMATCH: '承認証跡メールの差出人のドメインが、発行元として登録されている取引先のドメインと一致しません。発行元を確かめてから確認してください',
+  EVIDENCE_SENDER_UNVERIFIABLE: '承認証跡メールの差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）。発行元を確かめてから確認してください',
   ASSIGNMENT_USER_REQUIRED: '割り当てる利用者を選んでください',
   ASSIGNMENT_USER_NOT_FOUND: '割り当てる利用者が見つかりません（無効化された利用者は割り当てられません）',
   ASSIGNMENT_ROLE_NOT_ASSIGNABLE: '代表者はすべての案件を開けるため、割り当ては不要です',

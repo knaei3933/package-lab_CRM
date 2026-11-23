@@ -1,6 +1,6 @@
 # API エラーコード一覧（P0 サーバー p0/server + P1 サーバー p1/server + P2 サーバー p2/server + P4 サーバー p4/server）
 
-コード数: 287（`ERROR_MESSAGES_JA` の件数。P2 で 10 件、P2 検収反映で 4 件、P4 で 9 件追加）
+コード数: 288（`ERROR_MESSAGES_JA` の件数。P2 で 10 件、P2 検収反映で 4 件、P4 で 9 件、P4 検収反映で 1 件追加）
 
 API の拒否応答（HTTP 400 以上）は必ず JSON `{ "error": "<日本語の文>", "code": "<CODE>", ...追加項目 }` です（R09）。
 `error` には英語の core メッセージ・enum 値・項目名・内部 URL/ポートを入れません。安全でない文はサーバーがこの表の文に置き換えます。
@@ -403,7 +403,8 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `AMOUNT_REQUIRED` | 422 | 金額が入力されていないため代表承認できません。承認画面で金額を入力してから承認してください | P4 H4①: POST /api/maker-purchase-orders/:poId/ceo-approval。`missing: ["totalAmount", "requestedDeliveryDate"?]`（足りない項目すべて）。承認カード・代表の確認待ちの `blockers` にも同じコードが出る。金額は PATCH …/amounts（代表者）で入れる |
 | `DELIVERY_DATE_REQUIRED` | 422 | 希望納期が記録されていないため代表承認できません。発注の「希望納期」を入力してから承認してください | P4 H4①: 同上。金額があり希望納期だけ無いとき。希望納期は PATCH /api/film-supply-orders/:orderId/delivery-dates |
 | `IDEMPOTENCY_KEY_REQUIRED` | 400 | 発注コードを自動で付けるには送信の識別キーが必要です。画面を再読み込みしてからやり直してください | P4 H7②: 発注作成で `code` を空（省略・null・空白）にしたのに `Idempotency-Key` が無い。自動採番は `{案件コード}-FILM-{3桁}`、応答 `codeSource: "auto"` |
-| `EVIDENCE_SENDER_DOMAIN_MISMATCH` | — | 承認証跡メールの差出人のドメインが、発行元として登録されている取引先のドメインと一致しません。発行元を確かめてから確認してください | P4 N4: **拒否ではなく警告**。承認記録の応答 `warnings[]`、代表の確認待ち `detail.warnings[]` に `{ code, message, fromDomain, registeredDomain }`。比較結果は `senderDomainCheck` |
+| `EVIDENCE_SENDER_DOMAIN_MISMATCH` | — | 承認証跡メールの差出人のドメインが、発行元として登録されている取引先のドメインと一致しません。発行元を確かめてから確認してください | P4 N4: **拒否ではなく警告**（`senderDomainCheck.status = mismatch`）。承認記録の応答 `warnings[]`、代表の確認待ち `detail.warnings[]` に `{ code, message, fromDomain, registeredDomain }`。比較結果は `senderDomainCheck` |
+| `EVIDENCE_SENDER_UNVERIFIABLE` | — | 承認証跡メールの差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）。発行元を確かめてから確認してください | P4 検収 L-1: **拒否ではなく警告**。`senderDomainCheck.status` が `from_missing`（From なし・ASCII でないドメイン＝同形異字の可能性）または `multiple_from`（From ヘッダー 2 つ以上・アドレス 2 つ以上）。IP リテラル（`a@[203.0.113.5]`）は `mismatch`。`not_email`（PDF・画像など）は警告なし |
 | `ASSIGNMENT_USER_REQUIRED` | 422 | 割り当てる利用者を選んでください | P4 N1: POST /api/projects/:projectId/assignments の `userId`（UUID）が無い・不正 |
 | `ASSIGNMENT_USER_NOT_FOUND` | 422 | 割り当てる利用者が見つかりません（無効化された利用者は割り当てられません） | P4 N1: 存在しない・無効化済みの利用者 |
 | `ASSIGNMENT_ROLE_NOT_ASSIGNABLE` | 422 | 代表者はすべての案件を開けるため、割り当ては不要です | P4 N1: 割り当てられるのは staff・viewer・auditor。`role` |

@@ -3,8 +3,9 @@
  * PO only with its 金額 and its 希望納期 on record. Until P4 the approval
  * card let the representative approve with 「金額未入力のまま承認する」 and a
  * 「未記録」 delivery date. The gate sits next to G6 (支払条件) and is decided by
- * this one pure function, so the approval endpoint (before and under its row
- * lock), the approval card's blockers and the representative queue agree.
+ * this one pure function, so the approval endpoint (under its row lock, after
+ * every earlier refusal), the approval card's blockers and the representative
+ * queue agree.
  *
  * Not one of the four representative-confirmed server rules; the amount stays
  * admin-only (only the representative writes or reads it), and a refusal is a

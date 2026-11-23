@@ -100,9 +100,12 @@ export function registerP4Routes(app: Hono<any>, { db, recordAuditEvent }: P4Rou
       return context.json({ error: '割り当てる利用者を選んでください', code: 'ASSIGNMENT_USER_REQUIRED' }, 422);
     }
     const userId = body.userId;
-    const [target] = await db.select({ id: users.id, displayName: users.displayName, role: users.role, isActive: users.isActive })
-      .from(users).where(eq(users.id, userId)).limit(1);
-    if (!target || !target.isActive) {
+    const [target] = await db.select({
+      id: users.id, displayName: users.displayName, role: users.role, isActive: users.isActive, deletedAt: users.deletedAt
+    }).from(users).where(eq(users.id, userId)).limit(1);
+    // P4 review L-2: a logically deleted user (deleted_at set) is refused like
+    // an inactive one, whatever is_active says.
+    if (!target || !target.isActive || target.deletedAt !== null) {
       return context.json({ error: '割り当てる利用者が見つかりません（無効化された利用者は割り当てられません）', code: 'ASSIGNMENT_USER_NOT_FOUND' }, 422);
     }
     const role = String(target.role) as UserRole;
