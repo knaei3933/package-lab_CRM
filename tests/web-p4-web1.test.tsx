@@ -241,17 +241,10 @@ describe('H7① a duplicate says where the registered record is', () => {
 });
 
 describe('H10① a viewer is told it is a permission, not that the order is missing', () => {
-  it('orderLookupFailure: withheld codes + a read-only role → forbidden; otherwise missing', async () => {
-    const { orderLookupFailure } = await import('../apps/web/src/lib/order-lookup.js');
-    const { HIDDEN_BY_ROLE_LABEL } = await import('../apps/web/src/lib/redaction.js');
-    const hidden = [{ code: HIDDEN_BY_ROLE_LABEL }];
-    expect(orderLookupFailure(hidden, 'viewer')).toBe('forbidden');
-    expect(orderLookupFailure(hidden, 'unknown-role')).toBe('forbidden');
-    expect(orderLookupFailure(hidden, 'admin')).toBe('missing');
-    expect(orderLookupFailure(hidden, 'staff')).toBe('missing');
-    expect(orderLookupFailure(hidden, 'auditor')).toBe('missing');
-    expect(orderLookupFailure([{ code: 'FSO-1' }], 'viewer')).toBe('missing');
-    expect(orderLookupFailure([], 'viewer')).toBe('missing');
+  it('orderScreenRefused: the viewer and any unknown role are refused; operators and the auditor are not (p6 int round 2: by role, not by withheld codes)', async () => {
+    const { orderScreenRefused } = await import('../apps/web/src/lib/order-lookup.js');
+    for (const role of ['viewer', 'unknown-role', '', null, undefined]) expect(orderScreenRefused(role), String(role)).toBe(true);
+    for (const role of ['admin', 'staff', 'auditor']) expect(orderScreenRefused(role), role).toBe(false);
   });
 
   it('the order screen shows the permission message and the 履歴 link (the wording is the one the audit asked for)', async () => {
@@ -259,7 +252,7 @@ describe('H10① a viewer is told it is a permission, not that the order is miss
     expect(ORDER_FORBIDDEN_TITLE).toBe('閲覧権限では発注の画面を開けません');
     expect(ORDER_FORBIDDEN_BODY).toContain('履歴は「履歴」画面で見られます');
     const screen = code(readSrc('screens/OrderDetailScreen.tsx'));
-    expect(screen).toContain("orderLookupFailure(workspace.filmOrders, user.role) === 'forbidden'");
+    expect(screen).toContain('if (orderScreenRefused(user.role)) {');
   });
 });
 

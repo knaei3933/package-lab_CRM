@@ -1,24 +1,14 @@
-import { HIDDEN_BY_ROLE_LABEL } from './redaction';
-
 /**
- * P4 H10① (N10): the order screen could not find the order of the address.
- * For a viewer the order codes are withheld by the API (「（閲覧権限なし）」), so
- * 「この発注は見つかりません」 was a false statement — the order exists, this
- * role may not open its screen. Pure.
+ * P4 H10① (N10): the order screen is the operators' (担当者・代表者) and the auditor's read-only view;
+ * a viewer — or a role this web does not know, read as one — is told it is a permission, never
+ * 「この発注は見つかりません」.
  *
- * - 'forbidden': the role is read-only (viewer, or an unknown role read as one)
- *   and the list carries withheld codes: say it is a permission.
- * - 'missing': the code is not in this project (or the list could not be read).
- * The auditor has its own screens and is not told this (it reads the history).
+ * p6 int round 2: until p6 H10 the viewer's order codes were withheld, so the order of the address was
+ * never found for a viewer and the refusal came from that lookup. Since the viewer reads the codes (H10:
+ * code and stage on the overview), the refusal is decided by the role itself. Pure.
  */
-export type OrderLookupFailure = 'forbidden' | 'missing';
-
-export function orderLookupFailure(
-  orders: ReadonlyArray<{ code: string }>,
-  role: string | null | undefined
-): OrderLookupFailure {
-  const readOnly = role !== 'admin' && role !== 'staff' && role !== 'auditor';
-  return readOnly && orders.some((order) => order.code === HIDDEN_BY_ROLE_LABEL) ? 'forbidden' : 'missing';
+export function orderScreenRefused(role: string | null | undefined): boolean {
+  return role !== 'admin' && role !== 'staff' && role !== 'auditor';
 }
 
 export const ORDER_FORBIDDEN_TITLE = '閲覧権限では発注の画面を開けません';

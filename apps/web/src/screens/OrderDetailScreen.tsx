@@ -1,6 +1,6 @@
 import Link from 'next/link';
 import { Bilingual } from '../components/Bilingual';
-import { orderLookupFailure, ORDER_FORBIDDEN_BODY, ORDER_FORBIDDEN_TITLE } from '../lib/order-lookup';
+import { orderScreenRefused, ORDER_FORBIDDEN_BODY, ORDER_FORBIDDEN_TITLE } from '../lib/order-lookup';
 import { OrderTimeline } from '../components/OrderTimeline';
 import { StepPanelView } from '../components/StepPanel';
 import { StepAnnouncer } from '../components/StepAnnouncer';
@@ -69,8 +69,9 @@ export async function OrderDetailScreen({
   if (!user) return null;
   const workspace = board.workspace;
   const order = workspace.filmOrders.find((candidate) => candidate.code === orderCode);
-  if (!order && !workspace.error && orderLookupFailure(workspace.filmOrders, user.role) === 'forbidden') {
-    // P4 H10①: not 「見つかりません」 — the role may not open this screen.
+  if (orderScreenRefused(user.role)) {
+    // P4 H10① / p6 int round 2: not 「見つかりません」 — the role may not open this screen (decided by the role,
+    // not by whether its codes were withheld: since p6 H10 the viewer reads them).
     return (
       <section className="p1-notfound" aria-labelledby="order-forbidden-title">
         <h1 id="order-forbidden-title" className="p1-title"><Bilingual ja={ORDER_FORBIDDEN_TITLE} ko="열람 권한으로는 발주 화면을 열 수 없습니다" /></h1>
