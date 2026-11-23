@@ -25,6 +25,7 @@ import type { ProjectScreenProps } from './screen-props';
 import { deliveryTermsSummary, OrderTermsSection } from '../components/OrderTermsSection';
 import { readApprovalNotice } from '../lib/approval-notice-server';
 import { loadDeliveryStatus } from '../lib/receipt-closure';
+import { readReceiptNotice } from '../lib/receipt-notice-server';
 import { deliveryTermsLock, loadOrderFacts } from '../lib/order-terms';
 import { loadMakerRecipients, previousTypedRecipientOf } from '../lib/maker-master';
 import { SecondaryMenu } from '../components/SecondaryMenu';
@@ -160,7 +161,9 @@ export async function OrderDetailScreen({
     readinessLabel: labelLookup(workspace.labels, 'commissionReadinessStates'),
     // p4/web3 (e): what the completion rests on (server-decided), read only around the completion.
     closure: deliveryStatus?.closure ?? null,
-    evidenceKinds: deliveryStatus?.evidenceKinds ?? {}
+    evidenceKinds: deliveryStatus?.evidenceKinds ?? {},
+    // p4/web4: why the last confirmation stopped (kept across the redraw of this step).
+    notice: completionStage ? await readReceiptNotice(order.id) : null
   };
   // P4 §0: the cancellation review warns about the maker paper left on the order (the board's workspace skips that read).
   const makerCleanup = status === 'CANCELLATION_REVIEW' || status === 'ON_HOLD' || status === 'CHANGE_REVIEW' || status === 'CANCELLED'

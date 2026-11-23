@@ -179,7 +179,7 @@ export function PendingVerificationSection({
           ) : null}
           {readOnly ? (
             <p className="ui-note">
-              {recordHref ? <a href={recordHref}>発注の画面（手順6 校了）で確認を記録する</a> : '確認は発注の画面（手順6 校了）で記録します。'}
+              {recordHref ? <a className="p4w3-target" href={recordHref}>発注の画面（手順6 校了）で確認を記録する</a> : '確認は発注の画面（手順6 校了）で記録します。'}
             </p>
           ) : canVerify && entry.recordedAsPending ? (
             <ActionForm

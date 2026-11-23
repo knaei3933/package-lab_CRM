@@ -16,7 +16,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  * and renders the real components (no CSS text is read). Server rules, amounts (staff / viewer / auditor see none), the
  * idempotency semantics and P-7 (Japanese-only screens carry no Hangul) are not touched — the API is mocked and still decides.
  */
-const session = vi.hoisted(() => ({ user: null as { id: string; role: string; displayName?: string | null } | null, projects: [] as Array<{ id: string; code: string; name: string; status: string }> }));
+const session = vi.hoisted(() => ({
+  user: null as { id: string; role: string; displayName?: string | null } | null,
+  projects: [] as Array<{ id: string; code: string; name: string; status: string }>,
+  cookies: new Map<string, string>(),
+  cookieWrites: [] as Array<{ op: 'set' | 'delete'; name: string; value?: string; options?: Record<string, unknown> }>
+}));
 const callApi = vi.hoisted(() => vi.fn());
 const revalidatePath = vi.hoisted(() => vi.fn());
 vi.mock('../apps/web/src/lib/api.js', () => ({
@@ -32,7 +37,17 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
 }));
 vi.mock('next/cache', () => ({ revalidatePath }));
 vi.mock('next/headers', () => ({
-  cookies: async () => ({ get: () => undefined, set: () => undefined, delete: () => undefined }),
+  cookies: async () => ({
+    get: (name: string) => (session.cookies.has(name) ? { name, value: session.cookies.get(name)! } : undefined),
+    set: (name: string, value: string, options?: Record<string, unknown>) => {
+      session.cookies.set(name, value);
+      session.cookieWrites.push({ op: 'set', name, value, options });
+    },
+    delete: (name: string) => {
+      session.cookies.delete(name);
+      session.cookieWrites.push({ op: 'delete', name });
+    }
+  }),
   headers: async () => ({ get: () => null })
 }));
 vi.mock('next/navigation', () => ({
@@ -71,6 +86,7 @@ const stepActions = await import('../apps/web/src/app/step-actions.js');
 const actions = await import('../apps/web/src/app/actions.js');
 const cardLib = await import('../apps/web/src/lib/approval-card.js');
 const closureLib = await optional(() => import('../apps/web/src/lib/receipt-closure.js'));
+const noticeLib2 = await optional(() => import('../apps/web/src/lib/receipt-notice.js'));
 const senderLib = await import('../apps/web/src/lib/sender-check.js');
 const resultLib = await import('../apps/web/src/lib/action-result.js');
 /** The real project-data module (the mock above only replaces the workspace read). */
@@ -140,6 +156,8 @@ beforeEach(() => {
   board.value = null;
   workspaceFixture.value = null;
   session.projects = [];
+  session.cookies = new Map();
+  session.cookieWrites = [];
 });
 
 // =============================================================================================
@@ -583,6 +601,112 @@ describe('(2c) every confirmation says what it rests on (delivery-status evidenc
 });
 
 
+describe('(2d) the refusal survives the redraw: a stopped confirmation is said at the top of step 12 (cookie bound to the order)', () => {
+  const ORDER_UUID = '0192a000-0000-7000-8000-0000000000a1';
+  const OTHER_UUID = '0192a000-0000-7000-8000-0000000000a2';
+  const recordForm = (over: Record<string, string | string[]> = {}) => form({
+    orderId: ORDER_UUID, orderCode: 'FSO-1', projectCode: 'PRJ-1', lineId: 'line-1', 'unit_line-1': 'meters', 'quantity_line-1': '100',
+    receiptIssuer: 'customer_generated', receiptMode: 'confirm', evaluateReadiness: 'false', sevenPurchaseOrderId: 'po-1', ...FILE, ...over
+  });
+  /** The API as the chain needs it: the delivery, the order's move and the evidence are stored; the confirmation is refused. */
+  const refuseAtConfirmation = () => callApi.mockImplementation(async (url: string) => {
+    if (/\/deliveries$/.test(url)) return ok({ id: 'del-1' }, 201);
+    if (/\/transitions$/.test(url)) return ok({ order: { id: ORDER_UUID, status: 'FILM_DELIVERED' } });
+    if (/\/documents$/.test(url)) return ok({ document: { id: 'doc-new' }, version: { id: 'ver-new' } }, 201);
+    if (/\/verify$/.test(url)) return ok({ id: 'doc-new' });
+    return fail(422, BOUND);
+  });
+  const noticeCookie = () => session.cookies.get('kanei_receipt_notice');
+
+  it('encode / decode: a valid cookie reads back; a malformed one, another order\'s and an unknown reason are no notice', () => {
+    const notice = { orderId: ORDER_UUID, reason: 'maker_po_bound', at: '2026-11-23T05:00:00.000Z' };
+    const value = noticeLib2.encodeReceiptNotice?.(notice);
+    expect(noticeLib2.decodeReceiptNotice?.(value)).toEqual(notice);
+    expect(noticeLib2.decodeReceiptNotice?.(value, ORDER_UUID)).toEqual(notice);
+    expect(noticeLib2.decodeReceiptNotice?.(value, OTHER_UUID)).toBeNull();
+    for (const bad of [null, '', 'x', `${ORDER_UUID}|something_else|2026-11-23T05:00:00.000Z`, `${ORDER_UUID}|maker_po_bound|yesterday`, `not-a-uuid|maker_po_bound|2026-11-23T05:00:00.000Z`, `${value}|extra`, 'a'.repeat(200)]) {
+      expect(noticeLib2.decodeReceiptNotice?.(bad as never), String(bad).slice(0, 30)).toBeNull();
+    }
+  });
+
+  it('the single-submit 「納品を記録する」 refused at the confirmation: the answer is the guidance AND the reason is kept for the redraw', async () => {
+    refuseAtConfirmation();
+    const result = await stepActions.recordDeliveryStepAction(null, recordForm());
+    expect(result).toMatchObject({ ok: false, code: BOUND, settled: true });
+    expect(result.message.startsWith('「納品1の確認」で止まりました（その前の手順は記録済みです）。')).toBe(true);
+    expect(noticeLib2.decodeReceiptNotice?.(noticeCookie(), ORDER_UUID)).toMatchObject({ orderId: ORDER_UUID, reason: 'maker_po_bound' });
+    const write = session.cookieWrites.find((entry) => entry.name === 'kanei_receipt_notice');
+    expect(write?.options).toMatchObject({ httpOnly: true, sameSite: 'lax', path: '/', maxAge: 600 });
+    // Display only: no hash, no amount, no rule in the cookie.
+    expect(noticeCookie()!.split('|')).toEqual([ORDER_UUID, 'maker_po_bound', expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/)]);
+  });
+
+  it('the confirmation of an existing evidence refused the same way keeps the reason too; any other refusal keeps none', async () => {
+    callApi.mockResolvedValue(fail(422, BOUND));
+    await stepActions.confirmDeliveryReceiptStepAction(null, form({ orderId: ORDER_UUID, orderCode: 'FSO-1', projectCode: 'PRJ-1', receiptMode: 'confirm', evaluateReadiness: 'false', deliveryId: 'del-1', evidenceDocumentId: 'doc-r', evidenceDocumentVersionId: 'ver-r', evidenceVerified: 'true' }));
+    expect(noticeLib2.decodeReceiptNotice?.(noticeCookie(), ORDER_UUID)?.reason).toBe('maker_po_bound');
+    session.cookies.clear();
+    callApi.mockResolvedValue(fail(422, 'DELIVERY_EVIDENCE_NOT_VERIFIED'));
+    await stepActions.confirmDeliveryReceiptStepAction(null, form({ orderId: ORDER_UUID, orderCode: 'FSO-1', projectCode: 'PRJ-1', receiptMode: 'confirm', evaluateReadiness: 'false', deliveryId: 'del-1', evidenceDocumentId: 'doc-r', evidenceDocumentVersionId: 'ver-r', evidenceVerified: 'true' }));
+    expect(noticeCookie()).toBeUndefined();
+  });
+
+  it('a later submit that goes through (the customer\'s own receipt) ends the notice', async () => {
+    refuseAtConfirmation();
+    await stepActions.recordDeliveryStepAction(null, recordForm());
+    expect(noticeCookie()).toBeDefined();
+    callApi.mockReset();
+    callApi.mockImplementation(async (url: string) => /\/documents$/.test(url) ? ok({ document: { id: 'doc-ok' }, version: { id: 'ver-ok' } }, 201) : ok({ id: 'x' }));
+    const result = await stepActions.confirmDeliveryReceiptStepAction(null, form({ orderId: ORDER_UUID, orderCode: 'FSO-1', projectCode: 'PRJ-1', receiptMode: 'confirm', evaluateReadiness: 'false', deliveryId: 'del-1', receiptIssuer: 'customer_generated', ...FILE }));
+    expect(result.ok).toBe(true);
+    expect(noticeCookie()).toBeUndefined();
+  });
+
+  const stepWith = (notice: unknown, deliveries: unknown[] = [delivery('del-1')], showKorean = false, role = 'admin') => panel('FILM_DELIVERED', role, {
+    showKorean, documents: [receiptDoc('u-admin')], deliveryContext: context('u-admin', deliveries, { notice })
+  });
+  const NOTICE = { orderId: ORDER_UUID, reason: 'maker_po_bound', at: '2026-11-23T05:00:00.000Z' };
+
+  it('step 12 says it at the top (role=alert) with the way forward, while a delivery is still unconfirmed', () => {
+    const html = stepWith(NOTICE);
+    expect(html).toMatch(/<p class="p1-banner p4w3-notice" role="alert" data-notice="maker_po_bound">/);
+    expect(html).toContain('の納品の確認は止まりました。');
+    expect(html).toContain('メーカー発注書の受領書');
+    expect(html).toContain('<a href="#receipt-alternative">お客様の受領証跡を登録する</a>');
+    expect(html.indexOf('data-notice="maker_po_bound"')).toBeLessThan(html.indexOf('p4w2-delivery-list'));
+    expect(html).not.toMatch(HANGUL);
+    expect(stepWith(NOTICE, [delivery('del-1')], true)).toContain('고객에게서 받은 납품 수령 증빙');
+    // Nothing left to confirm / no notice: no banner.
+    expect(stepWith(NOTICE, [delivery('del-1', true)])).not.toContain('data-notice');
+    expect(stepWith(null)).not.toContain('data-notice');
+  });
+
+  it('the alternative form starts opened while a stopped confirmation waits for it, and closed otherwise (the link opens it: live check)', () => {
+    expect(stepWith(NOTICE)).toMatch(/<details class="p4w4-alt" id="receipt-alternative" open="" data-alternative-receipt="">/);
+    expect(stepWith(null)).toMatch(/<details class="p4w4-alt" id="receipt-alternative" data-alternative-receipt="">/);
+  });
+
+  it('the order screen reads the notice of ITS order only (another order\'s cookie says nothing)', async () => {
+    const serve = () => {
+      session.user = { id: 'u-admin', role: 'admin' };
+      const o = order('FILM_DELIVERED', { id: ORDER_UUID, lines: [] });
+      workspaceFixture.value = {
+        error: null, projectRefused: false, project: { id: 'project-a', code: 'PRJ-1', name: 'A', route: 'F1' }, labels: null, filmOrders: [o], fillingOrders: [],
+        sevenPurchaseOrders: [PO], documents: [receiptDoc('u-admin')], revisions: [], approvalEvents: [],
+        deliveries: [delivery('del-1', false, { orderId: ORDER_UUID })], readiness: null, documentVersionsWithheld: false, revisionsWithheld: 0
+      };
+      board.value = { workspace: workspaceFixture.value, boards: [{ order: o, closure: null, makerPurchaseOrders: [], makerPoError: null, paymentGate: null, paymentGateError: null }] };
+      callApi.mockImplementation(async (url: string) => url.endsWith('/delivery-status') ? ok({ lines: [] }) : url.endsWith('/order-facts') ? ok({ orderedQuantity: '500', orderedUnit: 'meters', updatedAt: null }) : ok({ events: [] }));
+    };
+    const screen = async () => render(await OrderDetailScreen({ projectId: 'project-a', projectCode: 'PRJ-1', orderCode: 'FSO-1', started: false, step: 12 } as never));
+    serve();
+    session.cookies.set('kanei_receipt_notice', `${ORDER_UUID}|maker_po_bound|2026-11-23T05:00:00.000Z`);
+    expect(await screen()).toContain('data-notice="maker_po_bound"');
+    session.cookies.set('kanei_receipt_notice', `${OTHER_UUID}|maker_po_bound|2026-11-23T05:00:00.000Z`);
+    expect(await screen()).not.toContain('data-notice="maker_po_bound"');
+  });
+});
+
 // =============================================================================================
 // (3) the Lows left by the p4/web3 review (REVIEW.md L-1 … L-6)
 // =============================================================================================
@@ -704,5 +828,19 @@ describe('(3) L-6: the lock line of a blocked 未定 row has its Korean twin (by
     const html = await home('something_new', true);
     expect(html).toContain('いまは変更できません');
     expect(html).not.toContain('결제 조건을 바꿀 수 없습니다');
+  });
+});
+
+describe('(3) L-6: the old approvals list\'s link to the step-6 check is a 44px target, and the summaries are 44px on a narrow screen', () => {
+  it('the read-only list links to the order screen with the target class', () => {
+    const html = render(<PendingVerificationSection pending={[toView(rawPending(FOREIGN))] as never} role="admin" canVerify={false} readOnly recordHref="/p/PRJ-1/o/FSO-1?step=6" evidenceLabel={() => 'x'} organizationText={() => '顧客'} />);
+    expect(html).toContain('<a class="p4w3-target" href="/p/PRJ-1/o/FSO-1?step=6">発注の画面（手順6 校了）で確認を記録する</a>');
+    expect(html).not.toContain('手動確認を記録する');
+  });
+
+  it('the stylesheet carries the narrow-screen rule for every <summary> in the content (measured live at 390px: see REPORT)', () => {
+    const css = readSrc('app/p4-web4.css');
+    expect(css).toMatch(/@media \(max-width: 600px\) \{\s*main details > summary \{[^}]*min-height: 44px;/);
+    expect(readSrc('app/layout.tsx')).toContain("import './p4-web4.css';");
   });
 });

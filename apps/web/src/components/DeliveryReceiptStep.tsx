@@ -1,4 +1,5 @@
 import { ActionForm } from './ActionForm';
+import { RevealDetails } from './RevealDetails';
 import { Bilingual } from './Bilingual';
 import { StepFileField } from './StepFileField';
 import { CheckboxField, SelectField, TextField } from './fields';
@@ -12,6 +13,8 @@ import { formatTimestamp, READINESS_BLOCKING_LABELS, VERIFICATION_STATUS_LABELS 
 import { CLOSURE_BASIS_LABELS, EVIDENCE_KIND_TEXT, EVIDENCE_KIND_TEXT_KO } from '../lib/receipt-closure';
 import type { DeliveryEvidenceKind, ReceiptClosureView } from '../lib/receipt-closure';
 import { ALTERNATIVE_RECEIPT_ANCHOR } from '../lib/step-messages';
+import { receiptNoticeText } from '../lib/receipt-notice';
+import type { ReceiptNotice } from '../lib/receipt-notice';
 
 /**
  * P4 H14 (R36 on the order screen): 12 納品 — the delivered quantity is confirmed
@@ -34,6 +37,8 @@ export interface DeliveryContext {
   closure?: ReceiptClosureView | null | undefined;
   /** p4/web4 (server2 §11/§12): what each confirmation rests on, by delivery id (empty: not read / older API). */
   evidenceKinds?: Readonly<Record<string, DeliveryEvidenceKind>> | undefined;
+  /** p4/web4: why the last confirmation of THIS order stopped, kept across the redraw (null: none). */
+  notice?: ReceiptNotice | null | undefined;
 }
 
 /** P4 H14 ②: a film delivery's confirmation in its own words (never 「充填製品の…」). */
@@ -132,6 +137,7 @@ export function DeliveryReceiptStep({
   const canConfirm = canRoleOperate(role, 'delivery_confirmation:record');
   return (
     <div className="p4w2-receipt">
+      {context.notice && unconfirmed.length > 0 ? <ReceiptStopNotice notice={context.notice} /> : null}
       <DeliveryLines deliveries={context.deliveries} evidenceKinds={context.evidenceKinds ?? {}} />
       {unconfirmed.length === 0 ? (
         <p className="p1-done"><span aria-hidden="true">✓ </span>{FILM_DELIVERY_CONFIRMATION_LABELS.CONFIRMED.ja}（受領証跡で数量を確認済み）</p>
@@ -182,7 +188,7 @@ export function DeliveryReceiptStep({
         </ActionForm>
       )}
       {canConfirm && unconfirmed.length > 0 && plan.kind === 'confirm_existing' ? (
-        <AlternativeReceiptForm order={order} projectCode={projectCode} unconfirmed={unconfirmed} evaluate={evaluate} admin={normalizeRole(role) === 'admin'} />
+        <AlternativeReceiptForm order={order} projectCode={projectCode} unconfirmed={unconfirmed} evaluate={evaluate} admin={normalizeRole(role) === 'admin'} stopped={Boolean(context.notice)} />
       ) : null}
 
       <ReadinessLine context={context} />
@@ -197,22 +203,40 @@ export function DeliveryReceiptStep({
   );
 }
 
+/** p4/web4: why the last confirmation stopped (kept across the redraw), with the way forward. */
+function ReceiptStopNotice({ notice }: { notice: ReceiptNotice }) {
+  const text = receiptNoticeText(notice.reason);
+  return (
+    <p className="p1-banner p4w3-notice" role="alert" data-notice={notice.reason}>
+      <span aria-hidden="true">⚠ </span>
+      {formatTimestamp(notice.at)} の納品の確認は止まりました。<Bilingual ja={text.ja} ko={text.ko} />{' '}
+      <a href={`#${ALTERNATIVE_RECEIPT_ANCHOR}`}>お客様の受領証跡を登録する</a>
+    </p>
+  );
+}
+
 /**
  * p4/web4 (server2 §11-2 / §12): the way out of 422 DELIVERY_EVIDENCE_MAKER_PO_BOUND — the customer's own receipt is
  * registered (and, for the representative, cited in the same submit) instead of the evidence the form above cites.
  * The refusal's link opens this block. Same action and same API rules as the form above: staff register only (P-4:
  * the uploader never confirms on their own evidence), the representative confirms.
  */
-function AlternativeReceiptForm({ order, projectCode, unconfirmed, evaluate, admin }: {
+function AlternativeReceiptForm({ order, projectCode, unconfirmed, evaluate, admin, stopped }: {
   order: FilmSupplyOrderView;
   projectCode: string;
   unconfirmed: readonly DeliveryView[];
   evaluate: boolean;
   admin: boolean;
+  /** A confirmation of this order was stopped (the notice): the form is waiting, so it starts opened. */
+  stopped: boolean;
 }) {
   return (
-    <details className="p4w4-alt" id={ALTERNATIVE_RECEIPT_ANCHOR} data-alternative-receipt>
-      <summary>お客様の受領証跡を登録して確認する<span className="p1-muted-inline">（上の証跡が使えないとき）</span></summary>
+    <RevealDetails
+      id={ALTERNATIVE_RECEIPT_ANCHOR}
+      className="p4w4-alt"
+      open={stopped}
+      summary={<>お客様の受領証跡を登録して確認する<span className="p1-muted-inline">（上の証跡が使えないとき）</span></>}
+    >
       <ActionForm
         action={confirmDeliveryReceiptStepAction}
         submitLabel={admin ? 'お客様の受領証跡を登録して納品を確認する' : 'お客様の受領証跡を登録する（確認は代表）'}
@@ -232,7 +256,7 @@ function AlternativeReceiptForm({ order, projectCode, unconfirmed, evaluate, adm
         {unconfirmed.map((delivery) => <input key={delivery.id} type="hidden" readOnly name="deliveryId" value={delivery.id} />)}
         <ReceiptFields customer />
       </ActionForm>
-    </details>
+    </RevealDetails>
   );
 }
 

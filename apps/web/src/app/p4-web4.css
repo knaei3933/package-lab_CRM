@@ -38,3 +38,17 @@
   cursor: pointer;
 }
 .p4w4-alt:target { outline: 2px solid var(--primary); outline-offset: 4px; }
+
+/*
+ * web3 review L-6: on a narrow screen every <summary> in the content is a 44px target (the old approvals / maker-po lists
+ * and the ID details measured 24px at 390px).
+ */
+@media (max-width: 600px) {
+  main details > summary {
+    display: list-item;
+    min-height: 44px;
+    padding-block: 10px;
+    box-sizing: border-box;
+    cursor: pointer;
+  }
+}
