@@ -37,6 +37,7 @@
   box-sizing: border-box;
   cursor: pointer;
 }
+.p4w4-alt { scroll-margin-top: 16px; }
 .p4w4-alt:target { outline: 2px solid var(--primary); outline-offset: 4px; }
 
 /*
