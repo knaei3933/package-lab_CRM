@@ -234,6 +234,15 @@ describe('fieldForActionMessage (1-①)', () => {
       // P2: R33 (lane X2) — the maker PO 送信先 (recipientAddress / recipientChoice) moved into its chooser.
       'components/RecipientChooser.tsx',
       'components/ProjectPicker.tsx',
+      // P4 web2a §0: the forms moved from the old lists to the order screen (and the wizard).
+      'components/NewOrderForm.tsx',
+      'components/SevenPoForms.tsx',
+      'components/StepPanel.tsx',
+      'components/OrderExceptionForms.tsx',
+      'components/OrderDocumentChecks.tsx',
+      'components/DeliveryReceiptStep.tsx',
+      'components/DesignChangeForms.tsx',
+      'components/EvidenceVerificationSection.tsx',
       'screens/OrdersScreen.tsx',
       'screens/DocumentsScreen.tsx',
       'screens/ApprovalsScreen.tsx',

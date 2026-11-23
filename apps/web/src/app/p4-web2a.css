@@ -1,0 +1,227 @@
+/*
+ * P4 web 2a (audit44 §0, H14, M6, M10, M12, N9). Loaded last, unlayered, like
+ * p4-web1.css. Existing tokens only — the step panel stays the one bold element
+ * of the order screen; the secondary menu and the lists are quiet.
+ */
+
+/* M6: 「その他の操作」 — a row of quiet buttons under the step, one form open at a time. */
+.p4w2-more {
+  margin-top: var(--space-5);
+  padding-top: var(--space-4);
+  border-top: 1px solid var(--line);
+}
+
+.p4w2-more-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.p4w2-more-button {
+  min-height: 44px;
+}
+
+.p4w2-more-button[aria-expanded='true'] {
+  border-color: var(--primary);
+  background: var(--primary-tint);
+  color: var(--primary);
+}
+
+.p4w2-more-who {
+  margin-left: var(--space-1);
+  color: var(--ink-sub);
+  font-size: var(--text-sm);
+}
+
+.p4w2-more-panel {
+  margin-top: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--primary);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.p4w2-more-panel[hidden] {
+  display: none;
+}
+
+/* The sub-forms inside the step (N9 別のデザイン, H14 証跡なしの場合) sit under a rule, quieter than the main action. */
+.p4w2-another-design,
+.p4w2-fallback {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px dashed var(--line-strong);
+}
+
+.p4w2-subtitle {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-md);
+  font-weight: 600;
+}
+
+.p4w2-fieldset {
+  margin: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.p4w2-fieldset > legend {
+  padding: 0 var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--ink-sub);
+}
+
+.p4w2-check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-2) var(--space-4);
+  align-items: end;
+}
+
+/* M10①: the send and the 代表承認 to the second, and why the send waits. */
+.p4w2-send-facts {
+  display: grid;
+  gap: var(--space-1);
+  margin: 0;
+}
+
+.p4w2-send-facts > div {
+  display: grid;
+  grid-template-columns: 7.5em 1fr;
+  gap: var(--space-2);
+}
+
+.p4w2-send-facts dt {
+  color: var(--ink-sub);
+}
+
+.p4w2-send-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+/* H14: the deliveries of the order and their confirmation. */
+.p4w2-delivery-list {
+  margin: 0 0 var(--space-3);
+  padding-left: 1.2em;
+}
+
+.p4w2-ok {
+  color: var(--ok);
+}
+
+.p4w2-wait {
+  color: var(--warn);
+}
+
+.p4w2-doc-checks {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* §0: the link of a read-only row to its order screen is a 44px target. */
+.p4w2-row-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+
+.p4w2-lists {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-4);
+  margin-top: var(--space-2);
+}
+
+.p4w2-lists > a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+}
+
+/* M12: the representative's 案件 links on the home are 44px blocks (they were 19px lines). */
+.p4w2-project-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.p4w2-project-links a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 0 var(--space-2);
+}
+
+/*
+ * M12: a list table becomes one card per row below 600px of its own width — each
+ * cell shows its column name (data-label) — instead of a sideways scroll of 538–846px.
+ */
+.table-scroll[data-cards='true'] {
+  container-type: inline-size;
+}
+
+@container (max-width: 600px) {
+  .ui-table--cards {
+    display: block;
+    min-width: 0 !important;
+    width: 100%;
+  }
+
+  .ui-table--cards thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .ui-table--cards tbody,
+  .ui-table--cards tr {
+    display: block;
+  }
+
+  .ui-table--cards tr {
+    margin-bottom: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+  }
+
+  .ui-table--cards td {
+    display: grid;
+    grid-template-columns: minmax(6.5em, 34%) 1fr;
+    gap: var(--space-2);
+    padding: var(--space-1) 0;
+    border: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .ui-table--cards td[data-label]::before {
+    content: attr(data-label);
+    color: var(--ink-sub);
+    font-size: var(--text-sm);
+  }
+}
+
+/* M12: 16px inputs on a narrow screen as well as on touch (iOS zooms into anything smaller). */
+@media (max-width: 600px) {
+  input:not([type='checkbox']):not([type='radio']),
+  select,
+  textarea {
+    font-size: 16px;
+  }
+}

@@ -322,7 +322,7 @@ describe('2-④ maker-po stages: status × (pending check, events) → done / cu
   it('APPROVED_FOR_MANUAL_SEND without a pending check: ③ current, ② done with the approval time, no ③′', () => {
     const view = makerPoStages({ orderStatus: 'APPROVED_FOR_MANUAL_SEND', papers: [paper('APPROVED_FOR_MANUAL_SEND')] });
     expect(states(view)).toEqual({ create: 'done', approve: 'done', send: 'current', accept: 'upcoming', complete: 'upcoming' });
-    expect(view.stages[1]!.summary).toBe('代表承認（2026/11/18 10:00 JST）');
+    expect(view.stages[1]!.summary).toBe('代表承認（2026/11/18 10:00:00 JST）');
     expect(view.stages.map((stage) => stage.key)).not.toContain('verify');
   });
 
@@ -335,7 +335,7 @@ describe('2-④ maker-po stages: status × (pending check, events) → done / cu
       create: 'done', approve: 'done', send: 'done', verify: 'current', accept: 'upcoming', complete: 'upcoming'
     });
     expect(stageLabel(view.current!)).toBe('手順3の確認: 送信の手動確認');
-    expect(view.stages[2]!.summary).toBe('送信の記録（送信日時 2026/11/18 11:00 JST）');
+    expect(view.stages[2]!.summary).toBe('送信の記録（送信日時 2026/11/18 11:00:00 JST）');
     expect(upcomingStagesLine(view)).toBe('このあと: 手順4: 受入 → 完了');
   });
 
@@ -591,11 +591,22 @@ describe('2-⑤ StatusBadge and DataTable markup', () => {
 // ---------------------------------------------------------------------------
 
 /** Consequential forms per screen: the confirmation title each must carry (admin). */
+/**
+ * P4 web2a §0: the lists only read — the consequential forms (and their dialogs) moved to the
+ * order screen; their dialogs are pinned there (tests/web-p4-web2a.test.tsx, 「その他の操作」).
+ */
 const CONFIRM_TITLES: Record<keyof typeof PAGES, string[]> = {
+  orders: [],
+  documents: [],
+  approvals: [],
+  'maker-po': [],
+  deliveries: []
+};
+const MOVED_DIALOG_TITLES: Record<keyof typeof PAGES, string[]> = {
   orders: ['発注の状態を変更しますか？', '問題なしで完了を記録しますか？'],
   documents: ['書類の確認結果を記録しますか？'],
   approvals: ['承認証跡の手動確認を記録しますか？'],
-  'maker-po': ['メーカー発注書を作成しますか？', 'メーカー発注書 …0000cc01 を取り消しますか？'],
+  'maker-po': ['メーカー発注書を作成しますか？', 'を取り消しますか？'],
   deliveries: ['納品を確認済みにしますか？']
 };
 
@@ -610,10 +621,23 @@ describe('2-⑤ tables: caption, header scope, scroll region (5 screens × 3 rol
       expect(html.match(/<table\b[^>]*><caption\b/g) ?? []).toHaveLength(tables.length);
       const headers = html.match(/<th\b/g) ?? [];
       expect(html.match(/<th\b[^>]*\bscope="(col|row)"/g) ?? []).toHaveLength(headers.length);
-      expect(html.match(/<div class="table-scroll" role="region" aria-label="[^"]+" tabindex="0"><table/g) ?? [])
+      expect(html.match(/<div class="table-scroll" role="region" aria-label="[^"]+" tabindex="0"(?: data-cards="true")?><table/g) ?? [])
         .toHaveLength(tables.length);
       // The old ad-hoc badge style is gone; badges carry a symbol.
       expect(html).not.toMatch(/border-radius:999px/);
+      // P4 M12: the list tables of orders / documents / deliveries turn into cards at 390px — every
+      // cell of such a table names its column (data-label), so the card reads without the header.
+      if (page === 'orders' || page === 'documents' || page === 'deliveries') {
+        const cardTables = [...html.matchAll(/<div class="table-scroll"[^>]*data-cards="true"><table[^>]*class="ui-table--cards"[\s\S]*?<\/table>/g)].map(([whole]) => whole);
+        expect(cardTables.length, 'a card table').toBeGreaterThan(0);
+        for (const table of cardTables) {
+          const cells = table.match(/<td\b[^>]*>/g) ?? [];
+          expect(cells.length).toBeGreaterThan(0);
+          for (const cell of cells) expect(cell).toMatch(/data-label="[^"]+"/);
+        }
+      }
+      // P4 L5: an order code cell never wraps and is not translated.
+      if (page === 'orders') expect(html).toMatch(role === 'viewer' ? /<td class="ui-td p4-nowrap" data-label="発注コード" translate="no">/ : /<td class="ui-td p4-nowrap" data-label="発注コード" translate="no">FSO-READY/);
     });
   }
 });
@@ -623,6 +647,7 @@ describe('confirmation markup and viewer forms', () => {
     it(`${page} (admin): consequential forms carry a <dialog> with its title and キャンセル`, async () => {
       serveAs('admin');
       const html = await renderPage(PAGES[page]);
+      for (const title of MOVED_DIALOG_TITLES[page]) expect(html, title).not.toContain(title);
       for (const title of CONFIRM_TITLES[page]) {
         const dialog = [...html.matchAll(/<dialog\b[\s\S]*?<\/dialog>/g)].map(([whole]) => whole).find((whole) => whole.includes(title));
         expect(dialog, title).toBeDefined();
@@ -639,11 +664,21 @@ describe('confirmation markup and viewer forms', () => {
     });
   }
 
-  it('maker-po: the cancellation confirmation and its submit button are danger-toned', async () => {
+  it('maker-po: the cancellation confirmation and its submit button are danger-toned — in the order screen\'s 「その他の操作」 (P4 §0)', async () => {
     serveAs('admin');
-    const html = await renderPage(MakerPoPage);
+    const { loadMakerPoBoard } = await import('../apps/web/src/lib/maker-po-data.js');
+    const { loadOrderMakerPaperWork, OrderMakerPaperWork } = await import('../apps/web/src/screens/MakerPoScreen.js');
+    const board = await loadMakerPoBoard(PROJECT_ID);
+    const entry = board.boards.find((candidate) => candidate.order.id === ORDER_SEND)!;
+    const work = await loadOrderMakerPaperWork(PROJECT_ID, entry, 'admin', board.workspace.documents);
+    expect(work).not.toBeNull();
+    const html = renderToString(<OrderMakerPaperWork work={work!} />).replaceAll('<!-- -->', '');
     expect(html).toMatch(/<dialog class="confirm-dialog confirm-dialog--danger"[^>]*>[\s\S]*?を取り消しますか？/);
     expect(html).toContain('この発注書は未送信です。');
+    // The list itself draws no cancellation form.
+    expect(await renderPage(MakerPoPage)).not.toContain('を取り消しますか？');
+    // Staff are never offered it (maker_po:cancel is the representative's).
+    expect(await loadOrderMakerPaperWork(PROJECT_ID, entry, 'staff', board.workspace.documents)).toBeNull();
   });
 });
 
@@ -670,7 +705,7 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
     const done = elementAt(html, '<details class="stage-done">');
     expect(done).toContain('<summary>済んだ段階（2件）</summary>');
     expect(done).toContain('<li>手順1: 発注書の作成: 発注書 …0000cc01 を作成（2026/11/18 09:00 JST）</li>');
-    expect(done).toContain('<li>手順2: 代表承認: 代表承認（2026/11/18 10:00 JST）</li>');
+    expect(done).toContain('<li>手順2: 代表承認: 代表承認（2026/11/18 10:00:00 JST）</li>');
   });
 
   it('admin: the 支払条件 box is large only before the approval; after it, one line', async () => {
@@ -719,22 +754,24 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
     }
   });
 
-  it('admin: the cancellation sits in the danger zone at the bottom; staff has none', async () => {
+  it('admin: the cancellation is named and linked to the order screen (no form on the list); staff has none (P4 §0)', async () => {
     serveAs('admin');
     const admin = await renderPage(MakerPoPage);
-    const zone = elementAt(admin, '<details class="danger-zone">');
-    expect(zone).toContain('<summary>取り消し（代表者のみ）</summary>');
-    expect(zone).toContain('>発注書を取り消す</button>');
-    // Not inside the current-stage block.
-    expect(elementAt(admin, '<div class="stage-current')).not.toContain('発注書を取り消す');
+    expect(admin).not.toContain('danger-zone');
+    expect(admin).not.toContain('>発注書を取り消す</button>');
+    expect(admin).toContain('取り消し・取り消し承認の操作があります。');
+    expect(admin).toMatch(/href="\/p\/TEST-P\/o\/FSO-SEND">発注の画面の「その他の操作」で記録する（代表者のみ）/);
     serveAs('staff');
-    expect(await renderPage(MakerPoPage)).not.toContain('danger-zone');
+    const staff = await renderPage(MakerPoPage);
+    expect(staff).not.toContain('danger-zone');
+    expect(staff).not.toContain('取り消し・取り消し承認の操作があります。');
   });
 
   it('the new film order card and the audit dashboard are folded (closed <details>)', async () => {
     serveAs('admin');
     const html = await renderPage(MakerPoPage);
-    expect(html).toMatch(/<details class="collapsed-card[^"]*"[^>]*><summary><h2[^>]*>新しいフィルム発注を作成する（支払条件つき）<\/h2><\/summary>/);
+    // P4 §0: a new order is registered in the wizard — a link, not a folded form.
+    expect(html).toMatch(/<a href="\/p\/TEST-P\/new">新しいフィルム発注を登録する<\/a>/);
     expect(html).toMatch(/<details class="collapsed-card[^"]*"[^>]*><summary><h2[^>]*>監査ダッシュボード（役割に応じた表示）— 1件<\/h2><\/summary>/);
     expect(html).not.toContain('<h2 style="font-size:20px;margin:0 0 4px">支払条件を設定して発注を作成する</h2>');
     expect(html).not.toMatch(/<details class="collapsed-card[^"]*"[^>]* open/);
@@ -745,10 +782,9 @@ describe('2-④ /maker-po card: stages, one open current stage, folded history, 
     const admin = await renderPage(MakerPoPage);
     expect(admin).toContain('<li class="step step--current" aria-current="step"><span class="step-mark">いま</span><span class="step-label">送信の手動確認</span></li>');
     expect(admin).toContain('<strong>手順3の確認: 送信の手動確認</strong>');
-    expect(admin).toContain('送信を確定する（確認）か、確定しない（却下）か');
-    expect(admin).toContain('根拠（何を確認して送信を確定したか）');
-    expect(admin).toContain('確認（送信を確定する）');
-    expect(admin).toContain('送信の手動確認を記録しますか？');
+    // P4 §0: the check is recorded at step 9 of the order screen (SendWaitFacts + the form there).
+    expect(admin).not.toContain('送信の手動確認を記録しますか？');
+    expect(admin).toMatch(/href="\/p\/TEST-P\/o\/FSO-SEND\?step=9"[^>]*>発注の画面で進める（手順9）/);
     expect(admin).not.toContain('納品を断定');
 
     serveAs('staff', ROWS, [PENDING_SEND_EVENT]);
@@ -782,10 +818,11 @@ describe('2-④ ① 作成 card: one line when there is nothing to create, no mi
     expect(html).not.toContain('作成待ちの発注はありません');
   });
 
-  it('an order ready for paper: the card is open with its form', async () => {
+  it('an order ready for paper: the card links step 7 of its order screen (the form is there, P4 §0)', async () => {
     serveAs('admin');
     const html = await renderPage(MakerPoPage);
-    expect(html).toContain('>メーカー発注書を作成する</button>');
+    expect(html).not.toContain('>メーカー発注書を作成する</button>');
+    expect(html).toMatch(/href="\/p\/TEST-P\/o\/FSO-READY\?step=7"><span translate="no">FSO-READY<\/span> のメーカー発注書を発注の画面で作る（手順7）/);
     expect(html).not.toContain('両組織の承認不足');
   });
 });
@@ -795,7 +832,7 @@ describe('2-⑤ status badges on the screens', () => {
     serveAs('admin');
     const html = await renderPage(OrdersPage);
     // R27: the cell style is the ui-td class now (no inline style).
-    expect(html).toContain('<td class="status-cell ui-td"><span class="status-badge status-badge--active"><span class="status-badge-mark" aria-hidden="true">●</span>下書き</span>');
+    expect(html).toContain('<td class="status-cell ui-td" data-label="状態"><span class="status-badge status-badge--active"><span class="status-badge-mark" aria-hidden="true">●</span>下書き</span>');
     // UI batch E (F-16): 保留中 keeps the blocked colour but reads ‖ (paused), not the ✕ of 取消済.
     expect(html).toContain('status-badge--blocked"><span class="status-badge-mark" aria-hidden="true">‖</span>保留中');
   });
@@ -847,9 +884,9 @@ describe('2-⑥ / 2-⑦ layout and small fixes (source of the shared stylesheet 
     expect(html.match(/<ol class="stepper"(?! aria-label)/g) ?? []).toHaveLength(0);
   });
 
-  it('orders: the date-only inputs are no longer type="date" (same field names)', async () => {
-    serveAs('admin');
-    const html = await renderPage(OrdersPage);
+  it('本登録日・発行日: the date-only inputs are no longer type="date" (same field names; on the order screen since P4 §0)', async () => {
+    const { SevenPoChecklistForm, SevenPoRegisterForm } = await import('../apps/web/src/components/SevenPoForms.js');
+    const html = renderToString(<><SevenPoRegisterForm poId="po-1" poNumber="PO-1" role="admin" /><SevenPoChecklistForm poId="po-1" poNumber="PO-1" role="admin" /></>);
     expect(html).not.toContain('type="date"');
     expect(html).toMatch(/name="officialRegisteredAt"/);
     expect(html).toMatch(/name="issueDate"/);

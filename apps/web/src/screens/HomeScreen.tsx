@@ -67,7 +67,7 @@ export async function HomeScreen() {
       ) : (
         <ViewerHistory projects={list.projects} />
       )}
-      <p className="p1-muted">
+      <p className="p1-muted p4w2-project-links">
         <Link href="/dashboard">案件を選んで開く</Link>
         {list.projects.length > 0 ? (
           <>
@@ -103,8 +103,8 @@ async function AdminInbox({ projects }: { projects: ProjectSummary[] }) {
       ) : (
         <ul className="p1-inbox" aria-label="承認箱">
           {tasks.map((task) => (
-            <li key={`${task.kind ?? task.status}-${task.projectId}-${task.orderId}`} className="p1-inbox-item">
-              <p className="p1-inbox-work">{task.work}<KoGloss ko={taskWorkKo(task)} /></p>
+            <li key={`${task.kind ?? task.status}-${task.projectId}-${task.orderId}-${task.target ?? ''}`} className="p1-inbox-item">
+              <p className="p1-inbox-work">{task.work}{task.target ? `（${task.target}）` : ''}<KoGloss ko={taskWorkKo(task)} /></p>
               <p className="p1-inbox-target">
                 <span translate="no">{task.orderCode}</span>
                 <span className="p1-muted-inline"> ・ <span translate="no">{task.projectCode}</span></span>
@@ -118,7 +118,7 @@ async function AdminInbox({ projects }: { projects: ProjectSummary[] }) {
                 {task.kind === 'maker_po_ceo_approval'
                   ? <Bilingual ja="内容を見て承認" ko="내용 확인 후 승인" />
                   : <Bilingual ja="開く" ko="열기" />}
-                <span className="visually-hidden">（{task.orderCode}{task.displayNumber ? ` ${task.displayNumber}` : ''}）</span>
+                <span className="visually-hidden">（{task.orderCode}{task.displayNumber ? ` ${task.displayNumber}` : ''}{task.target ? ` ${task.target}` : ''}）</span>
               </Link>
             </li>
           ))}

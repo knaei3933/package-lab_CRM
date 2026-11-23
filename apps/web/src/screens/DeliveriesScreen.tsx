@@ -1,4 +1,5 @@
-import type { Metadata } from 'next';
+import { orderPath } from '../lib/project-route';
+import { FILM_DELIVERY_CONFIRMATION_LABELS } from '../components/DeliveryReceiptStep';
 import { ActionForm } from '../components/ActionForm';
 import { DeliveryRecordForm } from '../components/DeliveryRecordForm';
 import { ProjectProgress } from '../components/ProjectProgress';
@@ -9,18 +10,16 @@ import { DataTable } from '../components/DataTable';
 import { StatusBadge } from '../components/StatusBadge';
 import { TechDetails } from '../components/TechDetails';
 import { SelectField, TextField } from '../components/fields';
-import { confirmDeliveryAction, evaluateCommissionReadinessAction, recordDeliveryAction } from '../app/actions';
+import { confirmDeliveryAction, recordDeliveryAction } from '../app/actions';
 import { loadSessionUser } from '../lib/api';
 import { canRoleOperate } from '../lib/permissions';
-import { knownStatus, labelLookup, loadWorkspace, NO_PROJECT_SELECTED_MESSAGE } from '../lib/project-data';
-import { isFilmDeliveryCandidate, NO_FILM_DELIVERY_CANDIDATE_NOTE } from '../lib/delivery-candidates';
+import { labelLookup, loadWorkspace } from '../lib/project-data';
 import { formatQuantityWithUnit } from '../lib/number-format';
 import { isOwnEvidenceOfStaff } from '../lib/self-verification';
 import { shortId } from '../lib/short-id';
 import type { DeliveryView } from '../lib/project-data';
 import { HIDDEN_BY_ROLE_LABEL } from '../lib/redaction';
-import { cardStyle, infoBoxStyle, noteStyle, tdStyle, thStyle } from '../lib/ui';
-import { formatTimestamp, READINESS_BLOCKING_LABELS, unitChoices, unitLabel, VERIFICATION_STATUS_LABELS } from '../lib/vocabulary';
+import { formatTimestamp, READINESS_BLOCKING_LABELS, unitChoices, VERIFICATION_STATUS_LABELS } from '../lib/vocabulary';
 
 
 /** UI batch A: per-screen tab title (layout template adds 「｜KANEI CRM」). */
@@ -70,16 +69,10 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
         }／ID ${shortId(version.id)}）`
       })));
 
-  // P4 M11: only shipped / delivered film orders are offered (the unshipped first order used to be the default).
-  const filmOrderOptions = workspace.filmOrders.filter((order) => isFilmDeliveryCandidate(knownStatus(order))).map((order) => ({
-    id: order.id,
-    code: order.code,
-    lines: order.lines.map((line) => ({
-      value: line.id,
-      label: `明細${line.lineNumber}：${line.description}（${formatQuantityWithUnit(line.orderedQuantity, line.unit)}）`,
-      unit: line.unit
-    }))
-  }));
+  // P4 H14 ③: no filling order in the project = film only (the server's own rule, delivery-status filmOnly).
+  const filmOnly = workspace.fillingOrders.length === 0;
+  const filmOrderCode = (delivery: DeliveryView): string | null =>
+    delivery.orderId ? workspace.filmOrders.find((order) => order.id === delivery.orderId)?.code ?? null : null;
   const fillingOrderOptions = workspace.fillingOrders.map((order) => ({
     id: order.id,
     code: order.code,
@@ -172,16 +165,11 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
             </tbody>
           </DataTable>
         ) : (
-          <p className="ui-note">まだ評価されていません。納品と本登録がそろったら「準備状態を再評価する」を実行してください。</p>
+          <p className="ui-note">まだ評価されていません。発注の画面の手順12で受領証跡による納品確認をすると評価されます。</p>
         )}
         <div className="sx-9c9cee2">
-          <RoleGate role={role} operation="commission_readiness:evaluate" label="準備状態の再評価">
-            <ActionForm action={evaluateCommissionReadinessAction} submitLabel="準備状態を再評価する">
-              <p className="ui-note">
-                評価はサーバーが記録にもとづいて行います。記録は明示的な評価時だけ更新されます。
-              </p>
-            </ActionForm>
-          </RoleGate>
+          {/* P4 §0 / H14: the evaluation runs with the delivery confirmation on the order screen (step 12). */}
+          <p className="ui-note">準備状態は、発注の画面（手順12 納品）で受領証跡による納品確認をすると評価し直されます。評価し直すボタンも手順12にあります。</p>
         </div>
       </div>
 
@@ -193,7 +181,7 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
         {workspace.deliveries.length === 0 ? (
           <p className="ui-note">納品の記録はまだありません。</p>
         ) : (
-          <DataTable caption="納品の一覧" captionHidden>
+          <DataTable caption="納品の一覧" captionHidden cards>
             <thead>
               <tr>
                 <th className="ui-th" scope="col">種別</th>
@@ -203,32 +191,35 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
                 <th className="ui-th" scope="col">納品日</th>
                 <th className="ui-th" scope="col">確認状態</th>
                 <th className="ui-th" scope="col">引用した証跡</th>
-                {showConfirmColumn ? <th className="ui-th" scope="col">確認を記録する</th> : null}
+                {showConfirmColumn ? <th className="ui-th" scope="col">確認</th> : null}
               </tr>
             </thead>
             <tbody>
               {workspace.deliveries.map((delivery) => (
                 <tr key={delivery.id} data-record-id={delivery.id}>
-                  <td className="ui-td">{delivery.kind === 'film' ? 'フィルム納品' : '充填製品納品'}</td>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="種別">{delivery.kind === 'film' ? 'フィルム納品' : '充填製品納品'}</td>
+                  <td className="ui-td p4-nowrap" data-label="発注" translate="no">
                     {orderText(delivery)}
                     <TechDetails context="ID">{delivery.id}</TechDetails>
                   </td>
-                  <td className="ui-td">{hiddenOr(delivery, formatQuantityWithUnit(delivery.deliveredQuantity, delivery.unit))}</td>
-                  <td className="ui-td">{hiddenOr(delivery, delivery.deliverySequence === null ? '未記録' : String(delivery.deliverySequence))}</td>
-                  <td className="ui-td">{hiddenOr(delivery, delivery.deliveredAt ? formatTimestamp(delivery.deliveredAt) : '未記録')}</td>
-                  <td className="status-cell ui-td">
+                  <td className="ui-td" data-label="数量／単位">{hiddenOr(delivery, formatQuantityWithUnit(delivery.deliveredQuantity, delivery.unit))}</td>
+                  <td className="ui-td" data-label="連番">{hiddenOr(delivery, delivery.deliverySequence === null ? '未記録' : String(delivery.deliverySequence))}</td>
+                  <td className="ui-td" data-label="納品日">{hiddenOr(delivery, delivery.deliveredAt ? formatTimestamp(delivery.deliveredAt) : '未記録')}</td>
+                  <td className="status-cell ui-td" data-label="確認状態">
                     {delivery.confirmationHidden ? (
                       <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} />
                     ) : (
                       <StatusBadge
                         domain="deliveryConfirmation"
                         status={delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION'}
-                        label={confirmationLabel(delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION')}
+                        label={delivery.kind === 'film'
+                          // P4 H14 ②: a film delivery is never called 「充填製品の…」.
+                          ? FILM_DELIVERY_CONFIRMATION_LABELS[delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION'].ja
+                          : confirmationLabel(delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION')}
                       />
                     )}
                   </td>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="引用した証跡">
                     {delivery.confirmationHidden
                       ? HIDDEN_BY_ROLE_LABEL
                       : delivery.evidenceDocumentVersionId
@@ -242,9 +233,16 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
                     {delivery.confirmedAt ? <div>確認 {formatTimestamp(delivery.confirmedAt)}</div> : null}
                   </td>
                   {showConfirmColumn ? (
-                    <td className="ui-td sx-576879f">
+                    <td className="ui-td sx-576879f" data-label="確認">
                       {delivery.confirmed ? (
                         <span className="ui-note">確認済みです（確認は1回だけ記録できます）。</span>
+                      ) : delivery.kind === 'film' ? (
+                        // P4 §0 / H14: a film delivery is confirmed on the order screen (step 12, receipt evidence).
+                        filmOrderCode(delivery) ? (
+                          <a className="p4w2-row-link" href={orderPath(projectCode, filmOrderCode(delivery)!, 12)}>
+                            発注の画面で確認する（手順12）<span className="visually-hidden">（{orderText(delivery)}）</span>
+                          </a>
+                        ) : <span className="ui-note">発注の画面で確認します。</span>
                       ) : (
                         <ActionForm
                           action={confirmDeliveryAction}
@@ -256,7 +254,7 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
                           }}
                           hint={
                             acceptanceChoices(delivery).length === 0
-                              ? '確認済みの受領証跡がまだありません。文書画面でアップロードして確認を記録してください。'
+                              ? '確認済みの受領証跡がまだありません。充填発注の受領証跡を登録し、確認を記録してください。'
                               : undefined
                           }
                         >
@@ -282,30 +280,31 @@ export async function DeliveriesScreen({ projectId, projectCode }: ProjectScreen
       </div>
 
       <div className="ui-card">
-        <h2 className="sx-c5c15d8">納品を記録する</h2>
+        <h2 className="sx-c5c15d8">納品の記録</h2>
         <p className="ui-note">
           納品行の記録と受領の確認は別の操作です。記録だけでは準備状態は進まず、確認（証跡の引用）がそろって初めて進みます。
         </p>
         <h3 className="sx-3562d27">フィルム納品</h3>
-        <RoleGate role={role} operation="film_delivery:create" label="フィルム納品の記録">
-          <DeliveryRecordForm
-            action={recordDeliveryAction}
-            kind="film"
-            orders={filmOrderOptions}
-            emptyText={workspace.filmOrders.length > 0 ? NO_FILM_DELIVERY_CANDIDATE_NOTE : undefined}
-            unitChoices={unitChoices('film')}
-          />
-        </RoleGate>
-        <hr className="sx-0682822" />
-        <h3 className="sx-e6251b7">充填製品納品</h3>
-        <RoleGate role={role} operation="filling_delivery:create" label="充填製品納品の記録">
-          <DeliveryRecordForm
-            action={recordDeliveryAction}
-            kind="filling"
-            orders={fillingOrderOptions}
-            unitChoices={unitChoices('filling')}
-          />
-        </RoleGate>
+        {/* P4 §0: a film delivery is recorded at step 12 of its order screen (with its receipt evidence). */}
+        <p className="ui-note">フィルムの納品は、発注の画面の手順12「納品」で記録します（受領証跡があれば同時に確認できます）。</p>
+        {filmOnly ? (
+          // P4 H14 ③: a film-only project has no filling delivery to record.
+          <p className="ui-note">この案件は充填発注がないため、フィルムのみの案件です（充填の納品は対象外）。</p>
+        ) : (
+          <>
+            <hr className="sx-0682822" />
+            <h3 className="sx-e6251b7">充填製品納品</h3>
+            {/* P4 §0 exception: a filling order has no order screen yet, so its delivery is recorded here. */}
+            <RoleGate role={role} operation="filling_delivery:create" label="充填製品納品の記録">
+              <DeliveryRecordForm
+                action={recordDeliveryAction}
+                kind="filling"
+                orders={fillingOrderOptions}
+                unitChoices={unitChoices('filling')}
+              />
+            </RoleGate>
+          </>
+        )}
       </div>
     </section>
   );

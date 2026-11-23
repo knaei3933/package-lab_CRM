@@ -2,9 +2,9 @@ import { FILM_SUPPLY_ORDER_TERMINAL_STATE } from '@kanei/core';
 import { holdSummaryText, paymentTermsText } from './decision-facts';
 import { MAKER_PO_STATUS_LABELS } from './maker-po-data';
 import type { MakerPoViewRow, PaymentGateView } from './maker-po-data';
-import { navHrefsForRole } from './navigation';
+import { openableHrefsForRole } from './navigation';
 import { canRoleOperate, normalizeRole } from './permissions';
-import { newOrderPath, orderPath } from './project-route';
+import { isRouteCode, newOrderPath, orderPath } from './project-route';
 import {
   knownStatus,
   labelLookup,
@@ -177,6 +177,19 @@ export function dashboardAmount(role: string | null | undefined, row: Pick<Maker
   return formatMoney(amounts.currency, amounts.totalAmount);
 }
 
+/**
+ * P4 §0: the link of an order's item — the order's own screen when the project code is
+ * known (every record is made there now), else the old list with its anchor.
+ */
+export function orderItemLink(
+  projectCode: string | null | undefined,
+  screen: ScreenPath,
+  order: { id: string; code: string }
+): { href: string; linkLabel: string } {
+  if (projectCode && isRouteCode(projectCode) && isRouteCode(order.code)) return { href: orderPath(projectCode, order.code), linkLabel: '発注の画面を開く' };
+  return { href: itemHref(screen, order.id), linkLabel: linkLabelFor(screen) };
+}
+
 /** The screen link of an item, with the order anchor the screens carry. */
 export function itemHref(screen: ScreenPath, orderId: string | null): string {
   if (!orderId) return screen;
@@ -191,7 +204,7 @@ export function itemHref(screen: ScreenPath, orderId: string | null): string {
  * the same order's state and next step are shown.
  */
 export function reachableScreen(role: string | null | undefined, screen: ScreenPath): ScreenPath {
-  return navHrefsForRole(role).includes(screen) ? screen : '/orders';
+  return openableHrefsForRole(role).includes(screen) ? screen : '/orders';
 }
 
 function linkLabelFor(screen: ScreenPath): string {
@@ -388,8 +401,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
             : status === 'CHANGE_REVIEW' ? CHANGE_REVIEW_NOTE : gapText,
         // P-6: drafting the paper is staff work, but a paper waiting for the 代表承認 is the representative's.
         owner: approvalPaper ? OWNER_ADMIN : action.owner,
-        href: itemHref(approvalPaper ? '/maker-po' : screen, order.id),
-        linkLabel: linkLabelFor(approvalPaper ? '/maker-po' : screen),
+        ...orderItemLink(input.projectCode, approvalPaper ? '/maker-po' : screen, order),
         paymentTerms: terms,
         amount: approvalPaper ? dashboardAmount(role, approvalPaper) : null,
         step
@@ -425,8 +437,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
             ? `止まる前の段階: ${PROGRESS_STEPS[progress.interruptedStep]}`
             : null,
         owner: action.owner,
-        href: itemHref('/orders', order.id),
-        linkLabel: linkLabelFor('/orders'),
+        ...orderItemLink(input.projectCode, '/orders', order),
         paymentTerms: terms,
         amount: null,
         step
@@ -443,8 +454,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
         title: 'セブン化学発注書に紐付いていないため、先へ進められません。',
         detail: '紐付けは作成のときだけ選べます。発注書を選んで作り直してください。',
         owner: null,
-        href: itemHref('/orders', order.id),
-        linkLabel: linkLabelFor('/orders'),
+        ...orderItemLink(input.projectCode, '/orders', order),
         paymentTerms: terms,
         amount: null,
         step
@@ -459,8 +469,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
         title: '発注明細が登録されていません。',
         detail: '明細がないと、メーカー発注書と納品を記録できません。',
         owner: null,
-        href: itemHref('/orders', order.id),
-        linkLabel: linkLabelFor('/orders'),
+        ...orderItemLink(input.projectCode, '/orders', order),
         paymentTerms: terms,
         amount: null,
         step
@@ -477,8 +486,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
         title: '支払条件が「未定」のため、代表承認を記録できません。',
         detail: board.paymentGate.gate.reason ?? null,
         owner: OWNER_ADMIN,
-        href: itemHref('/maker-po', order.id),
-        linkLabel: linkLabelFor('/maker-po'),
+        ...orderItemLink(input.projectCode, '/maker-po', order),
         paymentTerms: terms,
         amount: null,
         step
@@ -515,8 +523,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
           ? '原本のEMLと発注内容を見比べて、手動確認を記録してください。'
           : '証跡を揃えたうえで代表者へ相談してください。',
         owner: OWNER_ADMIN,
-        href: itemHref('/maker-po', order.id),
-        linkLabel: linkLabelFor('/maker-po'),
+        ...orderItemLink(input.projectCode, '/maker-po', order),
         paymentTerms: terms,
         amount: null,
         step
@@ -566,8 +573,7 @@ export function buildDashboard(input: DashboardInput): DashboardView {
             `最後の記録: ${formatTimestamp(lastAt)}`
           ].filter((part): part is string => part !== null).join('／'),
           owner: null,
-          href: itemHref('/orders', order.id),
-          linkLabel: linkLabelFor('/orders'),
+          ...orderItemLink(input.projectCode, '/orders', order),
           paymentTerms: terms,
           amount: null,
           step
@@ -812,7 +818,10 @@ function recentActivity(input: DashboardInput): Pick<DashboardView, 'activity' |
       at: formatTimestamp(event.occurredAt),
       actor: event.actor?.displayName ?? '（記録者不明）',
       text: `${code}${base}${statusPart}`,
-      href: screen ? itemHref(screen, order ? order.id : null) : null
+      // P4 §0: an order's record opens the order screen (where it was made); others the list.
+      href: order && input.projectCode && isRouteCode(input.projectCode) && isRouteCode(order.code)
+        ? orderPath(input.projectCode, order.code)
+        : screen ? itemHref(screen, order ? order.id : null) : null
     };
   });
   return {

@@ -406,7 +406,7 @@ function order(status: string, extra: Record<string, unknown> = {}) {
     detailsHidden: false, statusHidden: false, lastNormalStatus: null, paymentTerms: 'prepaid', createdAt: '', updatedAt: '', ...extra
   };
 }
-function panel(status: string, role: string, extra: { order?: Record<string, unknown>; maker?: unknown; recipients?: unknown; flow?: unknown } = {}) {
+function panel(status: string, role: string, extra: { order?: Record<string, unknown>; maker?: unknown; recipients?: unknown; flow?: unknown; previousTyped?: string | null } = {}) {
   const o = order(status, extra.order ?? {});
   const flow = extra.flow ?? buildOrderFlow({
     order: o as never, role, po: PO as never, documents: [], revisions: [], gate: null,
@@ -418,6 +418,7 @@ function panel(status: string, role: string, extra: { order?: Record<string, unk
         flow={flow as never} order={o as never} projectCode="PRJ-1" role={role} po={PO as never} gate={null}
         maker={(extra.maker ?? null) as never} makerEvents={[]} documents={[]} stateLabel={(key) => key}
         recipients={extra.recipients as never}
+        previousTypedRecipient={extra.previousTyped ?? null}
       />
     </RenderedContextProvider>
   );
@@ -598,24 +599,34 @@ async function renderBoard(): Promise<string> {
 }
 const recipientReads = () => callApi.mock.calls.filter((call) => String(call[0]).endsWith('/maker-recipient-addresses')).length;
 
-describe('/maker-po: the create form, MPO numbers, roles', () => {
-  it('admin: the chooser with the default preselected, the amount fields, and the paper by its number', async () => {
+describe('/maker-po: the list (MPO numbers, roles) — the create form is step 7 of the order screen (P4 §0)', () => {
+  it('admin: the paper by its number; no create form on the list, so the recipient list is never read here', async () => {
     serveBoard('admin');
     const html = await renderBoard();
-    expect(recipientReads()).toBe(1);
-    expect(checkedChoice(html)).toBe(ADDRESS_DEFAULT);
-    expect(html).toContain('value="__typed"');
-    expect(html).toContain('name="totalAmount"');
+    expect(recipientReads()).toBe(0);
+    expect(html).not.toContain('name="recipientChoice"');
+    expect(html).not.toContain('name="totalAmount"');
     expect(html).toContain('<strong translate="no" class="p1-figure p2-mpo-number">MPO-2026-0007</strong>');
     expect(html).toContain('メーカー発注書 <span translate="no" class="p1-figure p2-mpo-number">MPO-2026-0007</span>');
-    // P2 R33: the last paper's address is no longer filled in for the operator.
-    expect(/<input[^>]*name="recipientAddress"[^>]*>/.exec(html)![0]).not.toContain('value=');
+    // Step 7: the chooser with the default preselected and the amount fields (admin), the typed address never filled in.
+    const step = panel('DUAL_APPROVED', 'admin', { recipients: recipientChoicesFrom({ maker: MAKER }) });
+    expect(checkedChoice(step)).toBe(ADDRESS_DEFAULT);
+    expect(step).toContain('value="__typed"');
+    expect(step).toContain('name="totalAmount"');
+    expect(/<input[^>]*name="recipientAddress"[^>]*>/.exec(step)![0]).not.toContain('value=');
   });
 
-  it('a previous typed address outside the master is a hint only', async () => {
-    serveBoard('admin', { recipients: { projectId: PROJECT_ID, maker: { ...MAKER, recipientAddresses: [address(ADDRESS_OTHER, 'order@maker.example')] } } });
-    const html = await renderBoard();
+  it('a previous typed address outside the master is a hint only (step 7; the order screen computes it like the list did)', async () => {
+    const recipients = recipientChoicesFrom({ maker: { ...MAKER, recipientAddresses: [address(ADDRESS_OTHER, 'order@maker.example')] } });
+    const previous = masterModule.previousTypedRecipientOf([
+      { status: 'CANCELLED', createdAt: '2026-11-21T00:00:00Z', recipientAddress: 'wrong@maker.example' },
+      { status: 'APPROVED_FOR_MANUAL_SEND', createdAt: '2026-11-20T00:00:00Z', snapshot: { recipient: { address: 'sales@maker.example' } } }
+    ], recipients);
+    expect(previous).toBe('sales@maker.example');
+    expect(masterModule.previousTypedRecipientOf([{ status: 'DRAFT', recipientAddress: 'ORDER@maker.example' }], recipients)).toBeNull();
+    const html = panel('DUAL_APPROVED', 'admin', { recipients, previousTyped: previous });
     expect(html).toContain('前回の直接入力: sales@maker.example');
+    expect(/<input[^>]*name="recipientAddress"[^>]*>/.exec(html)![0]).not.toContain('value=');
   });
 
   it('without numbers (an older answer) the card falls back to the order-code name', async () => {
@@ -625,13 +636,15 @@ describe('/maker-po: the create form, MPO numbers, roles', () => {
     expect(html).toContain('FSO-SEND のメーカー発注書');
   });
 
-  it('staff: the chooser without any amount field', async () => {
+  it('staff: the list shows no amount; step 7 gives staff the chooser without any amount field', async () => {
     serveBoard('staff');
     const html = await renderBoard();
-    expect(checkedChoice(html)).toBe(ADDRESS_DEFAULT);
     expect(html).not.toContain('name="totalAmount"');
     expect(html).not.toContain('480,000');
     expect(html).toContain('MPO-2026-0007');
+    const step = panel('DUAL_APPROVED', 'staff', { recipients: recipientChoicesFrom({ maker: MAKER }) });
+    expect(checkedChoice(step)).toBe(ADDRESS_DEFAULT);
+    expect(step).not.toContain('name="totalAmount"');
   });
 
   it.each(['viewer', 'auditor'])('%s: no write form, no amount, the recipient list never asked for, quiet notices', async (role) => {

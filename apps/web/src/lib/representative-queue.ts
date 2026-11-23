@@ -42,6 +42,11 @@ export interface RepresentativeTask {
   displayNumber?: string | null | undefined;
   /** Set on a blocked row: why it cannot move, in one sentence. */
   blockedReason?: string | null | undefined;
+  /**
+   * P4 M13 / N11: what of the order the row is about — 「顧客／表面A」 (the server item's
+   * organization and designKey), 「明細1・500 m」 for a delivery; null when the item has none.
+   */
+  target?: string | null | undefined;
 }
 
 export interface RepresentativeQueue {
@@ -68,7 +73,9 @@ export const QUEUE_KIND_STEP: Readonly<Record<string, number | null>> = {
   hold_release: null,
   cancellation_review: null,
   cancellation_acknowledgement: null,
-  payment_terms_undetermined: 7
+  payment_terms_undetermined: 7,
+  // P4 H14: the representative confirms a delivery its uploader may not confirm (P-4).
+  delivery_confirmation: 12
 };
 
 /**
@@ -85,7 +92,8 @@ export const QUEUE_KIND_KO: Readonly<Record<string, string>> = {
   hold_release: '보류 해제',
   cancellation_review: '취소 확인 처리',
   cancellation_acknowledgement: '취소 승인 기록',
-  payment_terms_undetermined: '지불 조건 미정'
+  payment_terms_undetermined: '지불 조건 미정',
+  delivery_confirmation: '납품 확인'
 };
 
 /** The Korean status-based work line (the fallback queue's `work`). */
@@ -136,8 +144,27 @@ export function taskFromServerItem(item: unknown, blocked = false): Representati
     waitingSince: str(row.waitingSince),
     requestedBy: str(record(row.requestedBy).displayName),
     displayNumber: str(paper.displayNumber) ?? undefined,
-    blockedReason: blocked ? str(reason.message) : null
+    blockedReason: blocked ? str(reason.message) : null,
+    target: queueTarget(row) ?? undefined
   };
+}
+
+const QUEUE_ORGANIZATION_LABELS: Readonly<Record<string, string>> = { customer: '顧客', seven: 'セブン化学' };
+
+/** P4 M13 / N11: 「顧客／表面A」 from organization + designKey; 「明細1・500 m」 for a delivery item. */
+export function queueTarget(item: unknown): string | null {
+  const row = record(item);
+  const organization = str(row.organization);
+  const designKey = str(row.designKey);
+  const delivery = record(record(row.detail).delivery);
+  const line = record(delivery.line);
+  const parts = [
+    organization ? QUEUE_ORGANIZATION_LABELS[organization] ?? organization : null,
+    designKey ? `デザイン ${designKey}` : null,
+    typeof line.lineNumber === 'number' ? `明細${line.lineNumber}` : null,
+    str(delivery.display)
+  ].filter((part): part is string => part !== null);
+  return parts.length > 0 ? parts.join('／') : null;
 }
 
 /** P1 R25: the server's queue (complete: manual checks too, H3), or null when the API has no such route. */

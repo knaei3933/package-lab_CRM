@@ -318,10 +318,14 @@ describe('rendered screens per role (display only — the forms and permissions 
     // The form is offered only for the PO not known to be registered (unchanged
     // rule: hidden registration state does not hide the form — see M3). UI batch
     // B: a viewer is offered no write form at all (the API refuses it anyway).
-    expect(html.match(/>本登録日を記録する<\/summary>/g) ?? []).toHaveLength(role === 'viewer' ? 0 : 1);
+    // P4 §0: the list links where the 本登録 is recorded (the order screen's step 1, or the wizard).
+    expect(html.match(/>本登録日を記録する<\/summary>/g) ?? []).toHaveLength(0);
+    expect(html.match(/(発注の画面で本登録する（手順1）|この発注書で発注を登録する)/g) ?? []).toHaveLength(role === 'viewer' ? 0 : 1);
     if (role !== 'viewer') {
       // Server batch E: staff reads the PO number and the date as the admin does.
-      expect(html).toContain('SC-NEW-2（未登録）');
+      // P4 §0: the create form (and its 「（未登録）」 PO choice) moved to the wizard; the list row names the PO.
+      expect(html).toContain('SC-NEW-2');
+      expect(html).not.toContain('SC-NEW-2（未登録）');
       // UI batch E (F-15, T4): the date-only registration shows no invented time.
       expect(html).toContain('>2026/11/16</td>');
       expect(html).not.toContain('2026/11/16 09:00 JST');
@@ -338,10 +342,10 @@ describe('rendered screens per role (display only — the forms and permissions 
     }
   });
 
-  it.each(ROLES)('orders (%s): payment-gate is read only for drafts the role can see (L3)', async (role) => {
+  it.each(ROLES)('orders (%s): no payment-gate read — the list draws no 支払条件 form any more (P4 §0; L3 holds trivially)', async (role) => {
     serveAs(role);
     await renderPage(OrdersPage);
-    expect(paymentGateCalls()).toEqual(role === 'viewer' ? [] : [`/api/film-supply-orders/${FILM_ID}/payment-gate`]);
+    expect(paymentGateCalls()).toEqual([]);
   });
 
   it.each(ROLES)('deliveries (%s): no stand-in date, sequence or 未確認 for hidden values', async (role) => {
@@ -349,8 +353,9 @@ describe('rendered screens per role (display only — the forms and permissions 
     const html = await renderPage(DeliveriesPage);
     if (role === 'admin') {
       expect(html).toContain('2026/11/18 08:00 JST');
-      // R28: the standard wording of the delivery confirmation and readiness states.
-      expect(html).toContain('充填製品の納品確認済み');
+      // R28 / P4 H14②: a film delivery says 「フィルムの…」, never 「充填製品の…」.
+      expect(html).toContain('フィルムの納品確認済み');
+      expect(html).not.toContain('充填製品の納品確認済み');
       expect(html).toContain('納品確認待ち');
       expect(html).not.toContain(HIDDEN_BY_ROLE_LABEL);
     } else if (role === 'staff') {
@@ -421,8 +426,8 @@ describe('rendered screens per role (display only — the forms and permissions 
       expect(html).not.toContain('…902de940');
       expect(html).toContain('フィルム発注の作成は、閲覧権限のため操作できません。');
     } else {
-      // Server batch E: staff reads the PO number as the admin does.
-      expect(html).toContain('SC-REG-1（本登録済み）');
+      // P4 §0: the list draws no create form, so no PO select to label (the wizard has it).
+      expect(html).not.toContain('SC-REG-1（本登録済み）');
     }
   });
 });

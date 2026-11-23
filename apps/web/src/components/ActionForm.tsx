@@ -32,6 +32,8 @@ interface ActionFormProps {
    * hidden) — for lists that repeat the same button text on every row.
    */
   submitContext?: string | undefined;
+  /** P4 web2a: a secondary action beside the step's one primary action (a quiet button). */
+  quiet?: boolean | undefined;
 }
 
 /**
@@ -43,10 +45,10 @@ interface ActionFormProps {
  * after a success, so a refused submit keeps its values (review H1); with a
  * confirm dialog the button stays disabled until hydration (review M1).
  */
-export function ActionForm({ action, submitLabel, children, hint, hintKo, submitLabelKo, confirm, tone, successHint, submitContext }: ActionFormProps) {
+export function ActionForm({ action, submitLabel, children, hint, hintKo, submitLabelKo, confirm, tone, successHint, submitContext, quiet }: ActionFormProps) {
   const [state, formAction, pending] = useActionState(action, null);
   // P4 H13: a class, not an inline style — an inline style beat the 44px target and the hover of p3-polish.
-  const buttonClass = tone === 'danger' ? 'ui-button--danger' : 'ui-button';
+  const buttonClass = tone === 'danger' ? 'ui-button--danger' : quiet ? 'ui-button--subtle' : 'ui-button';
   return (
     <FeedbackForm
       action={formAction}

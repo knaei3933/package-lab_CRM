@@ -9,7 +9,7 @@ import { standardTerm } from '../lib/terms';
 import { ClearDrafts } from '../components/ClearDrafts';
 import { StatusBadge } from '../components/StatusBadge';
 import { callApi, loadSessionUser } from '../lib/api';
-import { loadMakerPoBoard, loadMakerPoDetail, makerPoName, makerPoNumberOf, sendManualVerificationsFromAuditEvents, undisclosedSendDecisionEventIds, MAKER_PO_AUDIT_WINDOW } from '../lib/maker-po-data';
+import { liveMakerPapers, loadMakerPaperCleanup, loadMakerPoBoard, loadMakerPoDetail, makerPoName, makerPoNumberOf, sendManualVerificationsFromAuditEvents, undisclosedSendDecisionEventIds, MAKER_PO_AUDIT_WINDOW } from '../lib/maker-po-data';
 import type { MakerPoEventRow } from '../lib/maker-po-data';
 import { buildOrderFlow, currentPaymentTerms, liveMakerPo, nextStepText, ORDER_STEPS, STEP_COUNT } from '../lib/order-flow';
 import { loadApprovalCard } from '../lib/approval-card';
@@ -24,7 +24,16 @@ import { orderRecordText } from '../lib/order-records';
 import type { ProjectScreenProps } from './screen-props';
 import { deliveryTermsSummary, OrderTermsSection } from '../components/OrderTermsSection';
 import { deliveryTermsLock, loadOrderFacts } from '../lib/order-terms';
-import { loadMakerRecipients } from '../lib/maker-master';
+import { loadMakerRecipients, previousTypedRecipientOf } from '../lib/maker-master';
+import { SecondaryMenu } from '../components/SecondaryMenu';
+import type { SecondaryMenuItem } from '../components/SecondaryMenu';
+import { ExceptionEntryForm, exceptionEntriesFor } from '../components/OrderExceptionForms';
+import { loadOrderMakerPaperWork, OrderMakerPaperWork } from './MakerPoScreen';
+import { OrderDocumentChecks, orderDocumentsToCheck } from '../components/OrderDocumentChecks';
+import { canRoleOperate } from '../lib/permissions';
+import { DesignChangeForms } from '../components/DesignChangeForms';
+import { approvalHistoryKeys, changeEvidenceChoices, printingStartedOrderIds } from '../lib/change-request';
+import { designsOf } from '../lib/order-flow';
 
 /** States in which the approval gate (designs, 押印 slots, pending checks) is read. */
 const GATE_STATES = new Set(['ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']);
@@ -131,6 +140,60 @@ export async function OrderDetailScreen({
     : null;
   // P2 R33: the project maker's recipient addresses, only when this role creates the maker paper now.
   const recipients = flow.panel.action.kind === 'maker_po_create' && flow.panel.canAct ? await loadMakerRecipients(projectId) : undefined;
+  // P4 M6: the representative's maker paper work (取り消し・取り消し承認) — judged like the old list.
+  const makerWork = entry ? await loadOrderMakerPaperWork(projectId, entry, user.role, workspace.documents) : null;
+  // P4 H14: step 12 reads the deliveries of this order, the readiness and who uploaded what.
+  const deliveryContext = {
+    deliveries: workspace.deliveries.filter((delivery) => delivery.kind === 'film' && delivery.orderId === order.id),
+    userId: user.id ?? null,
+    filmOnly: workspace.fillingOrders.length === 0,
+    readiness: workspace.readiness ?? null,
+    readinessLabel: labelLookup(workspace.labels, 'commissionReadinessStates')
+  };
+  // P4 §0: the cancellation review warns about the maker paper left on the order (the board's workspace skips that read).
+  const makerCleanup = status === 'CANCELLATION_REVIEW' || status === 'ON_HOLD' || status === 'CHANGE_REVIEW' || status === 'CANCELLED'
+    ? (await loadMakerPaperCleanup(projectId, [order.id]))[order.id]
+    : undefined;
+  const documentsToCheck = orderDocumentsToCheck(workspace.documents, order, po);
+  const designKeys = designsOf(workspace.revisions, order.id);
+  const menu: SecondaryMenuItem[] = [
+    ...(canRoleOperate(user.role, 'film_order:transition') && flow.phase === 'active'
+      ? exceptionEntriesFor(status, stateLabel).map((entryKey): SecondaryMenuItem => ({
+          key: `to-${entryKey}`,
+          label: entryKey === 'ON_HOLD' ? '保留にする' : entryKey === 'CHANGE_REVIEW' ? '変更確認にする' : '取消確認にする',
+          ko: entryKey === 'ON_HOLD' ? '보류' : entryKey === 'CHANGE_REVIEW' ? '변경 확인' : '취소 확인',
+          who: entryKey === 'ON_HOLD' ? '解除は代表' : entryKey === 'CANCELLATION_REVIEW' ? '処理は代表' : '担当者・代表',
+          content: <ExceptionEntryForm order={order} entry={entryKey} stateLabel={stateLabel} projectCode={projectCode} />
+        }))
+      : []),
+    ...(makerWork
+      ? [{ key: 'maker-paper', label: 'メーカー発注書の取り消し・取り消し承認', ko: '제조사 발주서 취소·취소 승인', who: '代表のみ', content: <OrderMakerPaperWork work={makerWork} /> }]
+      : []),
+    ...(designKeys.length > 0 && status !== null && !['DRAFT', 'CANCELLED', 'FILM_RECEIPT_ASSUMED_NO_ISSUE'].includes(status) && canRoleOperate(user.role, 'artwork_revision:create')
+      ? [{
+          key: 'design-change',
+          label: 'デザインを差し替える（変更依頼）',
+          ko: '디자인 교체(변경 의뢰)',
+          content: (
+            <DesignChangeForms
+              order={order}
+              projectCode={projectCode}
+              po={po}
+              role={user.role}
+              designKeys={designKeys}
+              documents={workspace.documents}
+              historyKeys={approvalHistoryKeys(workspace.revisions, workspace.approvalEvents, [gate])}
+              printedOrderIds={printingStartedOrderIds([order])}
+              evidenceChoices={changeEvidenceChoices(workspace.documents).filter((choice) => choice.orderId === order.id)}
+              livePapers={liveMakerPapers(makerPos).map((paper) => makerPoName(paper, order.code))}
+            />
+          )
+        }]
+      : []),
+    ...(documentsToCheck.length > 0 && canRoleOperate(user.role, 'document:verify')
+      ? [{ key: 'documents', label: `書類の確認（${documentsToCheck.length}件）`, ko: '서류 확인', content: <OrderDocumentChecks documents={documentsToCheck} role={user.role} userId={user.id ?? null} orderCode={order.code} /> }]
+      : [])
+  ];
   const currentStep = flow.current ? ORDER_STEPS[flow.current - 1] : null;
   const records = (activity.ok && activity.data && Array.isArray(activity.data.events) ? activity.data.events : [])
     .filter((event) => event.entityId === order.id || event.afterState?.filmSupplyOrderId === order.id
@@ -169,8 +232,8 @@ export async function OrderDetailScreen({
           <span>支払条件 {paymentTermsText(order)}</span>
         </p>
         <p className="p1-order-links">
-          <Link href={projectPath(projectCode, 'orders') + `#order-${order.id}`}>発注一覧で見る</Link>
-          <Link href={projectPath(projectCode, 'maker-po') + `#maker-order-${order.id}`}>メーカー発注の一覧</Link>
+          <Link href={projectPath(projectCode, 'orders') + `#order-${order.id}`}>発注の一覧（閲覧）</Link>
+          <Link href={projectPath(projectCode, 'maker-po') + `#maker-order-${order.id}`}>メーカー発注の一覧（閲覧）</Link>
           <a href="#order-terms">発注の条件</a>
         </p>
       </header>
@@ -221,6 +284,9 @@ export async function OrderDetailScreen({
             stateLabel={stateLabel}
             approvalCard={approvalCard}
             recipients={recipients}
+            previousTypedRecipient={recipients ? previousTypedRecipientOf(board.boards.flatMap((candidate) => candidate.makerPurchaseOrders), recipients) : null}
+            deliveryContext={deliveryContext}
+            makerCleanup={makerCleanup}
           />
           </StepAnnouncer>
           {nextStepText(flow) ? <p className="p1-next">{nextStepText(flow)}</p> : null}
@@ -232,6 +298,9 @@ export async function OrderDetailScreen({
           ) : null}
         </section>
       </div>
+
+      {/* P4 M6: the exceptions and checks beside the one primary action (they used to be in the old list tables). */}
+      <SecondaryMenu id="order-more" title="その他の操作（止める・変更する・取り消す）" items={menu} />
 
       <OrderTermsSection
         order={order}

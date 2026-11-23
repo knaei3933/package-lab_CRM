@@ -260,12 +260,13 @@ describe('H10① a viewer is told it is a permission, not that the order is miss
 });
 
 describe('H10② the auditor menu has 承認（閲覧）', () => {
-  it('auditor sees /approvals as 承認（閲覧）; operators keep 承認（校了）; viewer sees neither', async () => {
-    const { navGroupsForRole, navHrefsForRole } = await import('../apps/web/src/lib/navigation.js');
+  it('auditor sees /approvals as 承認（閲覧）; operators reach the read-only list from 発注の一覧 (P4 §0: not in their menu); viewer sees neither', async () => {
+    const { navGroupsForRole, navHrefsForRole, openableHrefsForRole } = await import('../apps/web/src/lib/navigation.js');
     const items = (role: string) => navGroupsForRole(role).flatMap((group) => group.items);
     expect(items('auditor').find((item) => item.href === '/approvals')?.label).toBe('承認（閲覧）');
-    expect(items('admin').find((item) => item.href === '/approvals')?.label).toBe('承認（校了）');
-    expect(items('staff').find((item) => item.href === '/approvals')?.label).toBe('承認（校了）');
+    expect(items('admin').find((item) => item.href === '/approvals')).toBeUndefined();
+    expect(items('staff').find((item) => item.href === '/approvals')).toBeUndefined();
+    expect(openableHrefsForRole('staff')).toContain('/approvals');
     expect(navHrefsForRole('viewer')).not.toContain('/approvals');
     expect(items('auditor').filter((item) => item.href === '/approvals')).toHaveLength(1);
   });
@@ -458,7 +459,8 @@ describe('M9 the browser\'s 「戻る」/「進む」 asks first — without eve
   });
 
   it('the long old forms keep a draft (the substitute where the browser cannot be asked)', () => {
-    expect(readSrc('screens/OrdersScreen.tsx')).toContain('<DraftAutosave name={`po-check-${po.id}`} />');
+    // P4 web2a §0: the 照合 checklist moved to the order screen (steps 1–2) with its draft.
+    expect(readSrc('components/SevenPoForms.tsx')).toContain('<DraftAutosave name={`po-check-${poId}`} />');
     expect(readSrc('components/ApprovalDecisionForm.tsx')).toContain('<DraftAutosave name={`approval-${designKey}-${revisionId}`} />');
   });
 });
@@ -675,7 +677,8 @@ describe('N15 the WIG leftovers', () => {
     const { SideNav } = await import('../apps/web/src/components/NavLinks.js');
     for (const group of NAV_GROUPS) for (const item of group.items) expect(item.ko, item.href).toMatch(/[가-힣]/);
     expect(MENU_TERMS['/approvals:auditor']).toEqual({ ja: '承認（閲覧）', ko: '승인(열람)' });
-    expect(MENU_TERMS['/approvals']?.ko).toBe('승인(교정 확정)');
+    // P4 §0: the operators' 承認（校了） left the menu (the list is read-only now).
+    expect(MENU_TERMS['/approvals']).toBeUndefined();
     const auditor = NAV_GROUPS.map((group) => ({ ...group, items: group.items.filter((item) => item.roles.includes('auditor')) })).filter((group) => group.items.length > 0);
     const html = renderToStaticMarkup(<SideNav groups={auditor as never} roleNote={null} korean role="auditor" />);
     expect(html).toContain('承認（閲覧）<span class="p1-ko" lang="ko">승인(열람)</span>');

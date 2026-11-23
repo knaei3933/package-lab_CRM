@@ -843,7 +843,7 @@ export function makerPaperCleanupWork(papers: ReadonlyArray<MakerPaperJudgement>
  */
 export const ARTWORK_REVISION_LIVE_PAPER_REFUSAL =
   'この発注には取り消されていないメーカー発注書があるため、新しい版は登録できません。'
-  + '版を変えるには、先にメーカー発注画面で代表者がその発注書を取り消してください。'
+  + '版を変えるには、先に発注の画面の「その他の操作」で代表者がその発注書を取り消してください。'
   + '送信未確認・受入済みの発注書は取り消せないため、その発注では版を登録できません（対応は代表者が判断します）。';
 
 /** The maker paper of one order that blocks a new artwork revision. */

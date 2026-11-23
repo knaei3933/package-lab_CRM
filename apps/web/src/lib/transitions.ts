@@ -28,7 +28,7 @@ export const RESUME_GROUP_LABEL = '再開する状態';
  * but a jump. Never past MAKER_PO_ACCEPTED unless the order left at or after it.
  */
 export const SKIP_AHEAD_GROUP_LABEL = '先の段階へ進める（注意）';
-export const MAKER_CHAIN_NOTICE = '次はメーカー発注画面の操作で進みます';
+export const MAKER_CHAIN_NOTICE = '次は発注の画面のメーカー発注書の手順で進みます';
 
 /**
  * ON_HOLD and CANCELLATION_REVIEW are left only through their own admin-only
@@ -50,9 +50,9 @@ export const CANCELLED_ORDER_NOTICE = 'この発注は取消で終了してい�
  * read — the plain notice above is then never shown.
  */
 export const CANCELLED_ORDER_CLEANUP_NOTICE =
-  'この発注は取消で終了しています（取消済）。状態はこれ以上進みませんが、メーカー発注書の整理（取り消し・取り消し承認）が残っています。メーカー発注画面で代表者が記録してください。';
+  'この発注は取消で終了しています（取消済）。状態はこれ以上進みませんが、メーカー発注書の整理（取り消し・取り消し承認）が残っています。発注の画面の「その他の操作」で代表者が記録してください。';
 export const CANCELLED_ORDER_UNREAD_NOTICE =
-  'この発注は取消で終了しています（取消済）。状態はこれ以上進みません。メーカー発注書の整理が残っていないかは、メーカー発注画面で確認してください。';
+  'この発注は取消で終了しています（取消済）。状態はこれ以上進みません。メーカー発注書の整理が残っていないかは、発注の画面で確認してください。';
 
 /** none: the maker paper is settled; cleanup: some is left; unknown (or not read): cannot tell. */
 export type MakerCleanupHint = 'none' | 'cleanup' | 'unknown';

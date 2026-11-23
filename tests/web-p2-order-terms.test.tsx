@@ -386,7 +386,8 @@ describe('OrderTermsSection: locked by an approved maker paper', () => {
     const html = section({ role: 'admin', lock });
     expect(html).toContain('納期と数量は固定されています（MPO-2026-0007 が代表承認済み）');
     expect(html).toContain('メーカー発注書を取り消して作り直し');
-    expect(html).toContain('href="/p/PRJ-1/maker-po#maker-order-order-1"');
+    // P4 §0: the cancellation is in the order screen's own 「その他の操作」 (the maker list only reads).
+    expect(html).toContain('href="#order-more"');
     expect(html).not.toContain('name="requestedDeliveryDate"');
     expect(html).not.toContain('name="orderedQuantity"');
     expect(html).toContain('name="totalAmount"');

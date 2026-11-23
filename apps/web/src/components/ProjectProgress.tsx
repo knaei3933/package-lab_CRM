@@ -16,7 +16,7 @@ import type {
   ScreenPath,
   Workspace
 } from '../lib/project-data';
-import { orderPath, scopeHref } from '../lib/project-route';
+import { newOrderPath, orderPath, scopeHref } from '../lib/project-route';
 
 /**
  * UI batch B (①): the project's progress at the top of every operator screen —
@@ -90,13 +90,21 @@ function NextActionBody({
   action,
   orderCode,
   currentPath,
-  projectCode
+  projectCode,
+  workOrderCode = null
 }: {
   action: NextActionView;
   orderCode: string | null;
   currentPath: ScreenPath | null;
   projectCode?: string | null | undefined;
+  /** P4 §0: the order the work belongs to — its own screen is where it is recorded. */
+  workOrderCode?: string | null | undefined;
 }) {
+  // P4 §0: the old screens only read now, so the one link is the order screen (or the
+  // new-order wizard when there is no order yet) — never 「文書画面を開く」.
+  const workHref = projectCode && action.screens.length > 0
+    ? workOrderCode ? orderPath(projectCode, workOrderCode) : action.operation === 'seven_po:create' || action.operation === 'film_order:create' ? newOrderPath(projectCode) : null
+    : null;
   return (
     <>
       <p className="next-text">
@@ -105,7 +113,11 @@ function NextActionBody({
       </p>
       {action.owner ? <p className="next-meta">担当: {action.owner}</p> : null}
       {action.refusal ? <p className="next-refusal">{action.refusal}</p> : null}
-      {action.screens.length > 0 ? (
+      {workHref ? (
+        <p className="next-links">
+          <Link href={workHref}>{workOrderCode ? '発注の画面で行う' : '新しい発注の画面を開く'}<span className="visually-hidden">{workOrderCode ? `（${workOrderCode}）` : ''}</span></Link>
+        </p>
+      ) : action.screens.length > 0 ? (
         <p className="next-links">
           {action.screens.map((screen) =>
             screen === currentPath ? (
@@ -140,12 +152,13 @@ export function ProjectProgress({
   const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
   const { active, completed, hidden } = groupOrdersForProgress(workspace.filmOrders);
 
-  const items: Array<{ key: string; orderCode: string | null; action: NextActionView }> =
+  const items: Array<{ key: string; orderCode: string | null; action: NextActionView; workOrderCode?: string | null }> =
     workspace.filmOrders.length === 0
       ? [{ key: 'none', orderCode: null, action: nextActionWithoutOrders(workspace, role) }]
       : active.map((order) => ({
         key: order.id,
         orderCode: active.length > 1 ? order.code : null,
+        workOrderCode: order.code,
         action: nextActionForOrder(order, workspace, role)
       }));
   if (items.length === 0) {
@@ -190,12 +203,12 @@ export function ProjectProgress({
       <div className="next-card">
         <h2>次にやること</h2>
         {items.length === 1 ? (
-          <NextActionBody action={items[0]!.action} orderCode={items[0]!.orderCode} currentPath={currentPath} projectCode={projectCode} />
+          <NextActionBody action={items[0]!.action} orderCode={items[0]!.orderCode} currentPath={currentPath} projectCode={projectCode} workOrderCode={items[0]!.workOrderCode} />
         ) : (
           <ul className="next-list">
             {items.map((item) => (
               <li key={item.key}>
-                <NextActionBody action={item.action} orderCode={item.orderCode} currentPath={currentPath} projectCode={projectCode} />
+                <NextActionBody action={item.action} orderCode={item.orderCode} currentPath={currentPath} projectCode={projectCode} workOrderCode={item.workOrderCode} />
               </li>
             ))}
           </ul>

@@ -8,7 +8,7 @@ import { accounts, auditEvents, createDatabase, filmSupplyOrders, projectAssignm
 import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
-import { projectScreen } from './helpers/project-screen.js';
+import { orderScreen, projectScreen } from './helpers/project-screen.js';
 
 /**
  * P0 against the REAL API on the isolated test database. The web's own
@@ -50,7 +50,13 @@ vi.mock('next/headers', () => ({
   })
 }));
 vi.mock('next/cache', () => ({ revalidatePath }));
-vi.mock('next/navigation', () => ({ redirect: () => undefined }));
+vi.mock('next/navigation', () => ({
+  redirect: () => undefined,
+  // P4 web2a §0: the order screen (where the forms moved) draws client components that read the router.
+  usePathname: () => '/p/TEST-P/o/x',
+  useRouter: () => ({ refresh: () => undefined, replace: () => undefined }),
+  useSearchParams: () => new URLSearchParams()
+}));
 
 const api = await import('../apps/web/src/lib/api.js');
 const actions = await import('../apps/web/src/app/actions.js');
@@ -276,29 +282,24 @@ describe('R01: 支払条件 is chosen at creation (real API)', () => {
     expect(order?.paymentTerms).toBe('undetermined');
   });
 
-  it('the order list offers 「支払条件を変更する」 to staff and admin for a DRAFT order, never to the viewer', async () => {
+  it('the order screen offers 「支払条件を変更する」 to staff and admin for a DRAFT order, never to the viewer (P4 §0: not the list)', async () => {
     const { orderCode } = await draftOrder('staff');
     for (const role of ['staff', 'admin'] as const) {
       signIn(role);
-      const html = await render(OrdersPage);
+      const html = await render(orderScreen(orderCode));
       expect(html, role).toContain('>支払条件を変更する</button>');
       expect(html, role).toContain(orderCode);
+      expect(await render(OrdersPage), role).not.toContain('>支払条件を変更する</button>');
     }
     signIn('viewer');
-    const viewer = await render(OrdersPage);
+    const viewer = await render(orderScreen(orderCode));
     expect(viewer).not.toContain('>支払条件を変更する</button>');
   });
 
   it('the change form is offered for DRAFT..MAKER_PO_READY and not after the maker paper is sent', async () => {
     const { orderId, orderCode } = await draftOrder('staff');
     signIn('admin');
-    const present = async () => {
-      const html = await render(OrdersPage);
-      const start = html.indexOf(`id="order-${orderId}"`);
-      expect(start, orderCode).toBeGreaterThan(-1);
-      const end = html.indexOf('</tr>', start);
-      return html.slice(start, end).includes('>支払条件を変更する</button>');
-    };
+    const present = async () => (await render(orderScreen(orderCode))).includes('>支払条件を変更する</button>');
     for (const status of ['DRAFT', 'SEVEN_PO_VERIFIED', 'ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']) {
       await moveOrderTo(orderId, status);
       expect(await present(), status).toBe(true);
@@ -336,11 +337,14 @@ describe('R01: 支払条件 is chosen at creation (real API)', () => {
   it('an undetermined order shows 「未定」 in the summary and the warning that it blocks the 代表承認', async () => {
     const { orderId } = await draftOrder('staff');
     signIn('admin');
-    const html = await render(OrdersPage);
-    const start = html.indexOf(`id="order-${orderId}"`);
-    const row = html.slice(start, html.indexOf('</tr>', start));
-    expect(row).toContain('支払条件: 未定');
-    expect(row).toContain('支払条件が「未定」です');
+    // P4 §0: the change is in the order screen's 「発注の条件」 (open while 「未定」); the list shows the term.
+    const list = await render(OrdersPage);
+    const start = list.indexOf(`id="order-${orderId}"`);
+    expect(list.slice(start, list.indexOf('</tr>', start))).toContain('未定');
+    const code = (await loadWorkspace(projectId)).filmOrders.find((row) => row.id === orderId)!.code;
+    const page = await render(orderScreen(code));
+    expect(page).toContain('（いま: 未定）');
+    expect(page).toContain('支払条件が「未定」です');
   });
 });
 
@@ -438,10 +442,12 @@ describe('R09 / R08: refusals in operator words (real API)', () => {
 
 describe('R10: the maker PO create form asks for an e-mail address (real API)', () => {
   it('admin sees the e-mail field with its new label, type=email, and no 宛先住所 label', async () => {
-    const { orderId } = await draftOrder('staff');
+    const { orderId, orderCode } = await draftOrder('staff');
+    expect((await actions.updateFilmPaymentTermsAction(null, form({ orderId, paymentTerms: 'prepaid' }))).ok).toBe(true);
     await moveOrderTo(orderId, 'MAKER_PO_READY');
     signIn('admin');
-    const html = await render(MakerPoPage);
+    // P4 §0: the paper is drawn up at step 7 of the order screen.
+    const html = await render(orderScreen(orderCode));
     const input = /<input[^>]*name="recipientAddress"[^>]*>/.exec(html)?.[0] ?? '';
     expect(input).toContain('type="email"');
     expect(input).toContain('required');

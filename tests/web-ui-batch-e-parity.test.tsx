@@ -18,7 +18,7 @@ import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
-import { projectScreen } from './helpers/project-screen.js';
+import { orderScreen, projectScreen } from './helpers/project-screen.js';
 import { withApprovalSnapshot } from './helpers/approval-snapshot.js';
 
 /**
@@ -260,8 +260,9 @@ describe('F-05: an order without its セブン化学発注書', () => {
     expect(staffHtml).not.toContain('セブン化学発注書の本登録と発注書の照合チェックを済ませ');
     expect(orderRow(staffHtml, code)).toContain('この発注は「発注書の照合済み」へ進められません。紐付けは作成のときだけ選べます。');
     expect(staffHtml).toContain('この発注はセブン化学発注書に紐付いていないため');
-    // The create form (staff may create) requires the PO.
-    expect(staffHtml).toMatch(/<select name="sevenPurchaseOrderId" required=""/);
+    // P4 §0: a new order is registered in the wizard (it always takes its PO); the list links it.
+    expect(staffHtml).toContain('>新しいフィルム発注を登録する</a>');
+    expect(staffHtml).not.toMatch(/<select name="sevenPurchaseOrderId"/);
   });
 });
 
@@ -292,10 +293,11 @@ describe('F-06: the evidence warning before a transition', () => {
     const { orderId, orderCode } = await linkedOrder(sevenPoId);
     // P1 R23: the linked verified PO makes the new order SEVEN_PO_VERIFIED at once.
     signIn('staff');
-    const row = orderRow(await render(OrdersPage), orderCode);
-    expect(row).toContain('証跡がないまま進める場合（「デザイン受領」）');
-    expect(row).toContain('この発注に紐付いた書類（デザイン入稿データ）が、文書画面にまだ登録されていません。');
-    expect(row).toContain('name="evidenceNote"');
+    // P4 §0: step 4 of the order screen takes the file, or 「ファイルがなく、受領だけを記録する」 with the memo (kept in the history).
+    const page = await render(orderScreen(orderCode));
+    expect(page).toContain('ファイルがなく、受領だけを記録する');
+    expect(page).toContain('name="evidenceNote"');
+    expect(orderRow(await render(OrdersPage), orderCode)).not.toContain('name="evidenceNote"');
     // Warn only: the API still accepts the transition (the gate is a policy decision).
     expect((await call(staffToken, `/api/film-supply-orders/${orderId}/transitions`, { to: 'ARTWORK_RECEIVED' })).status).toBe(200);
   });
@@ -348,18 +350,18 @@ describe('F-10, F-22: the provisional acceptance and what the final one waits fo
     await uploadDocument({ documentType: 'acceptance_evidence', issuerEntity: 'maker', orderId: chain.orderId, sevenPoId: chain.sevenPoId, makerPoId: poId });
 
     signIn('staff');
-    const staffHtml = await render(MakerPoPage);
-    expect(staffHtml).toMatch(/メーカー受入の日時: 未入力（記録した日時: \d{4}\/\d{2}\/\d{2} \d{2}:\d{2} JST）/);
-    expect(staffHtml).toContain('仮の受入記録はあります。最終受入確認の前に、受領証跡（メーカーの受入・検収を示す書類）が必要です。');
-    expect(staffHtml).toContain('書類種別「受領証跡」としてこの発注とこのメーカー発注書に紐付けてアップロード');
-    expect(staffHtml).toContain('担当者が仮の記録と受領証跡の登録、代表者が受領証跡を確認して最終確認');
+    // The list still reads the maker's time apart from the record time (F-22).
+    expect(await render(MakerPoPage)).toMatch(/メーカー受入の日時: 未入力（記録した日時: \d{4}\/\d{2}\/\d{2} \d{2}:\d{2} JST）/);
+    // P4 §0: the final acceptance is step 10 of the order screen — staff wait for the representative.
+    const staffPage = await render(orderScreen(chain.orderCode));
+    expect(staffPage).toContain('代表の確認・承認を待っています。（メーカー受注の最終確認）');
+    expect(staffPage).not.toMatch(/<button type="submit"[^>]*>メーカーの受注を確定する/);
 
     signIn('admin');
-    const adminHtml = await render(MakerPoPage);
-    expect(adminHtml).toContain('仮の受入記録はあります。最終受入確認の前に、受領証跡');
-    expect(adminHtml).not.toContain('最終受入確認のブロック理由');
-    // The unchecked upload is not offered for the final acceptance.
-    expect(adminHtml).not.toContain('受領証跡の書類バージョン（確認済み）');
+    const adminPage = await render(orderScreen(chain.orderCode));
+    expect(adminPage).toMatch(/<button type="submit"[^>]*>メーカーの受注を確定する（最終受入）/);
+    // The unchecked upload is shown as such; the chain checks it before the final acceptance.
+    expect(adminPage).toMatch(/受領証跡: [^<]*（未確認）・受入記録（仮）あり/);
   });
 });
 
@@ -368,9 +370,12 @@ describe('F-07: the upload form names the PO state', () => {
     const unverified = await call(staffToken, `/api/projects/${projectId}/seven-purchase-orders`, { poNumber: `SEVEN-BE-UNV-${nextTag()}` });
     expect(unverified.status).toBe(201);
     signIn('admin');
-    const html = await render(DocumentsPage);
-    // Review L3: the label names the step that is missing.
-    expect(html).toMatch(/SEVEN-BE-UNV-\d+（未登録） 発注書の照合チェックがまだです/);
+    // P4 §0: no upload form on the 文書 list any more (each step registers its own file, its PO fixed by the order).
+    expect(await render(DocumentsPage)).not.toContain('<form');
+    // The 発注の一覧 says where the PO is registered and checked (the wizard, or the order's steps 1–2).
+    const orders = await render(OrdersPage);
+    expect(orders).toMatch(/SEVEN-BE-UNV-\d+/);
+    expect(orders).toContain('この発注書で発注を登録する');
   });
 });
 

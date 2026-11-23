@@ -155,3 +155,23 @@ export async function loadMakerAccounts(): Promise<MakerAccountsRead> {
 /** P2: on /makers a DUPLICATE is a name or an e-mail, never a number (the dictionary's 「この番号は…」 does not fit). */
 export const MAKER_NAME_DUPLICATE_MESSAGE = 'この名前のメーカーはすでに登録されています。一覧で確認してください。';
 export const RECIPIENT_DUPLICATE_MESSAGE = 'このメールアドレスは、このメーカーの宛先にすでに登録されています。一覧で確認してください。';
+
+/**
+ * P2 R33 (DESIGN §4), shared by the maker list and the order screen (P4 §0): the latest
+ * live paper's address of the project when it is NOT one of the master addresses — shown
+ * as a hint of 「直接入力する」 only, never filled in (a wrong maker's address would go out).
+ * A cancelled paper is left out (it may have been cancelled for its wrong address, review L1).
+ */
+export function previousTypedRecipientOf(
+  papers: ReadonlyArray<{ status: string; createdAt?: string | null | undefined; recipientAddress?: string | null | undefined; snapshot?: { recipient?: { address?: string | null } | null } | null | undefined }>,
+  recipients: RecipientChoices
+): string | null {
+  const latest = papers
+    .filter((po) => po.status !== 'CANCELLED')
+    .map((po) => ({ at: po.createdAt ?? '', address: po.snapshot?.recipient?.address ?? po.recipientAddress ?? null }))
+    .filter((row): row is { at: string; address: string } => typeof row.address === 'string' && row.address.length > 0)
+    .sort((a, b) => (a.at < b.at ? 1 : -1))[0]?.address;
+  if (!latest) return null;
+  const inMaster = recipients.kind === 'list' && recipients.addresses.some((address) => address.email.toLowerCase() === latest.toLowerCase());
+  return inMaster ? null : latest;
+}
