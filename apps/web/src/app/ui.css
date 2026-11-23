@@ -55,9 +55,13 @@
 .ui-input:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 
 .ui-button[aria-disabled='true'],
+.ui-button--subtle[aria-disabled='true'],
+.ui-button--danger[aria-disabled='true'],
 .ui-button[disabled],
 .ui-button--subtle[disabled],
 .ui-button--danger[disabled] { opacity: 0.6; cursor: not-allowed; }
+
+/* P4 L-2: a pending danger / subtle button dims like the primary one did with its inline opacity. */
 
 .ui-table { width: 100%; font-size: var(--text-sm); font-variant-numeric: tabular-nums; border-collapse: collapse; }
 .ui-th { padding: 6px 8px; text-align: left; white-space: nowrap; background: var(--surface-sub); border: 1px solid var(--line); }

@@ -5,9 +5,8 @@ import { callApi } from '../../lib/api';
 import { offsetDateTimeField } from '../../lib/datetime';
 import type { ActionState } from '../../lib/types';
 import { recordIdOf, refreshesListOn, refusalState } from '../../lib/action-result';
-import { EXPECTED_TERMS_MISSING_MESSAGE, PAYMENT_TERMS_REQUIRED_MESSAGE, RECIPIENT_EMAIL_INVALID_MESSAGE } from '../../lib/form-messages';
+import { PAYMENT_TERMS_REQUIRED_MESSAGE, RECIPIENT_EMAIL_INVALID_MESSAGE } from '../../lib/form-messages';
 import { refuseIfProjectSwitched, writeProjectOf } from '../../lib/project-guard';
-import { AMOUNT_MISSING_CONFIRM_MESSAGE, SNAPSHOT_UNREADABLE_MESSAGE } from '../../lib/approval-snapshot';
 import { idempotencyKeyOf } from '../../lib/project-context';
 import { RECIPIENT_CHOICE_INVALID_MESSAGE, RECIPIENT_UNAVAILABLE_CODE, recipientChoiceOf } from '../../lib/maker-master';
 import { revalidatePath } from 'next/cache';
@@ -104,28 +103,8 @@ export async function createMakerPoAction(_prev: ActionState | null, formData: F
   return { ...state, message: RECIPIENT_UNAVAILABLE_REFUSAL.message };
 }
 
-/** Screen 2: the CEO approval of the frozen digest (admin only). */
-export async function approveMakerPoAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
-  const switched = await refuseIfProjectSwitched(formData);
-  if (switched) return switched;
-  const poId = field(formData, 'poId');
-  if (poId.length === 0) return { ok: false, message: 'メーカー発注書が選択されていません。' };
-  // P0 review: the 支払条件 the approval screen showed; the API refuses with 409
-  // PAYMENT_TERMS_CHANGED when it changed meanwhile (the approval never certifies
-  // a term the representative did not see).
-  // P0 review M1: never sent without it — a screen that could not read the term
-  // holds the approval instead of certifying a term nobody saw.
-  const expectedPaymentTerms = field(formData, 'expectedPaymentTerms');
-  if (!['prepaid', 'on_delivery', 'undetermined'].includes(expectedPaymentTerms)) {
-    return { ok: false, message: EXPECTED_TERMS_MISSING_MESSAGE };
-  }
-  // Review H1: the hash the screen was drawn with (never read again at submit); none → nothing is sent.
-  const expectedSnapshotSha256 = field(formData, 'expectedSnapshotSha256');
-  if (!/^[0-9a-f]{64}$/.test(expectedSnapshotSha256)) return { ok: false, message: SNAPSHOT_UNREADABLE_MESSAGE };
-  // A paper without an amount is approved only with the explicit confirmation drawn into the form.
-  if (field(formData, 'amountMissing') === 'true' && formData.get('acknowledgeMissingAmount') !== 'on') return { ok: false, message: AMOUNT_MISSING_CONFIRM_MESSAGE };
-  return post(formData, `/api/maker-purchase-orders/${encodeURIComponent(poId)}/ceo-approval`, { expectedPaymentTerms, expectedSnapshotSha256 });
-}
+// P4 L-3: the old list's 代表承認 action is gone. The approval is recorded on the order screen's card
+// (app/approval-actions.ts), which carries the terms stamp, the snapshot hash and the amount/date checks.
 
 /** Screen 2 support: record the G6 transaction terms while the order is a draft. */
 export async function updatePaymentTermsAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {

@@ -1,3 +1,4 @@
+import { FocusOnMount } from './FocusOnMount';
 import { loginHrefFor } from '../lib/return-path';
 import { webErrorText } from '../lib/error-dictionary';
 import { formatTimestamp } from '../lib/vocabulary';
@@ -16,7 +17,9 @@ export function SessionNotice({ kind, path, code, now = new Date() }: { kind: Se
   const expired = kind === 'expired';
   return (
     <section className="session-notice" aria-labelledby="session-notice-title">
-      <h1 id="session-notice-title" className="session-notice-title">
+      {/* P4 L-5: the notice takes the focus (the focus was left on <body>). */}
+      <FocusOnMount targetId="session-notice-title" />
+      <h1 id="session-notice-title" className="session-notice-title" tabIndex={-1}>
         {expired ? 'ログインの有効期限が切れました' : 'ログインしてください'}
       </h1>
       <p className="session-notice-body">
@@ -41,7 +44,8 @@ function OutageNotice({ path, code, now }: { path: string; code: string; now: Da
   const text = webErrorText(code);
   return (
     <section className="session-notice session-notice--outage" aria-labelledby="session-notice-title">
-      <h1 id="session-notice-title" className="session-notice-title">
+      <FocusOnMount targetId="session-notice-title" />
+      <h1 id="session-notice-title" className="session-notice-title" tabIndex={-1}>
         {database ? 'システムに接続できません（データベース）' : 'システムに接続できません'}
       </h1>
       <p className="session-notice-body">

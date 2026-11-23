@@ -10,63 +10,50 @@ export const LEAVE_CONFIRM_MESSAGE = '入力中の内容があります。移動
 
 const dirtyForms = new Set<object>();
 
-/** The page's address (null outside a browser). lib/ is also type-checked without the DOM lib. */
-function currentHref(): string | null {
-  const browser = (globalThis as { window?: { location?: { href?: unknown } } }).window;
-  return typeof browser?.location?.href === 'string' ? browser.location.href : null;
-}
-/** P4 M9: the address the input was typed at — where a refused 「戻る」 puts the operator back. */
-let heldHref: string | null = null;
 
 export function hasUnsavedInput(): boolean {
   return dirtyForms.size > 0;
 }
 
 export function markDirty(form: object, dirty: boolean): void {
-  if (dirty) {
-    if (dirtyForms.size === 0) heldHref = currentHref();
-    dirtyForms.add(form);
-  } else {
-    dirtyForms.delete(form);
-    if (dirtyForms.size === 0) heldHref = null;
-  }
+  if (dirty) dirtyForms.add(form);
+  else dirtyForms.delete(form);
 }
 
 /** After the operator chose to leave anyway, nothing is held any more. */
 export function forgetAll(): void {
   dirtyForms.clear();
-  heldHref = null;
 }
 
 export function forget(form: object): void {
   dirtyForms.delete(form);
-  if (dirtyForms.size === 0) heldHref = null;
-}
-
-/** The address the unsaved input belongs to (null when nothing is held). */
-export function heldAddress(): string | null {
-  return heldHref;
 }
 
 /**
- * P4 M9: the browser's 「戻る」 / 「進む」 (popstate). The address has already changed
- * when it fires, so a refusal puts the held address back (`restore`, a pushState)
- * and tells the caller to stop the event. With nothing typed it never asks.
+ * P4 M9 (review H-1): the browser's 「戻る」 / 「進む」, asked about through the Navigation API's
+ * `navigate` event — BEFORE anything changes. A refusal cancels the traversal (`preventDefault`), so the
+ * address, the history and the drawn screen stay exactly as they were. The earlier popstate guard had to
+ * put the address back with `pushState(history.state, …)` AFTER it changed, and that stored the previous
+ * screen's router tree under the typed screen's address (「進む」 then drew another order under the URL).
+ * Nothing here ever writes to the history.
+ *
+ * - Only a `traverse` (back / forward / history jump) is asked about; links are asked by the click guard,
+ *   closing and reloading by beforeunload.
+ * - A traversal the browser does not let a page cancel (`cancelable: false`: no history-action
+ *   activation, or a browser without the API) is NOT asked about — a question that cannot be acted on
+ *   would be false. The typed input still survives through DraftAutosave.
  */
-export function handlePopstate(deps: {
-  hasUnsaved: () => boolean;
-  confirm: (message: string) => boolean;
-  restore: (href: string) => void;
-  forget: () => void;
-  held: string | null;
-}): 'allow' | 'blocked' {
+export function decideTraverse(
+  event: { navigationType: string; cancelable: boolean },
+  deps: { hasUnsaved: () => boolean; confirm: (message: string) => boolean; forget: () => void }
+): 'allow' | 'cancel' {
+  if (event.navigationType !== 'traverse' || !event.cancelable) return 'allow';
   if (!deps.hasUnsaved()) return 'allow';
   if (deps.confirm(LEAVE_CONFIRM_MESSAGE)) {
     deps.forget();
     return 'allow';
   }
-  if (deps.held) deps.restore(deps.held);
-  return 'blocked';
+  return 'cancel';
 }
 
 /** Whether a click on this anchor leaves the page in the same tab (and so may lose input). */

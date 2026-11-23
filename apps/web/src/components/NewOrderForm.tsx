@@ -136,8 +136,7 @@ export function NewOrderForm({
             blankLabel="（選ぶ）"
             choices={existingPoChoices}
             width={360}
-            key={`existing-${existingPoId}`}
-            defaultValue={existingPoId}
+            value={existingPoId}
             onChange={(event) => setExistingPoId(event.target.value)}
           />
         ) : (

@@ -415,45 +415,51 @@ describe('M5 the system\'s own steps are never offered by hand', () => {
   });
 });
 
-describe('M9 the browser\'s 「戻る」 asks first', () => {
-  it('handlePopstate: nothing typed → allow without asking; typed + refused → blocked and the held address restored; typed + accepted → allow and forget', async () => {
-    const { handlePopstate } = await import('../apps/web/src/lib/unsaved-guard.js');
-    const asked: string[] = [];
-    const restored: string[] = [];
-    let forgotten = 0;
-    const deps = (unsaved: boolean, answer: boolean) => ({
-      hasUnsaved: () => unsaved, confirm: (message: string) => { asked.push(message); return answer; },
-      restore: (href: string) => restored.push(href), forget: () => { forgotten += 1; }, held: 'https://h/p/PRJ-1/new'
-    });
-    expect(handlePopstate(deps(false, false))).toBe('allow');
-    expect(asked).toEqual([]);
-    expect(handlePopstate(deps(true, false))).toBe('blocked');
-    expect(asked).toHaveLength(1);
-    expect(asked[0]).toContain('入力中の内容があります');
-    expect(restored).toEqual(['https://h/p/PRJ-1/new']);
-    expect(handlePopstate(deps(true, true))).toBe('allow');
-    expect(forgotten).toBe(1);
+describe('M9 the browser\'s 「戻る」/「進む」 asks first — without ever writing to the history (review H-1)', () => {
+  const deps = (unsaved: boolean, answer: boolean, log: { asked: string[]; forgotten: number }) => ({
+    hasUnsaved: () => unsaved,
+    confirm: (message: string) => { log.asked.push(message); return answer; },
+    forget: () => { log.forgotten += 1; }
   });
 
-  it('the dom guard listens to popstate in the capture phase, and the long old forms keep a draft', () => {
-    expect(readSrc('components/unsaved-guard-dom.tsx')).toMatch(/addEventListener\('popstate'[\s\S]*?\}, true\)/);
+  it('decideTraverse: a typed form + 「いいえ」 cancels the traversal; 「はい」 allows and forgets; nothing typed never asks', async () => {
+    const { decideTraverse } = await import('../apps/web/src/lib/unsaved-guard.js');
+    const log = { asked: [] as string[], forgotten: 0 };
+    expect(decideTraverse({ navigationType: 'traverse', cancelable: true }, deps(false, false, log))).toBe('allow');
+    expect(log.asked).toEqual([]);
+    expect(decideTraverse({ navigationType: 'traverse', cancelable: true }, deps(true, false, log))).toBe('cancel');
+    expect(log.asked).toHaveLength(1);
+    expect(log.asked[0]).toContain('入力中の内容があります');
+    expect(log.forgotten).toBe(0);
+    expect(decideTraverse({ navigationType: 'traverse', cancelable: true }, deps(true, true, log))).toBe('allow');
+    expect(log.forgotten).toBe(1);
+  });
+
+  it('decideTraverse: only a traversal is asked about, and only when the browser lets the page cancel it', async () => {
+    const { decideTraverse } = await import('../apps/web/src/lib/unsaved-guard.js');
+    for (const navigationType of ['push', 'replace', 'reload']) {
+      const log = { asked: [] as string[], forgotten: 0 };
+      expect(decideTraverse({ navigationType, cancelable: true }, deps(true, false, log)), navigationType).toBe('allow');
+      expect(log.asked, navigationType).toEqual([]);
+    }
+    // A traversal that cannot be cancelled is not asked about (the question could not be acted on).
+    const log = { asked: [] as string[], forgotten: 0 };
+    expect(decideTraverse({ navigationType: 'traverse', cancelable: false }, deps(true, false, log))).toBe('allow');
+    expect(log.asked).toEqual([]);
+  });
+
+  it('there is no popstate handling and no history write anywhere in the guard (the cause of H-1)', () => {
+    for (const file of ['components/unsaved-guard-dom.tsx', 'components/UnsavedGuardBoot.tsx', 'lib/unsaved-guard.ts']) {
+      const text = code(readSrc(file));
+      expect(text, file).not.toMatch(/popstate/i);
+      expect(text, file).not.toMatch(/pushState|replaceState|history\.go|history\.back|history\.forward/);
+    }
+    expect(readSrc('components/unsaved-guard-dom.tsx')).toContain("navigation.addEventListener('navigate'");
+  });
+
+  it('the long old forms keep a draft (the substitute where the browser cannot be asked)', () => {
     expect(readSrc('screens/OrdersScreen.tsx')).toContain('<DraftAutosave name={`po-check-${po.id}`} />');
     expect(readSrc('components/ApprovalDecisionForm.tsx')).toContain('<DraftAutosave name={`approval-${designKey}-${revisionId}`} />');
-  });
-
-  it('the guard remembers the address of the typed input, and forgets it with the last form', async () => {
-    const guard = await import('../apps/web/src/lib/unsaved-guard.js');
-    (globalThis as { window?: unknown }).window = { location: { href: 'https://h/p/PRJ-1/new' } };
-    try {
-      const form = {};
-      guard.markDirty(form, true);
-      expect(guard.heldAddress()).toBe('https://h/p/PRJ-1/new');
-      guard.markDirty(form, false);
-      expect(guard.heldAddress()).toBeNull();
-    } finally {
-      delete (globalThis as { window?: unknown }).window;
-      guard.forgetAll();
-    }
   });
 });
 
@@ -680,7 +686,8 @@ describe('N15 the WIG leftovers', () => {
     const html = renderToStaticMarkup(<StepAnnouncer progressKey="a" latest={null} now={null}>x</StepAnnouncer>);
     expect(html).not.toContain('role="status"');
     expect(html).toContain('tabindex="-1"');
-    expect(html).toContain('role="group"');
+    // Review L-1: no aria-label (it would replace the message as the element's name).
+    expect(html).not.toContain('aria-label');
   });
 
   it('no <p aria-label> (it is ignored on a paragraph): the 承認済み seal says it in visually-hidden text', () => {
@@ -764,4 +771,54 @@ describe('H8 a page that cannot open says why (a soft navigation never draws the
     expect(code(readSrc('app/p/[project]/layout.tsx'))).toContain("if (route.kind === 'no-session') return <RouteGate route={route} />;");
   });
 
+});
+
+// ---------------------------------------------------------------------------------------------
+describe('review round (REVIEW.md of 32f528a): M-1, L-1…L-5', () => {
+  it('M-1: the 「登録済みの発注書」 select is controlled, never re-keyed (a re-key drops the keyboard focus to <body>)', async () => {
+    const wizard = code(readSrc('components/NewOrderForm.tsx'));
+    expect(wizard).not.toMatch(/key=\{`existing-/);
+    expect(wizard).toMatch(/name="existingPoId"[\s\S]{0,400}value=\{existingPoId\}/);
+    const { SelectField } = await import('../apps/web/src/components/fields.js');
+    const html = renderToStaticMarkup(
+      <RenderedContextProvider value={{ projectId: 'p', showKorean: false }}>
+        <SelectField name="existingPoId" label="登録済み" choices={[{ value: 'a', label: 'A' }, { value: 'b', label: 'B' }]} value="b" onChange={() => undefined} />
+      </RenderedContextProvider>
+    );
+    expect(html).toContain('<option value="b" selected="">B</option>');
+    expect(html).not.toContain('<option value="a" selected');
+  });
+
+  it('L-1: the announcer has no aria-label (covered in the N15 test above); L-5: the session notice takes the focus', async () => {
+    const { SessionNotice } = await import('../apps/web/src/components/SessionNotice.js');
+    for (const kind of ['expired', 'login', 'outage'] as const) {
+      const html = renderToStaticMarkup(<SessionNotice kind={kind} path="/p/PRJ-1/orders" />);
+      expect(html, kind).toMatch(/<h1 id="session-notice-title"[^>]*tabindex="-1"/);
+    }
+    expect(readSrc('components/SessionNotice.tsx')).toContain('<FocusOnMount targetId="session-notice-title" />');
+  });
+
+  it('L-2: a pending danger / subtle button dims like the primary one (aria-disabled is styled for all three)', () => {
+    const css = readSrc('app/ui.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const selector of ['.ui-button[aria-disabled=\'true\']', '.ui-button--danger[aria-disabled=\'true\']', '.ui-button--subtle[aria-disabled=\'true\']']) {
+      expect(css, selector).toContain(selector);
+    }
+  });
+
+  it('L-3: approveMakerPoAction is deleted — not exported, not referenced by any source', async () => {
+    const actions = await import('../apps/web/src/app/maker-po/actions.js');
+    expect(Object.keys(actions)).not.toContain('approveMakerPoAction');
+    const offenders = ['screens', 'components', 'lib', 'app'].flatMap((dir) => sources(path.join(root, dir)))
+      .filter((file) => readFileSync(file, 'utf8').includes('approveMakerPoAction')).map((file) => path.relative(root, file));
+    expect(offenders).toEqual([]);
+    // The approval itself is still recorded by the card's action (the API judges it).
+    const card = await import('../apps/web/src/app/approval-actions.js');
+    expect(Object.keys(card).some((name) => /approv/i.test(name))).toBe(true);
+  });
+
+  it('L-4: the 支払条件 change does not repeat the server\'s success sentence in a hint', () => {
+    const section = readSrc('components/OrderTermsSection.tsx');
+    const change = section.slice(section.indexOf('export function PaymentTermsChange'), section.indexOf('/** 1 行の要約'));
+    expect(change).not.toContain('successHint');
+  });
 });

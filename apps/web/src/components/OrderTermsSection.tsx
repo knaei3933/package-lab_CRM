@@ -130,7 +130,6 @@ export function PaymentTermsChange({ order, role, cancelled }: { order: FilmSupp
       <ActionForm
         action={updateFilmPaymentTermsAction}
         submitLabel="支払条件を変更する"
-        successHint="支払条件を記録しました。"
         hint="代表承認の前なら変更できます（変更は履歴に残ります）。記録は入金確認ではありません。"
         confirm={{
           title: `発注 ${order.code} の支払条件を変更しますか？`,

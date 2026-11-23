@@ -223,6 +223,7 @@ export function SelectField({
   includeBlank = false,
   blankLabel = '（選択なし）',
   defaultValue,
+  value,
   width,
   onChange
 }: FieldProps & {
@@ -230,6 +231,8 @@ export function SelectField({
   includeBlank?: boolean | undefined;
   blankLabel?: string | undefined;
   defaultValue?: string | undefined;
+  /** P4 M-1: a controlled select (needs onChange); never re-key a select to change its value — a re-key drops the focus. */
+  value?: string | undefined;
   /** Maximum control width in px. */
   width?: number | undefined;
   onChange?: ChangeEventHandler<HTMLSelectElement> | undefined;
@@ -240,7 +243,7 @@ export function SelectField({
     <LabelWrapper label={label} required={required} hint={hint} width={max} {...feedback}>
       <select
         name={name}
-        defaultValue={defaultValue}
+        {...(value !== undefined ? { value } : { defaultValue })}
         required={required}
         onChange={onChange}
         aria-describedby={feedback.describedBy}

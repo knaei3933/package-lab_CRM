@@ -144,43 +144,8 @@ describe('R12 + R01: transitions', () => {
 
 const SNAP = 'ef56'.repeat(16);
 describe('p0-server review contract (aac8634)', () => {
-  it('the CEO approval sends the 支払条件 the screen showed (expectedPaymentTerms) and the card\'s snapshot hash (P1 integration)', async () => {
-    const card = { ok: true, status: 200, data: { makerPurchaseOrder: { approvalSnapshotSha256: SNAP }, snapshot: { amounts: { currency: 'JPY', totalAmount: '1' } } }, error: null, code: null };
-    callApi.mockImplementation(async (path: string) => (String(path).endsWith('/approval-card') ? card : { ok: true, status: 200, data: {}, error: null, code: null }));
-    // Review H1: the hash comes from the form (as the screen was drawn), never read again at submit.
-    await makerActions.approveMakerPoAction(null, form({ poId: 'po-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SNAP }));
-    expect(lastBody()).toEqual({ expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SNAP });
-    expect(callApi.mock.calls.some((call) => String(call[0]).endsWith('/approval-card'))).toBe(false);
-  });
-
-  it('review M1: without a readable expectedPaymentTerms the approval is held — the API is not asked', async () => {
-    for (const value of [undefined, '', 'cash']) {
-      callApi.mockClear();
-      const entries: Record<string, string> = { poId: 'po-1' };
-      if (value !== undefined) entries.expectedPaymentTerms = value;
-      const result = await makerActions.approveMakerPoAction(null, form(entries));
-      expect(result).toEqual({ ok: false, message: EXPECTED_TERMS_MISSING_MESSAGE });
-      expect(callApi).not.toHaveBeenCalled();
-    }
-  });
-
-  it('P1 integration: without a readable approval card the approval is held — never sent without the snapshot hash', async () => {
-    callApi.mockImplementation(async () => ({ ok: false, status: 404, data: { code: 'MAKER_PO_NOT_FOUND' }, error: 'x', errorKo: null, code: 'MAKER_PO_NOT_FOUND' }));
-    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'po-1', expectedPaymentTerms: 'prepaid' }));
-    expect(result.ok).toBe(false);
-    expect(callApi.mock.calls.some((call) => String(call[0]).endsWith('/ceo-approval'))).toBe(false);
-  });
-
-  it('PAYMENT_TERMS_CHANGED reads as the dictionary sentence', async () => {
-    const card = { ok: true, status: 200, data: { makerPurchaseOrder: { approvalSnapshotSha256: SNAP }, snapshot: { amounts: { currency: 'JPY', totalAmount: '1' } } }, error: null, code: null };
-    const refusal = ({ ok: false, status: 409, data: { code: 'PAYMENT_TERMS_CHANGED' }, error: '承認画面を開いた後に支払条件が変更されました。画面を再読み込みして最新の支払条件を確認してから、もう一度承認してください。', errorKo: null, code: 'PAYMENT_TERMS_CHANGED' });
-    callApi.mockImplementation(async (path: string) => (String(path).endsWith('/approval-card') ? card : refusal));
-    const result = await makerActions.approveMakerPoAction(null, form({ poId: 'po-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SNAP }));
-    expect(result.ok).toBe(false);
-    expect(result.code).toBe('PAYMENT_TERMS_CHANGED');
-    expect(result.message).toContain('支払条件が変更されました');
-  });
-
+  // P4 L-3: approveMakerPoAction (the old /maker-po 代表承認 form's action) is deleted — the approval is recorded by the
+  // order screen's card (approval-actions.ts, tests/web-p1-stage2-approval-actions.test.ts), which sends the terms stamp too.
   it('an upload warned SAME_CONTENT_OTHER_ISSUER says so next to 「記録しました」', async () => {
     callApi.mockResolvedValue(ok({ document: { id: 'd-1' }, version: { id: 'v-1' }, warnings: [{ code: 'SAME_CONTENT_OTHER_ISSUER', message: 'x' }] }));
     const result = await actions.uploadDocumentAction(null, form({ filename: 'a.txt', contentBase64: 'YQ==', documentType: 'film_quote_kanei', issuerEntity: 'kanei', contentType: 'text/plain' }));
@@ -222,7 +187,7 @@ describe('review H1: the Idempotency-Key lives until the submit is over', () => 
     const results = [
       await actions.recordDeliveryAction(null, form({ kind: 'film', orderId: 'o-1', lineId: 'l-1', unit: 'meters', deliveredQuantity: '10' })),
       await actions.transitionFilmSupplyOrderAction(null, form({ orderId: 'o-1', to: 'PROOF_READY' })),
-      await makerActions.approveMakerPoAction(null, form({ poId: 'po-1', expectedPaymentTerms: 'prepaid' })),
+      await makerActions.updatePaymentTermsAction(null, form({ orderId: 'o-1', paymentTerms: 'prepaid' })),
       await makerActions.recordProvisionalAcceptanceAction(null, form({ poId: 'po-1' }))
     ];
     for (const result of results) {
