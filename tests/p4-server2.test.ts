@@ -578,7 +578,11 @@ describe('(4) approval card: each evidence carries the server\'s sender verdict 
    */
   async function confirmIfHeld(recorded: { status: number; body: any }) {
     if (recorded.status !== 201 || recorded.body?.countsTowardDualApproval !== false || !recorded.body?.manualCheckReason) return;
-    expect(recorded.body.manualCheckReason).toEqual({ code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', message: '差出人のドメインが登録先と違います' });
+    // P5 round 2 (H-1): an unreadable sender (two From lines …) waits as well, with its own sentence.
+    expect([
+      { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', message: '差出人のドメインが登録先と違います' },
+      { code: 'EVIDENCE_SENDER_UNVERIFIABLE', message: '差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）' }
+    ]).toContainEqual(recorded.body.manualCheckReason);
     const confirmed = await post('admin', `/api/artwork-approval-events/${recorded.body.approvalEvent.id}/verification`, {
       result: 'confirmed', reasonNote: '差出人のドメイン違いを取引先に電話で確認した（合成）'
     });

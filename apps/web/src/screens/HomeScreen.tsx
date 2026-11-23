@@ -9,7 +9,7 @@ import type { WorkGroup, WorkRow } from '../lib/my-work';
 import { isAuditorRole, normalizeRole } from '../lib/permissions';
 import { loadSelectableProjectList } from '../lib/project-data';
 import type { AuditEventView, ProjectSummary } from '../lib/project-data';
-import { AUDIT_ACTION_LABELS, auditBasisOf, decisionOf, evidenceCell, evidenceIndex, eventTargets } from '../lib/audit-history';
+import { AUDIT_ACTION_LABELS, auditBasisOf, contactChangeOf, decisionOf, evidenceCell, evidenceIndex, eventTargets } from '../lib/audit-history';
 import type { EvidenceRef } from '../lib/audit-history';
 import { loadEvidenceMetadata } from '../lib/evidence-data';
 import { roleLabel } from '../lib/session-display';
@@ -45,7 +45,9 @@ const HISTORY_ACTIONS = [
   'FILM_SUPPLY_ORDER_CANCELLATION_REVIEW_RESOLVED',
   'MAKER_PO_CANCELLED',
   // P5 R3: 納品の確認 is a representative decision with its own evidence too.
-  'FILM_DELIVERY_CONFIRMED'
+  'FILM_DELIVERY_CONFIRMED',
+  // P5 round 2 (M-2): the project's customer / セブン化学 contact address (the server lists it for admin / auditor only).
+  'PARTNER_CONTACT_EMAIL_UPDATED'
 ];
 
 export async function HomeScreen() {
@@ -284,7 +286,8 @@ function EvidenceCellView({ cell, decision }: { cell: ReturnType<typeof evidence
   // P5 R3: a manual check / document check says what was decided (確認 / 却下) and on what reason.
   const decided = decision ? (
     <span className="p2-audit-sub p5-audit-decision" data-decision={decision.result}>
-      結果: {decision.result}{decision.reasonNote ? <>（理由: {decision.reasonNote}）</> : null}
+      {/* Round 2 (H-2): 監査履歴 is the auditor's screen — the written reason is never drawn here, even if sent. */}
+      結果: {decision.result}{decision.result === '却下' ? <>（理由は代表にご確認ください）</> : null}
     </span>
   ) : null;
   if (cell.kind === 'none') return <>記録のみ（証跡なし）{decided}</>;
@@ -374,7 +377,11 @@ async function AuditorHistory({ projects }: { projects: ProjectSummary[] }) {
                       </span>
                     </td>
                     <td role="cell" data-label="根拠">
-                      <EvidenceCellView cell={cell} decision={decisionOf(event)} />
+                      {contactChangeOf(event) ? (
+                        <span data-contact-change="">連絡先: <span translate="no">{contactChangeOf(event)!.before ?? '未登録'}</span> → <span translate="no">{contactChangeOf(event)!.after ?? '消去'}</span></span>
+                      ) : (
+                        <EvidenceCellView cell={cell} decision={decisionOf(event)} />
+                      )}
                       {evidenceDocumentId ? (
                         <span className="p2-audit-sub">
                           <Link href={`${projectPath(project.code, 'evidence')}#doc-${encodeURIComponent(evidenceDocumentId)}`}>証跡の一覧で見る</Link>

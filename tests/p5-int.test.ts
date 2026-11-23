@@ -25,7 +25,7 @@ import {
   users,
   uuidv7
 } from '@kanei/db';
-import { canPerform, maskAmountsInNote, NOTE_AMOUNT_MASK, senderDomainRequiresManualVerification } from '@kanei/core';
+import { canPerform, senderDomainRequiresManualVerification } from '@kanei/core';
 import { createApp } from '../apps/api/src/app.js';
 import { issueToken, SESSION_COOKIE, sessionTokenHashForRole } from '../apps/api/src/auth.js';
 import { withApprovalSnapshot } from './helpers/approval-snapshot.js';
@@ -254,14 +254,14 @@ describe('R1: after the representative rejects an evidence, the organization rec
     expect(after.designs[0].seven).toMatchObject({ valid: false, pendingEvidenceIdentifier: true, rejected: false, manualVerification: null });
   });
 
-  it('the reason reaches the representative as written, staff and auditor with the amount masked, the viewer not at all', async () => {
+  it('round 2 (H-2): the reason reaches the representative as written; staff and auditor get the 却下 WITHOUT any reasonNote key', async () => {
     const { chain } = await rejectedSeven();
     expect((await gateOf('admin', chain.orderId)).designs[0].seven.manualVerification.reasonNote).toBe(REASON);
     for (const role of ['staff', 'auditor'] as const) {
-      const note = (await gateOf(role, chain.orderId)).designs[0].seven.manualVerification.reasonNote as string;
-      expect(note, role).toContain('押印欄の会社名がセブン化学ではない');
-      expect(note, role).toContain(NOTE_AMOUNT_MASK);
-      expect(note, role).not.toMatch(/480,?000/);
+      const gate = await gateOf(role, chain.orderId);
+      expect(gate.designs[0].seven.manualVerification, role).toMatchObject({ result: 'rejected', verifierName: DISPLAY.admin });
+      expect(gate.designs[0].seven.manualVerification, role).not.toHaveProperty('reasonNote');
+      expect(JSON.stringify(gate), role).not.toContain('押印欄の会社名');
     }
     // The viewer cannot read the gate at all (403, unchanged); the server's null for it is a fail-closed default.
     expect((await get('viewer', `/api/film-supply-orders/${chain.orderId}/approval-gate`)).status).toBe(403);
@@ -384,17 +384,26 @@ describe('N4(b) (2026-11-23): a mail from another domain is recorded but waits f
     expect(confirmed.body).toMatchObject({ countsTowardDualApproval: true, dualApproved: true });
   });
 
-  it('unchanged: a matching mail counts at once; an unreadable From and an unregistered contact still only warn / say so', async () => {
+  it('round 2 (H-1): an exact match counts at once; two From lines wait with the 「差出人を確認できません」 reason; an unregistered contact still only warns', async () => {
     const chain = await orderAtApproval();
-    const match = await recordApproval(chain, 'customer', 'eml', approvalEml('boss@mail.customer-p5.example'));
+    const match = await recordApproval(chain, 'customer', 'eml', approvalEml('boss@customer-p5.example'));
     expect(match.body).toMatchObject({ evidenceIdentifierStatus: 'verified_in_document', countsTowardDualApproval: true, manualCheckReason: null });
     const twoFrom = approvalEml('po@seven-p5.example').replace('From: 承認者 <po@seven-p5.example>', 'From: 承認者 <po@seven-p5.example>\r\nFrom: 別人 <x@evil-p5.example>');
     const unverifiable = await recordApproval(chain, 'seven', 'eml', twoFrom);
     expect(unverifiable.status, unverifiable.text).toBe(201);
-    expect(unverifiable.body).toMatchObject({ countsTowardDualApproval: true, senderDomainCheck: { status: 'multiple_from' }, manualCheckReason: null });
+    expect(unverifiable.body).toMatchObject({
+      countsTowardDualApproval: false, evidenceIdentifierStatus: 'pending_manual_verification', senderDomainCheck: { status: 'multiple_from' },
+      manualCheckReason: { code: 'EVIDENCE_SENDER_UNVERIFIABLE', message: '差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）' }
+    });
+    const item = (await queue()).items.find((row) => row.key === `approval_evidence_verification:${unverifiable.body.approvalEvent.id}`);
+    expect(item?.reason).toEqual({ code: 'EVIDENCE_SENDER_UNVERIFIABLE', message: '差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）' });
     const chainB = await orderAtApproval(ids.projectB);
     const unregistered = await recordApproval(chainB, 'customer', 'eml', approvalEml('boss@anywhere-p5.example'));
     expect(unregistered.body).toMatchObject({ countsTowardDualApproval: true, senderDomainCheck: { status: 'no_registered_domain' }, manualCheckReason: null });
+    // Without a registered address an unreadable sender keeps the old meaning too (a warning, counted).
+    const noFrom = approvalEml('boss@anywhere-p5.example').replace('From: 承認者 <boss@anywhere-p5.example>\r\n', '');
+    const unregisteredNoFrom = await recordApproval(await orderAtApproval(ids.projectB), 'customer', 'eml', noFrom);
+    expect(unregisteredNoFrom.body).toMatchObject({ countsTowardDualApproval: true, manualCheckReason: null, warnings: [{ code: 'EVIDENCE_SENDER_UNVERIFIABLE' }] });
   });
 
   it('a REVOKE citing a foreign mail is not held (it never counts toward an approval anyway)', async () => {
@@ -491,13 +500,13 @@ describe('R3: 監査履歴 — each decision says what it rests on (basis), neve
     return answer.body.events as Array<Record<string, any>>;
   };
 
-  it('a manual check carries the cited version, its result and the reason (masked for the auditor, absent for the viewer)', async () => {
+  it('a manual check carries the cited version and its result; the reason only for the representative (round 2 H-2), no basis for the viewer', async () => {
     const chain = await orderAtApproval();
     const seven = await recordApproval(chain, 'seven', 'pdf', pdf());
     await verify(seven.body.approvalEvent.id, 'rejected', '社名違い（見積 ¥480000 の書類）');
     const rowOf = (events: Array<Record<string, any>>) => events.find((event) => event.action === 'EVIDENCE_MANUAL_VERIFICATION_RECORDED' && event.entityId === seven.body.approvalEvent.id);
     const auditor = rowOf(await history('auditor'));
-    expect(auditor?.basis).toEqual({ evidenceDocumentVersionId: seven.versionId, result: 'rejected', reasonNote: `社名違い（見積 ${NOTE_AMOUNT_MASK} の書類）` });
+    expect(auditor?.basis).toEqual({ evidenceDocumentVersionId: seven.versionId, result: 'rejected' });
     expect(rowOf(await history('admin'))?.basis.reasonNote).toBe('社名違い（見積 ¥480000 の書類）');
     const viewer = rowOf(await history('viewer'));
     expect(viewer).toBeDefined();
@@ -550,15 +559,6 @@ describe('R3: 監査履歴 — each decision says what it rests on (basis), neve
     expect(events.find((event) => event.action === 'FILM_DELIVERY_CONFIRMED')?.basis, 'the 11th code is read').toEqual({ evidenceDocumentVersionId: versionId });
   });
 
-  it('core: the mask hides money-like figures and keeps dates, short numbers and identifiers', () => {
-    expect(maskAmountsInNote('金額480,000円と違う')).toBe(`金額${NOTE_AMOUNT_MASK}と違う`);
-    expect(maskAmountsInNote('JPY 1200.50')).toBe(NOTE_AMOUNT_MASK);
-    expect(maskAmountsInNote('12万円')).toBe(NOTE_AMOUNT_MASK);
-    expect(maskAmountsInNote('480000')).toBe(NOTE_AMOUNT_MASK);
-    expect(maskAmountsInNote('2026-11-20 受領・版2・3件・REV-NOMID-005')).toBe('2026-11-20 受領・版2・3件・REV-NOMID-005');
-    expect(maskAmountsInNote(null)).toBeNull();
-    expect(maskAmountsInNote('a'.repeat(600))!.length).toBe(501);
-  });
 });
 
 // ===================================================================== R8
@@ -577,5 +577,285 @@ describe('R8: the 納品の確認 row carries the receipt evidence\'s declared i
     expect(item!.detail.evidenceIssuerEntity).toBe('customer_generated');
     expect(item!.detail.evidence).toEqual([expect.objectContaining({ documentId: receipt.body.document.id, issuerEntity: 'customer_generated' })]);
     expect(allKeys(item)).not.toContain('totalAmount');
+  });
+});
+
+// ===================================================================== round 2 (p5-int review REQUEST_CHANGES)
+describe('round 2 H-1: N4(b) is an allowlist — only the exact registered domain counts; every other mail waits (the review\'s 26 cases)', () => {
+  const R = 'seven-p5.example';
+  const emlOf = (fromLines: string[], stamp = tag(), body = `承認します（${stamp}）`) => [
+    ...fromLines, 'To: KANEI <staff@kanei.example>', `Subject: 校正承認 ${stamp}`, 'Date: Mon, 16 Nov 2026 01:00:00 +0000',
+    `Message-ID: <approval-${stamp}@mail.example>`, 'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', '', body, ''
+  ].join('\r\n');
+  // demo-eml/p5-int-review/work/p11-n4.mjs, verbatim (the registered domain is this suite's セブン化学).
+  const CASES: Array<[string, string[], 'count' | 'mismatch' | 'unverifiable']> = [
+    ['01 match (control)', [`From: 承認者 <po@${R}>`], 'count'],
+    ['02 foreign domain', ['From: 承認者 <boss@evil-rev.example>'], 'mismatch'],
+    ['03 uppercase match', [`From: PO@${R.toUpperCase()}`], 'count'],
+    ['04 real subdomain (exact match only since round 2)', [`From: a@mail.${R}`], 'mismatch'],
+    ['05 suffix spoof', [`From: a@${R}.evil-rev.example`], 'mismatch'],
+    ['06 prefix spoof', ['From: a@evilseven-p5.example'], 'mismatch'],
+    ['07 display-name spoof', [`From: "po@${R}" <boss@evil-rev.example>`], 'unverifiable'],
+    ['08 two From headers', [`From: po@${R}`, 'From: boss@evil-rev.example'], 'unverifiable'],
+    ['09 Cyrillic look-alike (ѕ)', ['From: boss@ѕeven-p5.example'], 'unverifiable'],
+    ['10 punycode domain', ['From: boss@xn--even-p5-q9a.example'], 'mismatch'],
+    ['11 no From header', [], 'unverifiable'],
+    ['12 comment with registered addr', [`From: boss@evil-rev.example (po@${R})`], 'unverifiable'],
+    ['13 quoted local with @', [`From: "po@${R}"@evil-rev.example`], 'unverifiable'],
+    ['14 encoded-word display', ['From: =?UTF-8?B?44K744OW44Oz5YyW5a2m?= <boss@evil-rev.example>'], 'mismatch'],
+    ['15 From ok + Sender foreign', [`From: po@${R}`, 'Sender: boss@evil-rev.example'], 'count'],
+    ['16 folded From header', ['From:', ' boss@evil-rev.example'], 'unverifiable'],
+    ['17 lowercase header name', ['from: boss@evil-rev.example'], 'mismatch'],
+    ['18 IP literal', ['From: boss@[203.0.113.5]'], 'mismatch'],
+    ['19 group syntax empty', ['From: undisclosed-recipients:;'], 'unverifiable'],
+    ['20 From with no domain', ['From: boss'], 'unverifiable'],
+    ['21 fullwidth @ (＠)', [`From: boss＠${R}`], 'unverifiable'],
+    ['22 trailing dot registered', [`From: po@${R}.`], 'count'],
+    ['23 from in body only', [], 'unverifiable'],
+    ['24 Reply-To registered, From foreign', ['From: boss@evil-rev.example', `Reply-To: po@${R}`], 'mismatch'],
+    ['25 UTF-8 local, foreign domain', ['From: 承認@evil-rev.example'], 'mismatch'],
+    ['26 angle-less + trailing text', [`From: boss@evil-rev.example <po@${R}>`], 'unverifiable']
+  ];
+  const REASONS = {
+    mismatch: { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', message: '差出人のドメインが登録先と違います' },
+    unverifiable: { code: 'EVIDENCE_SENDER_UNVERIFIABLE', message: '差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）' }
+  } as const;
+  async function recordFile(chain: Chain, filename: string, contentType: string, content: string, identifier = `P5-ID-${tag()}`) {
+    const uploaded = await post('staff', `/api/projects/${chain.project}/documents`, {
+      documentType: 'approval_evidence', issuerEntity: 'seven', filename, contentType, contentBase64: b64(content),
+      sevenPurchaseOrderId: chain.sevenPoId, filmSupplyOrderId: chain.orderId, designKey: 'label-front'
+    });
+    expect(uploaded.status, uploaded.text).toBe(201);
+    return await post('staff', `/api/artwork-revisions/${chain.revisionId}/approvals`, {
+      organization: 'seven', decision: 'APPROVE', evidenceSource: 'email', eventTime: '2026-11-15T10:00:00.000Z',
+      evidenceIdentifier: identifier, evidenceDocumentVersionId: uploaded.body.version.id
+    });
+  }
+
+  it.each(CASES)('%s → %s', async (name, fromLines, expected) => {
+    const chain = await orderAtApproval();
+    let content = emlOf(fromLines);
+    if (name.startsWith('23')) content = content.replace('承認します', `From: po@${R}\r\n承認します`);
+    const recorded = await recordFile(chain, `n4-${name.slice(0, 2)}.eml`, 'message/rfc822', content);
+    expect(recorded.status, recorded.text).toBe(201);
+    const gate = await gateOf('staff', chain.orderId);
+    if (expected === 'count') {
+      expect(recorded.body, name).toMatchObject({ countsTowardDualApproval: true, evidenceIdentifierStatus: 'verified_in_document', manualCheckReason: null, senderDomainCheck: { status: 'match' } });
+      expect(gate.designs[0].seven.valid, name).toBe(true);
+    } else {
+      expect(recorded.body, name).toMatchObject({ countsTowardDualApproval: false, evidenceIdentifierStatus: 'pending_manual_verification', manualCheckReason: REASONS[expected] });
+      expect(gate.designs[0].seven, name).toMatchObject({ valid: false, pendingEvidenceIdentifier: true });
+      const item = (await queue()).items.find((row) => row.key === `approval_evidence_verification:${recorded.body.approvalEvent.id}`);
+      expect(item?.reason, name).toEqual(REASONS[expected]);
+    }
+  });
+
+  it('a mail stripped of From AND Message-ID is still a mail (declared .eml, or only its To/Subject/Date): it waits', async () => {
+    const headersOnly = (id: string) => ['To: KANEI <staff@kanei.example>', 'Subject: 校正承認', 'Date: Mon, 16 Nov 2026 01:00:00 +0000', '', `承認します ${id}`, ''].join('\r\n');
+    for (const [filename, contentType] of [['bare.eml', 'message/rfc822'], ['bare.txt', 'text/plain']] as const) {
+      const id = `P5-BARE-${tag()}`;
+      const recorded = await recordFile(await orderAtApproval(), filename, contentType, headersOnly(id), id);
+      expect(recorded.status, recorded.text).toBe(201);
+      expect(recorded.body, filename).toMatchObject({ countsTowardDualApproval: false, manualCheckReason: REASONS.unverifiable, senderDomainCheck: { status: 'from_missing' } });
+    }
+  });
+
+  it('a file declared as a mail (message/rfc822 or *.eml) whose header block cannot be read waits too', async () => {
+    for (const [filename, contentType] of [['broken.eml', 'text/plain'], ['broken.bin', 'message/rfc822']] as const) {
+      const id = `P5-BROKEN-${tag()}`;
+      const recorded = await recordFile(await orderAtApproval(), filename, contentType, `承認します ${id}\n（ヘッダーなし）\n`, id);
+      expect(recorded.status, recorded.text).toBe(201);
+      expect(recorded.body, filename).toMatchObject({ countsTowardDualApproval: false, manualCheckReason: REASONS.unverifiable, senderDomainCheck: { status: 'from_missing' } });
+    }
+  });
+
+  it('unchanged: a plain text evidence that is not a mail (identifier line) is not judged by the sender rule', async () => {
+    const id = `MSG-P5-${tag()}`;
+    const recorded = await recordFile(await orderAtApproval(), 'approval-note.txt', 'text/plain', `p5 approval\nidentifier: ${id}\n`, id);
+    expect(recorded.body).toMatchObject({ countsTowardDualApproval: true, senderDomainCheck: { status: 'not_email' }, manualCheckReason: null });
+  });
+
+  it('core: only `match` with a registered domain passes; the decision is not a list of bad patterns', () => {
+    const check = (status: string, registeredDomain: string | null = R) => ({ status, fromAddress: null, fromDomain: null, registeredDomain }) as any;
+    expect(senderDomainRequiresManualVerification(check('match'))).toBe(false);
+    for (const status of ['mismatch', 'from_missing', 'multiple_from', 'anything-new']) expect(senderDomainRequiresManualVerification(check(status)), status).toBe(true);
+    expect(senderDomainRequiresManualVerification(check('from_missing', null))).toBe(false);
+    expect(senderDomainRequiresManualVerification(check('no_registered_domain', null))).toBe(false);
+    expect(senderDomainRequiresManualVerification(check('not_email'))).toBe(false);
+    expect(senderDomainRequiresManualVerification(null)).toBe(false);
+  });
+});
+
+describe('round 2 H-2: the 却下 reason never reaches staff / viewer / auditor — the review\'s 30 texts, every path', () => {
+  // demo-eml/p5-int-review/work/p13-mask.mjs, verbatim.
+  const NOTES = [
+    '見積 480,000円 と違う', '¥480000', '480000', '金額480000', '４８００００円', '48万円', '48万', '四十八万円', '四十八万', '480 000',
+    '480,000/本', '480000/ロット', '2026-480000', '480000-', '単価12.5万', '12.5万円', 'USD480', '480k', '0.48M', '480千円',
+    '税込 52万8千', '1,234', '1.234.567', '4 8 0 0 0 0', '¥ 4 8 0', '480.000', '4,800', '48,0000', '総額は見積書の通り（480 thousand yen）', '五百万円'
+  ];
+  /** Every value under a reasonNote key, anywhere in a JSON answer. */
+  const reasonValues = (value: unknown, out: unknown[] = []): unknown[] => {
+    if (Array.isArray(value)) value.forEach((entry) => reasonValues(entry, out));
+    else if (value && typeof value === 'object') for (const [key, entry] of Object.entries(value)) { if (key === 'reasonNote') out.push(entry); reasonValues(entry, out); }
+    return out;
+  };
+
+  it('each of the 30 is the representative\'s alone (gate, audit history, queue), and nobody else gets a reasonNote key or the text', async () => {
+    const chain = await orderAtApproval();
+    const seven = await recordApproval(chain, 'seven', 'pdf', pdf());
+    const eventId = seven.body.approvalEvent.id as string;
+    for (const note of NOTES) {
+      const rejected = await verify(eventId, 'rejected', note);
+      expect(rejected.status, `${note}: ${rejected.text}`).toBe(201);
+      expect((await gateOf('admin', chain.orderId)).designs[0].seven.manualVerification.reasonNote, note).toBe(note);
+      for (const role of ['staff', 'auditor'] as const) {
+        const answer = await get(role, `/api/film-supply-orders/${chain.orderId}/approval-gate`);
+        expect(reasonValues(answer.body), `${role} gate ${note}`).toEqual([]);
+        expect(answer.text, `${role} gate ${note}`).not.toContain(note);
+      }
+    }
+    const url = `/api/projects/${ids.projectA}/audit-history?limit=500&action=EVIDENCE_MANUAL_VERIFICATION_RECORDED`;
+    const adminNotes = reasonValues((await get('admin', url)).body);
+    for (const note of NOTES) expect(adminNotes, note).toContain(note);
+    for (const role of ['staff', 'auditor', 'viewer'] as const) {
+      const answer = await get(role, url);
+      expect(answer.status, role).toBe(200);
+      expect(reasonValues(answer.body), role).toEqual([]);
+      for (const note of NOTES) if (/[^0-9a-f-]/.test(note)) expect(answer.text, `${role} ${note}`).not.toContain(note);
+    }
+    // The queue is the representative's: its 却下 row carries the latest text (admin only — 403 for the others).
+    const row = (await queue()).blocked.find((item) => item.key === `approval_evidence_rejected:${eventId}`);
+    expect(row?.detail.rejection.reasonNote).toBe(NOTES.at(-1));
+    for (const role of ['staff', 'auditor', 'viewer'] as const) expect((await get(role, '/api/representative-queue')).status, role).toBe(403);
+  });
+});
+
+describe('round 2 M-1: the same paper sent again after a 却下 says so to the representative', () => {
+  it('same bytes uploaded again → 「same_content」 with that 却下 (gate and queue); the same version cited again → 「same_version」', async () => {
+    const chain = await orderAtApproval();
+    const content = pdf();
+    const first = await recordApproval(chain, 'seven', 'pdf', content);
+    await verify(first.body.approvalEvent.id, 'rejected', '社名がセブン化学ではない');
+    const again = await recordApproval(chain, 'seven', 'pdf', content);
+    expect(again.status, again.text).toBe(201);
+    const entry = (await gateOf('admin', chain.orderId)).pendingManualVerifications.find((item: { approvalEventId: string }) => item.approvalEventId === again.body.approvalEvent.id);
+    expect(entry.previouslyRejected).toEqual({ approvalEventId: first.body.approvalEvent.id, matchedOn: 'same_content', verifierName: DISPLAY.admin, rejectedAt: expect.any(String), reasonNote: '社名がセブン化学ではない' });
+    const item = (await queue()).items.find((row) => row.key === `approval_evidence_verification:${again.body.approvalEvent.id}`);
+    expect(item?.detail.previouslyRejected).toMatchObject({ approvalEventId: first.body.approvalEvent.id, matchedOn: 'same_content', reasonNote: '社名がセブン化学ではない' });
+    // The rejected version itself, named explicitly (supersedesEventId), is the same paper too.
+    await verify(again.body.approvalEvent.id, 'rejected', '同じ書類');
+    const cited = await post('staff', `/api/artwork-revisions/${chain.revisionId}/approvals`, {
+      organization: 'seven', decision: 'APPROVE', evidenceSource: 'signed_document', eventTime: '2026-11-15T10:00:00.000Z',
+      evidenceIdentifier: `P5-ID-${tag()}`, evidenceDocumentVersionId: first.versionId, supersedesEventId: again.body.approvalEvent.id
+    });
+    expect(cited.status, cited.text).toBe(201);
+    const citedEntry = (await gateOf('admin', chain.orderId)).pendingManualVerifications.find((item: { approvalEventId: string }) => item.approvalEventId === cited.body.approvalEvent.id);
+    // The latest earlier 却下 of the same paper is named: the re-upload (same bytes → same_content, its own reason).
+    expect(citedEntry.previouslyRejected).toMatchObject({ approvalEventId: again.body.approvalEvent.id, matchedOn: 'same_content', reasonNote: '同じ書類' });
+    // Only the version itself, with no later 却下 in between, reads same_version.
+    const chain2 = await orderAtApproval();
+    const one = await recordApproval(chain2, 'seven', 'pdf', pdf());
+    await verify(one.body.approvalEvent.id, 'rejected', '一回目');
+    const reCited = await post('staff', `/api/artwork-revisions/${chain2.revisionId}/approvals`, {
+      organization: 'seven', decision: 'APPROVE', evidenceSource: 'signed_document', eventTime: '2026-11-15T10:00:00.000Z',
+      evidenceIdentifier: `P5-ID-${tag()}`, evidenceDocumentVersionId: one.versionId, supersedesEventId: one.body.approvalEvent.id
+    });
+    expect(reCited.status, reCited.text).toBe(201);
+    const reEntry = (await gateOf('admin', chain2.orderId)).pendingManualVerifications.find((item: { approvalEventId: string }) => item.approvalEventId === reCited.body.approvalEvent.id);
+    expect(reEntry.previouslyRejected).toMatchObject({ approvalEventId: one.body.approvalEvent.id, matchedOn: 'same_version', reasonNote: '一回目' });
+  });
+
+  it('a different paper carries no such line', async () => {
+    const chain = await orderAtApproval();
+    const first = await recordApproval(chain, 'seven', 'pdf', pdf());
+    await verify(first.body.approvalEvent.id, 'rejected', 'x');
+    const other = await recordApproval(chain, 'seven', 'pdf', pdf());
+    const entry = (await gateOf('admin', chain.orderId)).pendingManualVerifications.find((item: { approvalEventId: string }) => item.approvalEventId === other.body.approvalEvent.id);
+    expect(entry.previouslyRejected).toBeNull();
+    expect((await queue()).items.find((row) => row.key === `approval_evidence_verification:${other.body.approvalEvent.id}`)?.detail.previouslyRejected).toBeNull();
+  });
+});
+
+describe('round 2 M-2: a contact address change is in the 監査履歴 of the projects that use the account', () => {
+  it('admin and the assigned auditor read PARTNER_CONTACT_EMAIL_UPDATED (before → after); staff and viewer do not; another project does not', async () => {
+    const set = await patch('admin', `/api/partner-accounts/${ids.seven}/contact-email`, { contactEmail: 'PO@seven-p5.example' });
+    expect(set.status, set.text).toBe(200);
+    const url = (project: string) => `/api/projects/${project}/audit-history?limit=500&order=desc&action=PARTNER_CONTACT_EMAIL_UPDATED`;
+    // The address only changed case (normalized to the same value) → no row; change it for real and back.
+    await patch('admin', `/api/partner-accounts/${ids.seven}/contact-email`, { contactEmail: 'po2@seven-p5.example' });
+    await patch('admin', `/api/partner-accounts/${ids.seven}/contact-email`, { contactEmail: SEVEN_MAIL });
+    const auditor = (await get('auditor', url(ids.projectA))).body.events as Array<Record<string, any>>;
+    const rows = auditor.filter((event) => event.entityId === ids.seven);
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    expect(rows[0]).toMatchObject({ action: 'PARTNER_CONTACT_EMAIL_UPDATED', beforeState: { contactEmail: 'po2@seven-p5.example' }, afterState: { contactEmail: SEVEN_MAIL }, actor: { id: ids.admin } });
+    expect((await get('admin', url(ids.projectA))).body.events.some((event: { entityId: string }) => event.entityId === ids.seven)).toBe(true);
+    for (const role of ['staff', 'viewer'] as const) {
+      expect((await get(role, url(ids.projectA))).body.events, role).toEqual([]);
+    }
+    // projectB uses the same セブン化学; the customer of projectA is not projectB's.
+    const customerChange = await patch('admin', `/api/partner-accounts/${ids.customer}/contact-email`, { contactEmail: 'approvals2@customer-p5.example' });
+    expect(customerChange.status).toBe(200);
+    await patch('admin', `/api/partner-accounts/${ids.customer}/contact-email`, { contactEmail: CUSTOMER_MAIL });
+    const bRows = (await get('admin', url(ids.projectB))).body.events as Array<{ entityId: string }>;
+    expect(bRows.some((event) => event.entityId === ids.customer)).toBe(false);
+    expect(bRows.some((event) => event.entityId === ids.seven)).toBe(true);
+  });
+});
+
+describe('round 2 L-1 / L-2: a 却下 is not flipped to 確認, and a replaced approval is not checked', () => {
+  it('L-1: 確認 after 却下 on the same event → 422 EVIDENCE_ALREADY_REJECTED, nothing written, order unmoved; a second 却下 is still possible', async () => {
+    const chain = await orderAtApproval();
+    expect((await recordApproval(chain, 'customer', 'eml', approvalEml('boss@customer-p5.example'))).body.countsTowardDualApproval).toBe(true);
+    const seven = await recordApproval(chain, 'seven', 'pdf', pdf());
+    expect((await verify(seven.body.approvalEvent.id, 'rejected', '社名違い')).status).toBe(201);
+    const flipped = await verify(seven.body.approvalEvent.id, 'confirmed', '気が変わった');
+    expect(flipped.status, flipped.text).toBe(422);
+    expect(flipped.body.code).toBe('EVIDENCE_ALREADY_REJECTED');
+    expect(await orderStatus(chain.orderId)).toBe('APPROVAL_PENDING');
+    const rows = await db.select().from(auditEvents).where(and(eq(auditEvents.action, 'EVIDENCE_MANUAL_VERIFICATION_RECORDED'), eq(auditEvents.entityId, seven.body.approvalEvent.id)));
+    expect(rows).toHaveLength(1);
+    expect((await verify(seven.body.approvalEvent.id, 'rejected', '理由を書き直す')).status).toBe(201);
+  });
+
+  it('L-2: a check of a replaced (older) approval → 422 EVIDENCE_VERIFICATION_TARGET_SUPERSEDED; the latest one is checkable', async () => {
+    const chain = await orderAtApproval();
+    const first = await recordApproval(chain, 'seven', 'pdf', pdf());
+    const second = await recordApproval(chain, 'seven', 'pdf', pdf());
+    for (const result of ['confirmed', 'rejected'] as const) {
+      const refused = await verify(first.body.approvalEvent.id, result, '古い方');
+      expect(refused.status, refused.text).toBe(422);
+      expect(refused.body.code).toBe('EVIDENCE_VERIFICATION_TARGET_SUPERSEDED');
+    }
+    expect((await verify(second.body.approvalEvent.id, 'confirmed', '最新を確認')).status).toBe(201);
+  });
+});
+
+describe('round 2 L-3 / L-5: no-store on every partner answer; the gaps the review\'s survivors showed', () => {
+  it('L-3: 401 and 403 of /api/partner-accounts are private, no-store too', async () => {
+    for (const [role, status] of [[null, 401], ['staff', 403], ['auditor', 403], ['admin', 200]] as const) {
+      const response = await app.request('/api/partner-accounts', { headers: role ? { cookie: `${SESSION_COOKIE}=${tokens[role]}` } : {} });
+      expect(response.status, String(role)).toBe(status);
+      expect(response.headers.get('cache-control'), String(role)).toBe('private, no-store');
+    }
+  });
+
+  it('L-5 (Y7): a 却下 on a cancelled or deleted order is not a stuck row', async () => {
+    for (const change of [{ status: 'CANCELLED' }, { deletedAt: new Date() }] as const) {
+      const chain = await orderAtApproval();
+      const seven = await recordApproval(chain, 'seven', 'pdf', pdf());
+      await verify(seven.body.approvalEvent.id, 'rejected', 'x');
+      const key = `approval_evidence_rejected:${seven.body.approvalEvent.id}`;
+      expect((await queue()).blocked.find((item) => item.key === key)).toBeDefined();
+      await db.update(filmSupplyOrders).set(change as any).where(eq(filmSupplyOrders.id, chain.orderId));
+      expect((await queue()).blocked.find((item) => item.key === key), JSON.stringify(change)).toBeUndefined();
+    }
+  });
+
+  it('L-5 (Y12): an empty string clears the address like null (ERROR_CODES.md contract), audited', async () => {
+    const cleared = await patch('admin', `/api/partner-accounts/${ids.customerNoMail}/contact-email`, { contactEmail: '   ' });
+    expect(cleared.status, cleared.text).toBe(200);
+    expect(cleared.body.contactEmail).toBeNull();
+    const [row] = await db.select({ contactEmail: accounts.contactEmail }).from(accounts).where(eq(accounts.id, ids.customerNoMail));
+    expect(row!.contactEmail).toBeNull();
   });
 });

@@ -15,4 +15,3 @@ export * from './display-format.js';
 export * from './self-verification.js';
 export * from './approval-facts.js';
 export * from './sender-domain.js';
-export * from './note-redaction.js';

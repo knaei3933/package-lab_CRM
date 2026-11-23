@@ -432,6 +432,25 @@ export interface PendingManualVerificationView {
   warnings?: SenderWarning[] | undefined;
   /** N4(b) (2026-11-23): why a mail waits here like a PDF (「差出人のドメインが登録先と違います」), or null. */
   manualCheckReason?: { code: string; message: string } | null | undefined;
+  /** Round 2 (p5-int review M-1): the same paper (version or bytes) the representative already rejected, sent again. */
+  previouslyRejected?: PreviousRejectionView | null | undefined;
+}
+
+/** Round 2 (M-1): an earlier 却下 of the same paper (the representative's answer only). */
+export interface PreviousRejectionView {
+  matchedOn: 'same_version' | 'same_content';
+  verifierName: string | null;
+  rejectedAt: string | null;
+  reasonNote: string | null;
+}
+
+/** Round 2 (M-1): the server's previouslyRejected, or null. Plain text, bounded. */
+export function previousRejectionOf(value: unknown): PreviousRejectionView | null {
+  if (!isRecord(value)) return null;
+  const matchedOn = value.matchedOn === 'same_version' || value.matchedOn === 'same_content' ? value.matchedOn : null;
+  if (!matchedOn) return null;
+  const str = (key: string) => (typeof value[key] === 'string' && (value[key] as string).length > 0 ? (value[key] as string).slice(0, 500) : null);
+  return { matchedOn, verifierName: str('verifierName'), rejectedAt: str('rejectedAt'), reasonNote: str('reasonNote') };
 }
 
 export interface DesignApprovalGateView {
@@ -1153,7 +1172,8 @@ export async function loadApprovalGate(orderId: string): Promise<ApprovalGateVie
             senderVerdict: evidenceLineFrom(entry.senderVerdict),
             declarationLine: evidenceLineFrom(entry.declarationLine),
             warnings: senderWarningsOf(entry.warnings),
-            manualCheckReason: manualCheckReasonOf(entry.manualCheckReason)
+            manualCheckReason: manualCheckReasonOf(entry.manualCheckReason),
+            previouslyRejected: previousRejectionOf(entry.previouslyRejected)
           }))
       : []
   };

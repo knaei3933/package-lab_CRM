@@ -15,7 +15,7 @@ import type { PartnerAccountsRead, PartnerAccountView } from '../lib/partner-con
 
 export const PARTNERS_TITLE = '取引先の連絡先';
 export const PARTNERS_ONLY_NOTICE = 'この画面は代表者だけが使います。';
-const LEAD = '顧客とセブン化学の連絡先メールアドレスを登録します。承認メール（.eml）の差出人のドメインをこのアドレスのドメインと照合し、違うときは自動で承認に数えず、代表の確認に回します。';
+const LEAD = '顧客とセブン化学の連絡先メールアドレスを登録します。承認メール（.eml）の差出人のドメインがこのアドレスのドメインと完全に一致するときだけ自動で承認に数えます。違うとき・差出人を読み取れないときは、代表の確認に回します。';
 
 function Header() {
   return (
@@ -89,7 +89,7 @@ function PartnerPanel({ account }: { account: PartnerAccountView }) {
             autoCapitalize="none"
             defaultValue={account.contactEmail ?? ''}
             placeholder="approvals@customer.example.jp"
-            hint="承認メールを送ってくる担当者のアドレス（ドメインで照合します。サブドメインも一致とみなします）。"
+            hint="承認メールを送ってくる担当者のアドレス（ドメインで照合します。サブドメインは一致とみなさず、代表の確認に回ります）。"
           />
         </ActionForm>
         {account.contactEmail ? (
@@ -100,7 +100,7 @@ function PartnerPanel({ account }: { account: PartnerAccountView }) {
             tone="danger"
             confirm={{
               title: 'この取引先の連絡先を消しますか？',
-              body: `${account.name} の連絡先 ${account.contactEmail} を消します。消すと、この取引先の承認メールの差出人は照合されなくなります。変更は監査履歴に残ります。`
+              body: `${account.name} の連絡先 ${account.contactEmail} を消します。消すと、この取引先の承認メールの差出人は照合されなくなります。変更は、この取引先を使う案件の監査履歴に残ります。`
             }}
           >
             <input type="hidden" readOnly name="accountId" value={account.id} />

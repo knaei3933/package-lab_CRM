@@ -137,6 +137,12 @@ export interface ApprovalSlotDesign {
   rejections?: Partial<Record<'customer' | 'seven', SlotRejection>> | undefined;
 }
 
+/**
+ * Round 2 (p5-int review H-2): what staff / viewer / auditor read in place of the 却下 reason. The reason is the
+ * representative's free text and is never sent to them (the API leaves it out); the screens never draw one for them.
+ */
+export const REJECTION_REASON_WITHHELD = '却下されました。理由は代表にご確認ください';
+
 /** P5 R1: the representative's 却下 of one slot's evidence, as the gate answers it. */
 export interface SlotRejection {
   verifierName: string | null;

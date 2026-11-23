@@ -22,7 +22,7 @@ import { EVIDENCE_NOTE_FIELD } from '../lib/transition-evidence';
 import { makerPoNumberOf, PAYMENT_TERMS_LABELS } from '../lib/maker-po-data';
 import type { RecipientChoices } from '../lib/maker-master';
 import type { MakerPoEventRow, MakerPoViewRow } from '../lib/maker-po-data';
-import { waitingText } from '../lib/order-flow';
+import { REJECTION_REASON_WITHHELD, waitingText } from '../lib/order-flow';
 import type { ApprovalSlotDesign, ApprovalSlotState, OrderFlowView, SlotRejection } from '../lib/order-flow';
 import type { ApprovalGateView, DocumentView, FilmSupplyOrderView, SevenPurchaseOrderView } from '../lib/project-data';
 import { projectPath } from '../lib/project-route';
@@ -445,10 +445,20 @@ const SLOT_TEXT: Record<ApprovalSlotState, string> = {
  * when — and takes the organization's approval again on another paper (the form below it). The new
  * APPROVE becomes the latest event, and the old 却下 no longer decides the slot.
  */
-function SlotRejectedNotice({ name, rejection }: { name: string; rejection: SlotRejection | undefined }) {
-  const reason = rejection?.reasonNote ?? '記録なし';
+function SlotRejectedNotice({ name, rejection, role }: { name: string; rejection: SlotRejection | undefined; role: string | null | undefined }) {
   const who = rejection?.verifierName ?? '代表';
   const when = rejection?.verifiedAt ? formatTimestamp(rejection.verifiedAt) : '日時不明';
+  // Round 2 (p5-int review H-2): the written reason is the representative's alone — every other role reads the
+  // fixed sentence, even if an older API sent the text (a free text cannot be proven amount-free).
+  if (role !== 'admin') {
+    return (
+      <p className="field-warning p5-slot-rejected" role="note" data-slot-state="rejected">
+        <span aria-hidden="true">⚠ </span>
+        {`${name}の承認証跡は${REJECTION_REASON_WITHHELD}（${who}・${when}）。別の承認書類を登録してください。`}
+      </p>
+    );
+  }
+  const reason = rejection?.reasonNote ?? '記録なし';
   return (
     <p className="field-warning p5-slot-rejected" role="note" data-slot-state="rejected">
       <span aria-hidden="true">⚠ </span>
@@ -500,7 +510,7 @@ function ApprovalSlots({ order, projectCode, po, designs, role }: StepPanelProps
                     <Waiting text={role === 'admin' ? pendingCheckText(design, organization, designs) : '代表の確認を待っています'} />
                   ) : (
                     <>
-                    {state === 'rejected' ? <SlotRejectedNotice name={name} rejection={design.rejections?.[organization]} /> : null}
+                    {state === 'rejected' ? <SlotRejectedNotice name={name} rejection={design.rejections?.[organization]} role={role} /> : null}
                     <ActionForm
                       action={recordApprovalStepAction}
                       submitLabel={state === 'rejected' ? `別の書類で${name}の承認を記録し直す` : `${name}の承認を記録する`}

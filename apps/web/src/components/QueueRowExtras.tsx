@@ -2,7 +2,7 @@ import { Bilingual } from './Bilingual';
 import { queueDueText } from '../lib/representative-queue';
 import type { RepresentativeTask } from '../lib/representative-queue';
 import { ISSUER_DECLARED_LABEL, senderStatusText } from '../lib/sender-check';
-import { ISSUER_ENTITY_LABELS } from '../lib/vocabulary';
+import { formatTimestamp, ISSUER_ENTITY_LABELS } from '../lib/vocabulary';
 
 /**
  * P4 M18 / N4: what an 承認箱 row adds to its title — 希望納期 and the days left, and for an
@@ -15,7 +15,10 @@ export function QueueRowExtras({ task, now }: { task: RepresentativeTask; now: D
   const warnings = task.warnings ?? [];
   const statusText = senderStatusText(evidence?.senderStatus ?? null);
   const reason = task.manualCheckReason ?? null;
-  if (!due && !evidence && warnings.length === 0 && !reason) return null;
+  // Round 2 (M-1 / L-4): this screen is the representative's (承認箱) — the written reason is theirs to read.
+  const previous = task.previouslyRejected ?? null;
+  const rejection = task.rejection ?? null;
+  if (!due && !evidence && warnings.length === 0 && !reason && !previous && !rejection) return null;
   return (
     // One full-width line under the row (the row's own grid has four narrow cells).
     <div className="p4-inbox-extra">
@@ -28,6 +31,16 @@ export function QueueRowExtras({ task, now }: { task: RepresentativeTask; now: D
         // N4(b) (2026-11-23): why this row waits for the representative — e.g. a mail from another domain.
         <p className="p4-inbox-line p5-inbox-reason" data-reason="">
           確認が必要な理由: {reason}
+        </p>
+      ) : null}
+      {previous ? (
+        <p className="field-warning p4-inbox-line" role="note" data-previously-rejected="">
+          <span aria-hidden="true">⚠ </span>前回却下した書類と同じ内容です（{previous.verifierName ?? '代表'}{previous.rejectedAt ? `・${formatTimestamp(previous.rejectedAt)}` : ''}{previous.reasonNote ? `／理由: ${previous.reasonNote}` : ''}）
+        </p>
+      ) : null}
+      {rejection ? (
+        <p className="p4-inbox-line" data-rejection="">
+          却下: {rejection.verifierName ?? '代表'}{rejection.rejectedAt ? `・${formatTimestamp(rejection.rejectedAt)}` : ''}{rejection.reasonNote ? `（理由: ${rejection.reasonNote}）` : ''}
         </p>
       ) : null}
       {evidence ? (

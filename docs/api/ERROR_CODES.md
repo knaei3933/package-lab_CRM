@@ -429,3 +429,13 @@ P4 で既存コードに足した項目（コードは同じ）:
 | `APPROVAL_EVIDENCE_REJECTED` | — | 却下された承認証跡があります。別の承認書類で承認を記録し直してください | P5 R1: 拒否コードではなく、代表の承認箱 `blocked[]` の行（`kind = approval_evidence_rejected`）の `reason.code`。代表が手動確認で「却下」した承認証跡（その組織・版の最新イベント）を、担当者または代表が別の書類で記録し直すまで載る。`detail.rejection` に検証者・日時・理由。金額なし |
 | `PARTNER_ACCOUNT_NOT_FOUND` | 404 | 取引先が見つかりません | P5 R5: `PATCH /api/partner-accounts/:accountId/contact-email` の対象が顧客・セブン化学の有効な取引先でない（削除済み・メーカーなど） |
 | `PARTNER_CONTACT_EMAIL_INVALID` | 422 | 連絡先はメールアドレスの形式で入力してください（例: approvals@customer.example.jp） | P5 R5: `contactEmail` がない、またはメールアドレスの形式でない。消すときは `null`（空文字も消去として扱う） |
+
+## P5 int round 2: 却下の確定 (L-1), 置き換え済みの承認 (L-2)
+
+| code | HTTP | message (ja) | 備考 |
+|---|---|---|---|
+| `EVIDENCE_ALREADY_REJECTED` | 422 | この承認証跡はすでに却下されています。却下を確認に変えることはできません。別の承認書類で承認を記録し直してください | P5 round 2（検収 L-1）: `POST /api/artwork-approval-events/:eventId/verification` の `result=confirmed` が、最新の手動確認が `rejected` のイベントに来たとき。同じ書類での「確認」への反転は不可（再度の「却下」は可）。行ロック内でも再判定する |
+| `EVIDENCE_VERIFICATION_TARGET_SUPERSEDED` | 422 | この承認はすでに新しい承認に置き換えられているため、確認を記録できません。最新の承認を確認してください | P5 round 2（検収 L-2）: 対象がその組織の、そのデザインの現在の版の最新イベントでない（新しい承認・取消で置き換え済み） |
+
+- P5 round 2（検収 H-1）: `EVIDENCE_SENDER_UNVERIFIABLE` は、取引先に登録連絡先があるときは警告だけでなく**手動確認待ちの理由**にもなる（`manualCheckReason = { code: EVIDENCE_SENDER_UNVERIFIABLE, message: 差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン） }`、`countsTowardDualApproval = false`）。判定は許可リスト方式: 登録連絡先がある取引先では、From がちょうど1つでそのドメイン（小文字化・末尾の点を除く）が登録ドメインと**完全一致**するときだけ自動で数える。サブドメインも手動確認（`mismatch`）。キリル文字・全角＠は正規化しない。
+- P5 round 2（検収 H-2）: 却下の理由（`reasonNote`）は代表（admin）の応答にだけ入る。staff・viewer・auditor の応答（承認ゲートの `manualVerification`、監査履歴の `basis`）にはキー自体がない。画面は固定文「却下されました。理由は代表にご確認ください」。

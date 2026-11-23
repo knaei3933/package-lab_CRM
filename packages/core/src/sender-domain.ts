@@ -30,7 +30,7 @@ export type EvidenceSenderDomainStatus =
   | 'multiple_from'
   /** The organization has no registered contact address to compare with. */
   | 'no_registered_domain'
-  /** Same domain, or a subdomain of the registered one. */
+  /** Round 2 (H-1): exactly the registered domain (lower case, trailing root dot dropped). A subdomain is a mismatch. */
   | 'match'
   /** Another domain: never a refusal; held for the representative's manual check (N4(b)). */
   | 'mismatch';
@@ -69,16 +69,43 @@ export const EVIDENCE_SENDER_DOMAIN_MISMATCH_MESSAGE =
 export const EVIDENCE_SENDER_DOMAIN_MANUAL_CHECK_REASON = '差出人のドメインが登録先と違います';
 
 /**
- * N4(b) (2026-11-23): whether the sender check holds an APPROVE out of the dual
- * approval until the representative's manual check — only a compared, differing
- * domain does. An unreadable / missing / multiple From, an unregistered contact
- * address and a non-mail evidence keep their old meaning (warning or neutral).
+ * N4(b) round 2 (2026-11-23, p5-int review H-1): the reason a mail whose sender
+ * cannot be read (no From, several, an unreadable domain, a broken header) waits
+ * for the representative's check — a different sentence from the mismatch one.
+ */
+export const EVIDENCE_SENDER_UNVERIFIABLE_MANUAL_CHECK_REASON = '差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）';
+
+/**
+ * N4(b) (2026-11-23), round 2 (p5-int review H-1): an ALLOWLIST. When the issuing
+ * organization has a registered contact address, a mail counts by itself only
+ * when its one From address's normalized domain (lower case, a trailing root dot
+ * dropped) is EXACTLY the registered domain (`match`). Everything else — another
+ * domain, a subdomain, no From, several From addresses, a domain that is not
+ * plain ASCII (Cyrillic look-alikes, a full-width ＠ are never normalized), a
+ * header the parser cannot read — waits for the representative's manual check
+ * (fail closed). Not a refusal. Without a registered address the old meaning
+ * stays (warning / neutral, counted), and a non-mail evidence is not judged here.
  * Next to the staff approval-evidence choice contract: its fields and refusals
  * are unchanged — only the counting condition is.
  */
 export function senderDomainRequiresManualVerification(check: EvidenceSenderDomainCheck | null | undefined): boolean {
-  return check?.status === 'mismatch';
+  if (!check || check.status === 'not_email' || check.status === 'no_registered_domain') return false;
+  if (check.registeredDomain === null) return false;
+  return check.status !== 'match';
 }
+
+/** N4(b): the one-line reason a held mail shows in the queue and on the check (null when it is not held). */
+export function senderManualCheckReason(check: EvidenceSenderDomainCheck | null | undefined):
+  | { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH' | 'EVIDENCE_SENDER_UNVERIFIABLE'; message: string }
+  | null {
+  if (!senderDomainRequiresManualVerification(check)) return null;
+  return check!.status === 'mismatch'
+    ? { code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', message: EVIDENCE_SENDER_DOMAIN_MANUAL_CHECK_REASON }
+    : { code: 'EVIDENCE_SENDER_UNVERIFIABLE', message: EVIDENCE_SENDER_UNVERIFIABLE_MANUAL_CHECK_REASON };
+}
+
+/** Header names that only a mail carries: one of them makes the evidence a mail (round 2: no From and no Message-ID is still a mail). */
+const MAIL_HEADER_NAMES = ['from', 'sender', 'reply-to', 'return-path', 'to', 'cc', 'bcc', 'subject', 'date', 'message-id', 'in-reply-to', 'references', 'received', 'mime-version'] as const;
 
 function domainOf(address: string | null | undefined): string | null {
   if (typeof address !== 'string') return null;
@@ -109,20 +136,24 @@ export function evaluateEvidenceSenderDomain(input: {
   bytes: Buffer;
   /** The issuing organization's registered contact address (accounts.contact_email). */
   registeredContactEmail: string | null | undefined;
+  /** Round 2: the uploader's declared type / file name — message/rfc822 or *.eml is a mail even if its headers do not parse. */
+  declaredMimeType?: string | null | undefined;
+  filename?: string | null | undefined;
 }): EvidenceSenderDomainCheck {
   const registeredDomain = domainOf(input.registeredContactEmail);
   const parsed = parseEml(withoutLeadingBlankLines(input.bytes));
   const headers = parsed.ok ? parsed.eml.headers : {};
-  // P4 review L-1: a From header alone marks a mail too. A mail stripped of
-  // Message-ID, Date and Received is still compared (warning side), not
-  // waved through as "not an email".
-  const looksLikeMail = parsed.ok && (
-    (headers['message-id'] ?? []).length > 0
-    || headers['received'] !== undefined
-    || headers['from'] !== undefined
-  );
-  if (!parsed.ok || !looksLikeMail) {
+  const declaredMail = (typeof input.declaredMimeType === 'string' && input.declaredMimeType.toLowerCase().startsWith('message/rfc822'))
+    || (typeof input.filename === 'string' && /\.eml$/i.test(input.filename.trim()));
+  // P4 review L-1 / round 2 (H-1): any mail header marks a mail — stripping From,
+  // Message-ID and Received no longer turns a mail into "not an email".
+  const looksLikeMail = declaredMail || (parsed.ok && MAIL_HEADER_NAMES.some((name) => headers[name] !== undefined));
+  if (!looksLikeMail) {
     return { status: 'not_email', fromAddress: null, fromDomain: null, registeredDomain };
+  }
+  if (!parsed.ok) {
+    // A declared mail whose header block cannot be read: who sent it is unknown.
+    return { status: 'from_missing', fromAddress: null, fromDomain: null, registeredDomain };
   }
   const fromAddress = parsed.eml.from?.address?.toLowerCase() ?? null;
   // P4 review L-1: two From headers (or one From naming several addresses)
@@ -135,7 +166,8 @@ export function evaluateEvidenceSenderDomain(input: {
   const fromDomain = domainOf(fromAddress);
   if (fromDomain === null) return { status: 'from_missing', fromAddress, fromDomain, registeredDomain };
   if (registeredDomain === null) return { status: 'no_registered_domain', fromAddress, fromDomain, registeredDomain };
-  const matches = fromDomain === registeredDomain || fromDomain.endsWith(`.${registeredDomain}`);
+  // Round 2 (H-1): exact equality only — a subdomain no longer counts by itself (it waits for the check).
+  const matches = fromDomain === registeredDomain;
   return { status: matches ? 'match' : 'mismatch', fromAddress, fromDomain, registeredDomain };
 }
 

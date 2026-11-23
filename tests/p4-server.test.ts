@@ -637,7 +637,8 @@ describe('N4: EML From domain against the organization registered domain (never 
   it('pure check: match, subdomain, mismatch, no From, not an email, no registered domain', () => {
     const eml = (from: string) => Buffer.from(approvalEml({ from }), 'utf8');
     expect(evaluateEvidenceSenderDomain({ bytes: eml('a@customer-p4.example'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('match');
-    expect(evaluateEvidenceSenderDomain({ bytes: eml('a@mail.customer-p4.example'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('match');
+    // P5 round 2 (p5-int review H-1, conductor decision): exact domain only — a subdomain is not the registered domain.
+    expect(evaluateEvidenceSenderDomain({ bytes: eml('a@mail.customer-p4.example'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('mismatch');
     expect(evaluateEvidenceSenderDomain({ bytes: eml('a@customer-p4.example.evil'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('mismatch');
     expect(evaluateEvidenceSenderDomain({ bytes: eml('a@evilcustomer-p4.example'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('mismatch');
     expect(evaluateEvidenceSenderDomain({ bytes: Buffer.from('From: \r\nDate: Mon, 16 Nov 2026 01:00:00 +0000\r\n\r\nx'), registeredContactEmail: CUSTOMER_MAIL }).status).toBe('from_missing');
@@ -916,7 +917,7 @@ describe('P4 review L-1: From shapes that cannot be compared become warnings (ne
     expect(evidenceSenderDomainWarning(null)).toBeNull();
   });
 
-  it('API: an approval mail with two From headers is recorded (201) with the UNVERIFIABLE warning; counting is unchanged', async () => {
+  it('API: an approval mail with two From headers is recorded (201) with the UNVERIFIABLE warning; since P5 round 2 (H-1) it waits for the manual check', async () => {
     const chain = await orderWithRevision();
     const tag = nextTag();
     const eml = [
@@ -927,10 +928,11 @@ describe('P4 review L-1: From shapes that cannot be compared become warnings (ne
     const recorded = await recordApproval(chain, 'customer', eml);
     expect(recorded.status, JSON.stringify(recorded.body)).toBe(201);
     expect(recorded.body).toMatchObject({
-      evidenceIdentifierStatus: 'verified_in_document',
-      countsTowardDualApproval: true,
+      evidenceIdentifierStatus: 'pending_manual_verification',
+      countsTowardDualApproval: false,
       senderDomainCheck: { status: 'multiple_from' },
-      warnings: [{ code: 'EVIDENCE_SENDER_UNVERIFIABLE' }]
+      warnings: [{ code: 'EVIDENCE_SENDER_UNVERIFIABLE' }],
+      manualCheckReason: { code: 'EVIDENCE_SENDER_UNVERIFIABLE' }
     });
   });
 });

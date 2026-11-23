@@ -26,7 +26,6 @@ export type EvidenceCell =
 export interface AuditBasis {
   evidenceDocumentVersionId: string | null;
   result: string | null;
-  reasonNote: string | null;
   makerPurchaseOrder: { displayNumber: string | null } | null;
 }
 
@@ -38,7 +37,7 @@ export function auditBasisOf(event: Pick<AuditEventView, 'basis'>): AuditBasis |
   return {
     evidenceDocumentVersionId: text(basis.evidenceDocumentVersionId),
     result: text(basis.result),
-    reasonNote: text(basis.reasonNote)?.slice(0, 500) ?? null,
+    // Round 2 (p5-int review H-2): a written reason is never read here (the 監査履歴 is not the representative's screen).
     makerPurchaseOrder: paper ? { displayNumber: text(paper.displayNumber) } : null
   };
 }
@@ -51,19 +50,21 @@ const DECISION_RESULT_LABELS: Readonly<Record<string, string>> = {
 };
 
 /**
- * P5 R3: the decision a manual-check / document-check row recorded — 「確認」/「却下」 and the reason the
- * representative wrote (the server masks figures that read like money for every role but the representative).
- * Null when the row is not such a decision.
+ * P5 R3: the decision a manual-check / document-check row recorded — 「確認」/「却下」. Round 2 (H-2): the reason the
+ * representative wrote is not part of it (the server sends it to the representative only). Null when the row is
+ * not such a decision.
  */
-export function decisionOf(event: Pick<AuditEventView, 'basis'>): { result: string; reasonNote: string | null } | null {
+export function decisionOf(event: Pick<AuditEventView, 'basis'>): { result: string } | null {
   const basis = auditBasisOf(event);
   if (!basis?.result) return null;
-  return { result: DECISION_RESULT_LABELS[basis.result] ?? basis.result, reasonNote: basis.reasonNote };
+  return { result: DECISION_RESULT_LABELS[basis.result] ?? basis.result };
 }
 
 /** P5 R3: the 監査履歴 asks for 納品の確認 too; its words (the shared ACTION_LABELS has none). */
 export const AUDIT_ACTION_LABELS: Readonly<Record<string, string>> = {
   FILM_DELIVERY_CONFIRMED: '納品の確認を記録',
+  // Round 2 (p5-int review M-2): a change of this project's customer / セブン化学 contact address.
+  PARTNER_CONTACT_EMAIL_UPDATED: '取引先の連絡先を変更',
   FILLING_DELIVERY_CONFIRMED: '充填製品納品の確認を記録'
 };
 
@@ -100,6 +101,12 @@ export function evidenceCell(event: AuditEventView, index: Map<string, EvidenceR
   if (!versionId) return basis?.makerPurchaseOrder ? { kind: 'paper', displayNumber: basis.makerPurchaseOrder.displayNumber } : { kind: 'none' };
   const found = index?.get(versionId);
   return found ? { kind: 'found', evidence: found } : { kind: 'unreadable' };
+}
+
+/** Round 2 (M-2): 「連絡先: 前 → 後」 of a PARTNER_CONTACT_EMAIL_UPDATED row (null for any other row). */
+export function contactChangeOf(event: AuditEventView): { before: string | null; after: string | null } | null {
+  if (event.action !== 'PARTNER_CONTACT_EMAIL_UPDATED') return null;
+  return { before: text(event.beforeState?.contactEmail), after: text(event.afterState?.contactEmail) };
 }
 
 /** 何を: the order code and the maker paper number the record carries, if any. */

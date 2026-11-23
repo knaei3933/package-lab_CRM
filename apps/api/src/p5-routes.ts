@@ -38,12 +38,15 @@ export function registerP5Routes(app: Hono<any>, { db, recordAuditEvent }: P5Rou
   const unauthorized = { error: '認証が必要です', code: 'AUTH_REQUIRED' } as const;
   const ceoOnly = { error: 'この操作は代表者だけが行えます', code: 'CEO_ONLY' } as const;
   const notFound = { error: '取引先が見つかりません', code: 'PARTNER_ACCOUNT_NOT_FOUND' } as const;
+  // Round 2 (p5-int review L-3): every answer of these routes — 200, 401, 403, 4xx — is private and never cached.
+  const NO_STORE = { 'cache-control': 'private, no-store' } as const;
+  const reply = (context: any, body: unknown, status: number) => context.json(body, status, NO_STORE);
 
   async function authorize(context: any) {
     const user = await getSessionUser(context.req.raw, db);
-    if (!user) return { ok: false as const, response: context.json(unauthorized, 401) };
+    if (!user) return { ok: false as const, response: reply(context, unauthorized, 401) };
     if (!canPerform(toActor(user), 'partner_contact:manage', 'F1').allowed) {
-      return { ok: false as const, response: context.json(ceoOnly, 403) };
+      return { ok: false as const, response: reply(context, ceoOnly, 403) };
     }
     return { ok: true as const, user };
   }
@@ -76,7 +79,7 @@ export function registerP5Routes(app: Hono<any>, { db, recordAuditEvent }: P5Rou
           .map((project) => project.code)
           .slice(0, 20)
       }))
-    }, 200, { 'cache-control': 'private, no-store' });
+    }, 200, NO_STORE);
   });
 
   app.patch('/api/partner-accounts/:accountId/contact-email', async (context) => {
@@ -84,17 +87,17 @@ export function registerP5Routes(app: Hono<any>, { db, recordAuditEvent }: P5Rou
     if (!auth.ok) return auth.response;
     const accountId = context.req.param('accountId');
     if (!isUuid(accountId)) {
-      return context.json({ error: '経路パラメータ（accountId）はUUIDである必要があります', code: 'INVALID_PATH_PARAMETER' }, 400);
+      return reply(context, { error: '経路パラメータ（accountId）はUUIDである必要があります', code: 'INVALID_PATH_PARAMETER' }, 400);
     }
     const body = await context.req.json().catch(() => null) as { contactEmail?: unknown } | null;
     if (!body || typeof body !== 'object' || !Object.hasOwn(body, 'contactEmail')) {
-      return context.json({ error: '連絡先メールアドレス（contactEmail）を指定してください。消すときは null です', code: 'PARTNER_CONTACT_EMAIL_INVALID' }, 422);
+      return reply(context, { error: '連絡先メールアドレス（contactEmail）を指定してください。消すときは null です', code: 'PARTNER_CONTACT_EMAIL_INVALID' }, 422);
     }
     let contactEmail: string | null = null;
     if (body.contactEmail !== null && !(typeof body.contactEmail === 'string' && body.contactEmail.trim().length === 0)) {
       const email = normalizeRecipientEmail(body.contactEmail);
       if (!email.ok) {
-        return context.json({ error: 'メールアドレスの形式で入力してください（例: approvals@customer.example.jp）', code: 'PARTNER_CONTACT_EMAIL_INVALID' }, 422);
+        return reply(context, { error: 'メールアドレスの形式で入力してください（例: approvals@customer.example.jp）', code: 'PARTNER_CONTACT_EMAIL_INVALID' }, 422);
       }
       contactEmail = email.email;
     }
@@ -120,13 +123,13 @@ export function registerP5Routes(app: Hono<any>, { db, recordAuditEvent }: P5Rou
       });
       return { changed: true as const, account: { ...locked, contactEmail } };
     });
-    if (!outcome) return context.json(notFound, 404);
-    return context.json({
+    if (!outcome) return reply(context, notFound, 404);
+    return reply(context, {
       id: outcome.account.id,
       name: outcome.account.name,
       role: outcome.account.role,
       contactEmail: outcome.account.contactEmail,
       changed: outcome.changed
-    });
+    }, 200);
   });
 }

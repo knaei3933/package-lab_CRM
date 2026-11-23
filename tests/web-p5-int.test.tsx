@@ -185,12 +185,13 @@ describe('R1: a rejected slot says so and takes a new approval (staff and repres
     expect(flowLib.approvalSlots(waiting)[0]!.seven).toBe('pending_check');
   });
 
-  it('staff: the slot reads 「却下されました（理由: …／検証者・日時）。別の承認書類を登録してください」 with the record form — not 「代表の確認を待っています」', async () => {
+  it('staff (round 2 H-2): the slot reads the fixed 「却下されました。理由は代表にご確認ください」 — never the written reason, even if an older API sent it', async () => {
     const gate = await gateFrom(rawGate(rawSlot('customer', 'approved'), rawSlot('seven', 'rejected')));
     const html = panel('staff', gate);
     const text = visibleText(html);
     expect(html).toContain('data-slot-state="rejected"');
-    expect(text).toMatch(/セブン化学の承認証跡は却下されました（理由: 押印欄の会社名がセブン化学ではない／合成代表者・2026\/11\/22 10:00 JST）。別の承認書類を登録してください。/);
+    expect(text).toContain('セブン化学の承認証跡は却下されました。理由は代表にご確認ください（合成代表者・2026/11/22 10:00 JST）。別の承認書類を登録してください。');
+    expect(html).not.toContain(REASON);
     expect(text).not.toContain('代表の確認を待っています');
     expect(text).toContain('却下（差し替えが必要）');
     expect(submitLabels(html)).toContain('別の書類でセブン化学の承認を記録し直す');
@@ -199,10 +200,11 @@ describe('R1: a rejected slot says so and takes a new approval (staff and repres
     expect(HANGUL.test(html)).toBe(false);
   });
 
-  it('a reason with markup is printed as text (escaped), never as an element', async () => {
+  it('the representative reads the written reason; markup in it is printed as text (escaped), never as an element', async () => {
     const raw = rawGate(rawSlot('customer', 'approved'), rawSlot('seven', 'rejected'));
+    expect(visibleText(panel('admin', await gateFrom(raw)))).toContain(`（理由: ${REASON}／合成代表者・2026/11/22 10:00 JST）`);
     (raw.designs[0]!.seven.manualVerification as Record<string, unknown>).reasonNote = '<script>alert(1)</script><img src=x onerror=alert(2)>';
-    const html = panel('staff', await gateFrom(raw));
+    const html = panel('admin', await gateFrom(raw));
     expect(html).not.toContain('<script>alert(1)</script>');
     expect(html).not.toContain('<img src=x');
     expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
@@ -392,7 +394,7 @@ describe('R3: the auditor\'s 根拠 column draws the cited evidence, the result 
     id, action, entityType: 'x', entityId: `e-${id}`, beforeState: null, afterState, occurredAt: `2026-11-22T0${id}:00:00Z`, requestMetadata: null,
     actor: { id: 'u-admin', displayName: '合成代表者', role: 'admin' }, ...(basis ? { basis } : {})
   });
-  it('rows that used to read 「記録のみ（証跡なし）」 now show their file, 「結果: 却下（理由: …）」 and the MPO number', async () => {
+  it('rows that used to read 「記録のみ（証跡なし）」 now show their file, 「結果: 却下（理由は代表にご確認ください）」 and the MPO number', async () => {
     session.user = { id: 'u-auditor', role: 'auditor' };
     session.projects = [{ id: 'proj-1', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }];
     callApi.mockImplementation(async (url: string) => {
@@ -416,7 +418,9 @@ describe('R3: the auditor\'s 根拠 column draws the cited evidence, the result 
     const cell = (index: number) => visibleText(/data-label="根拠">([\s\S]*?)<\/td>/.exec(rows[index]!)![1]!);
     // newest first: 4 delivery, 3 CEO, 2 send, 1 manual check
     expect(cell(3)).toContain('seal.pdf');
-    expect(cell(3)).toContain('結果: 却下（理由: 社名違い（見積 （金額は非表示） の書類））');
+    // Round 2 (H-2): even if a feed carried a reason, the auditor's screen draws the fixed sentence only.
+    expect(cell(3)).toContain('結果: 却下（理由は代表にご確認ください）');
+    expect(cell(3)).not.toContain('社名違い');
     expect(cell(2)).toContain('sent.eml');
     expect(cell(2)).toContain('結果: 確認');
     expect(cell(1)).toContain('メーカー発注書の内容（承認時のスナップショット）');
@@ -533,5 +537,103 @@ describe('R8: the 納品の確認 row says the receipt\'s declared issuer from t
     const text = visibleText(await home());
     expect(text).toMatch(/発行元（登録時の申告）: 顧客/);
     expect(text).not.toContain('発行元（登録時の申告）: 記録なし');
+  });
+});
+
+// =============================================================================================
+// Round 2 (p5-int review REQUEST_CHANGES)
+// =============================================================================================
+describe('round 2 H-2: the 30 review texts never reach a non-representative screen', () => {
+  // demo-eml/p5-int-review/work/p13-mask.mjs, verbatim.
+  const NOTES = [
+    '見積 480,000円 と違う', '¥480000', '480000', '金額480000', '４８００００円', '48万円', '48万', '四十八万円', '四十八万', '480 000',
+    '480,000/本', '480000/ロット', '2026-480000', '480000-', '単価12.5万', '12.5万円', 'USD480', '480k', '0.48M', '480千円',
+    '税込 52万8千', '1,234', '1.234.567', '4 8 0 0 0 0', '¥ 4 8 0', '480.000', '4,800', '48,0000', '総額は見積書の通り（480 thousand yen）', '五百万円'
+  ];
+  it.each(NOTES)('%s: not on the staff / viewer step 6 (even if sent), not on the auditor 監査履歴 (even if sent); on the representative\'s', async (note) => {
+    const raw = rawGate(rawSlot('customer', 'approved'), rawSlot('seven', 'rejected'));
+    (raw.designs[0]!.seven.manualVerification as Record<string, unknown>).reasonNote = note;
+    const gate = await gateFrom(raw);
+    const escaped = render(<>{note}</>);
+    for (const role of ['staff', 'viewer']) {
+      const html = panel(role, gate);
+      expect(html, role).not.toContain(escaped);
+      // The viewer's step 6 is a waiting line (no slots); staff read the fixed sentence in the slot.
+      if (role === 'staff') expect(visibleText(html), role).toContain('理由は代表にご確認ください');
+    }
+    expect(panel('admin', gate)).toContain(escaped);
+    session.user = { id: 'u-auditor', role: 'auditor' };
+    session.projects = [{ id: 'proj-1', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }];
+    callApi.mockImplementation(async (url: string) => (url.includes('/audit-history')
+      ? ok({ events: [{ id: 'a1', action: 'EVIDENCE_MANUAL_VERIFICATION_RECORDED', entityType: 'artwork_approval_event', entityId: 'ev-1', beforeState: null,
+          afterState: { evidenceDocumentVersionId: 'ver-x', reasonNote: note }, occurredAt: '2026-11-22T01:00:00Z', requestMetadata: null,
+          actor: { id: 'u-admin', displayName: '合成代表者', role: 'admin' }, basis: { evidenceDocumentVersionId: 'ver-x', result: 'rejected', reasonNote: note } }] })
+      : ok({ documents: [] })));
+    const history = await home();
+    expect(history).not.toContain(escaped);
+    expect(visibleText(history)).toContain('結果: 却下（理由は代表にご確認ください）');
+  });
+});
+
+describe('round 2 M-1 / L-4: the representative sees an earlier 却下 of the same paper, and who rejected a stuck row', () => {
+  it('the step-6 check says 「前回却下した書類と同じ内容です」 with that 却下', async () => {
+    const gate = await gateFrom(rawGate(rawSlot('customer', 'approved'), rawSlot('seven', 'pending'), [rawPending({
+      previouslyRejected: { approvalEventId: 'ev-0', matchedOn: 'same_content', verifierName: '合成代表者', rejectedAt: '2026-11-22T01:00:00Z', reasonNote: REASON }
+    })]));
+    expect(gate.pendingManualVerifications[0]!.previouslyRejected).toEqual({ matchedOn: 'same_content', verifierName: '合成代表者', rejectedAt: '2026-11-22T01:00:00Z', reasonNote: REASON });
+    const html = panel('admin', gate);
+    expect(html).toContain('data-previously-rejected="same_content"');
+    expect(visibleText(html)).toContain('前回却下した書類と同じ内容です');
+    expect(visibleText(html)).toContain(`（理由: ${REASON}）`);
+    const fresh = await gateFrom(rawGate(rawSlot('customer', 'approved'), rawSlot('seven', 'pending'), [rawPending()]));
+    expect(panel('admin', fresh)).not.toContain('data-previously-rejected');
+  });
+
+  it('承認箱: the check row carries the line; the stuck 却下 row says who rejected, when and why', async () => {
+    session.projects = [{ id: 'proj-1', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }];
+    const base = { project: { id: 'proj-1', code: 'PRJ-1', name: '案件A' }, order: { id: 'order-1', code: 'FSO-1', status: 'APPROVAL_PENDING', paymentTerms: 'prepaid' },
+      organization: 'seven', designKey: '表面A', waitingSince: '2026-11-22T01:00:00Z', deepLink: { step: 'approval', projectCode: 'PRJ-1', orderCode: 'FSO-1' } };
+    callApi.mockResolvedValue(ok({
+      items: [{ ...base, key: 'approval_evidence_verification:ev-2', kind: 'approval_evidence_verification', label: '承認証跡の確認', subjectId: 'ev-2',
+        detail: { previouslyRejected: { approvalEventId: 'ev-0', matchedOn: 'same_version', verifierName: '合成代表者', rejectedAt: '2026-11-22T01:00:00Z', reasonNote: REASON } } }],
+      blocked: [{ ...base, key: 'approval_evidence_rejected:ev-3', kind: 'approval_evidence_rejected', label: '却下した承認証跡の差し替え',
+        reason: { code: 'APPROVAL_EVIDENCE_REJECTED', message: 'セブン化学の承認証跡（デザイン 表面A）は却下されました。' },
+        detail: { rejection: { verifierName: '合成代表者', rejectedAt: '2026-11-22T01:00:00Z', reasonNote: '社名違い' } } }]
+    }));
+    const text = visibleText(await home());
+    expect(text).toContain(`前回却下した書類と同じ内容です（合成代表者・2026/11/22 10:00 JST／理由: ${REASON}）`);
+    expect(text).toContain('却下: 合成代表者・2026/11/22 10:00 JST（理由: 社名違い）');
+  });
+});
+
+describe('round 2 M-2: the auditor reads a contact address change in 監査履歴', () => {
+  it('「取引先の連絡先を変更」 with 「連絡先: 前 → 後」, and the history asks for the code', async () => {
+    session.user = { id: 'u-auditor', role: 'auditor' };
+    session.projects = [{ id: 'proj-1', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }];
+    callApi.mockImplementation(async (url: string) => (url.includes('/audit-history')
+      ? ok({ events: [{ id: 'c1', action: 'PARTNER_CONTACT_EMAIL_UPDATED', entityType: 'account', entityId: 'acc-1', beforeState: { contactEmail: 'old@seven.example' },
+          afterState: { contactEmail: null }, occurredAt: '2026-11-22T01:00:00Z', requestMetadata: null, actor: { id: 'u-admin', displayName: '合成代表者', role: 'admin' } }] })
+      : ok({ documents: [] })));
+    const text = visibleText(await home());
+    expect(text).toContain('取引先の連絡先を変更');
+    expect(text).toContain('連絡先: old@seven.example → 消去');
+    expect(text).not.toContain('記録のみ（証跡なし）');
+    const historyUrl = String(callApi.mock.calls.find(([url]) => String(url).includes('/audit-history'))![0]);
+    expect(decodeURIComponent(historyUrl)).toContain('PARTNER_CONTACT_EMAIL_UPDATED');
+  });
+});
+
+describe('round 2 L-5 (Y16): a customer-side 却下 is named as the customer in 「自分の作業」', () => {
+  it('「却下された承認証跡を差し替える（顧客・デザイン 表面A）」', async () => {
+    session.user = { id: 'u-staff', role: 'staff' };
+    session.projects = [{ id: 'proj-1', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }];
+    board.value = {
+      workspace: { error: null, filmOrders: [order('APPROVAL_PENDING')], sevenPurchaseOrders: [PO], documents: [], revisions: [], deliveries: [], labels: {} },
+      boards: []
+    };
+    const raw = rawGate(rawSlot('customer', 'rejected'), rawSlot('seven', 'approved'));
+    callApi.mockImplementation(async (url: string) => (url.endsWith('/approval-gate') ? ok(raw) : ok()));
+    const work = await myWork.loadMyWork(session.projects as never, 'staff');
+    expect(work.rows[0]!.text).toBe('却下された承認証跡を差し替える（顧客・デザイン 表面A）');
   });
 });

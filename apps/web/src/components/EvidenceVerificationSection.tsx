@@ -86,6 +86,18 @@ export function EvidenceIssuerCheck({
           <dd><SenderWarningNotes warnings={warnings} className="p4w4-warning" /></dd>
         </div>
       ) : null}
+      {entry.previouslyRejected ? (
+        // Round 2 (p5-int review M-1): the representative already rejected this very paper — said before 「確認」.
+        <div data-previously-rejected={entry.previouslyRejected.matchedOn}>
+          <dt>前回の却下</dt>
+          <dd>
+            <StatusBadge tone="blocked" label="前回却下した書類と同じ内容です" />{' '}
+            {entry.previouslyRejected.matchedOn === 'same_version' ? '同じ書類（同じ版）' : '同じ内容のファイル'}を、
+            {entry.previouslyRejected.verifierName ?? '代表'}が{entry.previouslyRejected.rejectedAt ? ` ${formatTimestamp(entry.previouslyRejected.rejectedAt)} に` : ''}却下しています
+            {entry.previouslyRejected.reasonNote ? <>（理由: {entry.previouslyRejected.reasonNote}）</> : null}。
+          </dd>
+        </div>
+      ) : null}
       {entry.manualCheckReason ? (
         // N4(b) (2026-11-23): a mail from another domain is not counted by itself — this is why it is here.
         <div data-manual-check-reason={entry.manualCheckReason.code}>
@@ -192,7 +204,8 @@ export function PendingVerificationSection({
                 <div>
                   前回の確認: {entry.manualVerification.result === 'confirmed' ? '確認' : '却下'} ／ 検証者{' '}
                   {entry.manualVerification.verifierName} ／ {formatTimestamp(entry.manualVerification.verifiedAt)}
-                  {entry.manualVerification.reasonNote ? <> ／ 理由: {entry.manualVerification.reasonNote}</> : null}
+                  {/* Round 2 (H-2): the written reason is drawn for the representative only. */}
+                  {role === 'admin' && entry.manualVerification.reasonNote ? <> ／ 理由: {entry.manualVerification.reasonNote}</> : null}
                 </div>
               ) : null}
             </div>

@@ -63,6 +63,10 @@ export interface RepresentativeTask {
   warnings?: SenderWarning[] | undefined;
   /** N4(b) (2026-11-23): why the row is in the manual-check queue (「差出人のドメインが登録先と違います」), when the server says. */
   manualCheckReason?: string | null | undefined;
+  /** Round 2 (M-1): the same paper was rejected before (an 承認証跡の確認 row). */
+  previouslyRejected?: { verifierName: string | null; rejectedAt: string | null; reasonNote: string | null } | null | undefined;
+  /** Round 2 (L-4): who rejected a stuck 却下 row's evidence, when and why (the representative's own queue). */
+  rejection?: { verifierName: string | null; rejectedAt: string | null; reasonNote: string | null } | null | undefined;
   /** p4/web3 (c): the server's deepLink.step when it is a place, not a step number (`payment_terms`). */
   deepLinkStep?: string | null | undefined;
   /**
@@ -260,6 +264,12 @@ export function taskFromServerItem(item: unknown, blocked = false): Representati
         }
       : null,
     warnings: senderWarningsOf(detail.warnings),
+    ...(kind === 'approval_evidence_verification' && Object.keys(record(detail.previouslyRejected)).length > 0
+      ? { previouslyRejected: rejectionFacts(detail.previouslyRejected) }
+      : {}),
+    ...(kind === 'approval_evidence_rejected' && Object.keys(record(detail.rejection)).length > 0
+      ? { rejection: rejectionFacts(detail.rejection) }
+      : {}),
     // N4(b): the 承認証跡の確認 row's reason (other kinds keep their own lines).
     ...(!blocked && kind === 'approval_evidence_verification' && str(reason.message) ? { manualCheckReason: str(reason.message)!.slice(0, 200) } : {}),
     // p4/web3 (c): the one place-valued step the web routes by (other steps are the kind's number).
@@ -267,6 +277,12 @@ export function taskFromServerItem(item: unknown, blocked = false): Representati
     ...(typeof row.paymentTermsEditable === 'boolean' ? { paymentTermsEditable: row.paymentTermsEditable } : {}),
     ...(paymentTermsLockOf(row.paymentTermsLock) ? { paymentTermsLock: paymentTermsLockOf(row.paymentTermsLock) } : {})
   };
+}
+
+/** Round 2 (M-1 / L-4): who rejected, when, why — plain text, bounded. */
+function rejectionFacts(value: unknown): { verifierName: string | null; rejectedAt: string | null; reasonNote: string | null } {
+  const row = record(value);
+  return { verifierName: str(row.verifierName)?.slice(0, 100) ?? null, rejectedAt: str(row.rejectedAt), reasonNote: str(row.reasonNote)?.slice(0, 500) ?? null };
 }
 
 /**
