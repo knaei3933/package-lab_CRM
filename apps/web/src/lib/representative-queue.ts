@@ -59,9 +59,26 @@ export interface RepresentativeTask {
   evidence?: QueueEvidence | null | undefined;
   /** P4 N4: the sender warnings of that evidence (EVIDENCE_SENDER_DOMAIN_MISMATCH / …_UNVERIFIABLE). */
   warnings?: SenderWarning[] | undefined;
+  /** p4/web3 (c): the server's deepLink.step when it is a place, not a step number (`payment_terms`). */
+  deepLinkStep?: string | null | undefined;
+  /**
+   * p4/web3 (c, server2 §1(2)): whether the 未定 can be fixed now (the PATCH in deepLink.action would pass);
+   * false comes with the lock's message (保留・見直し中, or a CEO-approved paper). Undefined: not answered.
+   */
+  paymentTermsEditable?: boolean | undefined;
+  paymentTermsLock?: { code: string; reason: string | null; message: string } | null | undefined;
+}
+
+export { PAYMENT_TERMS_ANCHOR } from './project-route';
+
+/** p4/web3 (c): a row whose fix is the order's 支払条件 (from creation on — not step 7, which a DRAFT has not reached). */
+export function opensPaymentTerms(task: Pick<RepresentativeTask, 'kind' | 'deepLinkStep'>): boolean {
+  return task.deepLinkStep === 'payment_terms' || task.kind === 'payment_terms_undetermined';
 }
 
 export interface QueueEvidence {
+  /** web2b review L-3: the declared issuer (the item's detail.evidenceIssuerEntity), shown with its label. */
+  issuerEntity?: string | null | undefined;
   filename: string | null;
   fromAddress: string | null;
   uploadedBy: string | null;
@@ -92,7 +109,8 @@ export const QUEUE_KIND_STEP: Readonly<Record<string, number | null>> = {
   hold_release: null,
   cancellation_review: null,
   cancellation_acknowledgement: null,
-  payment_terms_undetermined: 7,
+  // p4/web3 (c): opened at the order's 支払条件 (deepLink.step = payment_terms), whatever the step — see opensPaymentTerms.
+  payment_terms_undetermined: null,
   // P4 H14: the representative confirms a delivery its uploader may not confirm (P-4).
   delivery_confirmation: 12
 };
@@ -222,14 +240,27 @@ export function taskFromServerItem(item: unknown, blocked = false): Representati
     designKey: str(row.designKey),
     evidence: Object.keys(evidence).length > 0
       ? {
+          ...(str(detail.evidenceIssuerEntity) ? { issuerEntity: str(detail.evidenceIssuerEntity) } : {}),
           filename: str(evidence.filename),
           fromAddress: str(evidence.fromAddress),
           uploadedBy: str(record(evidence.uploadedBy).displayName),
           senderStatus: senderStatusOf(evidence.senderDomainCheck)
         }
       : null,
-    warnings: senderWarningsOf(detail.warnings)
+    warnings: senderWarningsOf(detail.warnings),
+    // p4/web3 (c): the one place-valued step the web routes by (other steps are the kind's number).
+    ...(deepLink.step === 'payment_terms' ? { deepLinkStep: 'payment_terms' } : {}),
+    ...(typeof row.paymentTermsEditable === 'boolean' ? { paymentTermsEditable: row.paymentTermsEditable } : {}),
+    ...(paymentTermsLockOf(row.paymentTermsLock) ? { paymentTermsLock: paymentTermsLockOf(row.paymentTermsLock) } : {})
   };
+}
+
+/** Pure: the blocked row's `paymentTermsLock` (server2 §1(2)), or null. The message is the server's plain text. */
+function paymentTermsLockOf(value: unknown): { code: string; reason: string | null; message: string } | null {
+  const lock = record(value);
+  const code = str(lock.code);
+  const message = str(lock.message);
+  return code && message ? { code, reason: str(lock.reason), message: message.slice(0, 200) } : null;
 }
 
 const QUEUE_ORGANIZATION_LABELS: Readonly<Record<string, string>> = { customer: '顧客', seven: 'セブン化学' };

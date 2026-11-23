@@ -70,6 +70,9 @@ export function orderPath(projectCode: string, orderCode: string, step?: number 
   return typeof step === 'number' && Number.isInteger(step) ? `${base}?step=${step}` : base;
 }
 
+/** p4/web3 (c): the anchor of 「支払条件を変更する」 on the order screen (OrderTermsSection). */
+export const PAYMENT_TERMS_ANCHOR = 'payment-terms';
+
 /** `/p/{project}/new` — the new film order wizard (発注書の受付 → 照合 → 発注内容). */
 export function newOrderPath(projectCode: string): string {
   return projectPath(projectCode, 'new');

@@ -2,12 +2,13 @@ import { ActionForm } from './ActionForm';
 import { DateTextField, SelectField, TextareaField, TextField } from './fields';
 import { Bilingual } from './Bilingual';
 import { approveFromCardAction, recordRequestedDeliveryDateAction, returnMakerPoAction } from '../app/approval-actions';
-import { approvalCardNeeds } from '../lib/approval-card';
-import type { ApprovalCardView, CardOrganization, SealState } from '../lib/approval-card';
+import { approvalCardNeeds, approvalEvidenceStamp, declarationLineOf } from '../lib/approval-card';
+import type { ApprovalCardView, ApprovalNotice, CardOrganization, EvidenceLine, EvidenceTone, SealState } from '../lib/approval-card';
+import { approvalNoticeText } from '../lib/approval-notice';
 import { PAYMENT_TERMS_LABELS } from '../lib/maker-po-data';
 import { ISSUER_ENTITY_LABELS, EVIDENCE_SOURCE_LABELS, formatTimestamp } from '../lib/vocabulary';
 import { webErrorText } from '../lib/error-dictionary';
-import { ISSUER_DECLARED_LABEL } from '../lib/sender-check';
+import { ISSUER_DECLARED_LABEL, senderStatusText } from '../lib/sender-check';
 import { ERROR_DICTIONARY } from '../lib/error-dictionary-data';
 import { dateCell, DeliveryTermsRows } from './OrderTermsSection';
 import type { TermCell } from './OrderTermsSection';
@@ -50,12 +51,31 @@ const SEAL_TEXT: Record<SealState, { ja: string; ko: string }> = {
   missing: { ja: '未承認', ko: '미승인' }
 };
 
+const TONE_MARK: Record<EvidenceTone, string> = { ok: '✓', warning: '⚠', neutral: '' };
+
+/**
+ * p4/web3 (a): one evidence line of a 押印欄 as the server decided it (server2 §1(4)) — 「申告どおり」 only
+ * when the declared issuer is the organization AND the mail's From domain matched; a foreign or unreadable
+ * sender is a warning. Plain text only (the label is a React text node).
+ */
+function EvidenceLineText({ line, kind }: { line: EvidenceLine; kind: 'declaration' | 'sender' }) {
+  const mark = TONE_MARK[line.tone];
+  return (
+    <span className={`p4w3-line p4w3-line--${line.tone}`} data-tone={line.tone} {...(kind === 'declaration' ? { 'data-declaration': line.code } : { 'data-sender': line.code })}>
+      {mark ? <span aria-hidden="true">{mark} </span> : null}{line.label}
+    </span>
+  );
+}
+
 function Seal({ name, ko, organization }: { name: string; ko: string; organization: CardOrganization | null }) {
   const state: SealState = organization?.state ?? 'missing';
   const evidence = organization?.evidence ?? null;
-  const mismatch = evidence?.issuerMatchesOrganization === false;
+  const declaration = declarationLineOf(evidence);
+  const warnings = evidence?.warnings ?? [];
+  const warn = declaration?.tone === 'warning' || warnings.length > 0;
+  const statusText = senderStatusText(evidence?.senderStatus ?? null);
   return (
-    <div className={`p1-seal-slot p1-seal-slot--${state === 'approved' ? 'approved' : 'open'}`}>
+    <div className={`p1-seal-slot p1-seal-slot--${state === 'approved' ? 'approved' : 'open'}${warn ? ' p4w3-seal--warning' : ''}`} data-seal={name}>
       <p className="p1-seal-name"><Bilingual ja={name} ko={ko} /></p>
       {state === 'approved' ? (
         <p className="p1-seal" aria-label={`${name} 承認済み`}><span className="p1-seal-mark">承認</span></p>
@@ -68,11 +88,58 @@ function Seal({ name, ko, organization }: { name: string; ko: string; organizati
           {EVIDENCE_SOURCE_LABELS[evidence.evidenceSource as keyof typeof EVIDENCE_SOURCE_LABELS] ?? '証跡'}
           {' ・ '}{ISSUER_DECLARED_LABEL}{' '}
           {ISSUER_ENTITY_LABELS[evidence.issuerEntity as keyof typeof ISSUER_ENTITY_LABELS] ?? '不明'}
-          {mismatch ? ' ✕ 承認組織と不一致' : evidence.issuerMatchesOrganization ? ' ✓ 申告どおり' : ''}
         </p>
       ) : null}
+      {declaration ? <p className="p1-seal-state"><EvidenceLineText line={declaration} kind="declaration" /></p> : null}
       {evidence?.filename ? <p className="p1-seal-state p4-seal-file">ファイル <span translate="no">{evidence.filename}</span></p> : null}
+      {evidence?.fromAddress || evidence?.senderVerdict ? (
+        <p className="p1-seal-state p4w3-seal-from">
+          {/* web2b review L-2: with several From lines the server keeps the first one. */}
+          {evidence.fromAddress ? <>{evidence.senderStatus === 'multiple_from' ? '差出人（1件目）' : '差出人'} <span translate="no">{evidence.fromAddress}</span></> : null}
+          {evidence.fromAddress && evidence.senderVerdict ? ' ・ ' : null}
+          {evidence.senderVerdict ? <EvidenceLineText line={evidence.senderVerdict} kind="sender" /> : null}
+        </p>
+      ) : null}
+      {!evidence?.senderVerdict && statusText ? <p className="p1-seal-state"><Bilingual ja={statusText.ja} ko={statusText.ko} /></p> : null}
+      {evidence?.uploadedBy ? (
+        <p className="p1-seal-state p4w3-seal-uploader">
+          登録した人 {evidence.uploadedBy}{evidence.uploadedAt ? `（${formatTimestamp(evidence.uploadedAt)}）` : ''}
+        </p>
+      ) : null}
+      {warnings.map((warning) => (
+        <p key={warning.code} className="field-warning p1-seal-state" role="note" data-warning={warning.code}>
+          <span aria-hidden="true">⚠</span> <Bilingual ja={warning.ja} ko={warning.ko ?? ''} />
+        </p>
+      ))}
     </div>
+  );
+}
+
+/** p4/web3 (a): the 押印欄 shows the first design; a warning on another design's evidence is said under it. */
+function otherDesignWarnings(card: ApprovalCardView): Array<{ key: string; text: string }> {
+  const out: Array<{ key: string; text: string }> = [];
+  card.designs.slice(1).forEach((design) => {
+    for (const [organization, label] of [['customer', '顧客'], ['seven', 'セブン化学']] as const) {
+      const evidence = design[organization].evidence;
+      const line = declarationLineOf(evidence);
+      const warnings = evidence?.warnings ?? [];
+      if (line?.tone !== 'warning' && warnings.length === 0) continue;
+      const parts = [line?.tone === 'warning' ? line.label : null, ...warnings.map((warning) => warning.ja)].filter((part): part is string => Boolean(part));
+      out.push({ key: `${design.designKey}-${organization}`, text: `デザイン ${design.designKey} の${label}の証跡: ${parts.join(' ')}` });
+    }
+  });
+  return out;
+}
+
+/** p4/web3 (b) / web2b review L-1: why the last approval from this card stopped (kept across the redraw). */
+function ApprovalStopNotice({ notice, status }: { notice: ApprovalNotice | null | undefined; status: string }) {
+  if (!notice || status !== 'DRAFT') return null;
+  const text = approvalNoticeText(notice.reason);
+  return (
+    <p className="p1-banner p4w3-notice" role="alert" data-notice={notice.reason}>
+      <span aria-hidden="true">⚠ </span>
+      {formatTimestamp(notice.at)} の代表承認は止まりました。<Bilingual ja={text.ja} ko={text.ko} />
+    </p>
   );
 }
 
@@ -81,11 +148,14 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
   const terms = card.paymentTerms ? PAYMENT_TERMS_LABELS[card.paymentTerms] ?? card.paymentTerms : '未記録';
   const cells = termCells(card);
   const needs = approvalCardNeeds(card);
+  const evidenceStamp = approvalEvidenceStamp(card);
+  const elsewhere = otherDesignWarnings(card);
   return (
     <section className="p1-card" aria-labelledby="approval-card-title" data-korean={korean ? 'on' : undefined}>
       <h3 id="approval-card-title" className="p1-card-title">
         <Bilingual ja={`${paperName}を代表承認`} ko="대표 승인" />
       </h3>
+      <ApprovalStopNotice notice={card.notice} status={card.status} />
       <dl className="p1-facts">
         <dt><Bilingual ja="金額" ko="금액" /></dt>
         <dd className="p1-figure">{card.amountDisplay ?? '未入力'}</dd>
@@ -149,6 +219,9 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
           <p className="p1-seal-empty">{card.status === 'DRAFT' ? '未承認' : '承認済み'}</p>
         </div>
       </div>
+      {elsewhere.map((entry) => (
+        <p key={entry.key} className="field-warning" role="note" data-warning-design={entry.key}><span aria-hidden="true">⚠</span> {entry.text}</p>
+      ))}
       {card.designs.length > 1 ? (
         <p className="p1-muted">デザインが{card.designs.length}つあります。押印欄は最初のデザインです（すべてのデザインの承認がそろうと校了です: {card.dualApproved ? 'そろっています' : 'そろっていません'}）。</p>
       ) : null}
@@ -243,10 +316,13 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
           </ActionForm>
         ) : null}
         {needs.canSubmitApproval && card.expectedPaymentTerms ? (
-          <ActionForm action={approveFromCardAction} submitLabel={`${card.displayNumber ?? card.orderCode} を代表承認する`}>
+          // web2b review L-4: no draft — a redrawn card (new hash) never gets an old amount back.
+          <ActionForm action={approveFromCardAction} submitLabel={`${card.displayNumber ?? card.orderCode} を代表承認する`} draft={false}>
             <input type="hidden" readOnly name="poId" value={card.poId} />
             <input type="hidden" readOnly name="expectedPaymentTerms" value={card.expectedPaymentTerms} />
             {card.expectedSnapshotSha256 ? <input type="hidden" readOnly name="expectedSnapshotSha256" value={card.expectedSnapshotSha256} /> : null}
+            {/* p4/web3 (b): the evidence set this card showed — compared only to say why a 409 stopped the approval. */}
+            {evidenceStamp ? <input type="hidden" readOnly name="expectedEvidenceStamp" value={evidenceStamp} /> : null}
             {/* P2 verifier M1: the 納期・数量 this card showed (re-checked before the approval). */}
             {card.termsStamp ? <input type="hidden" readOnly name="expectedTermsStamp" value={card.termsStamp} /> : null}
             {/* P4 H4①: a paper without an amount cannot be approved (the API refuses it, AMOUNT_REQUIRED) — the
@@ -270,6 +346,7 @@ export function ApprovalCard({ card, korean }: { card: ApprovalCardView; korean:
           <ActionForm
             action={returnMakerPoAction}
             submitLabel="差し戻す"
+            draft={false}
             tone="danger"
             confirm={{
               title: '差し戻しますか？',

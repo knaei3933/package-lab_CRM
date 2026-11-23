@@ -713,7 +713,7 @@ function MakerPoOrderSection({
           screen while the order is a draft (tests/web-ui-batch-b.test.tsx). */}
 
       {list.length === 0 ? null : (
-        <DataTable caption="この発注のメーカー発注書">
+        <DataTable caption="この発注のメーカー発注書" cards>
           <thead>
             <tr>
               <th className="ui-th" scope="col">発注書</th>
@@ -729,11 +729,11 @@ function MakerPoOrderSection({
           <tbody>
             {list.map((po) => (
               <tr key={po.id} data-record-id={po.id}>
-                <td className="ui-td">
+                <td className="ui-td" data-label="発注書">
                   <PaperRef po={po} />
                   <TechDetails context="ID">{po.id}</TechDetails>
                 </td>
-                <td className="ui-td">
+                <td className="ui-td" data-label="状態">
                   <StatusBadge domain="makerPo" status={po.status} label={MAKER_PO_STATUS_LABELS[po.status] ?? po.status} />
                   <div className="ui-note">
                     {closure
@@ -742,25 +742,25 @@ function MakerPoOrderSection({
                   </div>
                 </td>
                 {/* P4 L5: an order code is one token — it never breaks across lines, and the browser never translates it. */}
-                <td className="ui-td p4-nowrap" translate="no">{po.orderCode ?? po.snapshot?.order?.code ?? '—'}</td>
+                <td className="ui-td p4-nowrap" translate="no" data-label="発注コード">{po.orderCode ?? po.snapshot?.order?.code ?? '—'}</td>
                 {isAdmin ? (
-                  <td className="ui-td sx-b6f5052">
+                  <td className="ui-td sx-b6f5052" data-label="金額">
                     {po.snapshot?.amounts
                       ? formatMoney(po.snapshot.amounts.currency, po.snapshot.amounts.totalAmount)
                       : '—'}
                   </td>
                 ) : null}
                 {isAdmin ? (
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="宛先">
                     <div>{po.snapshot?.recipient?.address ?? po.recipientAddress ?? '—'}</div>
                     {/* UI batch E (F-14): the digest is a system value — under 「詳細」. */}
                     {po.snapshotSha256 ? <TechDetails context="作成時の内容のハッシュ">{po.snapshotSha256}</TechDetails> : null}
                   </td>
                 ) : (
-                  <td className="ui-td">{po.recipientAddress ?? '—'}</td>
+                  <td className="ui-td" data-label="宛先">{po.recipientAddress ?? '—'}</td>
                 )}
-                <td className="ui-td">{po.ceoApprovedAt ? formatTimestampSeconds(po.ceoApprovedAt) : '未承認'}</td>
-                <td className="ui-td">{formatTimestamp(po.updatedAt)}</td>
+                <td className="ui-td" data-label="代表承認">{po.ceoApprovedAt ? formatTimestampSeconds(po.ceoApprovedAt) : '未承認'}</td>
+                <td className="ui-td" data-label="更新">{formatTimestamp(po.updatedAt)}</td>
               </tr>
             ))}
           </tbody>

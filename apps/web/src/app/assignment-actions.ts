@@ -7,6 +7,7 @@ import { chosenUserId, isUserId } from '../lib/assignments';
 import { webErrorText } from '../lib/error-dictionary';
 import { idempotencyKeyOf } from '../lib/project-context';
 import { refuseIfProjectSwitched, writeProjectOf } from '../lib/project-guard';
+import { rememberAssignmentRemoval } from '../lib/assignment-notice-server';
 import type { ActionState } from '../lib/types';
 
 /**
@@ -32,7 +33,7 @@ export async function addAssignmentAction(_prev: ActionState | null, formData: F
   const userId = chosenUserId(formData);
   if (!userId) {
     return field(formData, 'typedUserId').length > 0
-      ? { ok: false, message: '利用者IDは、担当になる人の画面（「開ける案件がありません」）に出る英数字とハイフンの文字列です。そのまま貼り付けてください。' }
+      ? { ok: false, message: '利用者IDは、担当になる人の画面（「開ける案件がありません」）に出る英数字とハイフンの文字列です。一覧にない人だけ、そのまま貼り付けてください。' }
       : noUser();
   }
   const result = await callApi(`/api/projects/${encodeURIComponent(projectId)}/assignments`, {
@@ -58,6 +59,8 @@ export async function removeAssignmentAction(_prev: ActionState | null, formData
     expectedProjectId: projectId
   });
   if (!result.ok) return refusalState(result);
+  // web2b review L-6: the row (and this result line) disappears — the panel's status line says it.
+  await rememberAssignmentRemoval(projectId, userId);
   revalidatePath('/', 'layout');
   return { ok: true, message: '担当から外しました。この人は、この案件を開けなくなりました。', changedId: userId };
 }

@@ -126,10 +126,10 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
               </p>
 
               {gate ? (
-                <DataTable caption={`${orderCode(orderId)} のデザインごとの承認状況`}>
+                <DataTable caption={`${orderCode(orderId)} のデザインごとの承認状況`} cards>
                   <thead>
                     <tr>
-                      <th className="ui-th" scope="col">デザインキー</th>
+                      <th className="ui-th" scope="col">デザイン名</th>
                       <th className="ui-th" scope="col">現在の版</th>
                       <th className="ui-th" scope="col">顧客の承認</th>
                       <th className="ui-th" scope="col">セブン化学の承認</th>
@@ -139,11 +139,11 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
                   <tbody>
                     {gate.designs.map((design) => (
                       <tr key={design.designKey}>
-                        <td className="ui-td">{design.designKey}</td>
-                        <td className="ui-td">版{design.currentRevisionNo}</td>
-                        <td className="ui-td">{organizationStateText(design.customer)}</td>
-                        <td className="ui-td">{organizationStateText(design.seven)}</td>
-                        <td className="status-cell ui-td">
+                        <td className="ui-td" data-label="デザイン名" translate="no">{design.designKey}</td>
+                        <td className="ui-td" data-label="現在の版">版{design.currentRevisionNo}</td>
+                        <td className="ui-td" data-label="顧客の承認">{organizationStateText(design.customer)}</td>
+                        <td className="ui-td" data-label="セブン化学の承認">{organizationStateText(design.seven)}</td>
+                        <td className="status-cell ui-td" data-label="両組織の承認">
                           {design.dualApproved
                             ? <StatusBadge tone="done" label="済み（校了）" />
                             : <StatusBadge tone="waiting" label="未達" />}

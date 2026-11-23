@@ -14,8 +14,10 @@ import type { EvidenceRef } from '../lib/audit-history';
 import { loadEvidenceMetadata } from '../lib/evidence-data';
 import { roleLabel } from '../lib/session-display';
 import { isRouteCode, orderPath, projectPath } from '../lib/project-route';
-import { loadRepresentativeQueue, queueRowKey, queueRowSuffixKo, queueRowTitle, taskWorkKo } from '../lib/representative-queue';
+import { loadRepresentativeQueue, opensPaymentTerms, PAYMENT_TERMS_ANCHOR, queueRowKey, queueRowSuffixKo, queueRowTitle, taskWorkKo } from '../lib/representative-queue';
 import { QueueRowExtras } from '../components/QueueRowExtras';
+import { AssignmentRequest } from '../components/AssignmentRequest';
+import { requesterOf } from '../lib/requester';
 import type { RepresentativeQueue, RepresentativeTask } from '../lib/representative-queue';
 import { formatTimestamp } from '../lib/vocabulary';
 
@@ -68,6 +70,8 @@ export async function HomeScreen() {
       ) : (
         <ViewerHistory projects={list.projects} />
       )}
+      {/* web2b review L-6: a non-representative with no project to open asks for one here too (not only on /dashboard). */}
+      {!list.error && list.projects.length === 0 && role !== 'admin' ? <AssignmentRequest requester={await requesterOf(user)} /> : null}
       <p className="p1-muted p4w2-project-links">
         <Link href="/dashboard">案件を選んで開く</Link>
         {list.projects.length > 0 ? (
@@ -84,6 +88,10 @@ export async function HomeScreen() {
 }
 
 function taskHref(task: RepresentativeTask): string {
+  // p4/web3 (c): a 未定 row opens the order's 支払条件 (it can be a DRAFT, before step 7).
+  if (isRouteCode(task.projectCode) && isRouteCode(task.orderCode) && opensPaymentTerms(task)) {
+    return `${orderPath(task.projectCode, task.orderCode)}#${PAYMENT_TERMS_ANCHOR}`;
+  }
   if (isRouteCode(task.projectCode) && isRouteCode(task.orderCode)) return orderPath(task.projectCode, task.orderCode, task.step ?? null);
   return isRouteCode(task.projectCode) ? projectPath(task.projectCode) : '/dashboard';
 }
@@ -93,6 +101,31 @@ function koTitle(task: RepresentativeTask): string | null {
   const work = taskWorkKo(task);
   const suffix = queueRowSuffixKo(task);
   return work ? (suffix ? `${work} ${suffix}` : work) : null;
+}
+
+/**
+ * p4/web3 (c): a blocked row's one action. A 未定 that can be fixed now opens 「支払条件を変更する」 on the
+ * order screen; a locked one (保留・見直し中, CEO-approved paper — the server's paymentTermsLock) says why
+ * and only opens the order. The API decides the change itself (PATCH …/payment-terms).
+ */
+function BlockedRowAction({ task, href }: { task: RepresentativeTask; href: string }) {
+  const terms = opensPaymentTerms(task);
+  if (terms && task.paymentTermsEditable === false) {
+    return (
+      <>
+        <p className="p1-inbox-facts p4w3-lock" data-lock={task.paymentTermsLock?.reason ?? 'locked'}>
+          いまは変更できません: {task.paymentTermsLock?.message ?? '支払条件は変更できない状態です。'}
+        </p>
+        <Link className="p1-button p1-button--quiet p1-inbox-go" href={href}><Bilingual ja="発注を開く" ko="발주 열기" /><span className="visually-hidden">（{task.orderCode}）</span></Link>
+      </>
+    );
+  }
+  return (
+    <Link className="p1-button p1-button--quiet p1-inbox-go" href={href}>
+      {terms ? <Bilingual ja="支払条件を決める" ko="결제 조건 정하기" /> : <Bilingual ja="直す" ko="고치기" />}
+      <span className="visually-hidden">（{task.orderCode}）</span>
+    </Link>
+  );
 }
 
 async function AdminInbox({ projects }: { projects: ProjectSummary[] }) {
@@ -143,7 +176,7 @@ async function AdminInbox({ projects }: { projects: ProjectSummary[] }) {
                 <p className="p1-inbox-work"><span translate="no">{task.orderCode}</span></p>
                 <p className="p1-inbox-target">{task.blockedReason ?? task.work}<KoGloss ko={taskWorkKo(task)} /></p>
                 <QueueRowExtras task={task} now={now} />
-                <Link className="p1-button p1-button--quiet p1-inbox-go" href={taskHref(task)}><Bilingual ja="直す" ko="고치기" /><span className="visually-hidden">（{task.orderCode}）</span></Link>
+                <BlockedRowAction task={task} href={taskHref(task)} />
               </li>
             ))}
           </ul>

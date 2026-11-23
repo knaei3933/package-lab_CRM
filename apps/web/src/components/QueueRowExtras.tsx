@@ -2,6 +2,7 @@ import { Bilingual } from './Bilingual';
 import { queueDueText } from '../lib/representative-queue';
 import type { RepresentativeTask } from '../lib/representative-queue';
 import { ISSUER_DECLARED_LABEL, senderStatusText } from '../lib/sender-check';
+import { ISSUER_ENTITY_LABELS } from '../lib/vocabulary';
 
 /**
  * P4 M18 / N4: what an 承認箱 row adds to its title — 希望納期 and the days left, and for an
@@ -24,9 +25,12 @@ export function QueueRowExtras({ task, now }: { task: RepresentativeTask; now: D
       ) : null}
       {evidence ? (
         <p className="p4-inbox-line p4-inbox-evidence" data-evidence="">
-          <span className="p1-muted-inline">{ISSUER_DECLARED_LABEL}: 登録した人の申告で、ファイルの中身から確かめたものではありません。 </span>
+          {/* web2b review L-3: the declared value itself, then what a declaration is. */}
+          {ISSUER_DECLARED_LABEL}: {evidence.issuerEntity ? ISSUER_ENTITY_LABELS[evidence.issuerEntity as keyof typeof ISSUER_ENTITY_LABELS] ?? '不明' : '記録なし'}
+          <span className="p1-muted-inline">（登録した人の申告で、ファイルの中身から確かめたものではありません）</span>{' '}
           {evidence.filename ? <>ファイル <span translate="no">{evidence.filename}</span></> : null}
-          {evidence.fromAddress ? <> ・ 差出人 <span translate="no">{evidence.fromAddress}</span></> : null}
+          {/* web2b review L-2: with several From lines the server keeps the first one — said so. */}
+          {evidence.fromAddress ? <> ・ {evidence.senderStatus === 'multiple_from' ? '差出人（1件目）' : '差出人'} <span translate="no">{evidence.fromAddress}</span></> : null}
           {evidence.uploadedBy ? <> ・ 登録した人 {evidence.uploadedBy}</> : null}
           {statusText ? <> ・ <Bilingual ja={statusText.ja} ko={statusText.ko} /></> : null}
         </p>

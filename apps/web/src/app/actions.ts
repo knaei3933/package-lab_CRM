@@ -551,13 +551,30 @@ export async function assumeFilmReceiptAction(_prev: ActionState | null, formDat
   const note = field(formData, 'note');
   if (orderId.length === 0) return { ok: false, message: 'フィルム発注が選択されていません。' };
   if (note.length === 0) return { ok: false, message: '受領確認のメモは必須です。' };
-  if (!flag(formData, 'acknowledgeNoEvidence')) {
+  // p4/web3 (e, server2 §10): every delivery confirmed on its receipt evidence → the completion rests on
+  // them and asks no 「証跡なし」 acknowledgment. The server judges the basis again under its lock (a
+  // delivery added meanwhile → 422 RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED, the screen is drawn again).
+  const onConfirmed = field(formData, 'closureBasis') === 'delivery_confirmations';
+  if (!onConfirmed && !flag(formData, 'acknowledgeNoEvidence')) {
     return { ok: false, message: '「証跡なしで問題なしとみなす」の確認にチェックを入れてください。' };
   }
-  return post(formData, `/api/film-supply-orders/${encodeURIComponent(orderId)}/receipt-assumption`, {
-    note,
-    acknowledgeNoEvidence: true
-  });
+  return post(
+    formData,
+    `/api/film-supply-orders/${encodeURIComponent(orderId)}/receipt-assumption`,
+    onConfirmed ? { note } : { note, acknowledgeNoEvidence: true },
+    (code) => {
+      if (code !== 'RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED') return null;
+      refresh();
+      const text = webErrorText(code);
+      return { ok: false, message: `確認されていない納品があるため、確認済みの納品では完了できません。${text.message}`, messageKo: text.messageKo, code };
+    },
+    (data) => {
+      const basis = typeof data === 'object' && data !== null ? (data as { closureBasis?: unknown }).closureBasis : undefined;
+      if (basis === 'delivery_confirmations') return { ok: true, message: '発注を完了しました（完了の根拠: 確認済みの納品）。' };
+      if (basis === 'evidence_free_acknowledgment') return { ok: true, message: '発注を完了しました（完了の根拠: 証跡なしで問題なしとして完了）。' };
+      return null;
+    }
+  );
 }
 
 // ---------------------------------------------------------------------------

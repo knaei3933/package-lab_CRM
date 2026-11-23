@@ -3,7 +3,8 @@ import { Bilingual } from './Bilingual';
 import { SelectField, TextField } from './fields';
 import { addAssignmentAction, removeAssignmentAction } from '../app/assignment-actions';
 import { ASSIGNMENT_ROLE_LABELS } from '../lib/assignments';
-import type { AssignmentCandidate, AssignmentsView } from '../lib/assignments';
+import type { AssignableDirectory, AssignmentsView } from '../lib/assignments';
+import type { AssignmentNotice } from '../lib/assignment-notice';
 import { formatTimestamp } from '../lib/vocabulary';
 
 /**
@@ -12,17 +13,24 @@ import { formatTimestamp } from '../lib/vocabulary';
  * and lets the representative add or remove a person — until now that was SQL only, so a new staff
  * member saw 「開ける案件がありません」 and nobody could fix it from the screen.
  *
- * Adding: pick a person already assigned to another project, or paste the 利用者ID the person shows on
- * their own 「開ける案件がありません」 screen (the API has no user directory). The representative is never
- * listed: they open every project.
+ * p4/web3 (d): adding = picking the person by name from GET /api/assignable-users (active staff / viewer /
+ * auditor, minus the people already here). The 利用者ID field is there only when the server cut that list
+ * short (`truncated`). The representative is never listed: they open every project.
+ * web2b review L-7: the section is 「割り当て」 (its old title 「担当者」 read the same as the staff role label).
  */
-export function ProjectAssignmentsPanel({ view, candidates }: { view: AssignmentsView; candidates: AssignmentCandidate[] }) {
+export function ProjectAssignmentsPanel({ view, directory, notice = null }: { view: AssignmentsView; directory: AssignableDirectory; notice?: AssignmentNotice | null }) {
   const roleName = (role: string) => ASSIGNMENT_ROLE_LABELS[role] ?? role;
+  const removed = notice ? directory.candidates.find((candidate) => candidate.userId === notice.userId)?.displayName ?? '選んだ人' : null;
+  const canAdd = !view.error && !directory.error && (directory.candidates.length > 0 || directory.truncated);
   return (
     <section className="p1-panel p4-assignments" aria-labelledby="project-assignments-title" data-section="assignments">
       <h2 id="project-assignments-title" className="p1-section-title">
-        <Bilingual ja="担当者" ko="담당자" />
+        <Bilingual ja="割り当て（この案件を開ける人）" ko="담당 배정(이 안건을 열 수 있는 사람)" />
       </h2>
+      {/* web2b review L-6: always on the page, so a removal (its row and result line are gone) is announced. */}
+      <p className="p4w3-status" role="status" data-assignment-notice={notice ? 'removed' : undefined}>
+        {removed ? `${removed} を担当から外しました（${formatTimestamp(notice!.at)}）。この人は、この案件を開けなくなりました。` : null}
+      </p>
       <p className="p1-muted">
         <Bilingual
           ja="この案件を開ける人です。代表者は、すべての案件を開けるため、ここには出ません。割り当てると、その人はすぐにこの案件を開けます。"
@@ -65,36 +73,52 @@ export function ProjectAssignmentsPanel({ view, candidates }: { view: Assignment
           ))}
         </ul>
       )}
-      <ActionForm
-        action={addAssignmentAction}
-        submitLabel="担当者に割り当てる"
-        hint="別の案件の担当者から選ぶか、本人が見せる「利用者ID」を貼り付けます。代表者を割り当てる必要はありません。"
-        hintKo="다른 안건의 담당자 중에서 고르거나, 본인이 보여 주는 「利用者ID」를 붙여 넣습니다. 대표자는 배정할 필요가 없습니다."
-      >
-        <div className="p1-row">
-          {candidates.length > 0 ? (
-            <SelectField
-              name="candidateUserId"
-              label="ほかの案件の担当者から選ぶ"
-              includeBlank
-              blankLabel="（選ばない）"
-              choices={candidates.map((candidate) => ({
-                value: candidate.userId,
-                label: `${candidate.displayName}（${ASSIGNMENT_ROLE_LABELS[candidate.role] ?? candidate.role}）`
-              }))}
-              width={320}
-            />
-          ) : null}
-          <TextField
-            name="typedUserId"
-            label="利用者ID（本人の画面に出る文字列）"
-            width={380}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="例 0192…（貼り付け）"
+      {directory.error ? (
+        <p className="p1-banner p1-banner--error" role="alert" data-directory="error">割り当てられる人の一覧を読み込めませんでした。{directory.error}</p>
+      ) : !view.error && directory.candidates.length === 0 && !directory.truncated ? (
+        <p className="p1-muted" data-directory="empty">
+          <Bilingual
+            ja="割り当てられる人がいません（有効な担当者・閲覧・監査の利用者が、全員この案件に割り当て済みです）。"
+            ko="배정할 수 있는 사람이 없습니다(활성 담당자·열람·감사 사용자가 모두 이 안건에 배정되어 있습니다)."
           />
-        </div>
-      </ActionForm>
+        </p>
+      ) : null}
+      {canAdd ? (
+        <ActionForm
+          action={addAssignmentAction}
+          submitLabel="担当者に割り当てる"
+          hint="一覧は、有効な担当者・閲覧・監査の利用者です（代表者は割り当て不要）。"
+          hintKo="목록은 활성 상태인 담당자·열람·감사 사용자입니다(대표자는 배정 불필요)."
+        >
+          <div className="p1-row">
+            {directory.candidates.length > 0 ? (
+              <SelectField
+                name="candidateUserId"
+                label="割り当てる人"
+                required={!directory.truncated}
+                includeBlank
+                blankLabel="（選ぶ）"
+                choices={directory.candidates.map((candidate) => ({
+                  value: candidate.userId,
+                  label: `${candidate.displayName}（${roleName(candidate.role)}）`
+                }))}
+                width={320}
+              />
+            ) : null}
+            {directory.truncated ? (
+              <TextField
+                name="typedUserId"
+                label="一覧にない人の利用者ID"
+                width={380}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="例 0192…（貼り付け）"
+                hint="さらにいます。一覧にない人は、本人の画面に出る利用者IDを貼り付けてください。"
+              />
+            ) : null}
+          </div>
+        </ActionForm>
+      ) : null}
     </section>
   );
 }

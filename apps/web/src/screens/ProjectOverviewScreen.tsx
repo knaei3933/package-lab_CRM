@@ -11,7 +11,9 @@ import { RepresentativeQueuePanel } from '../components/RepresentativeQueue';
 import { DashboardFlow, DashboardItemList, DashboardActivity } from '../components/DashboardParts';
 import { ProjectOrderList } from '../components/ProjectOrderList';
 import { loadSessionUser } from '../lib/api';
-import { loadAssignmentCandidates, loadProjectAssignments } from '../lib/assignments';
+import { loadAssignableDirectory, loadProjectAssignments } from '../lib/assignments';
+import type { AssignableDirectory } from '../lib/assignments';
+import { readAssignmentNotice } from '../lib/assignment-notice-server';
 import { buildDashboard, OTHERS_TITLE, STALE_AFTER_DAYS, STALE_BASIS, STALLED_TITLE, TODO_SCOPE, TODO_TITLE } from '../lib/dashboard';
 import { loadDashboardData } from '../lib/dashboard-data';
 import { canRoleOperate, isAuditorRole, normalizeRole } from '../lib/permissions';
@@ -28,11 +30,13 @@ async function representativeQueueFor(openProjectId: string | null) {
   return loadRepresentativeQueue(list.projects.filter((project) => project.id !== openProjectId), { server: true });
 }
 
-/** P4 N1: the 担当者 of the open project and the people who could be added (representative only). */
+/** P4 N1 / p4/web3 (d): the 担当者 of the open project and the people who could be added (representative only). */
 async function assignmentsFor(projectId: string) {
-  const [view, list] = await Promise.all([loadProjectAssignments(projectId), loadSelectableProjectList()]);
-  const candidates = view.error || list.error ? [] : await loadAssignmentCandidates(projectId, view.assignments, list.projects);
-  return { view, candidates };
+  const view = await loadProjectAssignments(projectId);
+  const directory: AssignableDirectory = view.error
+    ? { candidates: [], truncated: false, error: null }
+    : await loadAssignableDirectory(view.assignments);
+  return { view, directory, notice: await readAssignmentNotice(projectId) };
 }
 
 /**
@@ -132,7 +136,7 @@ export async function ProjectOverviewScreen({ projectId, projectCode }: ProjectS
           </VStack>
         </Card>
 
-        {assignments ? <ProjectAssignmentsPanel view={assignments.view} candidates={assignments.candidates} /> : null}
+        {assignments ? <ProjectAssignmentsPanel view={assignments.view} directory={assignments.directory} notice={assignments.notice} /> : null}
 
         {queue ? (
           <Card>

@@ -1,6 +1,9 @@
 import type { ReactNode } from 'react';
 import { ActionForm } from './ActionForm';
 import { Bilingual } from './Bilingual';
+import { KoGloss } from './RenderedContext';
+import { webErrorText } from '../lib/error-dictionary';
+import { PAYMENT_TERMS_ANCHOR } from '../lib/project-route';
 import { DateTextField, SelectField, TextField } from './fields';
 import { updateFilmPaymentTermsAction } from '../app/actions';
 import { saveOrderAmountAction, saveOrderQuantityAction, updateDeliveryDatesAction } from '../app/order-terms-actions';
@@ -111,11 +114,24 @@ const PAYMENT_TERMS_CHOICES = [
  * the term is still 「未定」, because that is the one value that will stop the approval.
  * `paymentTermsEditable === false` (the API's own answer: approved, frozen, closed) hides it.
  */
-export function PaymentTermsChange({ order, role, cancelled }: { order: FilmSupplyOrderView; role: string | null | undefined; cancelled: boolean }) {
-  if (!editsOrderTerms(role) || cancelled || order.paymentTermsEditable === false) return null;
+export function PaymentTermsChange({ order, role, cancelled, locked = false }: { order: FilmSupplyOrderView; role: string | null | undefined; cancelled: boolean; locked?: boolean }) {
+  if (!editsOrderTerms(role) || cancelled) return null;
   const current = order.paymentTerms ?? null;
   const undecided = current === 'undetermined' || order.paymentTermsUndetermined === true;
+  if (locked || order.paymentTermsEditable === false) {
+    // p4/web3 (c): the home 「止まっている」 row opens here (#payment-terms) — a locked 未定 says why instead of a form.
+    if (!undecided) return null;
+    const lock = webErrorText('PAYMENT_TERMS_LOCKED');
+    return (
+      <p id={PAYMENT_TERMS_ANCHOR} className="field-warning p4w3-lock" data-lock="payment-terms" tabIndex={-1}>
+        <span aria-hidden="true">⚠</span> 支払条件は「未定」のままですが、いまは変更できません。{lock.message}
+        <KoGloss ko={lock.messageKo} />
+      </p>
+    );
+  }
   return (
+    // p4/web3 (c): the anchor the home 「止まっている」 row opens (#payment-terms).
+    <div id={PAYMENT_TERMS_ANCHOR} className="p4w3-anchor" tabIndex={-1}>
     <details className="p4-terms-change" open={undecided || undefined}>
       <summary className="p4-terms-change-summary">
         <Bilingual ja="支払条件を変更する" ko="결제 조건 변경" />
@@ -149,6 +165,7 @@ export function PaymentTermsChange({ order, role, cancelled }: { order: FilmSupp
         <TextField name="reason" label="変更の理由（任意）" width={280} />
       </ActionForm>
     </details>
+    </div>
   );
 }
 
@@ -307,7 +324,7 @@ export function OrderTermsSection({
       ) : null}
 
       {/* An approved maker paper fixes the 支払条件 too (the API: paymentTermsEditable false). */}
-      {locked ? null : <PaymentTermsChange order={order} role={role} cancelled={cancelled} />}
+      <PaymentTermsChange order={order} role={role} cancelled={cancelled} locked={locked} />
 
       {editable && isAdmin && poId && readFacts ? (
         <div key={`amount-${readFacts.amount?.totalAmount ?? ''}-${readFacts.amount?.currency ?? ''}`} className="p2-terms-form p2-terms-forms">

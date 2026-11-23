@@ -23,6 +23,8 @@ import { formatQuantityWithUnit } from '../lib/number-format';
 import { orderRecordText } from '../lib/order-records';
 import type { ProjectScreenProps } from './screen-props';
 import { deliveryTermsSummary, OrderTermsSection } from '../components/OrderTermsSection';
+import { readApprovalNotice } from '../lib/approval-notice-server';
+import { loadReceiptClosure } from '../lib/receipt-closure';
 import { deliveryTermsLock, loadOrderFacts } from '../lib/order-terms';
 import { loadMakerRecipients, previousTypedRecipientOf } from '../lib/maker-master';
 import { SecondaryMenu } from '../components/SecondaryMenu';
@@ -138,6 +140,8 @@ export async function OrderDetailScreen({
         sevenPo: po
       })
     : null;
+  // p4/web3 (b) / web2b review L-1: why the last approval from this card stopped (kept across the redraw).
+  if (approvalCard) approvalCard.notice = await readApprovalNotice(approvalCard.poId);
   // P2 R33: the project maker's recipient addresses, only when this role creates the maker paper now.
   const recipients = flow.panel.action.kind === 'maker_po_create' && flow.panel.canAct ? await loadMakerRecipients(projectId) : undefined;
   // P4 M6: the representative's maker paper work (取り消し・取り消し承認) — judged like the old list.
@@ -148,7 +152,9 @@ export async function OrderDetailScreen({
     userId: user.id ?? null,
     filmOnly: workspace.fillingOrders.length === 0,
     readiness: workspace.readiness ?? null,
-    readinessLabel: labelLookup(workspace.labels, 'commissionReadinessStates')
+    readinessLabel: labelLookup(workspace.labels, 'commissionReadinessStates'),
+    // p4/web3 (e): what the completion rests on (server-decided), read only around the completion.
+    closure: status === 'FILM_DELIVERED' || status === 'FILM_RECEIPT_ASSUMED_NO_ISSUE' ? await loadReceiptClosure(order.id) : null
   };
   // P4 §0: the cancellation review warns about the maker paper left on the order (the board's workspace skips that read).
   const makerCleanup = status === 'CANCELLATION_REVIEW' || status === 'ON_HOLD' || status === 'CHANGE_REVIEW' || status === 'CANCELLED'
@@ -210,7 +216,7 @@ export async function OrderDetailScreen({
     <article className="p1-order" aria-labelledby="order-title">
       <nav className="p1-crumbs" aria-label="現在の位置">
         <ol>
-          <li><Link href={projectPath(projectCode)} translate="no">{projectCode}</Link></li>
+          <li><Link className="p4w3-target" href={projectPath(projectCode)} translate="no">{projectCode}</Link></li>
           <li aria-current="page" translate="no">{order.code}</li>
         </ol>
       </nav>
@@ -232,9 +238,10 @@ export async function OrderDetailScreen({
           <span>支払条件 {paymentTermsText(order)}</span>
         </p>
         <p className="p1-order-links">
-          <Link href={projectPath(projectCode, 'orders') + `#order-${order.id}`}>発注の一覧（閲覧）</Link>
-          <Link href={projectPath(projectCode, 'maker-po') + `#maker-order-${order.id}`}>メーカー発注の一覧（閲覧）</Link>
-          <a href="#order-terms">発注の条件</a>
+          {/* web2a review L-3: the header links are 44px targets too (they were 19–24px). */}
+          <Link className="p4w3-target" href={projectPath(projectCode, 'orders') + `#order-${order.id}`}>発注の一覧（閲覧）</Link>
+          <Link className="p4w3-target" href={projectPath(projectCode, 'maker-po') + `#maker-order-${order.id}`}>メーカー発注の一覧（閲覧）</Link>
+          <a className="p4w3-target" href="#order-terms">発注の条件</a>
         </p>
       </header>
 

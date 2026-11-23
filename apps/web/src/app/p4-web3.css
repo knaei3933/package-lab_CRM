@@ -1,0 +1,69 @@
+/*
+ * p4/web3. Loaded last, unlayered, like p4-web2a/2b. Existing tokens only (no new colours):
+ * the server's evidence lines on the approval card, the stop notice, the lock line, 44px targets.
+ */
+
+/* (a) The server's line beside 「発行元（登録時の申告）」: the tone is the one thing that is louder. */
+.p4w3-line--ok { color: var(--ok); }
+.p4w3-line--warning { color: var(--ink); font-weight: 700; }
+.p4w3-line--warning > [aria-hidden='true'] { color: var(--warn); }
+.p4w3-line--neutral { color: var(--ink-sub); }
+
+/* A slot whose evidence carries a warning is marked by its edge, not by a new colour. */
+.p1-seal-slot.p4w3-seal--warning {
+  border-color: var(--warn);
+  background: var(--warn-tint);
+}
+
+.p4w3-seal-from,
+.p4w3-seal-uploader {
+  overflow-wrap: anywhere;
+}
+
+/* (b) Why the last approval from this card stopped. */
+.p4w3-notice {
+  background: var(--warn-tint);
+  border-color: var(--warn);
+}
+
+/* (c) A 未定 that cannot be changed now: said, not a dead button. */
+.p4w3-lock {
+  overflow-wrap: anywhere;
+}
+
+.p4w3-anchor:focus { outline: none; }
+.p4w3-anchor:target > .p4-terms-change,
+.p4w3-lock:target {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+}
+
+/* L-6 (web2b): the removal status line takes no room while it is empty. */
+.p4w3-status:empty { margin: 0; }
+
+/* web2a review L-3: breadcrumbs, header links and the progress rows' order links are 44px targets. */
+.p4w3-target {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  box-sizing: border-box;
+}
+
+.p4w3-target-summary {
+  display: list-item;
+  min-height: 44px;
+  padding-block: 10px;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+/*
+ * web2b review L-6: on a narrow screen every field is 44px high with 16px text. The fields set their
+ * size inline from these variables, so the variables change here (a stylesheet font-size never beat the inline one).
+ */
+@media (max-width: 600px) {
+  :root {
+    --control-h: 44px;
+    --control-text: 16px;
+  }
+}

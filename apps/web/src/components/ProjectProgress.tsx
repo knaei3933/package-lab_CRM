@@ -65,7 +65,7 @@ function OrderProgressRow({
       <p className="progress-head">
         {/* P1 R21: the order code opens that order's own screen. */}
         {projectCode ? (
-          <Link className="progress-code" href={orderPath(projectCode, order.code)}>{order.code}</Link>
+          <Link className="progress-code p4w3-target" href={orderPath(projectCode, order.code)}>{order.code}</Link>
         ) : (
           <span className="progress-code">{order.code}</span>
         )}
@@ -193,7 +193,7 @@ export function ProjectProgress({
       ) : null}
       {completed.length > 0 ? (
         <details className="progress-completed">
-          <summary>完了した発注 {completed.length}件</summary>
+          <summary className="p4w3-target-summary">完了した発注 {completed.length}件</summary>
           {completed.map((order) => (
             <OrderProgressRow key={order.id} order={order} stateLabel={stateLabel} projectCode={projectCode} />
           ))}

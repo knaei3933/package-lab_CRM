@@ -5,6 +5,8 @@ import { loadApprovalGate } from './project-data';
 import type { ApprovalGateView, OrganizationApprovalStateView, SevenPurchaseOrderView } from './project-data';
 import { formatAmount, formatQuantityWithUnit } from './number-format';
 import { orderAmountDisplay, orderFactsFromApi } from './order-terms';
+import { senderStatusOf, senderWarningsOf } from './sender-check';
+import type { SenderCheckStatus, SenderWarning } from './sender-check';
 
 /**
  * P1 R24: the representative's approval card (REDESIGN §5-4) — every fact the
@@ -21,9 +23,20 @@ import { orderAmountDisplay, orderFactsFromApi } from './order-terms';
  */
 export type SealState = 'approved' | 'pending_manual_verification' | 'rejected' | 'revoked' | 'missing';
 
+export type EvidenceTone = 'ok' | 'warning' | 'neutral';
+
+/** P4 server2 §1(4): one line the server decided (code, tone, Japanese label) — drawn as given. */
+export interface EvidenceLine {
+  code: string;
+  tone: EvidenceTone;
+  label: string;
+}
+
 export interface CardOrganization {
   state: SealState;
   eventTime: string | null;
+  /** p4/web3 (server2 §9): the approval event the slot rests on — part of the evidence set the approval is pinned to. */
+  approvalEventId?: string | null | undefined;
   evidence: {
     filename: string | null;
     issuerEntity: string | null;
@@ -31,6 +44,16 @@ export interface CardOrganization {
     issuerMatchesOrganization: boolean | null;
     evidenceSource: string | null;
     identifierStatus: string | null;
+    /** p4/web3 (server2 §1(4)): the evidence version, who uploaded it and the mail's From (null: not answered). */
+    documentVersionId?: string | null | undefined;
+    uploadedBy?: string | null | undefined;
+    uploadedAt?: string | null | undefined;
+    fromAddress?: string | null | undefined;
+    senderStatus?: SenderCheckStatus | null | undefined;
+    /** The server's sender verdict and the line beside 「発行元（登録時の申告）」; null on an older API. */
+    senderVerdict?: EvidenceLine | null | undefined;
+    declarationLine?: EvidenceLine | null | undefined;
+    warnings?: SenderWarning[] | undefined;
   } | null;
 }
 
@@ -83,6 +106,18 @@ export interface ApprovalCardView {
   /** For the approval request: the 支払条件 and (server card) the snapshot hash the card showed. */
   expectedPaymentTerms: string | null;
   expectedSnapshotSha256: string | null;
+  /** p4/web3: why the last approval from this card stopped (a short-lived notice; lib/approval-notice). */
+  notice?: ApprovalNotice | null | undefined;
+}
+
+/** p4/web3: the reason a 代表承認 from this card stopped, kept across the redraw (lib/approval-notice). */
+export type ApprovalNoticeReason = 'evidence_changed' | 'content_changed' | 'amount_required' | 'delivery_date_required';
+
+export interface ApprovalNotice {
+  poId: string;
+  reason: ApprovalNoticeReason;
+  /** When it stopped (ISO). */
+  at: string;
 }
 
 export interface CardDeliveryTerms {
@@ -143,6 +178,37 @@ export function isMissingRoute(result: { ok: boolean; status: number; data: unkn
   return !result.ok && result.status === 404 && !(isRecord(result.data) && typeof result.data.code === 'string');
 }
 
+const TONES: readonly string[] = ['ok', 'warning', 'neutral'];
+/** A server label is plain text of bounded length (never markup; drawn as a React text node). */
+const LINE_LABEL_MAX = 200;
+
+/** Pure: a server-decided line ({ code, tone, label }), or null when it is missing or malformed. */
+export function evidenceLineFrom(value: unknown): EvidenceLine | null {
+  if (!isRecord(value)) return null;
+  const code = text(value.code);
+  const tone = text(value.tone);
+  const label = text(value.label);
+  if (!code || !tone || !TONES.includes(tone) || !label) return null;
+  return { code, tone: tone as EvidenceTone, label: label.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, LINE_LABEL_MAX) };
+}
+
+/**
+ * p4/web3: the line drawn beside 「発行元（登録時の申告）」. The server's own line when the card carries it
+ * (server2 §1(4)); on an older API only what the declaration itself says — never 「申告どおり」, which the
+ * server says only when the mail's From domain was compared too (web2b review M-1).
+ */
+export function declarationLineOf(evidence: CardOrganization['evidence']): EvidenceLine | null {
+  if (!evidence) return null;
+  if (evidence.declarationLine) return evidence.declarationLine;
+  if (evidence.issuerMatchesOrganization === false) {
+    return { code: 'issuer_differs', tone: 'warning', label: '申告された発行元が承認組織と異なります' };
+  }
+  if (evidence.issuerMatchesOrganization === true) {
+    return { code: 'declared_only', tone: 'neutral', label: '申告は承認組織と一致（差出人は照合していません）' };
+  }
+  return null;
+}
+
 function organizationFromServer(value: unknown): CardOrganization {
   const record = isRecord(value) ? value : {};
   const evidence = isRecord(record.evidence) ? record.evidence : null;
@@ -150,6 +216,7 @@ function organizationFromServer(value: unknown): CardOrganization {
   return {
     state: state ?? 'missing',
     eventTime: text(record.eventTime),
+    ...(text(record.approvalEventId) ? { approvalEventId: text(record.approvalEventId) } : {}),
     evidence: evidence
       ? {
           filename: text(evidence.filename),
@@ -157,10 +224,37 @@ function organizationFromServer(value: unknown): CardOrganization {
           expectedIssuerEntity: text(evidence.expectedIssuerEntity),
           issuerMatchesOrganization: typeof evidence.issuerMatchesOrganization === 'boolean' ? evidence.issuerMatchesOrganization : null,
           evidenceSource: text(evidence.evidenceSource),
-          identifierStatus: text(evidence.identifierStatus)
+          identifierStatus: text(evidence.identifierStatus),
+          documentVersionId: text(evidence.documentVersionId),
+          uploadedBy: isRecord(evidence.uploadedBy) ? text(evidence.uploadedBy.displayName) : null,
+          uploadedAt: text(evidence.uploadedAt),
+          fromAddress: text(evidence.fromAddress),
+          senderStatus: senderStatusOf(evidence.senderDomainCheck),
+          senderVerdict: evidenceLineFrom(evidence.senderVerdict),
+          declarationLine: evidenceLineFrom(evidence.declarationLine),
+          warnings: senderWarningsOf(evidence.warnings)
         }
       : null
   };
+}
+
+/**
+ * p4/web3 (server2 §9, web review (b)): the approval-evidence set the card was drawn with — per design and
+ * organization the approval event and its evidence version, in a fixed order. The server pins the approval
+ * to the same set (its hash; 409 MAKER_PO_SNAPSHOT_CHANGED when it moved); the web only compares this stamp
+ * with a fresh card to say WHY the approval stopped. Null when the card carries no event ids (older API, web card).
+ */
+export function approvalEvidenceStamp(card: Pick<ApprovalCardView, 'source' | 'designs'>): string | null {
+  if (card.source !== 'server') return null;
+  const parts: string[] = [];
+  let anyEvent = false;
+  for (const design of card.designs) {
+    for (const [organization, slot] of [['customer', design.customer], ['seven', design.seven]] as const) {
+      if (slot.approvalEventId) anyEvent = true;
+      parts.push([design.designKey, organization, slot.approvalEventId ?? '', slot.evidence?.documentVersionId ?? ''].join(':'));
+    }
+  }
+  return anyEvent ? parts.sort().join('|') : null;
 }
 
 /** Pure: the server card (contract §2-1) in the screen's shape. */
@@ -307,6 +401,9 @@ export function cardFromWeb(input: {
     expectedSnapshotSha256: null
   };
 }
+
+/** p4/web3 (b): the server's answer when the paper or its approval-evidence set moved after the card was drawn (409). */
+export const SNAPSHOT_CHANGED_CODE = 'MAKER_PO_SNAPSHOT_CHANGED';
 
 /** P4 H4① (server rule): a 代表承認 needs both facts; the API answers a blocker with these codes. */
 export const AMOUNT_REQUIRED_CODE = 'AMOUNT_REQUIRED';

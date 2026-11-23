@@ -9,6 +9,8 @@ import type { DeliveryView, DocumentView, FilmSupplyOrderView, ReadinessView } f
 import { isOwnDocumentOfStaff } from '../lib/self-verification';
 import { formatQuantityWithUnit } from '../lib/number-format';
 import { formatTimestamp, READINESS_BLOCKING_LABELS, VERIFICATION_STATUS_LABELS } from '../lib/vocabulary';
+import { CLOSURE_BASIS_LABELS } from '../lib/receipt-closure';
+import type { ReceiptClosureView } from '../lib/receipt-closure';
 
 /**
  * P4 H14 (R36 on the order screen): 12 納品 — the delivered quantity is confirmed
@@ -27,6 +29,8 @@ export interface DeliveryContext {
   filmOnly: boolean;
   readiness: ReadinessView | null;
   readinessLabel: (key: string) => string;
+  /** p4/web3 (e): what the completion rests on, from the server (null: not read / older API). */
+  closure?: ReceiptClosureView | null | undefined;
 }
 
 /** P4 H14 ②: a film delivery's confirmation in its own words (never 「充填製品の…」). */
@@ -182,26 +186,73 @@ export function DeliveryReceiptStep({
         </ActionForm>
       ) : null}
 
-      {completed ? null : (
-        <div className="p4w2-fallback">
-          <h3 className="p4w2-subtitle">{unconfirmed.length === 0 ? '受領確認を記録して完了する' : '受領の証跡がない場合'}</h3>
-          <ActionForm
-            action={assumeFilmReceiptAction}
-            submitLabel={unconfirmed.length === 0 ? '受領確認（問題なし）を記録して完了する' : '証跡なしで問題なしとして完了する'}
-            quiet={unconfirmed.length > 0}
-            hint="発注を「受領確認（問題なし）」で終えます。メモは必須で、記録は取り消せません。"
-            confirm={{
-              title: '発注を完了しますか？',
-              body: `発注 ${order.code} を受領確認（問題なし）として完了します。記録は取り消せません。`,
-              summaryFields: ['note']
-            }}
-          >
-            <Hidden order={order} projectCode={projectCode} />
-            <TextField name="note" label="確認メモ" required width={360} />
-            <CheckboxField name="acknowledgeNoEvidence" label="問題なしとして受領確認を記録することに同意します" required />
-          </ActionForm>
-        </div>
-      )}
+      {completed ? <ClosureLine closure={context.closure ?? null} /> : <CompletionForm order={order} projectCode={projectCode} unconfirmed={unconfirmed.length} closure={context.closure ?? null} />}
+    </div>
+  );
+}
+
+/** p4/web3 (e): a completed order says what its completion rests on (server receiptAssumption.closureBasis). */
+function ClosureLine({ closure }: { closure: ReceiptClosureView | null }) {
+  const recorded = closure?.recorded ?? null;
+  if (!recorded) return null;
+  return (
+    <p className="p1-note" data-closure-basis={recorded.basis}>
+      完了の根拠: {CLOSURE_BASIS_LABELS[recorded.basis]}
+      {recorded.at ? `（${formatTimestamp(recorded.at)}${recorded.by ? `・${recorded.by}` : ''}）` : ''}
+    </p>
+  );
+}
+
+/**
+ * 「完了する」. p4/web3 (e, server2 §10): when the server says every delivery is confirmed on its receipt
+ * evidence (receiptClosure.basis = delivery_confirmations), the completion rests on them — no 「証跡なし」
+ * acknowledgment is asked or sent. Otherwise (or on an API that does not say) the acknowledgment stays.
+ */
+function CompletionForm({ order, projectCode, unconfirmed, closure }: { order: FilmSupplyOrderView; projectCode: string; unconfirmed: number; closure: ReceiptClosureView | null }) {
+  const pending = closure?.pending ?? null;
+  if (pending && !pending.acknowledgeNoEvidenceRequired) {
+    return (
+      <div className="p4w2-fallback" data-closure="delivery_confirmations">
+        <h3 className="p4w2-subtitle">確認済みの納品で完了する</h3>
+        <ActionForm
+          action={assumeFilmReceiptAction}
+          submitLabel="確認済みの納品で完了する"
+          hint="すべての納品が受領証跡で確認済みです。完了の根拠は「確認済みの納品」として記録されます。メモは必須で、記録は取り消せません。"
+          confirm={{
+            title: '発注を完了しますか？',
+            body: `発注 ${order.code} を、確認済みの納品にもとづいて完了します。記録は取り消せません。`,
+            summaryFields: ['note']
+          }}
+        >
+          <Hidden order={order} projectCode={projectCode} />
+          <input type="hidden" readOnly name="closureBasis" value="delivery_confirmations" />
+          <TextField name="note" label="確認メモ" required width={360} />
+        </ActionForm>
+      </div>
+    );
+  }
+  // The server says the completion would rest on no confirmed delivery: say it as such, whatever the local count.
+  const evidenceFree = pending !== null;
+  return (
+    <div className="p4w2-fallback" data-closure={evidenceFree ? 'evidence_free_acknowledgment' : undefined}>
+      <h3 className="p4w2-subtitle">{!evidenceFree && unconfirmed === 0 ? '受領確認を記録して完了する' : '受領の証跡がない場合'}</h3>
+      <ActionForm
+        action={assumeFilmReceiptAction}
+        submitLabel={!evidenceFree && unconfirmed === 0 ? '受領確認（問題なし）を記録して完了する' : '証跡なしで問題なしとして完了する'}
+        quiet={evidenceFree || unconfirmed > 0}
+        hint={evidenceFree
+          ? '確認されていない納品があります。完了の根拠は「証跡なしで問題なし（同意）」として記録されます。メモは必須で、記録は取り消せません。'
+          : '発注を「受領確認（問題なし）」で終えます。メモは必須で、記録は取り消せません。'}
+        confirm={{
+          title: '発注を完了しますか？',
+          body: `発注 ${order.code} を受領確認（問題なし）として完了します。記録は取り消せません。`,
+          summaryFields: ['note']
+        }}
+      >
+        <Hidden order={order} projectCode={projectCode} />
+        <TextField name="note" label="確認メモ" required width={360} />
+        <CheckboxField name="acknowledgeNoEvidence" label="問題なしとして受領確認を記録することに同意します" required />
+      </ActionForm>
     </div>
   );
 }

@@ -29,7 +29,7 @@ export async function NewOrderScreen({ projectId, projectCode }: ProjectScreenPr
     <section className="p1-new" aria-labelledby="new-order-title">
       <nav className="p1-crumbs" aria-label="現在の位置">
         <ol>
-          <li><Link href={projectPath(projectCode)} translate="no">{projectCode}</Link></li>
+          <li><Link className="p4w3-target" href={projectPath(projectCode)} translate="no">{projectCode}</Link></li>
           <li aria-current="page">新しいフィルム発注</li>
         </ol>
       </nav>

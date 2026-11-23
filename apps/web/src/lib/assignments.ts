@@ -1,14 +1,14 @@
 import { callApi } from './api';
-import type { ProjectSummary } from './project-data';
 
 /**
  * P4 N1: 担当の割り当て (p4-server REPORT §2-1). The API (admin only) lists, adds and removes a
  * project's assignments; the web shows them on the project overview, only to the representative.
  * The API decides every request (role, project, duplicates) — nothing here is a rule.
  *
- * The API has no user directory, so the representative picks from the people already assigned to
- * another project, or types a 利用者ID (the person shows their own ID on their 「開ける案件がありません」
- * screen — AssignmentRequest). Both end in the same POST {userId}.
+ * p4/web3 (d): the representative picks the person by name from GET /api/assignable-users (server2 §1(1):
+ * active staff / viewer / auditor only — every one of them is accepted by the POST). The 利用者ID field is
+ * offered only when that list is cut short (`truncated`); the old detour (people of other projects + a pasted
+ * ID) is gone. Both end in the same POST {userId}.
  */
 export interface ProjectAssignment {
   id: string;
@@ -90,33 +90,40 @@ export async function loadProjectAssignments(projectId: string): Promise<Assignm
   return { ...assignmentsFrom(result.data), error: null };
 }
 
-/** Pure: people assigned somewhere else and not (yet) here, once each, active ones only. */
-export function candidatesFrom(
-  here: readonly ProjectAssignment[],
-  elsewhere: ReadonlyArray<readonly ProjectAssignment[]>
-): AssignmentCandidate[] {
-  const taken = new Set(here.map((row) => row.userId));
-  const seen = new Map<string, AssignmentCandidate>();
-  for (const rows of elsewhere) {
-    for (const row of rows) {
-      if (!row.isActive || taken.has(row.userId) || seen.has(row.userId)) continue;
-      seen.set(row.userId, { userId: row.userId, displayName: row.displayName, role: row.role });
-    }
-  }
-  return [...seen.values()].sort((a, b) => a.displayName.localeCompare(b.displayName, 'ja'));
+/** p4/web3 (d): the people the representative can choose from (GET /api/assignable-users). */
+export interface AssignableDirectory {
+  candidates: AssignmentCandidate[];
+  /** The server cut the list short: more people exist, the 利用者ID field is offered for them. */
+  truncated: boolean;
+  /** Set when the list could not be read (said on the screen; no form without it). */
+  error: string | null;
 }
 
-const CANDIDATE_PROJECT_LIMIT = 20;
+/** Pure: the directory answer minus the people already assigned here, in the server's order (name, then id). */
+export function assignableCandidatesFrom(data: unknown, here: readonly Pick<ProjectAssignment, 'userId'>[]): Omit<AssignableDirectory, 'error'> {
+  const body = record(data);
+  const roles = Array.isArray(body.assignableRoles) ? body.assignableRoles.filter((role): role is string => typeof role === 'string') : null;
+  const taken = new Set(here.map((row) => row.userId));
+  const seen = new Set<string>();
+  const candidates: AssignmentCandidate[] = [];
+  for (const entry of Array.isArray(body.users) ? body.users : []) {
+    const row = record(entry);
+    const userId = str(row.id);
+    const displayName = str(row.displayName);
+    const role = str(row.role);
+    if (!userId || !isUserId(userId) || !displayName || !role || taken.has(userId) || seen.has(userId)) continue;
+    if (roles && !roles.includes(role)) continue;
+    seen.add(userId);
+    candidates.push({ userId, displayName, role });
+  }
+  return { candidates, truncated: body.truncated === true };
+}
 
-/** The people assigned to the representative's other projects (one read each, a bounded number). */
-export async function loadAssignmentCandidates(
-  openProjectId: string,
-  here: readonly ProjectAssignment[],
-  projects: readonly Pick<ProjectSummary, 'id'>[]
-): Promise<AssignmentCandidate[]> {
-  const others = projects.filter((project) => project.id !== openProjectId).slice(0, CANDIDATE_PROJECT_LIMIT);
-  const answers = await Promise.all(others.map((project) => loadProjectAssignments(project.id)));
-  return candidatesFrom(here, answers.filter((answer) => !answer.error).map((answer) => answer.assignments));
+/** p4/web3 (d): the directory (admin only — the overview asks only for the representative; the API answers 403 to anyone else). */
+export async function loadAssignableDirectory(here: readonly Pick<ProjectAssignment, 'userId'>[]): Promise<AssignableDirectory> {
+  const result = await callApi<unknown>('/api/assignable-users');
+  if (!result.ok) return { candidates: [], truncated: false, error: result.error ?? '割り当てられる人の一覧を読み込めませんでした。' };
+  return { ...assignableCandidatesFrom(result.data, here), error: null };
 }
 
 export const ASSIGNMENT_ROLE_LABELS: Readonly<Record<string, string>> = {

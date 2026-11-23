@@ -3,7 +3,10 @@
 import { refuseIfProjectSwitched, writeProjectOf } from '../lib/project-guard';
 import { SNAPSHOT_UNREADABLE_MESSAGE } from '../lib/approval-snapshot';
 import { isPlainAmount, normalizeAmountText } from '../lib/amount';
-import { deliveryTermsStamp, isMissingRoute, TERMS_CHANGED_MESSAGE, TERMS_UNREADABLE_MESSAGE } from '../lib/approval-card';
+import { approvalEvidenceStamp, cardFromServer, SNAPSHOT_CHANGED_CODE, deliveryTermsStamp, isMissingRoute, TERMS_CHANGED_MESSAGE, TERMS_UNREADABLE_MESSAGE } from '../lib/approval-card';
+import type { ApprovalNoticeReason } from '../lib/approval-card';
+import { approvalNoticeText } from '../lib/approval-notice';
+import { forgetApprovalNotice, rememberApprovalNotice } from '../lib/approval-notice-server';
 import { callApi } from '../lib/api';
 import { isSettledRefusal, refusalState } from '../lib/action-result';
 import { AMOUNT_REQUIRED_CODE, DELIVERY_DATE_REQUIRED_CODE } from '../lib/approval-card';
@@ -31,6 +34,29 @@ function field(formData: FormData, key: string): string {
 }
 
 const TERMS = ['prepaid', 'on_delivery', 'undetermined'];
+
+/**
+ * p4/web3 (b): the approval stopped with 409 MAKER_PO_SNAPSHOT_CHANGED. The server's hash now covers the
+ * approval-evidence set too (server2 §9), and its wording 「明細・版」 cannot tell an evidence change apart,
+ * so the card is read again and its evidence set compared with the one this card was drawn with
+ * (expectedEvidenceStamp). The reason is kept for the redrawn card (lib/approval-notice); nothing is sent
+ * again — the representative approves the new card with its own hash (review H1: never a hash read at submit).
+ */
+async function snapshotChanged(poId: string, formData: FormData, refusal: ActionState): Promise<ActionState> {
+  const drawn = field(formData, 'expectedEvidenceStamp');
+  let reason: ApprovalNoticeReason = 'content_changed';
+  if (drawn.length > 0) {
+    const current = await callApi<unknown>(`/api/maker-purchase-orders/${encodeURIComponent(poId)}/approval-card`);
+    const card = current.ok ? cardFromServer(poId, current.data) : null;
+    const now = card ? approvalEvidenceStamp(card) : null;
+    if (now !== null && now !== drawn) reason = 'evidence_changed';
+  }
+  await rememberApprovalNotice(poId, reason);
+  revalidatePath('/', 'layout');
+  const text = approvalNoticeText(reason);
+  // An answered 409: the submit is over (a new key for the next one, which carries the new card's hash).
+  return { ...refusal, ok: false, message: text.ja, messageKo: text.ko, code: SNAPSHOT_CHANGED_CODE, settled: true };
+}
 
 export async function approveFromCardAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
   const switched = await refuseIfProjectSwitched(formData);
@@ -70,7 +96,7 @@ export async function approveFromCardAction(_prev: ActionState | null, formData:
       idempotencyKey: idempotencyKeyOf(formData) ? `${idempotencyKeyOf(formData)}.amounts` : undefined,
       expectedProjectId: writeProjectOf(formData)
     });
-    if (!saved.ok) return refusalState(saved);
+    if (!saved.ok) return saved.code === SNAPSHOT_CHANGED_CODE ? snapshotChanged(poId, formData, refusalState(saved)) : refusalState(saved);
     const next = saved.data?.approvalSnapshotSha256;
     if (typeof next !== 'string' || !/^[0-9a-f]{64}$/.test(next)) return { ok: false, message: SNAPSHOT_UNREADABLE_MESSAGE };
     hash = next;
@@ -87,10 +113,16 @@ export async function approveFromCardAction(_prev: ActionState | null, formData:
     idempotencyKey: idempotencyKeyOf(formData), expectedProjectId: writeProjectOf(formData)
   });
   if (!result.ok) {
+    if (result.code === SNAPSHOT_CHANGED_CODE) return snapshotChanged(poId, formData, refusalState(result));
     // P4 H4①: the API says what is still missing (AMOUNT_REQUIRED / DELIVERY_DATE_REQUIRED): the card is drawn again with that input.
-    if (result.code === AMOUNT_REQUIRED_CODE || result.code === DELIVERY_DATE_REQUIRED_CODE) revalidatePath('/', 'layout');
+    // p4/web3 (web2b review L-1): the redraw mounts the step panel again — the reason rides on the notice.
+    if (result.code === AMOUNT_REQUIRED_CODE || result.code === DELIVERY_DATE_REQUIRED_CODE) {
+      await rememberApprovalNotice(poId, result.code === AMOUNT_REQUIRED_CODE ? 'amount_required' : 'delivery_date_required');
+      revalidatePath('/', 'layout');
+    }
     return refusalState(result);
   }
+  await forgetApprovalNotice();
   revalidatePath('/', 'layout');
   return { ok: true, message: '代表承認を記録しました。担当者がメーカーへ送信します。', changedId: poId };
 }
