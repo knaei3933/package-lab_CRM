@@ -303,6 +303,16 @@ describe('R2 left: 「発注書の作成後に明細または版が変わりま�
     expect(css()).toMatch(/@media \(max-width:\s*600px\)[^{]*\{[^@]*\.p1-card\s*>\s*\.p6-card-notice/);
   });
 
+  it('the phone spacing that keeps the P06 path under 1688 is pinned (the geometry itself is measured live: evidence/20-p06-geometry.txt)', () => {
+    const phone = /@media \(max-width:\s*600px\)\s*\{([\s\S]*)\}\s*$/.exec(css())![1]!;
+    expect(phone).toMatch(/\.p1-card\s*\{\s*gap:\s*var\(--space-2\);?\s*\}/);
+    expect(phone).toMatch(/\.p1-card\s*>\s*\.p5-card-needs\s*\{\s*margin-block:\s*0;?\s*\}/);
+    expect(phone).toMatch(/\.p1-step\s*\{\s*gap:\s*var\(--space-2\);?\s*\}/);
+    expect(phone).toMatch(/\.p1-announce\s*\{\s*padding-block:\s*var\(--space-2\);?\s*\}/);
+    // spacing only: nothing is hidden on the card
+    expect(phone).not.toMatch(/display:\s*none/);
+  });
+
   it('on a wide screen (no order rules) the notice keeps its markup place before the buttons, and is still read before them', () => {
     const html = cardHtml(card({ warnings: [DRIFT] }));
     expect(html.indexOf('data-card-notice="MAKER_PO_SNAPSHOT_DRIFTED"')).toBeLessThan(html.indexOf('代表承認する'));
@@ -496,7 +506,15 @@ describe('X6 the status line after a submit is the action that was submitted', (
     expect(pastTenseOf('MPO-2026-0001 を代表承認する')).toBe('MPO-2026-0001 を代表承認しました');
     expect(pastTenseOf('FSO-1 のメーカー発注書（下書き）を作る')).toBe('FSO-1 のメーカー発注書（下書き）を作りました');
     expect(pastTenseOf('差し戻す')).toBe('差し戻しました');
-    expect(pastTenseOf('取り消し')).toBe('「取り消し」を送信しました');
+    expect(pastTenseOf('別の書類でセブン化学の承認を記録し直す')).toBe('別の書類でセブン化学の承認を記録し直しました');
+    expect(pastTenseOf('受入記録（仮）を残す')).toBe('受入記録（仮）を残しました');
+    // a closing 「（…）」 of the label is not part of the sentence
+    expect(pastTenseOf('受領証跡を登録する（確認は代表）')).toBe('受領証跡を登録しました');
+    expect(pastTenseOf('メーカーの受注を確定する（最終受入）')).toBe('メーカーの受注を確定しました');
+    expect(pastTenseOf('校正を登録して校了の確認へ')).toBe('「校正を登録して校了の確認へ」を実行しました');
+    expect(pastTenseOf('取り消し')).toBe('「取り消し」を実行しました');
+    // the whole label is a parenthesis: nothing to strip, quoted
+    expect(pastTenseOf('（確認）')).toBe('「（確認）」を実行しました');
   });
 
   it('announcementText: the submit\'s action first; the newest record only when the change was not this screen\'s submit', async () => {

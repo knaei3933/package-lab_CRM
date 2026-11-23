@@ -26,4 +26,15 @@
    * thing the representative reads is the inputs and the button), in the markup order it keeps on a wide screen.
    */
   .p1-card > .p6-card-notice { order: 44; }
+
+  /*
+   * R2 (P06 path) margin: right after 「希望納期を記録する」 the status line of the step (✓ 希望納期を記録しました) is on screen above the
+   * card, so the approve button sat at 1716 (A/B on the same data: base b36e7bb 1799, p5/rc's 1688 limit = 2 screens of 844). Spacing only —
+   * no text, row or button is removed: the card's grid gap 12 → 8 (the needs box already carried its own 12px margin on top of the
+   * gap), the status line's padding 12 → 8 and its gap to the panel 12 → 8. The standard path (no status line) gains the same.
+   */
+  .p1-card { gap: var(--space-2); }
+  .p1-card > .p5-card-needs { margin-block: 0; }
+  .p1-step { gap: var(--space-2); }
+  .p1-announce { padding-block: var(--space-2); }
 }

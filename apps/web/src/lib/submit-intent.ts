@@ -34,15 +34,17 @@ export function takeSubmitIntent(now: number = Date.now()): string | null {
 }
 
 /**
- * 「手動確認を記録する」 → 「手動確認を記録しました」. Only the endings the product's buttons really use are turned into
- * the past tense; any other label is quoted as it is (「…」を送信しました) — never guessed into a wrong verb.
+ * 「手動確認を記録する」 → 「手動確認を記録しました」. Only the endings the product's buttons really use are turned into the past
+ * tense (〜する, 〜作る, 〜す: 差し戻す・残す・記録し直す), and a closing 「（…）」 of the label (「（確認は代表）」) is left out; any
+ * other label is quoted as it is (「…」を実行しました) — never guessed into a wrong verb.
  */
 export function pastTenseOf(label: string): string {
   const text = label.trim();
-  if (text.endsWith('する')) return `${text.slice(0, -2)}しました`;
-  if (text.endsWith('作る')) return `${text.slice(0, -1)}りました`;
-  if (text.endsWith('差し戻す')) return `${text.slice(0, -1)}しました`;
-  return `「${text}」を送信しました`;
+  const core = text.replace(/[（(][^）)]*[）)]$/, '').trim() || text;
+  if (core.endsWith('する')) return `${core.slice(0, -2)}しました`;
+  if (core.endsWith('作る')) return `${core.slice(0, -1)}りました`;
+  if (core.endsWith('す')) return `${core.slice(0, -1)}しました`;
+  return `「${text}」を実行しました`;
 }
 
 /**
