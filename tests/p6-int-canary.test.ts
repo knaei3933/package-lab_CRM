@@ -161,7 +161,8 @@ const canary = (field: string) => `CANARY-${field} 見積473,921円（¥473921�
 const CANARY_FIELDS = [
   'pastTransactionNote', 'quoteComparisonNote', 'checklistNote', 'tamperHints', 'preOrderNote', 'paymentTermsReason', 'evidenceNote', 'documentNote',
   'verificationNote', 'revisionNote', 'approvalCheckReason', 'returnReason', 'sendCheckReason', 'deliveryNote', 'receiptDocumentNote',
-  'confirmationNote', 'receiptClosureNote', 'holdReason', 'holdReleaseReason', 'cancellationReviewReason', 'evidenceFreeNote', 'fillingDeliveryNote'
+  'confirmationNote', 'receiptClosureNote', 'holdReason', 'holdReleaseReason', 'cancellationReviewReason', 'evidenceFreeNote', 'fillingDeliveryNote',
+  'openHoldReason'
 ] as const;
 const CANARY_RE = /CANARY-[A-Za-z]+|473,?921|丸の内1-2-3|canary-p6\.example/;
 
@@ -250,12 +251,20 @@ async function canaryWorld() {
   await db.update(filmSupplyOrders).set({ status: 'FILM_DELIVERED' }).where(eq(filmSupplyOrders.id, closed.orderId));
   await must('staff', 'POST', `/api/film-supply-orders/${closed.orderId}/receipt-assumption`, { note: canary('evidenceFreeNote'), acknowledgeNoEvidence: true });
 
+  // p6/rc (p6-int-review L-R2-5, mutant Q04): orders whose free text is still in the row at sweep time — one left
+  // 保留中 with its reason (film_supply_orders.hold_reason is set, not cleared by a release), one left in 取消確認
+  // after that hold, so a new route or key that echoes the current column (not only the audit trail) is swept too.
+  const openHold = await createOrder();
+  await must('staff', 'POST', `/api/film-supply-orders/${openHold.orderId}/transitions`, { to: 'ON_HOLD', holdReason: canary('openHoldReason') });
+  const inReview = await createOrder();
+  await must('staff', 'POST', `/api/film-supply-orders/${inReview.orderId}/transitions`, { to: 'CANCELLATION_REVIEW' });
+
   // A filling order delivery note.
   const filling = await send('staff', 'POST', `/api/projects/${ids.projectA}/filling-orders`, { code: `FIL-P6C-${tag()}`, lines: [{ lineNumber: 1, description: '合成充填P6C', orderedQuantity: 10, unit: 'pieces' }] });
   if (filling.status === 201) {
     await must('staff', 'POST', `/api/filling-orders/${filling.body.id}/deliveries`, { fillingOrderLineId: filling.body.lines[0].id, deliveredQuantity: 10, unit: 'pieces', note: canary('fillingDeliveryNote') });
   }
-  return { orders: [order, held, closed], paperIds: [returned.id as string, paper.id as string] };
+  return { orders: [order, held, closed, openHold, inReview], paperIds: [returned.id as string, paper.id as string] };
 }
 
 /** Every GET route of the API, for every id of the canary project (the routes come from the sources). */
@@ -302,7 +311,12 @@ describe('H-1: no free text (note / memo / reason) reaches a role other than the
       for (const match of answer.text.matchAll(/CANARY-([A-Za-z]+)/g)) adminSeen.add(match[1]!);
     }
     console.log('admin reads canaries of:', [...adminSeen].sort().join(', '));
-    for (const field of ['receiptClosureNote', 'evidenceFreeNote', 'deliveryNote', 'confirmationNote', 'holdReason']) expect([...adminSeen], field).toContain(field);
+    for (const field of ['receiptClosureNote', 'evidenceFreeNote', 'deliveryNote', 'confirmationNote', 'holdReason', 'openHoldReason']) expect([...adminSeen], field).toContain(field);
+    // The open hold is still open when swept (its reason is in the row, not only in the audit trail).
+    const { rows: openRows } = await pool.query("select status, hold_reason from film_supply_orders where hold_reason like 'CANARY-openHoldReason%'");
+    expect(openRows.map((row) => row.status)).toEqual(['ON_HOLD']);
+    const { rows: reviewRows } = await pool.query("select count(*)::int as n from film_supply_orders where project_id = $1 and status = 'CANCELLATION_REVIEW'", [ids.projectA]);
+    expect(reviewRows[0].n).toBe(1);
     const leaks: string[] = [];
     for (const role of ['staff', 'viewer', 'auditor'] as const) {
       for (const url of urls) {
@@ -358,3 +372,56 @@ async function everyGetUrlTemplates() {
     '/api/seven-purchase-orders/:poId/order-facts', '/api/document-versions/:versionId/evidence-message-id', '/api/document-versions/:versionId/download'
   ];
 }
+
+// ================================================================ p6/rc (d): operator business text, pinned
+/**
+ * p6/rc (d), p6-int-review r2: two free-text fields are operators' business text, readable beyond the representative
+ * by decision — the ロット表示 (lotMarking, written by staff on a design version) and the label of a maker recipient
+ * address (written by the representative). Nothing stops an amount or an address being typed into either, so they are
+ * in the canary inventory with their own marker (BIZTEXT, other amount/address than CANARY_RE): the exact set of
+ * (role, route, field) that reads them is pinned, and the viewer reads none. A new surface fails this test until it is
+ * decided and added here.
+ */
+const bizText = (field: string) => `BIZTEXT-${field} 単価618,204円 大阪府大阪市北区梅田9-8-7`;
+const BIZ_RE = /BIZTEXT-([A-Za-z]+)/g;
+const BIZ_LEAK_RE = /BIZTEXT-|618,?204|梅田9-8-7/;
+
+describe('p6/rc (d): lotMarking and the maker recipient label reach only the pinned (role, route) pairs', () => {
+  it('admin reads both; staff and auditor only where pinned; the viewer reads neither on any GET', async () => {
+    const order = await createOrder();
+    const artwork = `p6rc artwork ${tag()}\n`;
+    const proof = await must('staff', 'POST', `/api/projects/${ids.projectA}/documents`, {
+      documentType: 'proof', issuerEntity: 'kanei', filename: `p6rc-proof-${tag()}.txt`, contentType: 'text/plain', contentBase64: b64(artwork),
+      sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, designKey: 'label-front'
+    });
+    await must('staff', 'POST', `/api/film-supply-orders/${order.orderId}/artwork-revisions`, { designKey: 'label-front', fileDocumentVersionId: proof.version.id, lotMarking: bizText('lotMarking') });
+    await must('admin', 'POST', `/api/maker-accounts/${ids.maker}/recipient-addresses`, { email: `biz-${tag()}@maker-p6rc.example`, label: bizText('recipientLabel') });
+
+    const urls = await everyGetUrl();
+    const seen = new Set<string>();
+    const leakedOtherwise: string[] = [];
+    for (const role of ['admin', 'staff', 'viewer', 'auditor'] as const) {
+      for (const url of urls) {
+        const answer = await send(role, 'GET', url);
+        const template = url.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, ':id');
+        const fields = [...answer.text.matchAll(BIZ_RE)].map((match) => match[1]!);
+        for (const field of fields) seen.add(`${role} ${template} ${field}`);
+        // The amount and the address never travel without their marker (a field is either whole or absent).
+        if (fields.length === 0 && BIZ_LEAK_RE.test(answer.text)) leakedOtherwise.push(`${role} ${template}`);
+      }
+    }
+    expect(leakedOtherwise).toEqual([]);
+    const byRole = (role: string) => [...seen].filter((entry) => entry.startsWith(`${role} `)).sort();
+    console.log('business text readers:', [...seen].sort().join(' | '));
+    expect(byRole('admin').some((entry) => entry.endsWith(' lotMarking')), 'admin control lotMarking').toBe(true);
+    expect(byRole('admin').some((entry) => entry.endsWith(' recipientLabel')), 'admin control recipientLabel').toBe(true);
+    expect(byRole('viewer')).toEqual([]);
+    expect([...byRole('staff'), ...byRole('auditor')]).toEqual(PINNED_BUSINESS_TEXT_READERS);
+  });
+});
+/** Decided (conductor, p6/rc brief (d)): staff work from both; the auditor reads the ロット表示 on the approval gate. */
+const PINNED_BUSINESS_TEXT_READERS: string[] = [
+  'staff /api/film-supply-orders/:id/approval-gate lotMarking',
+  'staff /api/projects/:id/maker-recipient-addresses recipientLabel',
+  'auditor /api/film-supply-orders/:id/approval-gate lotMarking'
+];
