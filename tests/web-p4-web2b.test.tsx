@@ -451,7 +451,9 @@ const view = (rows: Array<Record<string, unknown>> = [], over: Record<string, un
   assignments: rows.map((row) => ({ id: `as-${row.userId}`, role: 'staff', isActive: true, assignedAt: '2026-11-20T01:00:00Z', ...row })),
   assignableRoles: ['staff', 'viewer', 'auditor'], error: null, ...over
 });
-const renderPanel = (v: unknown, candidates: unknown[] = []) => inContext(<ProjectAssignmentsPanel view={v as never} candidates={candidates as never} />);
+// p4/web3 (d): the candidates are the server's directory (GET /api/assignable-users), not other projects' people.
+const renderPanel = (v: unknown, candidates: unknown[] = [], directory: Record<string, unknown> = {}) =>
+  inContext(<ProjectAssignmentsPanel view={v as never} directory={{ candidates, truncated: false, error: null, ...directory } as never} />);
 
 describe('N1 担当者 panel (representative only)', () => {
   it('lists the people with their role and a confirmed 外す form each (userId in a hidden field)', () => {
@@ -464,21 +466,24 @@ describe('N1 担当者 panel (representative only)', () => {
     expect(html.match(/<button type="submit"[^>]*>外す/g)).toHaveLength(2);
   });
 
-  it('the add form offers the people assigned elsewhere and a typed 利用者ID — and says the representative needs no assignment', () => {
+  it('the add form offers the directory\'s people by name — no typed 利用者ID while the list is complete — and says the representative needs no assignment', () => {
+    // p4/web3 (d): the pasted-ID detour is gone; the ID field returns only when the server cut the list short.
     const html = renderPanel(view([]), [{ userId: USER_A, displayName: '佐藤', role: 'staff' }]);
     expect(html).toContain('name="candidateUserId"');
     expect(html).toContain(`value="${USER_A}"`);
     expect(html).toContain('佐藤（担当者）');
-    expect(html).toContain('name="typedUserId"');
+    expect(html).not.toContain('name="typedUserId"');
     expect(html).toContain('担当者に割り当てる');
     expect(html).toContain('代表者は、すべての案件を開けるため');
     expect(html).toContain('担当者はまだいません');
   });
 
-  it('without candidates only the typed field is offered; a failed read says so instead of 「いません」', () => {
+  it('without candidates there is no form (it says why); a truncated list offers the ID field; a failed read says so instead of 「いません」', () => {
     const html = renderPanel(view([]), []);
     expect(html).not.toContain('name="candidateUserId"');
-    expect(html).toContain('name="typedUserId"');
+    expect(html).not.toContain('name="typedUserId"');
+    expect(html).toContain('data-directory="empty"');
+    expect(renderPanel(view([]), [], { truncated: true })).toContain('name="typedUserId"');
     const failed = renderPanel(view([], { error: '読み込めません' }));
     expect(failed).toContain('role="alert"');
     expect(failed).toContain('担当者の一覧を読み込めませんでした');
@@ -491,22 +496,19 @@ describe('N1 担当者 panel (representative only)', () => {
 
   it('the Korean title and note follow showKorean', () => {
     const html = renderToStaticMarkup(
-      <RenderedContextProvider value={{ projectId: 'proj-1', showKorean: true }}><ProjectAssignmentsPanel view={view([]) as never} candidates={[]} /></RenderedContextProvider>
+      <RenderedContextProvider value={{ projectId: 'proj-1', showKorean: true }}><ProjectAssignmentsPanel view={view([]) as never} directory={{ candidates: [], truncated: false, error: null }} /></RenderedContextProvider>
     );
     expect(html).toContain('담당자');
   });
 
-  it('assignmentsFrom / candidatesFrom / isUserId / chosenUserId (pure)', () => {
+  it('assignmentsFrom / assignableCandidatesFrom / isUserId / chosenUserId (pure)', () => {
     const rows = assignmentsLib.assignmentsFrom({ assignments: [{ id: 'a', userId: USER_A, displayName: '佐藤', role: 'staff', isActive: true, assignedAt: 'x' }, { userId: '', displayName: 'x' }, null], assignableRoles: ['staff', 7] });
     expect(rows.assignments).toHaveLength(1);
     expect(rows.assignableRoles).toEqual(['staff']);
-    const here = [{ id: 'h', userId: USER_A, displayName: '佐藤', role: 'staff', isActive: true, assignedAt: null }];
-    const elsewhere = [[
-      { id: '1', userId: USER_A, displayName: '佐藤', role: 'staff', isActive: true, assignedAt: null },
-      { id: '2', userId: USER_B, displayName: '鈴木', role: 'viewer', isActive: true, assignedAt: null },
-      { id: '3', userId: 'c'.repeat(8) + '-0000-7000-8000-000000000000', displayName: '無効', role: 'staff', isActive: false, assignedAt: null }
-    ], [{ id: '4', userId: USER_B, displayName: '鈴木', role: 'viewer', isActive: true, assignedAt: null }]];
-    expect(assignmentsLib.candidatesFrom(here, elsewhere)).toEqual([{ userId: USER_B, displayName: '鈴木', role: 'viewer' }]);
+    // p4/web3 (d): the directory minus the people already here (the server already left out inactive / deleted / admin users).
+    const here = [{ userId: USER_A }];
+    const directory = { users: [{ id: USER_A, displayName: '佐藤', role: 'staff' }, { id: USER_B, displayName: '鈴木', role: 'viewer' }], assignableRoles: ['staff', 'viewer', 'auditor'], truncated: false };
+    expect(assignmentsLib.assignableCandidatesFrom(directory, here)).toEqual({ candidates: [{ userId: USER_B, displayName: '鈴木', role: 'viewer' }], truncated: false });
     expect(assignmentsLib.isUserId(USER_A)).toBe(true);
     expect(assignmentsLib.isUserId('not-an-id')).toBe(false);
     expect(assignmentsLib.chosenUserId(form({ candidateUserId: USER_B, typedUserId: USER_A }))).toBe(USER_B);
@@ -648,7 +650,7 @@ describe('N1 the project overview draws the panel for the representative only', 
     state.projects = [{ id: 'proj-1', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }, { id: 'proj-2', code: 'PRJ-2', name: '案件B', status: 'ACTIVE' }];
     callApi.mockImplementation(async (url: string) => {
       if (url === '/api/projects/proj-1/assignments') return ok({ assignments: [{ id: 'a1', userId: USER_A, displayName: '佐藤', role: 'staff', isActive: true, assignedAt: null }], assignableRoles: ['staff'] });
-      if (url === '/api/projects/proj-2/assignments') return ok({ assignments: [{ id: 'a2', userId: USER_B, displayName: '鈴木', role: 'staff', isActive: true, assignedAt: null }], assignableRoles: ['staff'] });
+      if (url === '/api/assignable-users') return ok({ users: [{ id: USER_A, displayName: '佐藤', role: 'staff' }, { id: USER_B, displayName: '鈴木', role: 'staff' }], assignableRoles: ['staff', 'viewer', 'auditor'], limit: 200, truncated: false });
       if (url === '/api/representative-queue') return ok({ items: [], blocked: [] });
       return ok({});
     });
@@ -658,7 +660,7 @@ describe('N1 the project overview draws the panel for the representative only', 
     return renderToStaticMarkup(<Provider value={{ projectId: 'proj-1', showKorean: false }}>{(await resolve(tree)) as ReactElement}</Provider>);
   }
 
-  it('the representative sees 担当者 with the people of this project and, as candidates, the people of the other project', async () => {
+  it('the representative sees 担当者 with the people of this project and, as candidates, the directory minus them (p4/web3 d)', async () => {
     const html = await overview('admin');
     expect(html).toContain('data-section="assignments"');
     expect(html).toContain('佐藤');
@@ -749,7 +751,9 @@ describe('N4 the sender check is shown (warn only — the confirmation itself is
     const evidence = { filename: 'customer-ok.eml', issuerEntity: 'customer_generated', expectedIssuerEntity: 'customer_generated', issuerMatchesOrganization: true, evidenceSource: 'email', identifierStatus: 'verified' };
     const html = renderCard(card({ designs: [{ designKey: '表面A', revisionNo: 2, customer: { state: 'approved', eventTime: null, evidence }, seven: org('approved') }] }));
     expect(html).toContain('発行元（登録時の申告）');
-    expect(html).toContain('申告どおり');
+    // p4/web3 (a, web2b review M-1): without the server's line (older API) the card never says 「申告どおり」.
+    expect(html).not.toContain('申告どおり');
+    expect(html).toContain('申告は承認組織と一致（差出人は照合していません）');
     expect(html).toContain('customer-ok.eml');
     expect(html).not.toMatch(/ ・ 発行元 /);
   });
@@ -922,7 +926,7 @@ describe('B1 final: a just-created order with 支払条件「未定」 is listed
     expect(decided).toContain('止まっている発注はありません');
   });
 
-  it('the home 承認箱 lists the server\'s blocked row (kind payment_terms_undetermined) with a 直す link to step 7', async () => {
+  it('the home 承認箱 lists the server\'s blocked row (kind payment_terms_undetermined) with a link to the order\'s 支払条件', async () => {
     state.projects = [{ id: 'proj-1', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }];
     callApi.mockResolvedValue(ok({
       items: [], blocked: [{ kind: 'payment_terms_undetermined', project: { id: 'proj-1', code: 'PRJ-1' }, order: { id: 'ord-1', code: 'PRJ-1-FILM-001', requestedDeliveryDate: '2026-12-15' }, reason: { message: '支払条件が「未定」です。' } }]
@@ -931,7 +935,8 @@ describe('B1 final: a just-created order with 支払条件「未定」 is listed
     const html = renderToStaticMarkup((await resolve(await HomeScreen())) as ReactElement);
     expect(html).toContain('止まっている（代表が直せるもの）');
     expect(html).toContain('支払条件が「未定」です。');
-    expect(html).toMatch(/href="\/p\/PRJ-1\/o\/PRJ-1-FILM-001\?step=7">直す/);
+    // p4/web3 (c): it opens the order's 支払条件 (#payment-terms), not step 7.
+    expect(html).toMatch(/href="\/p\/PRJ-1\/o\/PRJ-1-FILM-001#payment-terms">支払条件を決める/);
     // M18: the blocked row carries the 希望納期 too
     expect(html).toMatch(/希望納期 12\/15（/);
   });

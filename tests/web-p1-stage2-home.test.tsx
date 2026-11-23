@@ -102,7 +102,8 @@ describe('HomeScreen: representative (承認箱)', () => {
     const html = await home();
     expect(html).toContain('止まっている（代表が直せるもの）');
     expect(html).toContain('支払条件が未定です');
-    expect(html).toMatch(/href="\/p\/PRS-A\/o\/FSO-9\?step=7">直す/);
+    // p4/web3 (c): it opens the order's 支払条件 (#payment-terms) — a DRAFT has not reached step 7.
+    expect(html).toMatch(/href="\/p\/PRS-A\/o\/FSO-9#payment-terms">支払条件を決める/);
   });
 
   it('has no blocked section when nothing is blocked', async () => {

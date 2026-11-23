@@ -118,9 +118,17 @@ describe('approveFromCardAction', () => {
   });
 
   it('returns the refusal (and settles a 4xx) when the API refuses, e.g. a changed snapshot', async () => {
+    // p4/web3 (b): a changed snapshot is said in the web's words and the card is drawn again (it used to keep the old card).
     callApi.mockResolvedValue(fail(409, 'MAKER_PO_SNAPSHOT_CHANGED', '発注書が変わりました'));
     const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA }));
-    expect(result).toMatchObject({ ok: false, message: '発注書が変わりました', code: 'MAKER_PO_SNAPSHOT_CHANGED', settled: true });
+    expect(result).toMatchObject({ ok: false, code: 'MAKER_PO_SNAPSHOT_CHANGED', settled: true });
+    expect(result.message).toContain('発注書の内容（明細・版）が変わりました');
+    expect(revalidatePath).toHaveBeenCalledWith('/', 'layout');
+  });
+  it('any other refusal is still the API\'s answer, with the old card kept', async () => {
+    callApi.mockResolvedValue(fail(422, 'PAYMENT_GATE_UNSATISFIED', '支払条件が未定です'));
+    const result = await approveFromCardAction(null, form({ poId: 'mpo-1', expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA }));
+    expect(result).toMatchObject({ ok: false, message: '支払条件が未定です', code: 'PAYMENT_GATE_UNSATISFIED', settled: true });
     expect(revalidatePath).not.toHaveBeenCalled();
   });
 

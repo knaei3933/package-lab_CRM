@@ -167,7 +167,9 @@ describe('ApprovalCard: 押印欄', () => {
   it('shows the issuer mismatch text when the evidence issuer is not the organization', () => {
     const evidence = { filename: 'a.pdf', issuerEntity: 'customer_generated', expectedIssuerEntity: 'seven', issuerMatchesOrganization: false, evidenceSource: 'signed_document', identifierStatus: null };
     const html = render(card({ designs: [{ designKey: 'A', revisionNo: 1, customer: org('missing'), seven: org('pending_manual_verification', evidence) }] }));
-    expect(html).toContain('承認組織と不一致');
+    // p4/web3 (a): the same words as the server's declarationLine `issuer_differs`, as a warning.
+    expect(html).toContain('申告された発行元が承認組織と異なります');
+    expect(html).toContain('data-declaration="issuer_differs"');
   });
 
   it('shows a check mark, and no mismatch, when the issuer matches', () => {

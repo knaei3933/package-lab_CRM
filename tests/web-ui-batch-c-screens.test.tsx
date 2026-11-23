@@ -627,7 +627,9 @@ describe('2-⑤ tables: caption, header scope, scroll region (5 screens × 3 rol
       expect(html).not.toMatch(/border-radius:999px/);
       // P4 M12: the list tables of orders / documents / deliveries turn into cards at 390px — every
       // cell of such a table names its column (data-label), so the card reads without the header.
-      if (page === 'orders' || page === 'documents' || page === 'deliveries') {
+      // web2a review L-3 (p4/web3): the approval and maker-paper tables of those screens too (they were 451–854px wide).
+      const cardPage = page === 'orders' || page === 'documents' || page === 'deliveries' || page === 'maker-po' || (page === 'approvals' && role !== 'viewer');
+      if (cardPage) {
         const cardTables = [...html.matchAll(/<div class="table-scroll"[^>]*data-cards="true"><table[^>]*class="ui-table--cards"[\s\S]*?<\/table>/g)].map(([whole]) => whole);
         expect(cardTables.length, 'a card table').toBeGreaterThan(0);
         for (const table of cardTables) {

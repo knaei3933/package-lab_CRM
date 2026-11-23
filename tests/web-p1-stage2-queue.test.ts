@@ -35,7 +35,8 @@ describe('QUEUE_KIND_STEP / REPRESENTATIVE_WORK', () => {
   it('maps each kind to its order step', () => {
     expect(QUEUE_KIND_STEP).toMatchObject({
       approval_evidence_verification: 6, maker_po_creation: 7, maker_po_ceo_approval: 8,
-      send_verification: 9, maker_po_final_acceptance: 10, payment_terms_undetermined: 7,
+      // p4/web3 (c): a 未定 row opens the order's 支払条件 (deepLink.step payment_terms), not step 7.
+      send_verification: 9, maker_po_final_acceptance: 10, payment_terms_undetermined: null,
       hold_release: null, cancellation_review: null, cancellation_acknowledgement: null
     });
   });
@@ -92,7 +93,7 @@ describe('taskFromServerItem', () => {
 
   it('a blocked row carries blockedReason from reason.message and a default work text', () => {
     const task = taskFromServerItem({ kind: 'payment_terms_undetermined', project: { id: 'p1', code: 'P', name: 'n' }, order: { id: 'o1', code: 'O' }, reason: { code: 'PAYMENT_TERMS_UNDETERMINED', message: '支払条件が未定です' } }, true)!;
-    expect(task).toMatchObject({ blockedReason: '支払条件が未定です', work: '止まっている', step: 7 });
+    expect(task).toMatchObject({ blockedReason: '支払条件が未定です', work: '止まっている', step: null });
   });
 
   it('a non-blocked row never carries a blockedReason even if reason is present', () => {

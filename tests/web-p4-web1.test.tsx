@@ -175,7 +175,11 @@ describe('B1② 「支払条件を変更する」 on the order screen', () => {
     expect(render({ role: 'auditor' })).toBe('');
     expect(render({ role: null })).toBe('');
     expect(render({ role: 'admin', cancelled: true })).toBe('');
-    expect(render({ role: 'admin', order: { paymentTermsEditable: false } })).toBe('');
+    // p4/web3 (c): a 未定 the API says cannot be changed now has no form — it says why (the home row opens here).
+    const locked = render({ role: 'admin', order: { paymentTermsEditable: false } });
+    expect(locked).not.toContain('name="paymentTerms"');
+    expect(locked).toContain('data-lock="payment-terms"');
+    expect(render({ role: 'admin', order: { paymentTermsEditable: false, paymentTerms: 'prepaid', paymentTermsUndetermined: false } })).toBe('');
   });
 
   it('OrderTermsSection draws it, and hides it once an approved paper locks the order', () => {
