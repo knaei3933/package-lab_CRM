@@ -1,7 +1,7 @@
 import { DataTable } from './DataTable';
 import { isRouteCode, orderPath, projectPath } from '../lib/project-route';
 import { QueueRowExtras } from './QueueRowExtras';
-import { queueRowTitle } from '../lib/representative-queue';
+import { queueRowKey, queueRowTitle } from '../lib/representative-queue';
 import type { RepresentativeQueue } from '../lib/representative-queue';
 import { noteStyle, tdStyle, thStyle } from '../lib/ui';
 
@@ -42,7 +42,7 @@ export function RepresentativeQueuePanel({
           </thead>
           <tbody>
             {queue.tasks.map((task) => (
-              <tr key={`${task.kind ?? task.status}-${task.projectId}-${task.orderId}-${task.organization ?? ''}-${task.designKey ?? ''}`}>
+              <tr key={queueRowKey(task)}>
                 <td style={tdStyle}>{task.projectLabel}</td>
                 <td style={tdStyle} translate="no">{task.orderCode}</td>
                 <td style={tdStyle}>

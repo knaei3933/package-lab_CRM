@@ -56,27 +56,34 @@ function sources(dir: string): string[] {
 /** The source with its comments removed (a word in a comment is not on a screen). */
 const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '').replace(/\{\/\*[\s\S]*?\*\/\}/g, '');
 
+/**
+ * A module this change adds. On the base commit it does not exist: the import is then empty, and each test
+ * that needs it fails on its own (instead of the whole file failing to load) — the red/green evidence per item.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const optional = (load: () => Promise<any>): Promise<any> => load().catch(() => ({}));
+
 const { RenderedContextProvider } = await import('../apps/web/src/components/RenderedContext.js');
 const { ApprovalCard } = await import('../apps/web/src/components/ApprovalCard.js');
 const { NewOrderForm } = await import('../apps/web/src/components/NewOrderForm.js');
-const { ProjectAssignmentsPanel } = await import('../apps/web/src/components/ProjectAssignmentsPanel.js');
-const { AssignmentRequest, assignmentRequestText } = await import('../apps/web/src/components/AssignmentRequest.js');
+const { ProjectAssignmentsPanel } = await optional(() => import('../apps/web/src/components/ProjectAssignmentsPanel.js'));
+const { AssignmentRequest, assignmentRequestText } = await optional(() => import('../apps/web/src/components/AssignmentRequest.js'));
 const { ProjectChooser } = await import('../apps/web/src/components/ProjectChooser.js');
 const { ProjectNotFound } = await import('../apps/web/src/components/ProjectNotFound.js');
-const { QueueRowExtras } = await import('../apps/web/src/components/QueueRowExtras.js');
+const { QueueRowExtras } = await optional(() => import('../apps/web/src/components/QueueRowExtras.js'));
 const { RepresentativeQueuePanel } = await import('../apps/web/src/components/RepresentativeQueue.js');
 const { ActionForm } = await import('../apps/web/src/components/ActionForm.js');
 const { SelectField } = await import('../apps/web/src/components/fields.js');
 const approvalActions = await import('../apps/web/src/app/approval-actions.js');
-const assignmentActions = await import('../apps/web/src/app/assignment-actions.js');
+const assignmentActions = await optional(() => import('../apps/web/src/app/assignment-actions.js'));
 const stepActions = await import('../apps/web/src/app/step-actions.js');
 const { RENDERED_PROJECT_FIELD, IDEMPOTENCY_FIELD } = await import('../apps/web/src/lib/project-context.js');
 const approvalCardLib = await import('../apps/web/src/lib/approval-card.js');
-const assignmentsLib = await import('../apps/web/src/lib/assignments.js');
-const bindingLib = await import('../apps/web/src/lib/binding-conflict.js');
+const assignmentsLib = await optional(() => import('../apps/web/src/lib/assignments.js'));
+const bindingLib = await optional(() => import('../apps/web/src/lib/binding-conflict.js'));
 const duplicateLib = await import('../apps/web/src/lib/duplicate-check.js');
 const queueLib = await import('../apps/web/src/lib/representative-queue.js');
-const senderLib = await import('../apps/web/src/lib/sender-check.js');
+const senderLib = await optional(() => import('../apps/web/src/lib/sender-check.js'));
 const guardLib = await import('../apps/web/src/lib/unsaved-guard.js');
 const { refusalState } = await import('../apps/web/src/lib/action-result.js');
 
@@ -263,7 +270,7 @@ describe('H4① the approval card asks for the missing 金額 / 希望納期 (no
     expect(result.ok).toBe(true);
     expect(callApi).toHaveBeenCalledTimes(1);
     expect(callApi.mock.calls[0]![0]).toBe('/api/film-supply-orders/ord-1/delivery-dates');
-    expect(callApi.mock.calls[0]![1]).toMatchObject({ method: 'PATCH', body: { requestedDeliveryDate: '2026-12-01' }, idempotencyKey: 'form-key-0001', expectedProjectId: 'proj-1' });
+    expect(callApi.mock.calls[0]![1]).toEqual({ method: 'PATCH', body: { requestedDeliveryDate: '2026-12-01' }, idempotencyKey: 'form-key-0001', expectedProjectId: 'proj-1' });
     expect(revalidatePath).toHaveBeenCalledWith('/', 'layout');
   });
 
@@ -832,6 +839,13 @@ describe('N11 / M13 two rows of one order are told apart (組織・デザイン)
     errors.mockRestore();
   });
 
+  it('queueRowKey: two rows of one order (organization / design) get different keys; the blocked prefix keeps them apart from items', () => {
+    const [a, b] = [customerRow, sevenRow].map((row) => queueLib.taskFromServerItem(row)!);
+    expect(queueLib.queueRowKey(a!)).not.toBe(queueLib.queueRowKey(b!));
+    expect(queueLib.queueRowKey(a!, 'b-')).toBe(`b-${queueLib.queueRowKey(a!)}`);
+    expect(queueLib.queueRowKey({ ...a!, designKey: '裏面B' })).not.toBe(queueLib.queueRowKey(a!));
+  });
+
   it('the cross-project panel keeps both rows too (it used to key on order alone)', () => {
     const tasks = [customerRow, sevenRow].map((row) => queueLib.taskFromServerItem(row)!);
     const html = inContext(<RepresentativeQueuePanel queue={{ tasks, unreadProjects: [], skippedProjects: 0 }} currentProjectId={null} now={NOW} />);
@@ -875,13 +889,14 @@ describe('B1 final: a just-created order with 支払条件「未定」 is listed
 
   it('the stopped list holds the order from creation (status DRAFT), with a link to its own screen — and a decided one is not listed', async () => {
     const html = await overviewWith([fresh()]);
-    const blocked = html.slice(html.indexOf('止まっている発注</h2>'));
+    const blocked = html.match(/<ul class="dash-items" aria-label="止まっている発注">[\s\S]*?<\/ul>/)?.[0] ?? 'NO LIST';
     expect(blocked).toContain('PRJ-1-FILM-001');
     expect(blocked).toContain('未定');
     expect(blocked).toContain('href="/p/PRJ-1/o/PRJ-1-FILM-001"');
     expect(blocked).not.toContain('/orders#');
     const decided = await overviewWith([fresh({ paymentTerms: 'prepaid', paymentTermsUndetermined: false })]);
-    expect(decided.slice(decided.indexOf('止まっている発注</h2>'))).toContain('止まっている発注はありません');
+    expect(decided).not.toContain('aria-label="止まっている発注"');
+    expect(decided).toContain('止まっている発注はありません');
   });
 
   it('the home 承認箱 lists the server\'s blocked row (kind payment_terms_undetermined) with a 直す link to step 7', async () => {

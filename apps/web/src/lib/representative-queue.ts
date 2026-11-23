@@ -131,6 +131,8 @@ function str(value: unknown): string | null {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+const DUE_DATE_FORMAT = new Intl.DateTimeFormat('ja-JP', { month: 'numeric', day: 'numeric', timeZone: 'UTC' });
+
 function calendarDate(value: unknown): string | null {
   return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
 }
@@ -145,6 +147,11 @@ const ORGANIZATION_KO: Readonly<Record<string, string>> = { customer: '고객', 
 export function queueRowTitle(task: Pick<RepresentativeTask, 'work' | 'organization' | 'designKey'>): string {
   const parts = [task.organization ? ORGANIZATION_JA[task.organization] : null, task.designKey ?? null].filter((part): part is string => Boolean(part));
   return parts.length > 0 ? `${task.work}（${parts.join('／')}）` : task.work;
+}
+
+/** P4 N11/M13: a row's React key — two rows of one order (customer / seven, each design) must not share one. */
+export function queueRowKey(task: Pick<RepresentativeTask, 'kind' | 'status' | 'projectId' | 'orderId' | 'organization' | 'designKey'>, prefix = ''): string {
+  return `${prefix}${task.kind ?? task.status}-${task.projectId}-${task.orderId}-${task.organization ?? ''}-${task.designKey ?? ''}`;
 }
 
 /** The Korean twin of the suffix (the organization only; a design name is never translated). */
@@ -163,7 +170,7 @@ export function queueDueText(task: Pick<RepresentativeTask, 'requestedDeliveryDa
   const today = new Date(now.getTime() + 9 * 3_600_000).toISOString().slice(0, 10);
   const left = Math.round((Date.parse(`${date}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000);
   if (Number.isNaN(left)) return null;
-  const shown = `${Number(date.slice(5, 7))}/${Number(date.slice(8, 10))}`;
+  const shown = DUE_DATE_FORMAT.format(new Date(`${date}T00:00:00Z`));
   if (left > 0) return { text: `希望納期 ${shown}（あと${left}日）`, late: false };
   if (left === 0) return { text: `希望納期 ${shown}（今日）`, late: false };
   return { text: `希望納期 ${shown}（${-left}日超過）`, late: true };
