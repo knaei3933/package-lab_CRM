@@ -139,6 +139,7 @@ export function DeliveryReceiptStep({
           />
         </p>
       ) : (
+        // WIG: a delivery confirmation is recorded once and cannot be undone — it asks first (as the old list did).
         <ActionForm
           action={confirmDeliveryReceiptStepAction}
           submitLabel={plan.kind === 'upload_only' ? '受領証跡を登録する（確認は代表）' : '受領証跡で納品を確認する'}
@@ -148,6 +149,11 @@ export function DeliveryReceiptStep({
             ? '登録した人は自分の証跡で確認できないため、確認は代表が行います（代表の承認箱に出ます）。'
             : `証跡を確認済みにし、納品${unconfirmed.length}件の数量を確認して、手数料準備の状態を評価し直します（確認者と日時は自動で記録）。`}
           hintKo={plan.kind === 'upload_only' ? undefined : '증빙을 확인 완료로 하고 납품 수량을 확인한 뒤 수수료 준비 상태를 다시 평가합니다.'}
+          confirm={plan.kind === 'upload_only' ? undefined : {
+            title: '納品を確認済みにしますか？',
+            body: `${order.code} の納品${unconfirmed.length}件を、受領証跡を引用して確認済みにします。確認は1回だけ記録でき、取り消せません。`,
+            tone: 'primary'
+          }}
         >
           <Hidden order={order} projectCode={projectCode} />
           <input type="hidden" readOnly name="receiptMode" value={plan.kind === 'upload_only' ? 'register' : 'confirm'} />

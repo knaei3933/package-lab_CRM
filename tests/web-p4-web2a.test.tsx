@@ -433,6 +433,8 @@ describe('H14 step 12: the receipt evidence confirms the delivery (the main path
     expect(html).toContain('name="sevenPurchaseOrderId" value="po-1"');
     expect(html).toMatch(/<select[^>]*name="receiptIssuer"[^>]*required/);
     expect(html).toContain('<h3 class="p4w2-subtitle">受領の証跡がない場合</h3>');
+    // WIG: irreversible — the confirmation asks first.
+    expect(html).toContain('納品を確認済みにしますか？');
     expect(html).toMatch(/class="ui-button--subtle"[^>]*>証跡なしで問題なしとして完了する/);
     expect(html).toContain('フィルムの納品確認待ち');
     expect(html).not.toContain('充填製品');
