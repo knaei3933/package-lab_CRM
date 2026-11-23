@@ -89,9 +89,12 @@ export function registerP4Routes(app: Hono<any>, { db, recordAuditEvent }: P4Rou
    * staff; customers, seven and makers are accounts, never users), so there is
    * no other organization to hide. Admin only (project_assignment:manage), and
    * 401 before anything is read. Bounded like the representative queue:
-   * ?limit (default 200, at most 500) with `truncated`.
+   * ?limit (default 200, at most 500) with `truncated`. Answers carry
+   * `Cache-Control: private, no-store` (on every answer, 401/403 included).
    */
   app.get('/api/assignable-users', async (context) => {
+    // server2 review I-3: a list of people is never kept by a browser or a shared proxy (every answer, 401/403 included).
+    context.header('Cache-Control', 'private, no-store');
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json(unauthorized, 401);
     if (!canPerform(toActor(user), 'project_assignment:manage', 'F1').allowed) {

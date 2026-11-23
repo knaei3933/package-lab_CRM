@@ -32,6 +32,9 @@ import {
   CEO_APPROVAL_FACT_MESSAGES,
   evaluateEvidenceSenderDomain,
   evidenceSenderDomainWarning,
+  evidenceSenderVerdict,
+  approvalEvidenceDeclarationLine,
+  parseStoredEvidenceSenderDomainCheck,
   type EvidenceSenderDomainCheck,
   evaluateRevisionRegistrationGate,
   evaluateSevenPoChecklist,
@@ -761,6 +764,23 @@ async function readCappedBody(request: Request, cap: number): Promise<Uint8Array
     offset += chunk.byteLength;
   }
   return out;
+}
+
+/**
+ * P0 R01 / P4 server2 review L-1: the one definition of "a maker PO that locks
+ * the payment terms" (policy P-5) — not logically deleted, not cancelled, and
+ * carrying the representative's approval stamp. The PATCH that changes the
+ * terms, the project order list (`paymentTermsEditable`) and the queue's
+ * `blocked` rows all read it, so the screen can never show a lock the PATCH
+ * would not apply (or the reverse).
+ */
+export function liveApprovedPaperOf(filmSupplyOrderIds: string[]) {
+  return and(
+    inArray(makerPurchaseOrders.filmSupplyOrderId, filmSupplyOrderIds),
+    isNull(makerPurchaseOrders.deletedAt),
+    ne(makerPurchaseOrders.status, 'CANCELLED'),
+    isNotNull(makerPurchaseOrders.ceoApprovedAt)
+  );
 }
 
 export function createApp({
@@ -1826,12 +1846,7 @@ export function createApp({
       if (!locked || locked.deletedAt) return { kind: 'gone' as const };
       const [approvedPaper] = await tx.select({ id: makerPurchaseOrders.id, status: makerPurchaseOrders.status })
         .from(makerPurchaseOrders)
-        .where(and(
-          eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
-          isNull(makerPurchaseOrders.deletedAt),
-          ne(makerPurchaseOrders.status, 'CANCELLED'),
-          isNotNull(makerPurchaseOrders.ceoApprovedAt)
-        ))
+        .where(liveApprovedPaperOf([orderId]))
         .limit(1);
       const gate = evaluatePaymentTermsChange({
         orderStatus: String(locked.status),
@@ -1927,12 +1942,7 @@ export function createApp({
       .orderBy(asc(filmSupplyOrders.code));
     const approvedPapers = rows.length === 0 ? [] : await db.select({ filmSupplyOrderId: makerPurchaseOrders.filmSupplyOrderId })
       .from(makerPurchaseOrders)
-      .where(and(
-        inArray(makerPurchaseOrders.filmSupplyOrderId, rows.map((row) => row.id)),
-        isNull(makerPurchaseOrders.deletedAt),
-        ne(makerPurchaseOrders.status, 'CANCELLED'),
-        isNotNull(makerPurchaseOrders.ceoApprovedAt)
-      ));
+      .where(liveApprovedPaperOf(rows.map((row) => row.id)));
     const approvedOrderIds = new Set(approvedPapers.map((paper) => paper.filmSupplyOrderId));
     const orders = rows.map((row) => {
       const paymentTerms = normalizePaymentTerms(row.paymentTerms);
@@ -6689,7 +6699,12 @@ export function createApp({
   async function loadApprovalEvidenceIssuerFacts(
     approvalEventId: string,
     evidenceDocumentVersionId: string
-  ): Promise<{ issuerEntity: string | null; sharedEvidenceException: { reason: string } | null }> {
+  ): Promise<{
+    issuerEntity: string | null;
+    sharedEvidenceException: { reason: string } | null;
+    /** P4 server2: the From-domain check stored with the approval (null = none stored). */
+    senderDomainCheck: EvidenceSenderDomainCheck | null;
+  }> {
     const [document] = await db.select({ issuerEntity: documents.issuerEntity })
       .from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
@@ -6709,7 +6724,8 @@ export function createApp({
       : undefined;
     return {
       issuerEntity: document?.issuerEntity ?? null,
-      sharedEvidenceException: typeof reason === 'string' && reason.length > 0 ? { reason } : null
+      sharedEvidenceException: typeof reason === 'string' && reason.length > 0 ? { reason } : null,
+      senderDomainCheck: parseStoredEvidenceSenderDomainCheck((recorded?.afterState as { senderDomainCheck?: unknown } | null)?.senderDomainCheck)
     };
   }
 
@@ -7569,9 +7585,14 @@ export function createApp({
       versionId: documentVersions.id,
       sha256: documentVersions.sha256,
       filename: documents.originalFilename,
-      issuerEntity: documents.issuerEntity
+      issuerEntity: documents.issuerEntity,
+      // P4 server2: who uploaded the file and when (display only: id and display name).
+      uploadedAt: documentVersions.createdAt,
+      uploaderId: documentVersions.createdByUserId,
+      uploaderName: users.displayName
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .leftJoin(users, eq(users.id, documentVersions.createdByUserId))
       .where(inArray(documentVersions.id, evidenceVersionIds));
     const evidenceByVersion = new Map(evidenceRows.map((row) => [row.versionId, row]));
     const eventRows = eventIds.length === 0 ? [] : await db.select({
@@ -7607,8 +7628,15 @@ export function createApp({
       const evidence = event.evidenceDocumentVersionId ? evidenceByVersion.get(event.evidenceDocumentVersionId) : undefined;
       const facts = event.evidenceDocumentVersionId
         ? await loadApprovalEvidenceIssuerFacts(event.id, event.evidenceDocumentVersionId)
-        : { issuerEntity: null, sharedEvidenceException: null };
+        : { issuerEntity: null, sharedEvidenceException: null, senderDomainCheck: null };
       const expectedIssuerEntity = APPROVAL_ORGANIZATION_ISSUER[state.organization];
+      const issuerEntity = facts.issuerEntity ?? evidence?.issuerEntity ?? null;
+      const issuerMatchesOrganization = issuerEntity === expectedIssuerEntity;
+      // P4 server2 (p4-web2b review M-1): the sender check stored with this
+      // approval and the server's wording for it, so the card never reads
+      // 「申告どおり」 for a mail from a foreign domain. Display and warning only.
+      const senderDomainCheck = facts.senderDomainCheck;
+      const senderWarning = evidenceSenderDomainWarning(senderDomainCheck);
       const eventIntegrity = integrity.get(event.id);
       const sameContentEventId = eventIntegrity?.sameContentEventId
         ?? [...integrity.entries()].find(([, other]) => other.sameContentEventId === event.id)?.[0]
@@ -7625,9 +7653,16 @@ export function createApp({
           documentVersionId: event.evidenceDocumentVersionId ?? null,
           filename: evidence?.filename ?? null,
           sha256: evidence?.sha256 ?? null,
-          issuerEntity: facts.issuerEntity ?? evidence?.issuerEntity ?? null,
+          issuerEntity,
           expectedIssuerEntity,
-          issuerMatchesOrganization: (facts.issuerEntity ?? evidence?.issuerEntity ?? null) === expectedIssuerEntity,
+          issuerMatchesOrganization,
+          uploadedAt: evidence?.uploadedAt ?? null,
+          uploadedBy: evidence?.uploaderId ? { id: evidence.uploaderId, displayName: evidence.uploaderName ?? null } : null,
+          fromAddress: senderDomainCheck?.fromAddress ?? null,
+          senderDomainCheck,
+          senderVerdict: evidenceSenderVerdict(senderDomainCheck),
+          declarationLine: approvalEvidenceDeclarationLine({ issuerMatchesOrganization, sharedEvidence: facts.sharedEvidenceException !== null, senderDomainCheck }),
+          warnings: senderWarning ? [senderWarning] : [],
           evidenceSource: row?.evidenceSource ?? null,
           identifierStatus: event.evidenceIdentifierStatus ?? null,
           manualVerification: state.manualVerification,
@@ -8440,12 +8475,7 @@ export function createApp({
     // and a CEO-approved paper lock the term). One batch query, no amounts.
     const blockedApprovedPapers = blockedRows.length === 0 ? [] : await db.select({ filmSupplyOrderId: makerPurchaseOrders.filmSupplyOrderId })
       .from(makerPurchaseOrders)
-      .where(and(
-        inArray(makerPurchaseOrders.filmSupplyOrderId, blockedRows.map((row) => row.orderId)),
-        isNull(makerPurchaseOrders.deletedAt),
-        ne(makerPurchaseOrders.status, 'CANCELLED'),
-        isNotNull(makerPurchaseOrders.ceoApprovedAt)
-      ));
+      .where(liveApprovedPaperOf(blockedRows.map((row) => row.orderId)));
     const blockedApprovedOrderIds = new Set(blockedApprovedPapers.map((paper) => paper.filmSupplyOrderId));
     const blocked = blockedRows
       .map((row) => {
