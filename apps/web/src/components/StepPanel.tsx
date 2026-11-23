@@ -442,12 +442,16 @@ const SLOT_TEXT: Record<ApprovalSlotState, string> = {
 /**
  * p4/web3 review L-1 / p4/web4: the representative's check of this slot's evidence is offered once every approval of the
  * order is recorded (the 手動確認 form is the panel of its own) — so a slot that waits for the check says WHAT it waits for,
- * instead of pointing at a 「証跡を確認する」 that is not on this screen yet.
+ * instead of pointing at a 「証跡を確認する」 that is not on this screen yet. When nothing else is open (the check list
+ * did not come with the page) it says to read the screen again rather than promise a form.
  */
-function pendingCheckText(design: ApprovalSlotDesign, organization: 'customer' | 'seven'): string {
+function pendingCheckText(design: ApprovalSlotDesign, organization: 'customer' | 'seven', designs: readonly ApprovalSlotDesign[]): string {
   const other = organization === 'customer' ? 'seven' : 'customer';
-  const waitsFor = design[other] === 'open' ? `${other === 'customer' ? '顧客' : 'セブン化学'}の承認` : 'ほかの承認';
-  return `証跡の確認が必要です。${waitsFor}が記録されると、この画面で確認できます`;
+  if (design[other] === 'open') return `証跡の確認が必要です。${other === 'customer' ? '顧客' : 'セブン化学'}の承認が記録されると、この画面で確認できます`;
+  if (designs.some((one) => one !== design && (one.customer === 'open' || one.seven === 'open'))) {
+    return '証跡の確認が必要です。ほかのデザインの承認が記録されると、この画面で確認できます';
+  }
+  return '証跡の確認が必要です。確認の欄が出ないときは、画面を再読み込みしてください';
 }
 
 /** 6 校了: the 押印 slots — each organization's own approval, on its own evidence (B2). */
@@ -469,7 +473,7 @@ function ApprovalSlots({ order, projectCode, po, designs, role }: StepPanelProps
                   {state === 'approved' ? (
                     <p className="p1-seal"><span className="p1-seal-mark" aria-hidden="true">承認</span><span className="visually-hidden">{name}の承認済み</span></p>
                   ) : state === 'pending_check' ? (
-                    <Waiting text={role === 'admin' ? pendingCheckText(design, organization) : '代表の確認を待っています'} />
+                    <Waiting text={role === 'admin' ? pendingCheckText(design, organization, designs) : '代表の確認を待っています'} />
                   ) : (
                     <ActionForm action={recordApprovalStepAction} submitLabel={`${name}の承認を記録する`} submitContext={`${order.code}・デザイン ${design.designKey}・${name}`}>
                       <OrderFields order={order} projectCode={projectCode} />

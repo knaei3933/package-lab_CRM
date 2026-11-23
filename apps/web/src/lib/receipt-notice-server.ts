@@ -22,11 +22,11 @@ export async function rememberReceiptNotice(orderId: string, reason: ReceiptNoti
   }
 }
 
-/** p4/web4: the deliveries were confirmed — the notice is over. */
-export async function forgetReceiptNotice(): Promise<void> {
+/** p4/web4: this order's deliveries were confirmed — its notice is over (another order's notice is left alone). */
+export async function forgetReceiptNotice(orderId: string): Promise<void> {
   try {
     const store = await cookies();
-    if (store.get(RECEIPT_NOTICE_COOKIE)) store.delete(RECEIPT_NOTICE_COOKIE);
+    if (decodeReceiptNotice(store.get(RECEIPT_NOTICE_COOKIE)?.value, orderId)) store.delete(RECEIPT_NOTICE_COOKIE);
   } catch {
     // Display only (as above).
   }

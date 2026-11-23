@@ -132,7 +132,8 @@ export async function runChain(formData: FormData, steps: readonly ChainStep[], 
         settled: written > 0
           ? isSettledRefusal(result) && RENEWS_KEY_AFTER_PARTIAL_CODES.includes(result.code ?? codeOf(result.data) ?? '')
           : (specific ? isSettledRefusal(result) : base.settled),
-        ...(options.partialId && written > 0 ? { partialPoId: options.partialId(answers) } : {})
+        ...(options.partialId && written > 0 ? { partialPoId: options.partialId(answers) } : {}),
+        ...(written > 0 ? { chainStored: true as const } : {})
       };
     }
     answers.push(result.data);

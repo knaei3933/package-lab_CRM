@@ -558,6 +558,15 @@ describe('(2c) every confirmation says what it rests on (delivery-status evidenc
     expect(markup).toContain('フィルムの納品確認済み');
   });
 
+  it('when every delivery is confirmed but one rests on the maker\'s 受領書 (legacy), the done line says that one is not the completion\'s basis', () => {
+    const rows = [delivery('del-1', true), delivery('del-2', true)];
+    const legacy = panel('FILM_DELIVERED', 'admin', { deliveryContext: context('u-admin', rows, { evidenceKinds: { 'del-1': 'customer_receipt', 'del-2': 'maker_po_acceptance' } }) });
+    expect(legacy).toContain('フィルムの納品確認済み（数量は確認済み。メーカー受領書で確認した分は、完了の根拠には数えません）');
+    expect(legacy).not.toContain('（受領証跡で数量を確認済み）');
+    const clean = panel('FILM_DELIVERED', 'admin', { deliveryContext: context('u-admin', rows, { evidenceKinds: { 'del-1': 'customer_receipt', 'del-2': 'customer_receipt' } }) });
+    expect(clean).toContain('フィルムの納品確認済み（受領証跡で数量を確認済み）');
+  });
+
   it('Japanese screens carry no Hangul; the bilingual screen adds the Korean line', () => {
     expect(html()).not.toMatch(HANGUL);
     const korean = panel('FILM_DELIVERED', 'admin', { showKorean: true, deliveryContext: context('u-admin', deliveries, { evidenceKinds: kinds }) });
@@ -641,14 +650,30 @@ describe('(2d) the refusal survives the redraw: a stopped confirmation is said a
     expect(noticeCookie()!.split('|')).toEqual([ORDER_UUID, 'maker_po_bound', expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/)]);
   });
 
-  it('the confirmation of an existing evidence refused the same way keeps the reason too; any other refusal keeps none', async () => {
-    callApi.mockResolvedValue(fail(422, BOUND));
-    await stepActions.confirmDeliveryReceiptStepAction(null, form({ orderId: ORDER_UUID, orderCode: 'FSO-1', projectCode: 'PRJ-1', receiptMode: 'confirm', evaluateReadiness: 'false', deliveryId: 'del-1', evidenceDocumentId: 'doc-r', evidenceDocumentVersionId: 'ver-r', evidenceVerified: 'true' }));
+  it('a refusal AFTER a stored write (the evidence was checked first) keeps the reason; a refusal of the first write does not (its own line stays on the mounted form); any other refusal keeps none', async () => {
+    const existing = (verified: string) => form({ orderId: ORDER_UUID, orderCode: 'FSO-1', projectCode: 'PRJ-1', receiptMode: 'confirm', evaluateReadiness: 'false', deliveryId: 'del-1', evidenceDocumentId: 'doc-r', evidenceDocumentVersionId: 'ver-r', evidenceVerified: verified });
+    callApi.mockImplementation(async (url: string) => url.endsWith('/verify') ? ok({ id: 'doc-r' }) : fail(422, BOUND));
+    const stored = await stepActions.confirmDeliveryReceiptStepAction(null, existing('false'));
+    expect(stored.chainStored).toBe(true);
     expect(noticeLib2.decodeReceiptNotice?.(noticeCookie(), ORDER_UUID)?.reason).toBe('maker_po_bound');
     session.cookies.clear();
-    callApi.mockResolvedValue(fail(422, 'DELIVERY_EVIDENCE_NOT_VERIFIED'));
-    await stepActions.confirmDeliveryReceiptStepAction(null, form({ orderId: ORDER_UUID, orderCode: 'FSO-1', projectCode: 'PRJ-1', receiptMode: 'confirm', evaluateReadiness: 'false', deliveryId: 'del-1', evidenceDocumentId: 'doc-r', evidenceDocumentVersionId: 'ver-r', evidenceVerified: 'true' }));
+    callApi.mockReset();
+    callApi.mockResolvedValue(fail(422, BOUND));
+    const first = await stepActions.confirmDeliveryReceiptStepAction(null, existing('true'));
+    expect(first).toMatchObject({ ok: false, code: BOUND, settled: true });
+    expect(first.chainStored).toBeUndefined();
     expect(noticeCookie()).toBeUndefined();
+    callApi.mockResolvedValue(fail(422, 'DELIVERY_EVIDENCE_NOT_VERIFIED'));
+    await stepActions.confirmDeliveryReceiptStepAction(null, existing('false'));
+    expect(noticeCookie()).toBeUndefined();
+  });
+
+  it('a success on ANOTHER order leaves this order\'s notice alone (one slot, bound to its order)', async () => {
+    session.cookies.set('kanei_receipt_notice', `${ORDER_UUID}|maker_po_bound|2026-11-23T05:00:00.000Z`);
+    callApi.mockImplementation(async (url: string) => /\/documents$/.test(url) ? ok({ document: { id: 'doc-ok' }, version: { id: 'ver-ok' } }, 201) : ok({ id: 'x' }));
+    const other = await stepActions.confirmDeliveryReceiptStepAction(null, form({ orderId: OTHER_UUID, orderCode: 'FSO-2', projectCode: 'PRJ-1', receiptMode: 'confirm', evaluateReadiness: 'false', deliveryId: 'del-9', receiptIssuer: 'customer_generated', ...FILE }));
+    expect(other.ok).toBe(true);
+    expect(noticeCookie()).toBe(`${ORDER_UUID}|maker_po_bound|2026-11-23T05:00:00.000Z`);
   });
 
   it('a later submit that goes through (the customer\'s own receipt) ends the notice', async () => {
@@ -738,6 +763,16 @@ describe('(3) L-1: a slot that waits for the representative\'s check no longer p
     expect(visibleText(html)).toContain('証跡の確認が必要です。セブン化学の承認が記録されると、この画面で確認できます');
     expect(html).not.toContain('上の「証跡を確認する」');
     expect(html).not.toContain('手動確認を記録する');
+  });
+
+  it('the waiting text never promises a form that cannot come: another design\'s open slot is named; with nothing open it says to reload', () => {
+    const designOf = (key: string, customer: ReturnType<typeof slot>, seven: ReturnType<typeof slot>) => ({ designKey: key, currentRevisionId: `rev-${key}`, currentRevisionNo: 1, fileSha256: 'ab'.repeat(32), customer, seven, dualApproved: false });
+    const other = { ...gateWith([]), designs: [designOf('表面A', slot(false, true), slot(true)), designOf('裏面B', slot(false), slot(false))] };
+    expect(visibleText(panel('APPROVAL_PENDING', 'admin', { gate: other as never }))).toContain('ほかのデザインの承認が記録されると、この画面で確認できます');
+    const none = { ...gateWith([]), designs: [designOf('表面A', slot(false, true), slot(true, true))] };
+    const html = visibleText(panel('APPROVAL_PENDING', 'admin', { gate: none as never }));
+    expect(html).toContain('確認の欄が出ないときは、画面を再読み込みしてください');
+    expect(html).not.toContain('承認が記録されると、この画面で確認できます');
   });
 
   it('staff keep their line (the representative checks); once both approvals are recorded the check form itself is on the screen', () => {

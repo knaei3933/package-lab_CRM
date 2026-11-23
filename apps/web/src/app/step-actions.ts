@@ -668,11 +668,13 @@ const RECEIPT_ISSUERS = ['customer_generated', 'maker', 'seven', 'kanei'];
 /**
  * p4/web4: a confirmation refused with DELIVERY_EVIDENCE_MAKER_PO_BOUND after the delivery / the evidence were stored moves
  * the order on and mounts step 12 again, which drops the form's result line — the reason is kept for the redraw (a cookie
- * bound to the order; lib/receipt-notice). A later submit that goes through (a confirmation, or the customer's own receipt registered) ends it. Display only: the answer is unchanged.
+ * bound to the order; lib/receipt-notice). A later submit of THIS order that goes through (a confirmation, or the customer's own receipt registered) ends it. Display only: the answer is unchanged.
  */
 async function withReceiptNotice(orderId: string, result: ActionState): Promise<ActionState> {
-  if (result.code === DELIVERY_EVIDENCE_BOUND_CODE) await rememberReceiptNotice(orderId, 'maker_po_bound');
-  else if (result.ok) await forgetReceiptNotice();
+  // Only a refusal AFTER a stored write needs it (the redraw drops the form's line); a refusal of the first write keeps its
+  // own line on the mounted form, so the banner would say it twice.
+  if (result.code === DELIVERY_EVIDENCE_BOUND_CODE && result.chainStored) await rememberReceiptNotice(orderId, 'maker_po_bound');
+  else if (result.ok) await forgetReceiptNotice(orderId);
   return result;
 }
 

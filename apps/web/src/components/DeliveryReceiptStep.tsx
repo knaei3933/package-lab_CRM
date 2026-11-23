@@ -140,7 +140,13 @@ export function DeliveryReceiptStep({
       {context.notice && unconfirmed.length > 0 ? <ReceiptStopNotice notice={context.notice} /> : null}
       <DeliveryLines deliveries={context.deliveries} evidenceKinds={context.evidenceKinds ?? {}} />
       {unconfirmed.length === 0 ? (
-        <p className="p1-done"><span aria-hidden="true">✓ </span>{FILM_DELIVERY_CONFIRMATION_LABELS.CONFIRMED.ja}（受領証跡で数量を確認済み）</p>
+        <p className="p1-done">
+          <span aria-hidden="true">✓ </span>{FILM_DELIVERY_CONFIRMATION_LABELS.CONFIRMED.ja}
+          {context.deliveries.some((delivery) => context.evidenceKinds?.[delivery.id] === 'maker_po_acceptance')
+            // p4/web4 (review): a confirmation on the maker's 受領書 (legacy) is on file, but is not what the completion rests on.
+            ? '（数量は確認済み。メーカー受領書で確認した分は、完了の根拠には数えません）'
+            : '（受領証跡で数量を確認済み）'}
+        </p>
       ) : !canConfirm ? (
         <p className="p1-waiting"><span aria-hidden="true">… </span>担当者か代表が受領証跡で納品を確認します。</p>
       ) : plan.kind === 'wait_representative' ? (
