@@ -18,7 +18,7 @@ import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
-import { projectScreen } from './helpers/project-screen.js';
+import { menuPanel, orderScreen, projectScreen } from './helpers/project-screen.js';
 import { withApprovalSnapshot } from './helpers/approval-snapshot.js';
 
 /**
@@ -79,6 +79,13 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   }
 }));
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
+// P4 web2a §0: the order screen (where the forms moved) draws client components that read the router.
+vi.mock('next/navigation', () => ({
+  redirect: () => undefined,
+  usePathname: () => '/p/TEST-P/o/x',
+  useRouter: () => ({ refresh: () => undefined, replace: () => undefined }),
+  useSearchParams: () => new URLSearchParams()
+}));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
 
 const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);

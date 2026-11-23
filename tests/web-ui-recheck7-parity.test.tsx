@@ -19,7 +19,7 @@ import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
-import { projectScreen } from './helpers/project-screen.js';
+import { menuPanel, orderScreen, projectScreen } from './helpers/project-screen.js';
 import { withApprovalSnapshot } from './helpers/approval-snapshot.js';
 
 /**
@@ -83,6 +83,13 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   }
 }));
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
+// P4 web2a §0: the order screen (where the forms moved) draws client components that read the router.
+vi.mock('next/navigation', () => ({
+  redirect: () => undefined,
+  usePathname: () => '/p/TEST-P/o/x',
+  useRouter: () => ({ refresh: () => undefined, replace: () => undefined }),
+  useSearchParams: () => new URLSearchParams()
+}));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
 
 const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
@@ -330,10 +337,11 @@ describe('Medium-1 (W1): a cancelled paper\'s pending send is history, never ③
     const poId = await approvedPaper(chain.orderId);
     const eventId = await pendingSend(poId, chain.orderCode);
     signIn('admin');
-    // Before the cancel the paper is live: ③′ is the work.
-    const live = orderCard(await render(MakerPoPage), chain.orderCode);
-    expect(live).toContain('手順3の確認: 送信の手動確認（代表者のみ）');
+    // Before the cancel the paper is live: ③′ is the work — at step 9 of the order screen (P4 §0).
+    const live = await render(orderScreen(chain.orderCode));
+    expect(live).toMatch(/<button type="submit"[^>]*>送信の確認を記録する/);
     expect(live).toContain(`name="eventId" value="${eventId}"`);
+    expect(orderCard(await render(MakerPoPage), chain.orderCode)).not.toContain(`name="eventId" value="${eventId}"`);
 
     const cancelled = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancel`, { note: '未確認の送信を訂正' });
     expect(cancelled.body).toMatchObject({ cancellationKind: 'INTERNAL_CANCEL' });
@@ -343,6 +351,7 @@ describe('Medium-1 (W1): a cancelled paper\'s pending send is history, never ③
     const card = orderCard(await render(MakerPoPage), chain.orderCode);
     expect(card).not.toContain('手順3の確認: 送信の手動確認（代表者のみ）');
     expect(card).not.toContain(`name="eventId" value="${eventId}"`);
+    expect(await render(orderScreen(chain.orderCode))).not.toContain(`name="eventId" value="${eventId}"`);
     expect(card).toContain('は手動確認待ちのまま残っています。取り消し済みの発注書の送信は、確認も却下も記録できません（APIが拒否します）');
     expect(card).toContain('この取り消しは内部の訂正として扱われたため、取り消し承認も不要です。');
     // Info-4: the project audit read was complete, so the event is not asked about by id.
@@ -373,8 +382,8 @@ describe('Medium-3: a cancelled order with live maker paper', () => {
     signIn('admin');
     expect((await transitionFilmSupplyOrderAction(null, form({ orderId: chain.orderId, to: 'CANCELLATION_REVIEW' }))).ok).toBe(true);
 
-    // The review form warns that ending the order leaves the paper live.
-    const review = orderRow(await render(OrdersPage), chain.orderCode);
+    // The review form warns that ending the order leaves the paper live — on the order screen (P4 §0).
+    const review = await render(orderScreen(chain.orderCode));
     expect(review).toContain('取り消されていないメーカー発注書が1件あります（メーカーが生産する可能性があります）');
     // The board lists the frozen order in cleanup mode — no send form (the API refuses it there).
     const frozenCard = orderCard(await render(MakerPoPage), chain.orderCode);
@@ -390,25 +399,29 @@ describe('Medium-3: a cancelled order with live maker paper', () => {
     expect(await paperStatus(poId)).toBe('APPROVED_FOR_MANUAL_SEND');
 
     const orders = await render(OrdersPage);
-    expect(orderRow(orders, chain.orderCode)).toContain(CANCELLED_ORDER_CLEANUP_NOTICE);
     expect(orders).not.toContain(CANCELLED_ORDER_NOTICE);
     expect(nextCard(orders)).toContain('この発注は取消で終了していますが、メーカー発注書の整理が残っています（取り消されていない発注書 1件）');
-    expect(nextCard(orders)).toContain('href="/p/TEST-P/maker-po"');
+    // P4 §0: the cleanup is recorded on the order screen's 「その他の操作」.
+    expect(nextCard(orders)).toContain(`href="/p/TEST-P/o/${chain.orderCode}"`);
+    expect(CANCELLED_ORDER_CLEANUP_NOTICE).toContain('発注の画面の「その他の操作」');
     expect(orders).not.toContain('これ以上の作業はありません');
 
-    const card = orderCard(await render(MakerPoPage), chain.orderCode);
-    expect(card).toContain('整理だけができます');
-    expect(card).toMatch(/<details class="danger-zone" open="">/);
-    expect(card).toContain('整理: 取り消し・取り消し承認（代表者のみ）');
+    const list = orderCard(await render(MakerPoPage), chain.orderCode);
+    expect(list).toContain('整理だけができます');
+    expect(list).toContain('整理（取り消し・取り消し承認）が残っています。');
+    expect(list).not.toContain(`name="poId" value="${poId}"`);
+    // The cancellation form itself is in the order screen's 「その他の操作」 (P4 §0).
+    const card = menuPanel(await render(orderScreen(chain.orderCode)), 'maker-paper');
     expect(card).toContain(`name="poId" value="${poId}"`);
     expect(card).toContain('この発注は取消で終了しているため、取り消しても発注の状態は変わらず、新しい発注書も作成されません。');
     expect(card).not.toContain('再度開きます');
-    expect(card).not.toContain('手順2: 代表承認（代表者のみ）');
+    expect(list).not.toContain('手順2: 代表承認（代表者のみ）');
 
     signIn('staff');
     const staffCard = orderCard(await render(MakerPoPage), chain.orderCode);
     expect(staffCard).toContain('整理（発注書の取り消し・取り消し承認）は代表者が行います。');
     expect(staffCard).not.toContain(`name="poId" value="${poId}"`);
+    expect(menuPanel(await render(orderScreen(chain.orderCode)), 'maker-paper')).toBe('');
 
     signIn('admin');
     expect(await cancelMakerPoAction(null, form({ poId, note: '取消終了した発注の整理' }))).toMatchObject({ ok: true });
@@ -418,7 +431,6 @@ describe('Medium-3: a cancelled order with live maker paper', () => {
     // Nothing is left: the card leaves the board and the plain wording returns.
     expect(await render(MakerPoPage)).not.toContain(`フィルム発注 ${chain.orderCode}`);
     const settled = await render(OrdersPage);
-    expect(orderRow(settled, chain.orderCode)).toContain(CANCELLED_ORDER_NOTICE);
     expect(nextCard(settled)).toContain('この発注は取消で終了しています。これ以上の作業はありません。');
   });
 
@@ -432,11 +444,11 @@ describe('Medium-3: a cancelled order with live maker paper', () => {
     expect(await resolveCancellationReviewAction(null, form({ orderId: chain.orderId, outcome: 'cancel', reason: '顧客都合で取消' })))
       .toMatchObject({ ok: true });
 
-    const sent = orderCard(await render(MakerPoPage), chain.orderCode);
+    const sent = menuPanel(await render(orderScreen(chain.orderCode)), 'maker-paper');
     expect(sent).toContain('取り消したあと、メーカーが取り消しを受け入れたことを「取り消し承認（メーカー取消確認）」として記録してください。');
     expect(await cancelMakerPoAction(null, form({ poId, note: '送信ずみの発注書の整理' }))).toMatchObject({ ok: true });
 
-    const owed = orderCard(await render(MakerPoPage), chain.orderCode);
+    const owed = menuPanel(await render(orderScreen(chain.orderCode)), 'maker-paper');
     expect(owed).toContain('取り消し承認を記録する（メーカー取消確認・代表者のみ）');
     expect(owed).toContain('この発注は取消で終了しているため新しい発注書は作成しませんが');
     expect(owed).not.toContain('訂正後の発注書を新しく作成する');
@@ -466,14 +478,15 @@ describe('Low-7: hold wording, hold reason refusals, and the 取り消し承認 
 
     // A held order with live paper: cleanup on the board, a link from 次にやること.
     const heldOrders = await render(OrdersPage);
-    expect(nextCard(heldOrders)).toContain('解除の前でも、メーカー発注画面で取り消し・取り消し承認を記録できます');
-    expect(nextCard(heldOrders)).toContain('href="/p/TEST-P/maker-po"');
-    expect(orderRow(heldOrders, chain.orderCode)).toContain('残っている発注書がない場合は「メーカー発注準備完了」（発注書の作成）から再開します');
-    expect(orderRow(heldOrders, chain.orderCode)).toContain('解除に取り消し承認は要りません');
+    expect(nextCard(heldOrders)).toContain('解除の前でも、発注の画面の「その他の操作」で取り消し・取り消し承認を記録できます');
+    expect(nextCard(heldOrders)).toContain(`href="/p/TEST-P/o/${chain.orderCode}"`);
+    // The release form (on the order screen) says where the order resumes.
+    const heldPage = await render(orderScreen(chain.orderCode));
+    expect(heldPage).toContain('残っている発注書がない場合は「メーカー発注準備完了」（発注書の作成）から再開します');
     expect(orderCard(await render(MakerPoPage), chain.orderCode)).toContain('整理だけができます');
 
     expect(await cancelMakerPoAction(null, form({ poId, note: '保留中に送信ずみの発注書を取り消す' }))).toMatchObject({ ok: true });
-    const heldOwed = orderCard(await render(MakerPoPage), chain.orderCode);
+    const heldOwed = menuPanel(await render(orderScreen(chain.orderCode)), 'maker-paper');
     expect(heldOwed).toContain('保留・見直し中でも記録できます');
 
     // (a) the server does not ask for the 取り消し承認 before the release.
@@ -491,7 +504,8 @@ describe('Low-7: hold wording, hold reason refusals, and the 取り消し承認 
 
     expect(await acknowledgeMakerPoCancellationAction(null, form({ poId, note: 'メーカーが取り消しを承諾' }))).toMatchObject({ ok: true });
     const reopened = await render(MakerPoPage);
-    expect(reopened).toContain(`<option value="${chain.orderId}"`);
+    // P4 §0: the paper is drawn up at step 7 of the order screen; the list links it.
+    expect(reopened).toContain(`href="/p/TEST-P/o/${chain.orderCode}?step=7"`);
     expect(orderCard(reopened, chain.orderCode)).toContain('取り消し済み（新しい発注書の作成待ち）');
     const created = await postAs(adminToken, `/api/film-supply-orders/${chain.orderId}/maker-purchase-orders`, { recipientAddress: 'maker-po@example.com' });
     expect(created.status).toBe(201);

@@ -6,11 +6,11 @@ import { FILM_UNITS } from '@kanei/core';
 import { refuseIfProjectSwitched, writeProjectOf } from '../lib/project-guard';
 import { offsetDateTimeField } from '../lib/datetime';
 import { isRouteCode, orderPath } from '../lib/project-route';
-import { alreadyAt, answeredOrderStatus, answerId, AUTO_TRANSITION_CODES, autoAdvanceRequest, runChain, uploadedVersionId, withAnswer } from '../lib/step-chain';
+import { alreadyAt, answeredOrderStatus, answerId, AUTO_TRANSITION_CODES, autoAdvanceRequest, MISSING_ANSWER, runChain, uploadedVersionId, withAnswer } from '../lib/step-chain';
 import type { ChainStep } from '../lib/step-chain';
 import { RECIPIENT_EMAIL_INVALID_MESSAGE } from '../lib/form-messages';
 import { isPlainAmount, normalizeAmountText } from '../lib/amount';
-import { STEP_REFUSALS } from '../lib/step-messages';
+import { RECEIPT_WAITS_FOR_REPRESENTATIVE, STEP_REFUSALS } from '../lib/step-messages';
 import { DUPLICATE_CODE, duplicateFromAnswer } from '../lib/duplicate-check';
 import { deliveryDatesFromForm } from '../lib/delivery-dates';
 import { RECIPIENT_CHOICE_INVALID_MESSAGE, RECIPIENT_UNAVAILABLE_CODE, recipientChoiceOf } from '../lib/maker-master';
@@ -71,6 +71,15 @@ function uploadedFile(formData: FormData): UploadedFile | ActionState {
     mailMessageId: optional(formData, 'mailMessageId') ?? null,
     mailDate: optional(formData, 'mailDate') ?? null
   };
+}
+
+function existingDesignKeys(formData: FormData): string[] {
+  try {
+    const parsed: unknown = JSON.parse(field(formData, 'existingDesignKeys') || '[]');
+    return Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string') : [];
+  } catch {
+    return [];
+  }
 }
 
 function isFile(value: UploadedFile | ActionState): value is UploadedFile {
@@ -240,6 +249,10 @@ export async function submitProofStepAction(_prev: ActionState | null, formData:
   if (orderId.length === 0) return missing('フィルム発注が見つかりません。');
   if (poId.length === 0) return missing('セブン化学発注書が紐付いていません。発注一覧で確認してください。');
   if (designKey.length === 0) return missing('デザイン名を入力してください（例: 表面A）。');
+  // P4 N9: 「別のデザインを追加する」 names a NEW design; a registered one is changed through 変更確認.
+  if (existingDesignKeys(formData).includes(designKey)) {
+    return missing(`デザイン「${designKey}」は登録済みです。別の名前にするか、差し替えは「その他の操作」の変更確認から行ってください。`);
+  }
   const file = uploadedFile(formData);
   if (!isFile(file)) return file;
   const lotMarking = optional(formData, 'lotMarking');
@@ -562,6 +575,7 @@ export async function recordAcceptanceStepAction(_prev: ActionState | null, form
 export async function recordDeliveryStepAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
   const switched = await guard(formData);
   if (switched) return switched;
+  const projectId = writeProjectOf(formData)!;
   const orderId = field(formData, 'orderId');
   if (orderId.length === 0) return missing('フィルム発注が見つかりません。');
   const lineIds = formData.getAll('lineId').filter((value): value is string => typeof value === 'string' && value.length > 0);
@@ -575,26 +589,217 @@ export async function recordDeliveryStepAction(_prev: ActionState | null, formDa
     if (raw.length === 0 || !Number.isFinite(quantity) || quantity <= 0) return missing(`明細${index + 1}の納品数量は正の数で入力してください。`);
     deliveries.push({ lineId, unit: field(formData, `unit_${lineId}`), quantity });
   }
+  // P4 H14: the receipt evidence may come with the delivery (one submit): then the
+  // delivered quantity is confirmed on it right away (or, for its own uploader, it waits
+  // for the representative — P-4).
+  const receipt = field(formData, 'contentBase64') ? receiptOf(formData) : null;
+  if (receipt && 'message' in receipt) return receipt;
+  const deliverySteps: ChainStep[] = deliveries.map((delivery, index): ChainStep => ({
+    label: `明細${index + 1}の納品`,
+    request: () => ({
+      path: `/api/film-supply-orders/${id(orderId)}/deliveries`,
+      body: {
+        filmSupplyOrderLineId: delivery.lineId,
+        unit: delivery.unit,
+        deliveredQuantity: delivery.quantity,
+        ...(deliveredAt ? { deliveredAt } : {})
+      }
+    })
+  }));
   const steps: ChainStep[] = [
-    ...deliveries.map((delivery, index): ChainStep => ({
-      label: `明細${index + 1}の納品`,
-      request: () => ({
-        path: `/api/film-supply-orders/${id(orderId)}/deliveries`,
-        body: {
-          filmSupplyOrderLineId: delivery.lineId,
-          unit: delivery.unit,
-          deliveredQuantity: delivery.quantity,
-          ...(deliveredAt ? { deliveredAt } : {})
-        }
-      })
-    })),
+    ...deliverySteps,
     {
       label: '納品済み',
       request: () => ({ path: `/api/film-supply-orders/${id(orderId)}/transitions`, body: { to: 'FILM_DELIVERED' } })
-    }
+    },
+    ...(receipt
+      ? receiptSteps({
+          projectId,
+          orderId,
+          receipt,
+          offset: deliverySteps.length + 1,
+          deliveryIdsOf: (answers) => deliverySteps.map((_, index) => answerId(answers[index])),
+          confirm: field(formData, 'receiptMode') === 'confirm',
+          evaluate: field(formData, 'evaluateReadiness') === 'true'
+        })
+      : [])
   ];
   return runChain(formData, steps, {
-    success: '納品を記録しました。最後に受け取りの確認をします。',
+    success: receipt
+      ? field(formData, 'receiptMode') === 'confirm'
+        ? '納品を記録し、受領証跡で納品数量を確認しました。'
+        : `納品を記録し、受領証跡（${receipt.file.filename}）を登録しました。${RECEIPT_WAITS_FOR_REPRESENTATIVE}`
+      : '納品を記録しました。次は受領証跡を付けて納品を確認します。',
+    refusal: STEP_REFUSALS
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 12 納品の確認 (P4 H14): 受領証跡 → 書類 → 確認 → 納品確認 → 準備状態 (one submit)
+// ---------------------------------------------------------------------------
+
+const RECEIPT_ISSUERS = ['customer_generated', 'maker', 'seven', 'kanei'];
+
+interface ReceiptInput {
+  file: UploadedFile;
+  issuer: string;
+}
+
+type ExistingReceipt = { documentId: string; versionId: string; verified: boolean };
+
+function receiptOf(formData: FormData): ReceiptInput | ActionState {
+  const file = uploadedFile(formData);
+  if (!isFile(file)) return file;
+  const issuer = field(formData, 'receiptIssuer');
+  if (!RECEIPT_ISSUERS.includes(issuer)) return missing('受領証跡の発行元を選んでください（顧客・メーカーなど）。');
+  return { file, issuer };
+}
+
+/**
+ * The writes after the receipt evidence: register it (bound to this order), mark it
+ * checked, confirm each delivery on it, evaluate the commission readiness. `confirm`
+ * false = its uploader may not confirm (P-4): only the registration is written and the
+ * representative's queue (delivery_confirmation) carries the rest.
+ */
+function receiptSteps(options: {
+  projectId: string;
+  orderId: string;
+  receipt: ReceiptInput | null;
+  existing?: ExistingReceipt | null;
+  offset: number;
+  deliveryIdsOf: (answers: readonly unknown[]) => Array<string | null>;
+  confirm: boolean;
+  evaluate: boolean;
+}): ChainStep[] {
+  const { projectId, orderId, receipt, existing, offset } = options;
+  const at = (answers: readonly unknown[]) => answers[offset] as { document?: { id?: unknown } } | null;
+  const documentOf = (answers: readonly unknown[]): string | null => {
+    if (existing) return existing.documentId;
+    const id = at(answers)?.document?.id;
+    return typeof id === 'string' ? id : null;
+  };
+  const versionOf = (answers: readonly unknown[]): string | null => existing?.versionId ?? uploadedVersionId(answers[offset]);
+  const steps: ChainStep[] = [
+    {
+      label: '受領証跡の登録',
+      request: () => receipt ? {
+        path: `/api/projects/${id(projectId)}/documents`,
+        body: {
+          documentType: 'acceptance_evidence',
+          issuerEntity: receipt.issuer,
+          filmSupplyOrderId: orderId,
+          filename: receipt.file.filename,
+          contentBase64: receipt.file.contentBase64,
+          contentType: receipt.file.contentType
+        }
+      } : null
+    }
+  ];
+  if (!options.confirm) return steps;
+  steps.push({
+    label: '受領証跡の確認',
+    request: (answers) => existing?.verified ? null : withAnswer(documentOf(answers), (documentId) => ({
+      path: `/api/documents/${id(documentId)}/verify`,
+      body: { verificationStatus: 'verified' }
+    }))
+  });
+  // The deliveries are known at build time (an existing list) or from the answers (just recorded).
+  const placeholder = options.deliveryIdsOf([]);
+  placeholder.forEach((_, index) => {
+    steps.push({
+      label: `納品${index + 1}の確認`,
+      request: (answers) => {
+        const deliveryId = options.deliveryIdsOf(answers)[index] ?? null;
+        const versionId = versionOf(answers);
+        return deliveryId && versionId
+          ? { path: `/api/film-deliveries/${id(deliveryId)}/confirmation`, body: { evidenceDocumentVersionId: versionId } }
+          : MISSING_ANSWER;
+      }
+    });
+  });
+  if (options.evaluate) {
+    steps.push({
+      label: '手数料準備の評価',
+      request: () => ({ path: `/api/projects/${id(projectId)}/commission-readiness`, body: {} })
+    });
+  }
+  return steps;
+}
+
+export async function confirmDeliveryReceiptStepAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await guard(formData);
+  if (switched) return switched;
+  const projectId = writeProjectOf(formData)!;
+  const orderId = field(formData, 'orderId');
+  if (orderId.length === 0) return missing('フィルム発注が見つかりません。');
+  const deliveryIds = formData.getAll('deliveryId').filter((value): value is string => typeof value === 'string' && value.length > 0);
+  const confirm = field(formData, 'receiptMode') === 'confirm';
+  if (confirm && deliveryIds.length === 0) return missing('確認する納品がありません。画面を再読み込みしてください。');
+  const existingDocumentId = optional(formData, 'evidenceDocumentId');
+  const existingVersionId = optional(formData, 'evidenceDocumentVersionId');
+  const existing: ExistingReceipt | null = existingDocumentId && existingVersionId
+    ? { documentId: existingDocumentId, versionId: existingVersionId, verified: field(formData, 'evidenceVerified') === 'true' }
+    : null;
+  const receipt = existing ? null : receiptOf(formData);
+  if (receipt && 'message' in receipt) return receipt;
+  if (!existing && !receipt) return missing('受領証跡のファイルを選択してください。');
+  const steps = receiptSteps({
+    projectId,
+    orderId,
+    receipt: receipt as ReceiptInput | null,
+    existing,
+    offset: 0,
+    deliveryIdsOf: () => deliveryIds,
+    confirm,
+    evaluate: field(formData, 'evaluateReadiness') === 'true'
+  });
+  return runChain(formData, steps, {
+    success: confirm
+      ? `受領証跡で納品数量を確認しました（${deliveryIds.length}件）。`
+      : `受領証跡（${(receipt as ReceiptInput).file.filename}）を登録しました。${RECEIPT_WAITS_FOR_REPRESENTATIVE}`,
+    refusal: STEP_REFUSALS
+  });
+}
+
+// ---------------------------------------------------------------------------
+// P4 §0: the proof file of a design change (the 版 is registered with the change facts after it)
+// ---------------------------------------------------------------------------
+
+/**
+ * P4 §0: the old 文書 screen was where a replacement 校正ゲラ was uploaded before the
+ * 変更依頼 form cited it. On the order screen the file is registered here (bound to
+ * this order and design, issuer メーカー as in step 5); the 版 with its change facts
+ * is the next form (registerArtworkRevisionAction, unchanged — the API decides).
+ */
+export async function uploadChangeProofStepAction(_prev: ActionState | null, formData: FormData): Promise<ActionState> {
+  const switched = await guard(formData);
+  if (switched) return switched;
+  const projectId = writeProjectOf(formData)!;
+  const orderId = field(formData, 'orderId');
+  const poId = field(formData, 'sevenPurchaseOrderId');
+  const designKey = field(formData, 'designKey');
+  if (orderId.length === 0) return missing('フィルム発注が見つかりません。');
+  if (poId.length === 0) return missing('セブン化学発注書が紐付いていません。');
+  if (designKey.length === 0) return missing('差し替えるデザインを選んでください。');
+  const file = uploadedFile(formData);
+  if (!isFile(file)) return file;
+  return runChain(formData, [{
+    label: '校正ファイルの登録',
+    request: () => ({
+      path: `/api/projects/${id(projectId)}/documents`,
+      body: {
+        documentType: 'proof',
+        issuerEntity: 'maker',
+        sevenPurchaseOrderId: poId,
+        filmSupplyOrderId: orderId,
+        designKey,
+        filename: file.filename,
+        contentBase64: file.contentBase64,
+        contentType: file.contentType
+      }
+    })
+  }], {
+    success: `差し替えの校正ゲラ（${file.filename}）を登録しました。続けて下の「版を登録する（変更依頼）」で版を登録します。`,
     refusal: STEP_REFUSALS
   });
 }

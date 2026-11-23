@@ -19,7 +19,7 @@ import {
 import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
-import { projectScreen } from './helpers/project-screen.js';
+import { menuPanel, orderScreen, projectScreen } from './helpers/project-screen.js';
 
 /**
  * UI batch F (demo-eml/ui-batch-f/REPORT.md) against the REAL API on the
@@ -193,7 +193,7 @@ async function dualApprovedOrder(
 }
 
 function revisionCard(html: string): string {
-  const start = html.indexOf('校正ゲラの版を登録する');
+  const start = html.indexOf('校正ゲラの版の登録'); // P4 §0: the read-only list's card (the form moved to the order screen)
   expect(start).toBeGreaterThan(-1);
   return html.slice(start, html.indexOf('承認の記録履歴', start));
 }
@@ -272,7 +272,9 @@ describe('R1-9 / F2: the controlled change request through the revision form', (
   it('a design with approval history: the form requires the facts, the API stores them, the order enters CHANGE_REVIEW', async () => {
     const chain = await dualApprovedOrder();
     signIn('staff');
-    const card = revisionCard(await render(ApprovalsPage));
+    // P4 §0: the 版 with its change facts is registered from the order screen's 「その他の操作」 (the 承認 list only reads).
+    expect(revisionCard(await render(ApprovalsPage))).not.toContain('name="changeReason"');
+    const card = menuPanel(await render(orderScreen(chain.orderCode)), 'design-change');
     expect(card).toContain('変更依頼（承認済みデザインの差し替え）');
     expect(card).toContain('ロット表記（変更依頼では必須）');
     expect(card).toContain('依頼組織・変更理由・証憑・影響（納期／数量／金額）・');
@@ -354,6 +356,11 @@ describe('R1-9 / F2: the controlled change request through the revision form', (
     const card = revisionCard(await render(ApprovalsPage));
     expect(card).not.toContain('name="changeReason"');
     expect(card).not.toContain('変更依頼として登録する');
+    const chain = await dualApprovedOrder();
+    signIn('viewer');
+    const page = await render(orderScreen(chain.orderCode));
+    expect(page).not.toContain('name="changeReason"');
+    expect(page).not.toContain('<form');
   });
 });
 
@@ -432,18 +439,13 @@ describe('review M5: /approvals reads Message-IDs only for evidence an open appr
     expect(viewer.added).toBe(0);
     expect(viewer.reads).toEqual([]);
     const staff = await viewedDuring('staff');
-    // One read: the current version of the pending design's EML (not v1, not the approved designs').
-    expect(staff.added).toBe(1);
-    const [latestView] = await db.select({ entityId: auditEvents.entityId }).from(auditEvents)
-      .where(and(eq(auditEvents.action, 'DOCUMENT_VERSION_VIEWED'), eq(auditEvents.projectId, projectId)))
-      .orderBy(sql`${auditEvents.occurredAt} desc`).limit(1);
+    // P4 §0: the 承認 list has no approval form any more, so it reads no Message-ID at all
+    // (each read is a DOCUMENT_VERSION_VIEWED row); the approval is recorded at step 6 with its own file.
+    expect(staff.added).toBe(0);
+    expect(staff.reads).toEqual([]);
+    expect(staff.html).not.toContain('承認を記録する：デザイン label-back');
     const backVersions = (await db.execute(sql`select dv.id from document_versions dv where dv.original_filename = 'uf-back.eml' order by dv.version_number`)).rows as Array<{ id: string }>;
     const readOf = (versionId: string | undefined) => `/api/document-versions/${versionId}/evidence-message-id`;
-    expect(latestView?.entityId).toBe(backVersions[1]?.id);
-    // v2 is asked for, v1 is not (the API would refuse it).
-    expect(staff.reads).toContain(readOf(backVersions[1]?.id));
-    expect(staff.reads).not.toContain(readOf(backVersions[0]?.id));
-    expect(staff.html).toContain('承認を記録する：デザイン label-back');
     // Once the design is approved, its evidence is no longer read.
     const revision = (await revisionsOf(chain.orderId)).find((row) => row.designKey === 'label-back')!;
     for (const organization of ['customer', 'seven'] as const) {

@@ -84,7 +84,10 @@ const VALID: Record<string, () => Record<string, string | string[]>> = {
   recordAcceptanceStepAction: acceptForm,
   recordDeliveryStepAction: deliveryForm,
   // P2: R22 デザイン入稿 (lane X2) — the design data file bound to the order, then デザイン受領.
-  submitArtworkStepAction: () => ({ orderId: 'ord-1', ...file })
+  submitArtworkStepAction: () => ({ orderId: 'ord-1', ...file }),
+  // P4 web2a H14: the receipt evidence → confirmation of the deliveries; §0: the proof of a design change.
+  confirmDeliveryReceiptStepAction: () => ({ orderId: 'ord-1', deliveryId: ['del-1'], receiptMode: 'confirm', receiptIssuer: 'customer_generated', ...file }),
+  uploadChangeProofStepAction: () => ({ orderId: 'ord-1', sevenPurchaseOrderId: 'po-1', designKey: '表面A', ...file })
 };
 
 beforeEach(() => {

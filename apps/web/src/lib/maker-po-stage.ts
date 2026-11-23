@@ -1,7 +1,7 @@
 import { isFilmOrderPastMakerAcceptance } from '@kanei/core';
 import type { MakerPoEventRow, MakerPoSendManualVerification, MakerPoViewRow } from './maker-po-data';
 import { shortId } from './short-id';
-import { formatTimestamp } from './vocabulary';
+import { formatTimestamp, formatTimestampSeconds } from './vocabulary';
 
 /**
  * UI batch C (2-④): the stages of one order's maker paper, for the /maker-po
@@ -131,9 +131,9 @@ function summaries(paper: MakerPoStagePaper): Record<MakerPoStageKey, string | n
     create: po.createdAt
       ? `発注書 ${shortId(po.id)} を作成（${formatTimestamp(po.createdAt)}）`
       : `発注書 ${shortId(po.id)} を作成`,
-    approve: po.ceoApprovedAt ? `代表承認（${formatTimestamp(po.ceoApprovedAt)}）` : '代表承認を記録済み',
+    approve: po.ceoApprovedAt ? `代表承認（${formatTimestampSeconds(po.ceoApprovedAt)}）` : '代表承認を記録済み',
     send: sent?.sentAt
-      ? `送信の記録（送信日時 ${formatTimestamp(sent.sentAt)}）`
+      ? `送信の記録（送信日時 ${formatTimestampSeconds(sent.sentAt)}）`
       : '送信を記録済み',
     verify: confirmed
       ? `手動確認: 確認（${confirmed.verifierName ?? '検証者未記録'}／${formatTimestamp(confirmed.verifiedAt ?? confirmed.recordedAt)}）`

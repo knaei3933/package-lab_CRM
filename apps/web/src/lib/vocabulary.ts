@@ -210,6 +210,45 @@ export function formatTimestamp(value: unknown): string {
   return `${JP_DATETIME_FORMAT.format(date)} JST`;
 }
 
+const JP_DATETIME_SECONDS_FORMAT = new Intl.DateTimeFormat('ja-JP', {
+  timeZone: DISPLAY_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23'
+});
+
+/**
+ * P4 M10①: a send / approval time to the second (「2026/11/23 09:10:49 JST」). The send
+ * proof compares them strictly (core eml.ts, 0 s tolerance), so a minute-only time could
+ * hide why a send waits for the representative.
+ */
+export function formatTimestampSeconds(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${JP_DATETIME_SECONDS_FORMAT.format(date)} JST`;
+}
+
+/**
+ * P4 M10①: 「送信は代表承認の30秒前」 — the signed gap between two instants in words, or null
+ * when one of them is missing. Whole seconds (the stored times carry milliseconds).
+ */
+export function sendApprovalGapText(sentAt: unknown, approvedAt: unknown): string | null {
+  if (typeof sentAt !== 'string' || typeof approvedAt !== 'string') return null;
+  const sent = Date.parse(sentAt);
+  const approved = Date.parse(approvedAt);
+  if (Number.isNaN(sent) || Number.isNaN(approved)) return null;
+  const seconds = Math.round((sent - approved) / 1000);
+  if (seconds === 0) return '送信は代表承認と同じ秒';
+  const size = Math.abs(seconds);
+  const amount = size < 60 ? `${size}秒` : size < 3600 ? `${Math.floor(size / 60)}分${size % 60 ? `${size % 60}秒` : ''}` : `${Math.floor(size / 3600)}時間${Math.floor((size % 3600) / 60)}分`;
+  return seconds < 0 ? `送信は代表承認の${amount}前` : `送信は代表承認の${amount}後`;
+}
+
 /**
  * An amount as people write it. P4 N15: one formatter for every screen — lib/number-format
  * `formatAmount`; this keeps the older name and shows 「—」 for an empty amount.

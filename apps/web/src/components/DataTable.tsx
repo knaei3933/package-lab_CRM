@@ -11,15 +11,21 @@ import { tableStyle } from '../lib/ui';
 export function DataTable({
   caption,
   captionHidden = false,
+  cards = false,
   children
 }: {
   caption: string;
   captionHidden?: boolean;
+  /**
+   * P4 M12: below 600px of its own width the table becomes one card per row — each
+   * cell shows its column name (the cell's data-label) — instead of a sideways scroll.
+   */
+  cards?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className="table-scroll" role="region" aria-label={caption} tabIndex={0}>
-      <table style={tableStyle}>
+    <div className="table-scroll" role="region" aria-label={caption} tabIndex={0} data-cards={cards ? 'true' : undefined}>
+      <table style={tableStyle} className={cards ? 'ui-table--cards' : undefined}>
         <caption className={captionHidden ? 'visually-hidden' : 'table-caption'}>{caption}</caption>
         {children}
       </table>

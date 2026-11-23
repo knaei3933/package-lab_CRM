@@ -450,10 +450,11 @@ describe('① replay: lastNormalStatus and the receipt assumption', () => {
       serveAs('staff', [...HEAD, created(ORDER_GAP, 'FSO-GAP'), ...toReady(ORDER_GAP), hold(ORDER_GAP, 'APPROVED_FOR_MANUAL_SEND')]);
       const html = await renderPage(OrdersPage);
       expect(html).toContain('代表者が理由を記録して保留を解除する（原則として保留にする前の状態に戻ります。保留中にその段階のメーカー発注書が取り消され、残っている発注書がない場合は「メーカー発注準備完了」に戻ります）。');
-      expect(html).toContain('保留の解除は代表者が行います。');
+      // P4 §0: the release is recorded on the order screen (its RoleGate says it is the representative's there).
       const links = [...html.matchAll(/<p class="next-links">([\s\S]*?)<\/p>/g)].map((match) => match[1]!);
       expect(links.length).toBeGreaterThan(0);
       for (const inner of links) expect(inner).not.toContain('href="/maker-po"');
+      expect(links.join('')).toContain('href="/p/TEST-P/o/FSO-GAP"');
       // No generic select for the held order: nothing to skip with (B-M2 holds trivially).
       expect([...html.matchAll(/<select[^>]*name="to"[^>]*>/g)]).toHaveLength(0);
       expect(html).not.toContain('value="FILM_IN_PRODUCTION"');
@@ -940,14 +941,25 @@ describe('⑥ shortId', () => {
 // Rendered screens per role (integration through the API's own role filter)
 // ---------------------------------------------------------------------------
 
+/**
+ * P4 web2a §0: the old screens only read. Every one of these forms moved to the order
+ * screen (/p/{案件}/o/{発注}) and must not be drawn here any more, for any role.
+ * The only writes left on the lists are the filling order's (it has no order screen yet).
+ */
+const MOVED_FORMS = {
+  orders: ['発注書を登録する', '状態を進める', '支払条件を変更する', '受領確認を記録する', '本登録する', 'チェックリストを記録する', '保留を解除する', '取消確認を処理する'],
+  documents: ['書類をアップロードする', '確認を記録する'],
+  approvals: ['版を登録する', '顧客として承認する', 'セブン化学として承認する', '手動確認を記録する'],
+  'maker-po': ['送信を記録する', 'メーカー発注書を作成する', '発注書を取り消す', '取り消し承認を記録する', '手動確認を記録する'],
+  deliveries: ['準備状態を再評価する', '納品を確認する']
+} as const;
 const FORM_MARKERS = {
-  // 支払条件 (FSO-DRAFT, P0 R01: label 「支払条件を変更する」) and 受領確認 (FSO-DELIV): both staff work, gated per role.
-  orders: ['発注書を登録する', '状態を進める', '発注を作成する', '支払条件を変更する', '受領確認を記録する'],
-  // P1 P-4: the fixture's documents were uploaded by this staff member — their 確認 is not offered (see below).
-  documents: ['書類をアップロードする'],
-  approvals: ['版を登録する'],
-  'maker-po': ['送信を記録する', '発注を作成する'],
-  deliveries: ['準備状態を再評価する', '納品を記録する', '納品を確認する']
+  // The filling order keeps its creation here (P4 §0 exception; no filling order screen yet).
+  orders: ['発注を作成する'],
+  documents: [],
+  approvals: [],
+  'maker-po': [],
+  deliveries: []
 } as const;
 
 /**
@@ -955,10 +967,7 @@ const FORM_MARKERS = {
  * approval decision (artwork_approval:record) is staff work — see the
  * dedicated staff test below; it is not listed here.
  */
-const ADMIN_ONLY_FORMS = {
-  'maker-po': ['発注書を取り消す'],
-  approvals: ['手動確認を記録する']
-} as const;
+const ADMIN_ONLY_FORMS = {} as const;
 
 describe('rendered screens: stepper, 次にやること and role-gated forms', () => {
   for (const page of PAGE_NAMES) {
@@ -982,8 +991,9 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
       serveAs('staff');
       const html = await renderPage(PAGES[page]);
       for (const marker of FORM_MARKERS[page]) expect(html, marker).toContain(`>${marker}</button>`);
-      if (page === 'documents') expect(html).toContain('自分で登録した証跡は自分で確認できません');
-      if (page === 'documents') expect(html).toContain('自分で登録した証跡は自分で確認できません');
+      for (const marker of MOVED_FORMS[page]) expect(html, marker).not.toContain(`>${marker}</button>`);
+      // The record is made on the order screen: the list links it.
+      if (page !== 'documents') expect(html).toMatch(/href="\/p\/TEST-P\/o\/FSO-/);
       for (const marker of (ADMIN_ONLY_FORMS as Record<string, readonly string[]>)[page] ?? []) {
         expect(html, marker).not.toContain(`>${marker}</button>`);
       }
@@ -996,8 +1006,8 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
       serveAs('admin');
       const html = await renderPage(PAGES[page]);
       for (const marker of FORM_MARKERS[page]) expect(html, marker).toContain(`>${marker}</button>`);
-      // P-4: the representative may confirm any evidence, their own included.
-      if (page === 'documents') expect(html).toContain('>確認を記録する</button>');
+      for (const marker of MOVED_FORMS[page]) expect(html, marker).not.toContain(`>${marker}</button>`);
+      if (page !== 'documents') expect(html).toMatch(/href="\/p\/TEST-P\/o\/FSO-/);
       for (const marker of (ADMIN_ONLY_FORMS as Record<string, readonly string[]>)[page] ?? []) {
         expect(html, marker).toContain(`>${marker}</button>`);
       }
@@ -1037,17 +1047,16 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
     expect(html).toContain('フィルム発注 FSO-READY');
   });
 
-  it('approvals (staff, gate readable): the approval decision is staff work — form shown, no refusal (M3)', async () => {
+  it('approvals (staff, gate readable): the approval decision is staff work — recorded at step 6 of the order screen (M3 → P4 §0)', async () => {
     // The real API withholds the revision's order link from staff, so the gate
     // is shaped as admin here to check the screen rule itself.
     serveAs('staff', ROWS, 'admin');
     const html = await renderPage(ApprovalsPage);
-    expect(html).toContain('>顧客として承認する</button>');
-    expect(html).toContain('>セブン化学として承認する</button>');
-    expect(html).toContain('approval.eml（版1／確認状態 確認済み／ID …0000ee02）');
-    expect(html).not.toContain('承認の記録は');
+    expect(html).not.toContain('>顧客として承認する</button>');
+    expect(html).not.toContain('>セブン化学として承認する</button>');
+    expect(html).toMatch(/href="\/p\/TEST-P\/o\/FSO-[A-Z]+\?step=6"[^>]*>発注の画面で承認を記録する/);
     expect(html).not.toContain('>手動確認を記録する</button>');
-    expect(html).toContain('手動確認の記録は代表者が行います。');
+    expect(html.match(/<form\b/g) ?? []).toHaveLength(0);
   });
 
   it.each(PAGE_NAMES)('%s (role unreadable): forms hidden, worded apart from 閲覧者 (M5)', async (page) => {
@@ -1064,40 +1073,25 @@ describe('rendered screens: stepper, 次にやること and role-gated forms', (
     serveAs('staff');
     const html = await renderPage(MakerPoPage);
     expect(html).toContain('メーカー発注書（下書き）を作成する。作成後に代表が承認します。');
-    expect(html).toContain('この操作は代表者が行います。');
     // P-6: staff may draft the paper themselves — no 「作成は代表者」 refusal any more.
     expect(html).not.toContain('メーカー発注書の作成は代表者が行います。');
-    expect(html).toContain('この画面の下にあります');
+    // P4 §0: the work is done on the order screen, never 「この画面の下」 of a read-only list.
+    expect(html).not.toContain('この画面の下にあります');
+    expect(html).toContain('発注の画面で行う');
   });
 
-  it('orders (admin): the transition selects are narrowed, start blank and are required', async () => {
+  it('orders (admin): no transition select on the list — each order links its own screen at its step (P4 §0)', async () => {
     serveAs('admin');
     const html = await renderPage(OrdersPage);
-    const selects = [...html.matchAll(/<select[^>]*name="to"[^>]*>([\s\S]*?)<\/select>/g)];
-    // FSO-READY, FSO-SEND, FSO-HOLD, FSO-DRAFT, FSO-DELIV: the completed order offers no form.
-    const optionValues = (inner: string) => [...inner.matchAll(/<option value="([^"]*)"/g)].map((match) => match[1]);
-    expect(selects.map(([, inner]) => optionValues(inner!))).toEqual([
-      ['', 'ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW'], // FSO-READY
-      ['', 'ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW'], // FSO-SEND
-      // FSO-HOLD: no generic select — the representative's release form instead (UI batch D).
-      ['', 'SEVEN_PO_VERIFIED', 'ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW'], // FSO-DRAFT
-      ['', 'ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW'] // FSO-DELIV
-    ]);
-    for (const [whole, inner] of selects) {
-      expect(whole).toMatch(/required/);
-      expect(inner).toMatch(/^<option value="">（進める先を選ぶ）<\/option>/);
-      expect(inner).not.toMatch(/selected/);
-    }
-    expect(html).toContain('「問題なしで完了」は下の操作で記録します。');
-    expect(html).not.toContain(`<optgroup label="${RESUME_GROUP_LABEL}">`);
-    expect(html).toContain(HOLD_RELEASE_NOTICE);
-    expect(html).toContain('保留を解除する（代表者のみ）');
-    expect(html).toContain(`<optgroup label="${EXCEPTION_GROUP_LABEL}">`);
-    // A hold is offered with its reason field (the API's HOLD_REASON_REQUIRED).
-    expect(html).toContain('name="holdReason"');
-    expect(html).toContain('次はメーカー発注画面の操作で進みます。');
-    expect(html).toContain('この発注は完了しています。進める先はありません。');
-    expect(html).toContain('メーカー発注画面を開く');
+    expect(html).not.toMatch(/<select[^>]*name="to"/);
+    expect(html).not.toContain('name="holdReason"');
+    expect(html).toMatch(/href="\/p\/TEST-P\/o\/FSO-DRAFT\?step=\d+"/);
+    expect(html).toContain('発注の画面で進める（手順');
+    // The exceptions are the order screen's 「その他の操作」, from the same state machine.
+    const { exceptionEntriesFor } = await import('../apps/web/src/components/OrderExceptionForms.js');
+    expect(exceptionEntriesFor('MAKER_PO_READY', label)).toEqual(['ON_HOLD', 'CHANGE_REVIEW', 'CANCELLATION_REVIEW']);
+    expect(exceptionEntriesFor('ON_HOLD', label)).toEqual([]);
+    expect(exceptionEntriesFor('FILM_RECEIPT_ASSUMED_NO_ISSUE', label)).toEqual([]);
   });
 });
 

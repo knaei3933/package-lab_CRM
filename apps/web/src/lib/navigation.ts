@@ -44,7 +44,6 @@ export interface NavGroup {
 }
 
 const ALL: readonly NavRole[] = ['admin', 'staff', 'viewer'];
-const OPERATORS: readonly NavRole[] = ['admin', 'staff'];
 /** P2 P-2: the screens the auditor reads (their APIs answer the auditor; nothing to write there). */
 const READERS: readonly NavRole[] = ['admin', 'staff', 'viewer', 'auditor'];
 
@@ -58,6 +57,15 @@ export const GUIDE_PATH = '/guide';
 /** P1 R26: the role's home — 承認箱 (representative), 自分の作業 (staff), 履歴 (viewer). */
 export const HOME_PATH = '/home';
 
+/**
+ * P4 §0 (audit44 UNRESOLVED §0-3): the menu keeps the lists only. Every record of a
+ * film order is made on the order's own screen (/p/{案件}/o/{発注}); for the operators
+ * (admin, staff) the old screens 文書・承認・メーカー発注・納品 are read-only lists reached
+ * from the order screen and from 発注の一覧, not from the menu (they used to pull people
+ * into their old forms). The roles that only read (viewer, auditor) cannot open the order
+ * screen (H10①), so they keep the read-only screens they read, named 「（閲覧）」 — P4
+ * H10② for the auditor's 承認.
+ */
 export const NAV_GROUPS: readonly NavGroup[] = [
   {
     key: 'home',
@@ -72,42 +80,22 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     ]
   },
   {
-    key: 'intake',
-    step: 1,
-    title: '受付・発注',
-    items: [{ href: '/orders', label: '発注の一覧', ko: '발주 목록', roles: READERS }]
-  },
-  {
-    key: 'artwork',
-    step: 2,
-    title: 'デザイン・校正',
-    items: [
-      { href: '/documents', label: '文書', ko: '서류', roles: OPERATORS },
-      { href: '/approvals', label: '承認（校了）', ko: '승인(교정 확정)', roles: OPERATORS },
-      // P4 H10②: the auditor reads the approval history (the API allows artwork_approval:read); no forms there.
-      { href: '/approvals', label: '承認（閲覧）', ko: '승인(열람)', roles: ['auditor'] }
-    ]
-  },
-  {
-    key: 'maker',
-    step: 3,
-    title: 'メーカー発注',
-    items: [
-      { href: '/maker-po', label: 'メーカー発注', ko: '제조사 발주', roles: READERS },
-      { href: MAKERS_PATH, label: 'メーカーの宛先', ko: '제조사 수신처', roles: ['admin'] }
-    ]
-  },
-  {
-    key: 'delivery',
-    step: 4,
-    title: '納品・手数料',
-    items: [{ href: '/deliveries', label: '納品確認・手数料準備', ko: '납품 확인·수수료 준비', roles: ALL }]
-  },
-  {
-    key: 'evidence',
+    key: 'lists',
     step: null,
-    title: '証跡',
-    items: [{ href: EVIDENCE_PATH, label: '証跡の一覧', ko: '증빙 목록', roles: ['admin', 'staff', 'auditor'] }]
+    title: '一覧',
+    items: [
+      { href: '/orders', label: '発注の一覧', ko: '발주 목록', roles: READERS },
+      { href: '/approvals', label: '承認（閲覧）', ko: '승인(열람)', roles: ['auditor'] },
+      { href: '/maker-po', label: 'メーカー発注（閲覧）', ko: '제조사 발주(열람)', roles: ['viewer', 'auditor'] },
+      { href: '/deliveries', label: '納品・手数料（閲覧）', ko: '납품·수수료(열람)', roles: ['viewer'] },
+      { href: EVIDENCE_PATH, label: '証跡の一覧', ko: '증빙 목록', roles: ['admin', 'staff', 'auditor'] }
+    ]
+  },
+  {
+    key: 'master',
+    step: null,
+    title: '設定',
+    items: [{ href: MAKERS_PATH, label: 'メーカーの宛先', ko: '제조사 수신처', roles: ['admin'] }]
   },
   {
     key: 'help',
@@ -119,6 +107,24 @@ export const NAV_GROUPS: readonly NavGroup[] = [
     ]
   }
 ];
+
+/** P4 §0: the read-only lists the operators reach from 発注の一覧 and the order screen (not from the menu). */
+export const READ_ONLY_LISTS: readonly { href: string; label: string }[] = [
+  { href: '/documents', label: '文書の一覧' },
+  { href: '/approvals', label: '承認の一覧' },
+  { href: '/maker-po', label: 'メーカー発注の一覧' },
+  { href: '/deliveries', label: '納品・手数料の一覧' }
+];
+
+/**
+ * The screens a role can open (its menu, plus — for the operators — the read-only lists
+ * that left the menu). A link to any other screen is replaced by 発注の一覧.
+ */
+export function openableHrefsForRole(role: string | null | undefined): string[] {
+  const menu = navHrefsForRole(role);
+  const effective = navRole(role);
+  return effective === 'admin' || effective === 'staff' ? [...menu, ...READ_ONLY_LISTS.map((list) => list.href)] : menu;
+}
 
 /** The menu of one role: groups with only the items it sees, empty groups dropped. */
 export function navGroupsForRole(role: string | null | undefined): NavGroup[] {
@@ -170,26 +176,26 @@ export const SCREEN_GUIDES: Readonly<Record<string, ScreenGuide>> = {
   '/orders': {
     step: 1,
     phase: '受付・発注',
-    doHere: 'セブン化学発注書を登録し、本登録日と発注書の照合チェックを記録してから、フィルム発注を作成して状態を進めます（「製造中」「出荷済み」への変更もこの画面です）。',
-    next: { href: '/documents', label: '文書', text: '「発注書の照合済み」になったら、文書画面でデザイン入稿データを登録します。' }
+    doHere: 'フィルム発注とセブン化学発注書の一覧です（閲覧用）。記録・状態の変更・保留や取消は、各行の「発注の画面」で行います。新しい発注は「新しいフィルム発注を登録する」から。',
+    next: null
   },
   '/documents': {
     step: 2,
     phase: 'デザイン・校正',
-    doHere: 'デザイン入稿データ・校正ゲラ・承認証跡・受領証跡のファイルを登録し、確認の結果を記録します。',
-    next: { href: '/approvals', label: '承認（校了）', text: '校正ゲラを登録したら、承認画面で版を登録して校了を記録します。' }
+    doHere: 'この案件の書類（発注書・校正ゲラ・各種証跡）の一覧です（閲覧用）。書類の登録と確認は発注の画面の各手順で行います。',
+    next: null
   },
   '/approvals': {
     step: 2,
     phase: 'デザイン・校正',
-    doHere: '校正ゲラの版を登録し、同じ版に対する顧客の承認とセブン化学の承認をそれぞれ記録します（順番は問いません。両方そろって校了です）。',
-    next: { href: '/maker-po', label: 'メーカー発注', text: '両組織の承認がそろって「校了（顧客・セブン化学）」になると、発注は自動で「メーカー発注準備完了」に進みます。メーカー発注画面へ。' }
+    doHere: 'デザインごとの顧客・セブン化学の承認の状況と記録の一覧です（閲覧用）。承認の記録と証跡の確認は発注の画面の手順6で行います。',
+    next: null
   },
   '/maker-po': {
     step: 3,
     phase: 'メーカー発注',
-    doHere: 'メーカー発注書の作成（担当者・代表者）→ 代表承認（代表者）→ 送信済みメールの原本（EML）で送信を記録 → 受入（仮）と最終受入、の順に進めます。',
-    next: { href: '/orders', label: '案件（発注）', text: '最終受入が済んだら、発注画面で「製造中」「出荷済み」へ進めます。' }
+    doHere: 'メーカー発注書の作成・代表承認・送信・受入の状況と履歴の一覧です（閲覧用）。記録は発注の画面の手順7〜10で行います。',
+    next: null
   },
   [MAKERS_PATH]: {
     step: 3,
@@ -206,7 +212,7 @@ export const SCREEN_GUIDES: Readonly<Record<string, ScreenGuide>> = {
   '/deliveries': {
     step: 4,
     phase: '納品・手数料',
-    doHere: '納品を記録し、受領証跡を引用して納品確認をしたあと、手数料準備状態を評価し直します。',
+    doHere: '納品と手数料準備の状態の一覧です（閲覧用）。フィルムの納品の記録と確認は発注の画面の手順12で行います。',
     next: null
   },
   [GUIDE_PATH]: {

@@ -1378,7 +1378,7 @@ export function makerCleanupActionText(work: MakerPaperCleanupSummary): string {
     ? '取り消せない発注書（送信未確認・受入済み）は、メーカーへの連絡と対応を代表者が判断する。'
     : '';
   return records.length > 0
-    ? `メーカー発注画面で${records.join('・')}を記録する。${stuck}`
+    ? `発注の画面の「その他の操作」で${records.join('・')}を記録する。${stuck}`
     : stuck;
 }
 
@@ -1398,7 +1398,7 @@ function cleanupParts(cleanup: MakerPaperCleanupSummary): string {
 /** For a frozen order: the maker cleanup the representative may record before the release. */
 function frozenCleanupLine(cleanup: MakerPaperCleanupSummary | undefined): string {
   return cleanup?.state === 'cleanup'
-    ? `（メーカー発注書の整理が残っています: ${cleanupParts(cleanup)}。解除の前でも、メーカー発注画面で取り消し・取り消し承認を記録できます）`
+    ? `（メーカー発注書の整理が残っています: ${cleanupParts(cleanup)}。解除の前でも、発注の画面の「その他の操作」で取り消し・取り消し承認を記録できます）`
     : '';
 }
 
@@ -1496,7 +1496,7 @@ export function nextActionForOrder(
       return draftNextAction(order, workspace, advance, label, role);
     case 'SEVEN_PO_VERIFIED':
       return nextAction(
-        `デザイン入稿データを文書画面で登録し、${advance('ARTWORK_RECEIVED')}。`,
+        `デザイン入稿データを発注の画面（手順4）で登録し、${advance('ARTWORK_RECEIVED')}。`,
         both, ['/documents', '/orders'], 'document:create', role
       );
     case 'ARTWORK_RECEIVED':
@@ -1507,18 +1507,18 @@ export function nextActionForOrder(
       // be this order's, so never claim the proof is still missing.
       return (workspace.revisionsWithheld ?? 0) > 0
         ? nextAction(
-          `校正ゲラの版が承認画面に登録されていることを確かめます。${AUTO_PROOF_TEXT}`,
+          `校正ゲラの版が登録されていることを発注の画面で確かめます。${AUTO_PROOF_TEXT}`,
           both, ['/approvals', '/orders'], 'film_order:transition', role
         )
         : nextAction(
-          `校正ゲラを承認画面で登録します。登録すると自動で進みます。`,
+          `校正ゲラを発注の画面（手順5）で登録します。登録すると自動で進みます。`,
           both, ['/approvals', '/orders'], 'artwork_revision:create', role
         );
     case 'PROOF_READY':
       return nextAction(`校正ゲラの登録で自動で進みます。進んでいないときは、発注の画面で理由を確認してください。`, both, ['/orders'], 'film_order:transition', role);
     case 'APPROVAL_PENDING':
       return nextAction(
-        `顧客とセブン化学の承認（校了）を承認画面で記録する。両方そろうと自動で「${label('DUAL_APPROVED')}」になります。`,
+        `顧客とセブン化学の承認（校了）を発注の画面（手順6）で記録する。両方そろうと自動で「${label('DUAL_APPROVED')}」になります。`,
         both, ['/approvals'], 'artwork_approval:record', role
       );
     case 'DUAL_APPROVED':
@@ -1598,7 +1598,7 @@ export function nextActionForOrder(
         );
       }
       return {
-        text: 'この発注は取消で終了しています。メーカー発注書の整理（取り消し・取り消し承認）が残っていないかは、メーカー発注画面で確認してください。',
+        text: 'この発注は取消で終了しています。メーカー発注書の整理（取り消し・取り消し承認）が残っていないかは、発注の画面で確認してください。',
         owner: null,
         screens: ['/maker-po'],
         operation: null,

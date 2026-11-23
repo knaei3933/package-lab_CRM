@@ -114,15 +114,18 @@ describe('sidebar menu by role (A)', () => {
   it('admin and staff see every screen in the order of the work', () => {
     // P1 R26: the role's home (承認箱 / 自分の作業 / 履歴) comes first.
     // P2: the representative's maker master (/makers, R33) and the evidence list (/evidence, P-2).
-    expect(navHrefsForRole('admin')).toEqual(['/home', '/dashboard', '/orders', '/documents', '/approvals', '/maker-po', '/makers', '/deliveries', '/evidence', '/guide', '/status']);
-    expect(navHrefsForRole('staff')).toEqual(['/home', '/dashboard', '/orders', '/documents', '/approvals', '/maker-po', '/deliveries', '/evidence', '/guide', '/status']);
-    expect(navGroupsForRole('admin').map((group) => group.step)).toEqual([null, 1, 2, 3, 4, null, null]);
+    // P4 §0: the operators' menu keeps the lists only — the old screens are read-only lists
+    // reached from 発注の一覧 and the order screen, every record is made on the order screen.
+    expect(navHrefsForRole('admin')).toEqual(['/home', '/dashboard', '/orders', '/evidence', '/makers', '/guide', '/status']);
+    expect(navHrefsForRole('staff')).toEqual(['/home', '/dashboard', '/orders', '/evidence', '/guide', '/status']);
+    expect(navGroupsForRole('admin').map((group) => group.key)).toEqual(['home', 'lists', 'master', 'help']);
   });
 
   it('a viewer is not shown 文書 and 承認 (the API refuses it document:read and artwork_approval:read)', () => {
+    // The viewer cannot open the order screen (H10①): it keeps the screens it reads, named 「（閲覧）」.
     expect(navHrefsForRole('viewer')).toEqual(['/home', '/dashboard', '/orders', '/maker-po', '/deliveries', '/guide', '/status']);
-    // The デザイン・校正 group has no item left for a viewer and is dropped, not shown empty.
-    expect(navGroupsForRole('viewer').map((group) => group.key)).not.toContain('artwork');
+    // A group with no item left for the role is dropped, not shown empty.
+    expect(navGroupsForRole('viewer').map((group) => group.key)).not.toContain('master');
   });
 
   it('an unknown or missing role never gets more than the viewer menu', () => {
@@ -136,9 +139,9 @@ describe('sidebar menu by role (A)', () => {
 
   it('marks only the current screen (aria-current="page"), including its sub-paths', () => {
     nav.pathname = '/maker-po/abc';
-    const html = markup(<SideNav groups={navGroupsForRole('staff')} roleNote={null} />);
+    const html = markup(<SideNav groups={navGroupsForRole('viewer')} roleNote={null} />);
     expect(html.match(/aria-current="page"/g)).toHaveLength(1);
-    expect(html).toContain('<a aria-current="page" href="/maker-po">メーカー発注</a>');
+    expect(html).toContain('<a aria-current="page" href="/maker-po">メーカー発注（閲覧）</a>');
     expect(html).toContain('<a href="/orders">発注の一覧</a>');
     expect(isCurrentNavItem('/orders-archive', '/orders')).toBe(false);
     nav.pathname = '/orders';
@@ -147,7 +150,7 @@ describe('sidebar menu by role (A)', () => {
   it('names the menu, numbers the phases in text and lists only the role’s links', () => {
     const html = markup(<SideNav groups={navGroupsForRole('viewer')} roleNote={navRoleNote('viewer')} />);
     expect(html).toContain('aria-label="業務メニュー（作業の順番）"');
-    expect(html).toMatch(/<p id="nav-group-intake" class="app-nav-group-title"><span class="app-nav-step"><span class="visually-hidden">手順<\/span>1<\/span>受付・発注<\/p><ul aria-labelledby="nav-group-intake">/);
+    expect(html).toMatch(/<p id="nav-group-lists" class="app-nav-group-title">一覧<\/p><ul aria-labelledby="nav-group-lists">/);
     // The group titles are not headings: the menu adds no outline level before the screen's h1.
     expect(html).not.toMatch(/<h[1-6]/);
     expect(html).not.toContain('href="/documents"');
@@ -228,7 +231,9 @@ describe('screen guide lines (C)', () => {
     const html = markup(<ScreenGuideLine />);
     expect(html).toContain('手順1｜受付・発注');
     expect(html).toContain('この画面でやること');
-    expect(html).toContain('<a href="/documents">文書画面を開く</a>');
+    // P4 §0: a read-only list sends nobody to another old screen; it says where the record is made.
+    expect(html).toContain('各行の「発注の画面」で行います');
+    expect(html).not.toContain('<a href="/documents">文書画面を開く</a>');
     expect(html).not.toMatch(/[\uAC00-\uD7A3]/);
     expect(html).not.toContain('<aside');
     nav.pathname = '/deliveries';

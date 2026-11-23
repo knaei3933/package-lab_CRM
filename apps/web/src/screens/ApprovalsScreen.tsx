@@ -1,56 +1,32 @@
-import type { Metadata } from 'next';
-import { ActionForm } from '../components/ActionForm';
-import { KoGloss } from '../components/RenderedContext';
-import { ApprovalDecisionForm } from '../components/ApprovalDecisionForm';
-import { ChangeRequestFields } from '../components/ChangeRequestFields';
-import { OffsetDateTimeField } from '../components/OffsetDateTimeField';
+import { orderPath } from '../lib/project-route';
 import { ProjectProgress } from '../components/ProjectProgress';
 import { ProjectUnavailable } from '../components/ProjectUnavailable';
 import type { ProjectScreenProps } from './screen-props';
-import { RoleGate, ViewerPageNotice } from '../components/RoleGate';
+import { ViewerPageNotice } from '../components/RoleGate';
 import { DataTable } from '../components/DataTable';
 import { StatusBadge } from '../components/StatusBadge';
 import { TechDetails } from '../components/TechDetails';
-import { SelectField, TextField } from '../components/fields';
-import {
-  recordArtworkApprovalAction,
-  registerArtworkRevisionAction,
-  verifyEvidenceManualAction
-} from '../app/actions';
 import { loadSessionUser } from '../lib/api';
 import { callApi } from '../lib/api';
-import { asiaTokyoDatetimeLocalNow } from '../lib/datetime';
-import { canRoleOperate, operationRefusal } from '../lib/permissions';
+import { canRoleOperate } from '../lib/permissions';
 import {
-  filmOrderChoiceLabel,
   labelLookup,
   loadApprovalGate,
   loadWorkspace,
-  NO_PROJECT_SELECTED_MESSAGE,
   knownStatus,
   revisionNumberText
 } from '../lib/project-data';
 import { shortId } from '../lib/short-id';
-import { approvalHistoryKeys, changeEvidenceChoices, printingStartedOrderIds } from '../lib/change-request';
-import type {
-  ApprovalGateView,
-  FilmSupplyOrderView,
-  DesignApprovalGateView,
-  PendingManualVerificationView
-} from '../lib/project-data';
-import { cardStyle, infoBoxStyle, noteStyle, tdStyle, thStyle } from '../lib/ui';
+import type { ApprovalGateView, FilmSupplyOrderView, DesignApprovalGateView } from '../lib/project-data';
 import {
   APPROVAL_DECISION_LABELS,
   EVIDENCE_SOURCE_LABELS,
   formatTimestamp,
-  evidenceSourceChoices,
-  ISSUER_ENTITY_LABELS,
   VERIFICATION_STATUS_LABELS
 } from '../lib/vocabulary';
-import type { IssuerEntity } from '@kanei/core';
-import type { Choice } from '../lib/types';
 import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../lib/redaction';
-import { ARTWORK_REVISION_LIVE_PAPER_REFUSAL, liveMakerPapers, makerPoName, MAKER_PO_STATUS_LABELS, withDisplayNumbers } from '../lib/maker-po-data';
+import { PendingVerificationSection } from '../components/EvidenceVerificationSection';
+import { liveMakerPapers, withDisplayNumbers } from '../lib/maker-po-data';
 import type { MakerPoViewRow } from '../lib/maker-po-data';
 
 
@@ -105,65 +81,12 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
     return `書類バージョン ${shortId(versionId)}`;
   };
 
-  // UI batch F (review M5): the API records DOCUMENT_VERSION_VIEWED for every
-  // Message-ID it reads, so only the evidence an approval form on this screen
-  // actually offers is read — a role that may record approvals, a design still
-  // waiting for them, and the document's current version (the only one the API
-  // extracts from). Nothing is read for a viewer or a fully approved order.
-  const evidenceAutoIdentifiers = new Map<string, string>();
-  const pendingDesigns = new Set(gates.flatMap((gate) => gate
-    ? gate.designs.filter((design) => !design.dualApproved).map((design) => `${gate.orderId}\u0000${design.designKey}`)
-    : []));
-  const offeredEvidence = canRoleOperate(role, 'artwork_approval:record')
-    ? workspace.documents.filter((document) => document.documentType === 'approval_evidence'
-      && document.filmSupplyOrderId !== null
-      && document.designKey !== null
-      && pendingDesigns.has(`${document.filmSupplyOrderId}\u0000${document.designKey}`))
-    : [];
-  const currentVersions = offeredEvidence.flatMap((document) => {
-    const latest = Math.max(...document.versions.map((candidate) => candidate.versionNumber));
-    return document.versions.filter((version) => version.versionNumber === latest);
-  });
-  await Promise.all(currentVersions.map(async (version) => {
-    const result = await callApi<{ evidenceIdentifier?: string }>(
-      `/api/document-versions/${encodeURIComponent(version.id)}/evidence-message-id`
-    );
-    if (result.ok && result.data?.evidenceIdentifier) {
-      evidenceAutoIdentifiers.set(version.id, result.data.evidenceIdentifier);
-    }
-  }));
-
-  const approvalEvidenceChoices = (orderId: string, designKey: string): Choice[] =>
-    workspace.documents
-      .filter((document) => document.documentType === 'approval_evidence'
-        && document.filmSupplyOrderId === orderId
-        && document.designKey === designKey)
-      .flatMap((document) => document.versions.map((version) => ({
-        value: version.id,
-        issuerEntity: document.issuerEntity,
-        autoEvidenceIdentifier: evidenceAutoIdentifiers.get(version.id) ?? null,
-        label: `${document.filename}（版${version.versionNumber}／確認状態 ${
-          VERIFICATION_STATUS_LABELS[document.verificationStatus] ?? document.verificationStatus
-        }／ID ${shortId(version.id)}）`
-      })));
-
-  const revisionTargets = canRoleOperate(role, 'artwork_revision:create')
-    ? await loadRevisionTargets(workspace.filmOrders)
-    : { registrable: [], blocked: [], unread: [] };
-
-  // UI batch F: the change request facts the revision form asks for (server R1-9 / F2).
-  const historyKeys = approvalHistoryKeys(workspace.revisions, workspace.approvalEvents, gates);
-  const printedOrderIds = printingStartedOrderIds(workspace.filmOrders);
-  const changeEvidence = changeEvidenceChoices(workspace.documents);
-
-  const proofChoices: Choice[] = workspace.documents
-    .filter((document) => document.documentType === 'proof')
-    .flatMap((document) => document.versions.map((version) => ({
-      value: version.id,
-      label: `${document.filmSupplyOrderId ? orderCode(document.filmSupplyOrderId) : '発注未紐付け'}／${
-        document.designKey ?? 'デザイン未指定'
-      }／${document.filename}（版${version.versionNumber}／ID ${shortId(version.id)}）`
-    })));
+  // P4 §0: this list only reads — no form here, so no evidence Message-ID is read
+  // (the API records DOCUMENT_VERSION_VIEWED for each one) and no 版 choices are built.
+  const orderPathOf = (orderId: string, step: number | null = 6): string | null => {
+    const code = workspace.filmOrders.find((order) => order.id === orderId)?.code;
+    return code ? orderPath(projectCode, code, step) : null;
+  };
 
   return (
     <section className="sx-11bfff5">
@@ -183,7 +106,7 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
           <p className="ui-note">
             {workspace.revisionsWithheld > 0
               ? `校正ゲラの版は${workspace.revisionsWithheld}件記録されていますが、紐付け先の発注とデザインが${HIDDEN_BY_ROLE_SHORT}のため、ここには表示できません。`
-              : '校了対象の版がまだありません。下の「校正ゲラの版を登録する」で版を登録すると、デザインごとの承認待ちが表示されます。'}
+              : '校了対象の版がまだありません。発注の画面の手順5で校正を登録すると、デザインごとの承認待ちが表示されます。'}
           </p>
         </div>
       ) : (
@@ -199,7 +122,7 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
               <p className="ui-note">
                 {gate?.dualApproved
                   ? 'この発注の必要なデザインはすべて両組織の承認済みです。'
-                  : '未承認のデザインがあります。証跡を選んで承認を記録してください。'}
+                  : '未承認のデザインがあります。承認は発注の画面（手順6 校了）で記録します。'}
               </p>
 
               {gate ? (
@@ -255,100 +178,30 @@ export async function ApprovalsScreen({ projectId, projectCode }: ProjectScreenP
                   canVerify={canVerifyEvidence}
                   evidenceLabel={evidenceLabel}
                   organizationText={organizationLabel}
+                  readOnly
+                  recordHref={role === 'auditor' ? null : orderPathOf(orderId)}
                 />
               ) : null}
 
-              {gate
-                ? gate.designs
-                    .filter((design) => !design.dualApproved)
-                    .map((design) => (
-                      <div className="sx-1f27ed4" key={design.designKey}>
-                        <h3 className="sx-f4deb8f">
-                          承認を記録する：デザイン {design.designKey}（版{design.currentRevisionNo}）
-                        </h3>
-                        <RoleGate role={role} operation="artwork_approval:record" label="承認の記録">
-                          <p className="ui-note">
-                            必要な証跡：この発注とデザイン「{design.designKey}」に紐付けた承認証跡の書類バージョン。
-                            顧客の承認には顧客の承認証跡（発行主体「顧客作成」）、セブン化学の承認にはセブン化学の承認証跡
-                            （発行主体「セブン化学」）を、組織ごとに別の書類として登録して引用してください。
-                            承認証跡識別子（承認メールのMessage-IDなど）も組織ごとに違う値になります。
-                          </p>
-                          <ApprovalDecisionForm
-                            action={recordArtworkApprovalAction}
-                            revisionId={design.currentRevisionId}
-                            designKey={design.designKey}
-                            evidenceChoices={approvalEvidenceChoices(orderId, design.designKey)}
-                            evidenceSourceChoices={evidenceSourceChoices()}
-                            defaultEventTime={nowInputValue()}
-                          />
-                        </RoleGate>
-                      </div>
-                    ))
-                : null}
+              {/* P4 §0: approvals are recorded at step 6 of the order screen (one 押印 slot per organization). */}
+              {gate && !gate.dualApproved && canRoleOperate(role, 'artwork_approval:record') && orderPathOf(orderId) ? (
+                <p>
+                  <a className="p4w2-row-link" href={orderPathOf(orderId)!}>
+                    発注の画面で承認を記録する（手順6 校了）<span className="visually-hidden">（{orderCode(orderId)}）</span>
+                  </a>
+                </p>
+              ) : null}
             </div>
           );
         })
       )}
 
       <div className="ui-card">
-        <h2 className="sx-c5c15d8">校正ゲラの版を登録する</h2>
-        <RoleGate role={role} operation="artwork_revision:create" label="版の登録">
-          <p className="ui-note">
-            発注が「{stateLabel('SEVEN_PO_VERIFIED')}」以降の状態で、取り消されていないメーカー発注書がないとき、
-            校正ゲラの書類のバージョンを版として登録できます（取消で終了した発注には登録できません）。
-            新しい版を登録すると、そのデザインの既存の承認は無効になり承認待ちに戻ります。
-            承認の記録があるデザインの差し替えは変更依頼として扱われ、依頼組織・変更理由・証憑・影響（納期／数量／金額）・
-            実費（なければ0）・ロット表記の記録が必要です。
-          </p>
-          {revisionTargets.blocked.length > 0 ? (
-            <div className="ui-info">
-              <strong>版を登録できない発注: </strong>
-              {revisionTargets.blocked.map(({ order, papers }) => `${order.code}（${papers
-                .map((paper) => `${makerPoName(paper, order.code)}: ${MAKER_PO_STATUS_LABELS[paper.status] ?? paper.status}`)
-                .join('、')}）`).join('／')}
-              <p className="ui-note">{ARTWORK_REVISION_LIVE_PAPER_REFUSAL}</p>
-            </div>
-          ) : null}
-          {revisionTargets.unread.length > 0 ? (
-            <p className="ui-note">
-              {`${revisionTargets.unread.map((order) => order.code).join('、')}: メーカー発注書の状態を確認できませんでした。`
-                + '取り消されていないメーカー発注書がある場合、版は登録されません（理由が表示されます）。'}
-            </p>
-          ) : null}
-          <ActionForm action={registerArtworkRevisionAction} submitLabel="版を登録する">
-            <div className="sx-f11b79b">
-              <SelectField
-                name="orderId"
-                label="フィルム発注"
-                required
-                width={300}
-                choices={[...revisionTargets.registrable, ...revisionTargets.unread].map((order) => ({
-                  value: order.id,
-                  label: filmOrderChoiceLabel(order, stateLabel)
-                }))}
-              />
-              <TextField name="designKey" label="デザインキー" required width={180} hint="例：T-35" />
-              <SelectField
-                name="fileDocumentVersionId"
-                label="版ファイル（校正ゲラのバージョン）"
-                required
-                width={420}
-                choices={proofChoices}
-              />
-              <TextField name="lotMarking" label="ロット表記（変更依頼では必須）" width={200} />
-              <TextField name="note" label="備考（任意）" width={220} />
-              <ChangeRequestFields
-                historyKeys={historyKeys}
-                printedOrderIds={printedOrderIds}
-                evidenceChoices={changeEvidence}
-                canRecordPrinted={role === 'admin'}
-              />
-            </div>
-          </ActionForm>
-          {proofChoices.length === 0 ? (
-            <p className="ui-note">校正ゲラの書類がまだありません。文書画面から校正ゲラをアップロードしてください。</p>
-          ) : null}
-        </RoleGate>
+        <h2 className="sx-c5c15d8">校正ゲラの版の登録</h2>
+        <p className="ui-note">
+          校正ゲラは発注の画面の手順5「校正」で登録します。2つ目のデザインは手順6の「別のデザインを追加する」、
+          承認済みデザインの差し替え（変更依頼）は発注の画面の「その他の操作」で行います。この一覧は閲覧用です。
+        </p>
       </div>
 
       <div className="ui-card">
@@ -426,187 +279,6 @@ function organizationStateText(state: DesignApprovalGateView['customer']): strin
   if (state.invalidatedByNewerRevision) return '新しい版で無効化';
   if (state.latestDecision === 'REVOKE') return '取消済み';
   return '未承認';
-}
-
-/** The result select of the verification form. */
-/** P0 R02: a mismatched issuer without the declared exception can only be rejected (the API refuses 「確認」). */
-/** P0 review (EVIDENCE_REQUIRES_REPLACEMENT): an older held-back approval is re-recorded, not checked. */
-const REPLACEMENT_GUIDANCE =
-  'この承認は確認の記録ができない古い記録です。上の「承認を記録する」で、この組織が発行した承認証跡を選んで承認を記録し直してください（証跡がなければ文書画面で先に登録します）。';
-
-const REJECT_ONLY_CHOICES: Choice[] = [{ value: 'rejected', label: '却下（発行元が承認する組織と違う／確認できなかった）' }];
-
-/**
- * P0 R02 (B2): the facts the representative checks before 「確認」, spelled out —
- * the evidence's issuer, the organization approving, whether they match, the
- * shared-evidence exception and its reason, and whether 「確認」 is possible.
- */
-function EvidenceIssuerCheck({
-  entry,
-  organizationText
-}: {
-  entry: PendingManualVerificationView;
-  organizationText: (key: string) => string;
-}) {
-  const issuer = entry.evidenceIssuerEntity ? ISSUER_ENTITY_LABELS[entry.evidenceIssuerEntity as IssuerEntity] ?? '（不明）' : '（記録なし）';
-  const expected = entry.expectedIssuerEntity ? ISSUER_ENTITY_LABELS[entry.expectedIssuerEntity as IssuerEntity] ?? '（不明）' : '—';
-  const matches = entry.issuerMatchesOrganization;
-  return (
-    <dl className="issuer-check">
-      <div>
-        <dt>承認する組織</dt>
-        <dd>{organizationText(entry.organization)}</dd>
-      </div>
-      <div>
-        <dt>証跡の発行元</dt>
-        <dd>{issuer}</dd>
-      </div>
-      <div>
-        <dt>照合</dt>
-        <dd>
-          {matches === true ? (
-            <StatusBadge tone="done" label="一致" />
-          ) : matches === false ? (
-            <>
-              <StatusBadge tone="blocked" label="不一致" />
-              {` 必要な発行元: ${expected}`}
-            </>
-          ) : (
-            '（照合結果なし）'
-          )}
-        </dd>
-      </div>
-      <div>
-        <dt>識別子</dt>
-        <dd translate="no">{entry.evidenceIdentifier ?? '（記録なし）'}</dd>
-      </div>
-      {entry.sameContentUsedByOtherOrganization ? (
-        <div>
-          <dt>内容の重複</dt>
-          <dd>もう一方の組織の承認と同じ内容の証跡です（同じ書類またはまったく同じファイル）。共有証跡の例外がなければ数えられません。</dd>
-        </div>
-      ) : null}
-      {entry.sharedEvidenceException ? (
-        <div>
-          <dt>共有証跡の例外</dt>
-          <dd>あり（理由: {entry.sharedEvidenceException.reason ?? '記録なし'}）</dd>
-        </div>
-      ) : null}
-      {entry.confirmable ? null : (
-        <div>
-          <dt>確認</dt>
-          <dd>発行元が承認する組織と違うため「確認」は記録できません。「却下」を記録し、その組織が発行した承認証跡を登録し直してください。</dd>
-        </div>
-      )}
-    </dl>
-  );
-}
-
-const VERIFICATION_RESULT_CHOICES: Choice[] = [
-  { value: 'confirmed', label: '確認（識別子を原本証跡で確認した）' },
-  { value: 'rejected', label: '却下（確認できなかった）' }
-];
-
-/**
- * M8-OPER2 FIX 2: the pending evidence verifications of one order. Admin sees
- * the original evidence (원본 증빙) next to the proof revision it is checked
- * against (교정본) and records the append-only verification; every other role
- * reads why the approval is not counting yet and waits for the representative.
- */
-function PendingVerificationSection({
-  pending,
-  role,
-  canVerify,
-  evidenceLabel,
-  organizationText
-}: {
-  pending: PendingManualVerificationView[];
-  role: string | null;
-  canVerify: boolean;
-  evidenceLabel: (versionId: string | null) => string;
-  organizationText: (key: string) => string;
-}) {
-  return (
-    <div className="sx-1f27ed4">
-      <h3 className="sx-e6251b7">
-        承認証跡の手動確認（PDF・画像の識別子確認）— {pending.length}件
-      </h3>
-      <p className="ui-note">
-        バイナリ証跡（PDF・画像）の承認は、識別子を自動検証できないため手動確認待ちとして記録されます。
-        確認が記録されるまで両組織の承認には算入されません。確認の記録は代表者だけです。
-      </p>
-      {pending.map((entry) => (
-        <div className="sx-045aac8" key={entry.approvalEventId}>
-          <div className="ui-info sx-ab544d4">
-            <StatusBadge tone="waiting" label="手動確認待ち" /><KoGloss ko="수동 확인 대기" />{' '}
-            <strong>{organizationText(entry.organization)}</strong> の承認（デザイン {entry.designKey}／版
-            {entry.revisionNo}）は手動確認待ちです。
-            <EvidenceIssuerCheck entry={entry} organizationText={organizationText} />
-            <div className="ui-note">
-              原本証跡: {evidenceLabel(entry.evidenceDocumentVersionId)}
-              <TechDetails context="ID・識別子">
-                <p>証跡バージョンID: {entry.evidenceDocumentVersionId ?? '—'}</p>
-                <p>承認証跡識別子: {entry.evidenceIdentifier ?? '—'}</p>
-                <p>版ハッシュ（approved_file_sha256）: {entry.approvedFileSha256}</p>
-              </TechDetails>
-              確認対象の校正: デザイン {entry.designKey} ／ 版{entry.revisionNo} ／{' '}
-              {formatTimestamp(entry.eventTime)} 承認（記録 {formatTimestamp(entry.recordedAt)}）
-              {entry.manualVerification ? (
-                <div>
-                  前回の確認: {entry.manualVerification.result === 'confirmed' ? '確認' : '却下'} ／ 検証者{' '}
-                  {entry.manualVerification.verifierName} ／ {formatTimestamp(entry.manualVerification.verifiedAt)}
-                </div>
-              ) : null}
-            </div>
-          </div>
-          {canVerify && !entry.recordedAsPending ? (
-            <p className="role-notice">{REPLACEMENT_GUIDANCE}</p>
-          ) : null}
-          {canVerify && entry.recordedAsPending ? (
-            <ActionForm
-              action={verifyEvidenceManualAction}
-              submitLabel="手動確認を記録する"
-              submitLabelKo="수동 확인을 기록"
-              hint="確認の記録は新しい追記型イベントです。元の承認イベントとその監査記録は書き換えられません。"
-              hintKo="확인 기록은 새로 추가되는 이벤트입니다. 원래의 승인 이벤트와 감사 기록은 수정되지 않습니다."
-              confirm={{
-                title: '承認証跡の手動確認を記録しますか？',
-                body: `${organizationText(entry.organization)} の承認（デザイン ${entry.designKey}／版${entry.revisionNo}）に、選んだ結果を記録します。「確認」は両組織の承認に算入されます。記録は追記型で、あとから書き換えられません。`,
-                summaryFields: ['result', 'reasonNote']
-              }}
-            >
-              <input type="hidden" readOnly name="approvalEventId" value={entry.approvalEventId} />
-              <div className="sx-f11b79b">
-                {/* P0 R11 (M3): the API records the signed-in representative and the server time. */}
-                <SelectField
-                  name="result"
-                  label="結果"
-                  required
-                  width={320}
-                  choices={entry.confirmable ? VERIFICATION_RESULT_CHOICES : REJECT_ONLY_CHOICES}
-                />
-                <TextField
-                  name="reasonNote"
-                  label="根拠（原本証跡のどこで識別子を確認したか）"
-                  required
-                  width={420}
-                />
-              </div>
-            </ActionForm>
-          ) : (
-            <p className="role-notice">
-              次のアクション: 代表者による原本証跡の確認を待ちます。<KoGloss ko="다음 작업: 대표의 원본 증빙 확인을 기다립니다." />{operationRefusal(role, 'artwork_approval:verify_evidence', '手動確認の記録')}
-            </p>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-/** Current wall-clock time in Japan, explicitly independent of the server timezone. */
-function nowInputValue(): string {
-  return asiaTokyoDatetimeLocalNow();
 }
 
 /**

@@ -19,7 +19,7 @@ import { createApp } from '../apps/api/src/app.js';
 import { hashPassword } from '../apps/api/src/password.js';
 import { issueToken, SESSION_COOKIE } from '../apps/api/src/auth.js';
 import { sendMakerPoEmlEvidence } from './helpers/maker-po-evidence.js';
-import { projectScreen } from './helpers/project-screen.js';
+import { orderScreen, projectScreen } from './helpers/project-screen.js';
 import { withApprovalSnapshot } from './helpers/approval-snapshot.js';
 
 /**
@@ -86,10 +86,26 @@ vi.mock('../apps/web/src/lib/api.js', () => ({
   }
 }));
 vi.mock('next/cache', () => ({ revalidatePath: () => undefined }));
+// P4 web2a §0: the order screen (where the forms moved) draws client components that read the router.
+vi.mock('next/navigation', () => ({
+  redirect: () => undefined,
+  usePathname: () => '/p/TEST-P/o/x',
+  useRouter: () => ({ refresh: () => undefined, replace: () => undefined }),
+  useSearchParams: () => new URLSearchParams()
+}));
 vi.mock('next/headers', () => ({ cookies: async () => ({ get: () => undefined, set: () => undefined }) }));
 
 const MakerPoPage = projectScreen((await import('../apps/web/src/screens/MakerPoScreen.js')).MakerPoScreen);
 const OrdersPage = projectScreen((await import('../apps/web/src/screens/OrdersScreen.js')).OrdersScreen);
+/** P4 web2a §0: the order screen of one order — the maker paper's cancellation forms are in its 「その他の操作」. */
+const orderPage = (orderCode: string) => render(orderScreen(orderCode));
+/** The markup of one 「その他の操作」 panel of the order screen. */
+function menuPanel(html: string, key: string): string {
+  const start = html.indexOf(`data-menu-panel="${key}"`);
+  expect(start, `panel ${key}`).toBeGreaterThan(-1);
+  const end = html.indexOf('data-menu-panel="', start + 1);
+  return html.slice(start, end === -1 ? undefined : end);
+}
 const {
   makerPoSendProof,
   sendManualVerificationsFromAuditEvents
@@ -324,8 +340,9 @@ describe('High-A: a manually confirmed send is a proven send on the screen, as o
     signIn('admin');
     const before = orderCard(await render(MakerPoPage), chain.orderCode);
     expect(before).toContain('この発注書の送信状態: </strong>送信ずみ（送信証跡の確認、または代表者による送信の手動確認があります）');
-    expect(before).toContain('この発注書は送信ずみです（送信証跡の確認、または送信の手動確認の記録があります）');
     expect(before).not.toContain('未送信');
+    // The cancel box and its dialog are on the order screen now (P4 §0).
+    expect(await orderPage(chain.orderCode)).toContain('この発注書は送信ずみです（送信証跡の確認、または送信の手動確認の記録があります）');
 
     const cancelled = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancel`, { note: '送信済み発注の訂正' });
     expect(cancelled.status).toBe(200);
@@ -334,9 +351,9 @@ describe('High-A: a manually confirmed send is a proven send on the screen, as o
     expect(await orderStatus(chain.orderId)).toBe('MAKER_PO_SENT_MANUALLY');
     expect(await webProof(poId)).toBe('proven');
 
-    const after = orderCard(await render(MakerPoPage), chain.orderCode);
-    // The danger zone is open on the acknowledgement work (it was missing before: High-A).
-    expect(after).toMatch(/<details class="danger-zone" open="">/);
+    // The list says the acknowledgement is owed and links the order screen, where it is recorded (P4 §0).
+    expect(orderCard(await render(MakerPoPage), chain.orderCode)).toContain('送信ずみで取り消した発注書の取り消し承認が未記録です。');
+    const after = menuPanel(await orderPage(chain.orderCode), 'maker-paper');
     expect(after).toContain('取り消し承認を記録する（メーカー取消確認・代表者のみ）');
     expect(after).toContain(`name="poId" value="${poId}"`);
     // Low-6: only the version bound to this paper is offered.
@@ -362,6 +379,7 @@ describe('High-A: a manually confirmed send is a proven send on the screen, as o
     const recorded = orderCard(await render(MakerPoPage), chain.orderCode);
     expect(recorded).toContain('取り消し承認（メーカー取消確認）: 記録済み');
     expect(recorded).not.toContain('取り消し承認を記録する（メーカー取消確認・代表者のみ）');
+    expect(await orderPage(chain.orderCode)).not.toContain('取り消し承認を記録する（メーカー取消確認・代表者のみ）');
   });
 
   it('a send still waiting for the manual check is not proven: the box warns, the API cancels internally', async () => {
@@ -371,7 +389,8 @@ describe('High-A: a manually confirmed send is a proven send on the screen, as o
     expect(await webProof(poId)).toBe('unproven');
 
     signIn('admin');
-    const card = orderCard(await render(MakerPoPage), chain.orderCode);
+    expect(orderCard(await render(MakerPoPage), chain.orderCode)).toContain('送信は記録されていますが、まだ確認されていません（手動確認待ち）');
+    const card = await orderPage(chain.orderCode);
     expect(card).toContain('送信は記録されていますが、まだ確認されていません（手動確認待ち）');
     expect(card).toContain('取り消す前に送信の手動確認を記録してください');
 
@@ -379,8 +398,8 @@ describe('High-A: a manually confirmed send is a proven send on the screen, as o
     expect(cancelled.status).toBe(200);
     expect(cancelled.body).toMatchObject({ cancellationKind: 'INTERNAL_CANCEL' });
     expect(await orderStatus(chain.orderId)).toBe('MAKER_PO_READY');
-    const after = orderCard(await render(MakerPoPage), chain.orderCode);
-    expect(after).not.toContain('取り消し承認を記録する');
+    expect(orderCard(await render(MakerPoPage), chain.orderCode)).not.toContain('取り消し承認を記録する');
+    expect(await orderPage(chain.orderCode)).not.toContain('取り消し承認を記録する');
   });
 
   it('a VERIFIED send stays proven (unchanged rule) and an unsent paper says 未送信', async () => {
@@ -397,7 +416,7 @@ describe('High-A: a manually confirmed send is a proven send on the screen, as o
     expect(await webProof(poId)).toBe('proven');
     const cancelled = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancel`, { note: '訂正' });
     expect(cancelled.body).toMatchObject({ cancellationKind: 'MAKER_PO_CANCELLED' });
-    const after = orderCard(await render(MakerPoPage), chain.orderCode);
+    const after = await orderPage(chain.orderCode);
     expect(after).toContain('取り消し承認を記録する（メーカー取消確認・代表者のみ）');
     // No document is bound to this paper: the select is replaced by the guidance.
     expect(after).toContain('引用できる書類はありません（証跡は任意です）');
@@ -408,8 +427,9 @@ describe('High-A: a manually confirmed send is a proven send on the screen, as o
     try {
       const outage = orderCard(await render(MakerPoPage), chain.orderCode);
       expect(outage).toContain('一時的に取得できません');
-      expect(outage).toContain('取り消し承認を記録する（メーカー取消確認・代表者のみ）');
-      expect(outage).toContain('この発注書の送信の記録を読み込めなかったため');
+      const outageOrder = await orderPage(chain.orderCode);
+      expect(outageOrder).toContain('取り消し承認を記録する（メーカー取消確認・代表者のみ）');
+      expect(outageOrder).toContain('この発注書の送信の記録を読み込めなかったため');
     } finally {
       signedIn.failPaths.clear();
     }
@@ -429,16 +449,19 @@ describe('hold release and cancellation review: dedicated admin forms, real endp
     expect(held.ok).toBe(true);
     expect(await orderStatus(chain.orderId)).toBe('ON_HOLD');
 
-    const adminHtml = await render(OrdersPage);
-    expect(adminHtml).toContain('保留を解除する（代表者のみ）');
-    expect(adminHtml).toContain('保留の解除は下の「保留を解除する（代表者のみ）」で行います');
+    // P4 §0: the release is the order screen's panel form (the list only reads).
+    const adminHtml = await orderPage(chain.orderCode);
+    expect(adminHtml).toMatch(/<button type="submit"[^>]*>保留を解除する/);
+    expect(adminHtml).toContain('顧客確認待ち');
     // No generic resume target is offered for a hold any more.
     expect(adminHtml).not.toContain('<optgroup label="再開する状態"');
+    expect(await render(OrdersPage)).not.toMatch(/<button type="submit"[^>]*>保留を解除する/);
 
     signIn('staff');
-    const staffHtml = await render(OrdersPage);
-    expect(staffHtml).toContain('保留の解除は代表者が行います。');
-    expect(staffHtml).not.toContain('保留を解除する（代表者のみ）</summary>');
+    const staffHtml = await orderPage(chain.orderCode);
+    // Staff read who releases it (相手待ち), no form.
+    expect(staffHtml).toContain('（保留の解除は代表）');
+    expect(staffHtml).not.toMatch(/<button type="submit"[^>]*>保留を解除する/);
     const staffRelease = await releaseFilmOrderHoldAction(null, form({ orderId: chain.orderId, reason: '担当者' }));
     expect(staffRelease.ok).toBe(false);
     expect(await orderStatus(chain.orderId)).toBe('ON_HOLD');
@@ -461,8 +484,8 @@ describe('hold release and cancellation review: dedicated admin forms, real endp
     const chain = await reachMakerPoReady();
     signIn('admin');
     expect((await transitionFilmSupplyOrderAction(null, form({ orderId: chain.orderId, to: 'CANCELLATION_REVIEW' }))).ok).toBe(true);
-    const reviewHtml = await render(OrdersPage);
-    expect(reviewHtml).toContain('取消確認を処理する（代表者のみ）');
+    const reviewHtml = await orderPage(chain.orderCode);
+    expect(reviewHtml).toMatch(/<button type="submit"[^>]*>取消確認を処理する/);
     expect(reviewHtml).toContain('<option value="resume">再開する（取消確認前の状態に戻す）</option>');
     expect(reviewHtml).toContain('<option value="cancel">取消で終了する（取消済・元に戻せません）</option>');
 
@@ -481,8 +504,9 @@ describe('hold release and cancellation review: dedicated admin forms, real endp
     const badge = /<span class="status-badge status-badge--(\w+)"><span class="status-badge-mark" aria-hidden="true">(.)<\/span>([^<]*)<\/span>/g;
     const badges = [...cancelledHtml.matchAll(badge)].map((match) => [match[1], match[2], match[3]]);
     expect(badges, cancelledHtml.slice(cancelledHtml.indexOf('<table'), cancelledHtml.indexOf('<table') + 1500)).toContainEqual(['blocked', '✕', '取消済']);
-    expect(cancelledHtml).toContain('この発注は取消で終了しています（取消済）。これ以上進める先はありません。');
     expect(cancelledHtml).toContain('この発注は取消で終了しました（取消済）。段階は進みません。');
+    // P4 §0: the order screen says it is over (the list's transition cell is gone).
+    expect(await orderPage(chain.orderCode)).toContain('この発注は取消で終了しました。これ以上の手順はありません。');
     // The terminal state really is terminal on the server.
     const reopen = await postAs(adminToken, `/api/film-supply-orders/${chain.orderId}/transitions`, { to: 'DRAFT' });
     expect(reopen.status).toBe(409);
@@ -524,8 +548,7 @@ describe('High-A: a busy project — the confirmation lies past the capped audit
 
     const cancelled = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancel`, { note: '訂正' });
     expect(cancelled.body).toMatchObject({ cancellationKind: 'MAKER_PO_CANCELLED' });
-    const after = orderCard(await render(MakerPoPage), chain.orderCode);
-    expect(after).toContain('取り消し承認を記録する（メーカー取消確認・代表者のみ）');
+    expect(await orderPage(chain.orderCode)).toContain('取り消し承認を記録する（メーカー取消確認・代表者のみ）');
   });
 });
 
@@ -544,6 +567,6 @@ describe('review M2: a rejected send that is confirmed later is proven (real API
     expect(card).toContain('この発注書の送信状態: </strong>送信ずみ');
     const cancelled = await postAs(adminToken, `/api/maker-purchase-orders/${poId}/cancel`, { note: '訂正' });
     expect(cancelled.body).toMatchObject({ cancellationKind: 'MAKER_PO_CANCELLED' });
-    expect(orderCard(await render(MakerPoPage), chain.orderCode)).toContain('取り消し承認を記録する（メーカー取消確認・代表者のみ）');
+    expect(await orderPage(chain.orderCode)).toContain('取り消し承認を記録する（メーカー取消確認・代表者のみ）');
   });
 });

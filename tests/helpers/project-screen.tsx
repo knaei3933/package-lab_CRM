@@ -21,3 +21,22 @@ export function projectScreen<P extends object>(screen: Screen<P>) {
     return screen({ projectId, projectCode: TEST_PROJECT_CODE, ...(props ?? ({} as P)) });
   };
 }
+
+/**
+ * P4 web2a §0: the old lists only read now — a record is made on the order screen
+ * (/p/{案件}/o/{発注}). The parity tests draw that screen for one order of the test project.
+ */
+export function orderScreen(orderCode: string) {
+  return projectScreen(async (props: { projectId: string; projectCode: string }) => {
+    const { OrderDetailScreen } = await import('../../apps/web/src/screens/OrderDetailScreen.js');
+    return OrderDetailScreen({ ...props, orderCode, started: false });
+  });
+}
+
+/** P4 web2a §0: the markup of one 「その他の操作」 panel of the order screen ('' when the menu has no such item). */
+export function menuPanel(html: string, key: string): string {
+  const start = html.indexOf(`data-menu-panel="${key}"`);
+  if (start === -1) return '';
+  const end = html.indexOf('data-menu-panel="', start + 1);
+  return html.slice(start, end === -1 ? undefined : end);
+}

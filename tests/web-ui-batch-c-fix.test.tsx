@@ -445,15 +445,19 @@ beforeEach(() => {
   callApi.mockReset();
 });
 
-describe('M3: /orders — 本登録, 発注書の照合チェック, 支払条件 ask first (primary tone, disabled before hydration)', () => {
+const { SevenPoChecklistForm, SevenPoRegisterForm } = await import('../apps/web/src/components/SevenPoForms.js');
+const { PaymentTermsChange } = await import('../apps/web/src/components/OrderTermsSection.js');
+
+describe('M3: 本登録, 発注書の照合チェック, 支払条件 ask first (primary tone, disabled before hydration) — on the order screen since P4 §0', () => {
+  // P4 web2a §0: these forms moved from the 発注の一覧 table to the order screen (steps 1–2, 「発注の条件」).
+  const draft = { id: ORDER_DRAFT, code: 'FSO-DRAFT', status: 'DRAFT', paymentTerms: 'undetermined', paymentTermsEditable: true } as never;
   it.each([
-    ['本登録する', '本登録日を記録しますか？', ['本登録日']],
-    ['チェックリストを記録する', '発注書の照合チェックを記録しますか？', ['相違あり・確認中', '履歴に残ります']],
-    ['支払条件を変更する', '発注 FSO-DRAFT の支払条件を変更しますか？', ['入金確認ではありません', '代表承認の前なら記録し直せます']]
-  ] as const)('%s → dialog 「%s」', async (button, title, bodyParts) => {
-    serve([...SEVEN_PO_ROWS, ...filmOrder(ORDER_DRAFT, 'FSO-DRAFT', [])]);
-    const html = await renderPage(OrdersPage);
-    const form = formWithButton(html, button);
+    ['本登録する', '本登録日を記録しますか？', ['本登録日'], () => <SevenPoRegisterForm poId="po-1" poNumber="PO-1" role="admin" />],
+    ['照合チェックを記録する', '発注書の照合チェックを記録しますか？', ['相違あり・確認中', '履歴に残ります'], () => <SevenPoChecklistForm poId="po-1" poNumber="PO-1" role="staff" />],
+    ['支払条件を変更する', '発注 FSO-DRAFT の支払条件を変更しますか？', ['入金確認ではありません', '代表承認の前なら記録し直せます'], () => <PaymentTermsChange order={draft} role="staff" cancelled={false} />]
+  ] as const)('%s → dialog 「%s」', (button, title, bodyParts, node) => {
+    const html = render(node());
+    const form = formWithButton(html, `${button}(?:<span class="visually-hidden">[^<]*</span>)?`);
     expect(form, button).not.toBe('');
     expect(form).toMatch(new RegExp(`<dialog class="confirm-dialog"[^>]*>[\\s\\S]*?<h2 [^>]*>${title}</h2>`));
     for (const part of bodyParts) expect(form).toContain(part);
@@ -462,27 +466,28 @@ describe('M3: /orders — 本登録, 発注書の照合チェック, 支払条�
   });
 
   it('the summary fields name real controls of each form (the dialog rows are read from them)', () => {
-    const page = source('apps/web/src/screens/OrdersScreen.tsx');
-    expect(page).toContain("summaryFields: ['officialRegisteredAt']");
-    expect(page).toContain("summaryFields: ['paymentTerms', 'reason']");
-    expect(page).toMatch(/summaryFields: \[\s*'quoteMatchesPo',\s*'quoteCompared',\s*'uncertain',\s*'confirmationReplyRecorded',\s*'documentNumber',\s*'issueDate'\s*\]/);
-    for (const name of ['officialRegisteredAt', 'paymentTerms', 'reason', 'quoteMatchesPo', 'quoteCompared', 'uncertain', 'confirmationReplyRecorded', 'documentNumber', 'issueDate']) {
-      expect(page).toContain(`name="${name}"`);
+    const forms = source('apps/web/src/components/SevenPoForms.tsx');
+    expect(forms).toContain("summaryFields: ['officialRegisteredAt']");
+    expect(forms).toMatch(/summaryFields: \[\s*'quoteMatchesPo',\s*'quoteCompared',\s*'uncertain',\s*'confirmationReplyRecorded',\s*'documentNumber',\s*'issueDate'\s*\]/);
+    for (const name of ['officialRegisteredAt', 'quoteMatchesPo', 'quoteCompared', 'uncertain', 'confirmationReplyRecorded', 'documentNumber', 'issueDate']) {
+      expect(forms).toContain(`name="${name}"`);
     }
+    expect(source('apps/web/src/components/OrderTermsSection.tsx')).toContain("summaryFields: ['paymentTerms', 'reason']");
+  });
+
+  it('the 発注の一覧 table carries none of them any more (it only reads)', async () => {
+    serve([...SEVEN_PO_ROWS, ...filmOrder(ORDER_DRAFT, 'FSO-DRAFT', [])]);
+    const html = await renderPage(OrdersPage);
+    for (const button of ['本登録する', 'チェックリストを記録する', '支払条件を変更する']) expect(formWithButton(html, button), button).toBe('');
   });
 });
 
-describe('M3: /maker-po — 受入記録（仮） asks first and names the empty-date case', () => {
-  it('the provisional acceptance form carries its dialog and a disabled button before hydration', async () => {
+describe('M3: /maker-po — 受入記録（仮） is recorded at step 10 of the order screen (P4 §0)', () => {
+  it('the maker list draws no acceptance form; it links the order screen at step 10', async () => {
     serve([...SEVEN_PO_ROWS, ...filmOrder(ORDER_SENT, 'FSO-SENT', [...TO_READY, 'APPROVED_FOR_MANUAL_SEND', 'MAKER_PO_SENT_MANUALLY'])]);
     const html = await renderPage(MakerPoPage);
-    const form = formWithButton(html, '受入記録（仮）を記録する');
-    expect(form).not.toBe('');
-    expect(form).toMatch(/<dialog class="confirm-dialog"[^>]*>[\s\S]*?<h2 [^>]*>受入記録（仮）を記録しますか？<\/h2>/);
-    expect(form).toContain('発注書の状態は動きません');
-    expect(form).toContain('受入日時なしで記録されます');
-    expect(submitButtons(form).map(isDisabled)).toEqual([true]);
-    expect(source('apps/web/src/screens/MakerPoScreen.tsx')).toContain("summaryFields: ['acceptedAt']");
+    expect(formWithButton(html, '受入記録（仮）を記録する')).toBe('');
+    expect(html.match(/<form\b/g) ?? []).toHaveLength(0);
   });
 });
 

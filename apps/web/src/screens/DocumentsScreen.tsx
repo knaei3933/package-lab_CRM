@@ -1,37 +1,19 @@
-import type { Metadata } from 'next';
-import { ActionForm } from '../components/ActionForm';
-import { DocumentUploadForm } from '../components/DocumentUploadForm';
+import { orderPath } from '../lib/project-route';
 import { ProjectProgress } from '../components/ProjectProgress';
 import { ProjectUnavailable } from '../components/ProjectUnavailable';
 import type { ProjectScreenProps } from './screen-props';
-import { isOwnDocumentOfStaff, SELF_VERIFICATION_NOTICE } from '../lib/self-verification';
-import { RoleGate, ViewerPageNotice } from '../components/RoleGate';
+import { ViewerPageNotice } from '../components/RoleGate';
 import { DataTable } from '../components/DataTable';
 import { StatusBadge } from '../components/StatusBadge';
 import { TechDetails } from '../components/TechDetails';
-import { SelectField, TextField } from '../components/fields';
-import { uploadDocumentAction, verifyDocumentAction } from '../app/actions';
 import { loadSessionUser } from '../lib/api';
-import { loadMakerPoChoices } from '../lib/document-maker-po-server';
 import { canRoleOperate } from '../lib/permissions';
-import {
-  filmOrderChoiceLabel,
-  labelLookup,
-  loadWorkspace,
-  NO_PROJECT_SELECTED_MESSAGE,
-  sevenPurchaseOrderChoiceLabel
-} from '../lib/project-data';
-import type { SevenPurchaseOrderView } from '../lib/project-data';
-import type { SevenPoChoice } from '../lib/document-maker-po';
+import { loadWorkspace } from '../lib/project-data';
 import { shortId } from '../lib/short-id';
-import { cardStyle, infoBoxStyle, monoStyle, noteStyle, tdStyle, thStyle } from '../lib/ui';
 import {
   DOCUMENT_TYPE_LABELS,
   formatTimestamp,
-  documentTypeChoices,
-  contentTypeChoices,
   ISSUER_ENTITY_LABELS,
-  issuerEntityChoices,
   VERIFICATION_STATUS_LABELS
 } from '../lib/vocabulary';
 import { HIDDEN_BY_ROLE_LABEL, HIDDEN_BY_ROLE_SHORT } from '../lib/redaction';
@@ -46,33 +28,6 @@ import { documentDownloadHref, downloadRefusalMessage } from '../lib/document-do
  * audit history of the selected project, and the verify control calls
  * POST /api/documents/:id/verify with verificationStatus verified/mismatch.
  */
-/**
- * UI batch E (F-07): the upload form's PO choices — named the way the orders
- * screen names them, and tagged ready when the PO opens the official-artifact
- * gate (registered, verified, no review pending). A PO that is not ready says
- * so in its label instead of failing after the upload.
- */
-function sevenPoUploadChoices(orders: readonly SevenPurchaseOrderView[]): SevenPoChoice[] {
-  return orders.map((po) => {
-    const ready = po.officiallyRegistered && po.verificationStatus === 'verified' && !po.reviewPending;
-    // Review L3: name the step that is missing, not always the checklist.
-    const missing = po.reviewPending
-      ? '不一致の確認中です'
-      : po.verificationStatus === 'mismatch'
-        ? '発注書の照合で相違ありです'
-        : po.verificationStatus !== 'verified'
-          ? po.verificationHidden ? '発注書の照合の状態は閲覧権限なしです' : '発注書の照合チェックがまだです'
-          : !po.officiallyRegistered
-            ? po.officialRegistrationHidden ? '本登録の状態は閲覧権限なしです' : '本登録がまだです'
-            : '';
-    return {
-      value: po.id,
-      ready,
-      label: ready ? sevenPurchaseOrderChoiceLabel(po) : `${sevenPurchaseOrderChoiceLabel(po)} ${missing}`
-    };
-  });
-}
-
 export async function DocumentsScreen(props: ProjectScreenProps & {
   searchParams?: Promise<Record<string, string | string[] | undefined>> | undefined;
 }) {
@@ -90,15 +45,9 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
   // UI batch F: download links only for a role the API lets read the files
   // (assigned staff, the representative); the API still decides each request.
   const canDownload = canRoleOperate(role, 'document:read');
-  const stateLabel = labelLookup(workspace.labels, 'filmSupplyOrderStates');
   const poLabelById = new Map(workspace.sevenPurchaseOrders.map((po) => [po.id, po.poNumber]));
 
-  const makerPurchaseOrderChoices = await loadMakerPoChoices(workspace.filmOrders);
-
-  const verificationChoices = [
-    { value: 'verified', label: VERIFICATION_STATUS_LABELS.verified ?? '確認済み' },
-    { value: 'mismatch', label: VERIFICATION_STATUS_LABELS.mismatch ?? '相違あり' }
-  ];
+  const orderCodeOf = (orderId: string): string | null => workspace.filmOrders.find((order) => order.id === orderId)?.code ?? null;
 
   return (
     <section className="sx-11bfff5">
@@ -115,25 +64,13 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
       </header>
 
       <div className="ui-card">
-        <h2 className="sx-c5c15d8">書類をアップロードする</h2>
-        <RoleGate role={role} operation="document:create" label="書類のアップロード">
-          <p className="ui-note">
-            セブン化学発注書は先行発注参照として記録される場合があります。正式書類（校正ゲラ・各種証跡）は、
-            セブン化学発注書の本登録と発注書の照合がすんでいる必要があります。
-          </p>
-          <DocumentUploadForm
-            action={uploadDocumentAction}
-            documentTypeChoices={documentTypeChoices()}
-            issuerEntityChoices={issuerEntityChoices()}
-            contentTypeChoices={contentTypeChoices()}
-            sevenPurchaseOrderChoices={sevenPoUploadChoices(workspace.sevenPurchaseOrders)}
-            makerPurchaseOrderChoices={makerPurchaseOrderChoices}
-            filmSupplyOrderChoices={workspace.filmOrders.map((order) => ({
-              value: order.id,
-              label: filmOrderChoiceLabel(order, stateLabel)
-            }))}
-          />
-        </RoleGate>
+        <h2 className="sx-c5c15d8">書類の登録と確認</h2>
+        {/* P4 §0: the file of each step is registered in that step of the order screen (its type,
+            issuer and links are fixed by the step); the checks are made there too. */}
+        <p className="ui-note">
+          書類は発注の画面の各手順で登録します（発注書・デザイン入稿データ・校正ゲラ・承認証跡・受領証跡）。種類と発行元は手順が決めるので、ここで選ぶ必要はありません。
+          確認の記録も発注の画面（「その他の操作」の書類の確認、各手順）で行います。この一覧は閲覧用です。
+        </p>
       </div>
 
       <div className="ui-card">
@@ -151,7 +88,7 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
         {workspace.documents.length === 0 ? (
           <p className="ui-note">書類はまだありません。</p>
         ) : (
-          <DataTable caption="書類の一覧" captionHidden>
+          <DataTable caption="書類の一覧" captionHidden cards>
             <thead>
               <tr>
                 <th className="ui-th" scope="col">書類種別</th>
@@ -160,26 +97,26 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                 <th className="ui-th" scope="col">紐付け</th>
                 <th className="ui-th" scope="col">検証状態</th>
                 <th className="ui-th" scope="col">登録</th>
-                {showVerifyColumn ? <th className="ui-th" scope="col">確認を記録する</th> : null}
+                {showVerifyColumn ? <th className="ui-th" scope="col">発注の画面</th> : null}
               </tr>
             </thead>
             <tbody>
               {workspace.documents.map((document) => (
                 <tr key={document.id} data-record-id={document.id}>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="書類種別">
                     {document.typeHidden
                       ? HIDDEN_BY_ROLE_LABEL
                       : DOCUMENT_TYPE_LABELS[document.documentType as keyof typeof DOCUMENT_TYPE_LABELS]
                         ?? document.documentType}
                     <TechDetails context="ID">{document.id}</TechDetails>
                   </td>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="発行主体">
                     {document.detailsHidden
                       ? HIDDEN_BY_ROLE_LABEL
                       : ISSUER_ENTITY_LABELS[document.issuerEntity as keyof typeof ISSUER_ENTITY_LABELS]
                         ?? document.issuerEntity}
                   </td>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="ファイル名">
                     {document.filename}
                     {document.note ? <div className="ui-note">{document.note}</div> : null}
                     <details className="sx-c71373e">
@@ -212,7 +149,7 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                       ))}
                     </details>
                   </td>
-                  <td className="ui-td">
+                  <td className="ui-td" data-label="紐付け">
                     {document.sevenPurchaseOrderId ? (
                       <div>セブン化学発注書: {poLabelById.get(document.sevenPurchaseOrderId) ?? shortId(document.sevenPurchaseOrderId)}</div>
                     ) : null}
@@ -229,7 +166,7 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                         : '—'
                       : null}
                   </td>
-                  <td className="status-cell ui-td">
+                  <td className="status-cell ui-td" data-label="検証状態">
                     {document.verificationHidden
                       ? <StatusBadge tone="hidden" label={HIDDEN_BY_ROLE_LABEL} />
                       : (
@@ -242,32 +179,18 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                     {document.verificationNote ? <div className="ui-note">{document.verificationNote}</div> : null}
                     {/* UI batch E (F-19): the send itself is confirmed on the maker PO screen, not here. */}
                     {document.documentType === 'send_evidence' && !document.verificationHidden && document.verificationStatus === 'unverified' ? (
-                      <div className="ui-note">送信が確認済みかどうかは、メーカー発注画面の「送信の記録」に表示されます（この欄は書類そのものの確認です）。</div>
+                      <div className="ui-note">送信が確認済みかどうかは、発注の画面の手順9「メーカーへ送信」に表示されます（この欄は書類そのものの確認です）。</div>
                     ) : null}
                   </td>
-                  <td className="ui-td">{formatTimestamp(document.createdAt)}</td>
+                  <td className="ui-td" data-label="登録">{formatTimestamp(document.createdAt)}</td>
                   {showVerifyColumn ? (
-                    <td className="ui-td sx-c2faf0d">
-                      {/* P1 P-4: staff never confirm the evidence they registered themselves (the API refuses
-                          SELF_VERIFICATION_FORBIDDEN); the representative may (recorded as a self-verification). */}
-                      {isOwnDocumentOfStaff(role, user?.id ?? null, document) ? (
-                        <p className="ui-note">{SELF_VERIFICATION_NOTICE}</p>
-                      ) : (
-                      <ActionForm
-                        action={verifyDocumentAction}
-                        submitLabel="確認を記録する"
-                        hint="確認結果は書類ごとに上書き記録されます（実施者と日時も記録されます）。"
-                        confirm={{
-                          title: '書類の確認結果を記録しますか？',
-                          body: `「${document.filename}」の確認結果を記録します。前の確認結果は上書きされ、実施者と日時が記録されます。`,
-                          summaryFields: ['verificationStatus', 'verificationNote']
-                        }}
-                      >
-                        <input type="hidden" readOnly name="documentId" value={document.id} />
-                        <SelectField name="verificationStatus" label="確認結果" required choices={verificationChoices} width={180} />
-                        <TextField name="verificationNote" label="確認メモ" width={220} />
-                      </ActionForm>
-                      )}
+                    <td className="ui-td" data-label="発注の画面">
+                      {document.filmSupplyOrderId && orderCodeOf(document.filmSupplyOrderId) ? (
+                        <a href={orderPath(projectCode, orderCodeOf(document.filmSupplyOrderId)!)} className="p4w2-row-link">
+                          {document.verificationStatus === 'verified' ? '発注の画面を開く' : '発注の画面で確認する'}
+                          <span className="visually-hidden">（{document.filename}）</span>
+                        </a>
+                      ) : <span className="ui-note">—</span>}
                     </td>
                   ) : null}
                 </tr>

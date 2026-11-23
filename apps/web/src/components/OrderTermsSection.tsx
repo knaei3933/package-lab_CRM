@@ -17,7 +17,6 @@ import {
 import { deliveryDateText } from '../lib/delivery-dates';
 import type { DeliveryTermsLock, OrderFactsRead } from '../lib/order-terms';
 import type { FilmSupplyOrderView } from '../lib/project-data';
-import { projectPath } from '../lib/project-route';
 
 /**
  * One cell of the 条件ブロック: a value, or why there is none. `unknown` is the
@@ -223,7 +222,8 @@ export function OrderTermsSection({
           <p className="p1-note">変えるには、メーカー発注書を取り消して作り直し、もう一度代表が承認します。</p>
           {isAdmin ? (
             <p className="p1-note">
-              <a className="p1-button p1-button--quiet" href={`${projectPath(projectCode, 'maker-po')}#maker-order-${order.id}`}>メーカー発注の画面で取り消す</a>
+              {/* P4 §0: the cancellation is in this screen's 「その他の操作」 (the maker list only reads). */}
+              <a className="p1-button p1-button--quiet" href="#order-more">「その他の操作」でメーカー発注書を取り消す</a>
             </p>
           ) : editable ? (
             <p className="p1-note">取り消しは代表が行います。</p>

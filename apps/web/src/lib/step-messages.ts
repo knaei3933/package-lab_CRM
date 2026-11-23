@@ -16,3 +16,6 @@ export function STEP_REFUSALS(code: string | null): ActionState | null {
       return null;
   }
 }
+
+/** P4 H14: said when the uploader may not confirm on their own evidence (P-4, SELF_VERIFICATION_FORBIDDEN). */
+export const RECEIPT_WAITS_FOR_REPRESENTATIVE = '登録した人は自分の証跡で納品を確認できないため、代表が確認します（代表の承認箱に「納品の確認」として出ます）。';
