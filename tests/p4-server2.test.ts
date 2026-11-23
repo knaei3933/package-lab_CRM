@@ -17,6 +17,7 @@ import {
   auditEvents,
   createDatabase,
   deliveryConfirmations,
+  documents,
   filmSupplyOrders,
   makerPurchaseOrders,
   projectAssignments,
@@ -27,6 +28,7 @@ import {
 } from '@kanei/db';
 import {
   approvalEvidenceDeclarationLine,
+  approvalEvidenceSenderFacts,
   evaluateDeliveryEvidence,
   evaluateFilmReceiptAssumption,
   evaluateFilmReceiptClosure,
@@ -1439,5 +1441,112 @@ describe('(8) review4 M-1: the maker acceptance re-uploaded without its binding 
     expect(evaluateDeliveryEvidence('v', context({ ...base, contentMatchesMakerPoDocument: true }))).toMatchObject({ code: 'DELIVERY_EVIDENCE_MAKER_PO_BOUND' });
     expect(evaluateDeliveryEvidence('v', context({ ...base, contentMatchesMakerPoDocument: true, verificationStatus: 'unverified' }))).toMatchObject({ code: 'DELIVERY_EVIDENCE_MAKER_PO_BOUND' });
     expect(evaluateDeliveryEvidence('v', context({ ...base, contentMatchesMakerPoDocument: false }))).toEqual({ ok: true, confirmedOn: 'verified_delivery_evidence' });
+  });
+});
+
+// ================================================================ (9) round 7: p4-web3 review M-1
+describe('(9) p4-web3 review M-1: the approval gate\'s pending manual verifications carry the card\'s sender facts', () => {
+  const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+  /** An approval mail without Message-ID: recorded as pending the representative's manual verification. */
+  const pendingEml = (from: string, stamp = tag()) => [
+    `From: 承認者 <${from}>`, 'To: KANEI 担当 <staff@kanei.example>', `Subject: 校正承認 ${stamp}`, 'Date: Mon, 16 Nov 2026 01:00:00 +0000',
+    'MIME-Version: 1.0', 'Content-Type: text/plain; charset=UTF-8', '', `承認します（${stamp}）`, ''
+  ].join('\r\n');
+
+  async function pendingApproval(from: string) {
+    const order = await createOrder('prepaid');
+    expect((await post('staff', `/api/film-supply-orders/${order.orderId}/transitions`, { to: 'ARTWORK_RECEIVED' })).status).toBe(200);
+    const proof = await post('staff', `/api/projects/${ids.projectA}/documents`, {
+      documentType: 'proof', issuerEntity: 'kanei', filename: `s2-g-proof-${tag()}.txt`, contentType: 'text/plain',
+      contentBase64: b64(`s2 gate artwork ${tag()}\n`), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, designKey: 'label-front'
+    });
+    const revision = await post('staff', `/api/film-supply-orders/${order.orderId}/artwork-revisions`, { designKey: 'label-front', fileDocumentVersionId: proof.body.version.id });
+    expect(revision.status, revision.text).toBe(201);
+    const evidence = await post('staff', `/api/projects/${ids.projectA}/documents`, {
+      documentType: 'approval_evidence', issuerEntity: 'customer_generated', filename: `s2-g-${tag()}.eml`, contentType: 'text/plain',
+      contentBase64: b64(pendingEml(from)), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, designKey: 'label-front'
+    });
+    expect(evidence.status, evidence.text).toBe(201);
+    const approval = await post('staff', `/api/artwork-revisions/${revision.body.id}/approvals`, {
+      organization: 'customer', decision: 'APPROVE', evidenceSource: 'email', eventTime: '2026-11-15T10:00:00.000Z',
+      evidenceIdentifier: `S2-G-${tag()}`, evidenceDocumentVersionId: evidence.body.version.id
+    });
+    expect(approval.status, approval.text).toBe(201);
+    expect(approval.body.evidenceIdentifierStatus).toBe('pending_manual_verification');
+    return { order, eventId: approval.body.approvalEvent.id as string, documentId: evidence.body.document.id as string };
+  }
+  const gateItem = async (role: Role, orderId: string, eventId: string) => {
+    const gate = await get(role, `/api/film-supply-orders/${orderId}/approval-gate`);
+    expect(gate.status, gate.text).toBe(200);
+    return { gate, item: gate.body.pendingManualVerifications.find((entry: { approvalEventId: string }) => entry.approvalEventId === eventId) };
+  };
+
+  it('a foreign-domain mail waiting for the manual confirmation shows the From, a warning verdict and no 「申告どおり」; it stays confirmable', async () => {
+    const { order, eventId } = await pendingApproval('boss@evil-s2.example');
+    const { item } = await gateItem('admin', order.orderId, eventId);
+    expect(item).toMatchObject({
+      issuerMatchesOrganization: true,
+      confirmable: true,
+      fromAddress: 'boss@evil-s2.example',
+      senderDomainCheck: { status: 'mismatch', fromDomain: 'evil-s2.example', registeredDomain: 'customer-s2.example' },
+      senderVerdict: { code: 'mismatch', tone: 'warning' },
+      declarationLine: { code: 'sender_domain_mismatch', tone: 'warning' },
+      warnings: [{ code: 'EVIDENCE_SENDER_DOMAIN_MISMATCH', fromDomain: 'evil-s2.example', registeredDomain: 'customer-s2.example' }]
+    });
+    expect(item.declarationLine.label).not.toContain('申告どおり');
+    // Display only: the representative can still record the confirmation.
+    const confirmed = await post('admin', `/api/artwork-approval-events/${eventId}/verification`, {
+      result: 'confirmed', verifiedAt: '2026-11-16T10:00:00.000Z', reasonNote: '差出人を電話で確認'
+    });
+    expect([200, 201], confirmed.text).toContain(confirmed.status);
+  });
+
+  it('a matching From says 「申告どおり（差出人のドメインも一致）」 with no warning', async () => {
+    const { order, eventId } = await pendingApproval('boss@customer-s2.example');
+    const { item } = await gateItem('admin', order.orderId, eventId);
+    expect(item).toMatchObject({
+      fromAddress: 'boss@customer-s2.example',
+      senderVerdict: { code: 'match', tone: 'ok' },
+      declarationLine: { code: 'declared_and_sender_match', tone: 'ok', label: '申告どおり（差出人のドメインも一致）' },
+      warnings: []
+    });
+  });
+
+  it('a declared issuer other than the organization is a warning line (issuer_differs) and stays unconfirmable, as before', async () => {
+    // Recording refuses this (EVIDENCE_ISSUER_MISMATCH), so it is built as data: the document's declared issuer changed afterwards.
+    const { order, eventId, documentId } = await pendingApproval('boss@customer-s2.example');
+    await db.update(documents).set({ issuerEntity: 'seven' }).where(eq(documents.id, documentId));
+    const { item } = await gateItem('admin', order.orderId, eventId);
+    expect(item).toMatchObject({
+      issuerMatchesOrganization: false,
+      confirmable: false,
+      declarationLine: { code: 'issuer_differs', tone: 'warning' }
+    });
+    expect(item.declarationLine.label).not.toContain('申告どおり');
+  });
+
+  it('the gate and the card answer the same shape from one helper (parity on every check status)', () => {
+    const check = (status: string) => ({ status, fromAddress: 'a@b.example', fromDomain: 'b.example', registeredDomain: 'c.example' }) as any;
+    for (const status of ['match', 'mismatch', 'from_missing', 'multiple_from', 'no_registered_domain', 'not_email']) {
+      const facts = approvalEvidenceSenderFacts({ issuerMatchesOrganization: true, sharedEvidence: false, senderDomainCheck: check(status) });
+      expect(Object.keys(facts).sort()).toEqual(['declarationLine', 'fromAddress', 'senderDomainCheck', 'senderVerdict', 'warnings']);
+      expect(facts.declarationLine.label.includes('申告どおり'), status).toBe(status === 'match');
+      expect(facts.warnings.length > 0, status).toBe(['mismatch', 'from_missing', 'multiple_from'].includes(status));
+    }
+    expect(approvalEvidenceSenderFacts({ issuerMatchesOrganization: true, sharedEvidence: false, senderDomainCheck: null }))
+      .toMatchObject({ fromAddress: null, senderDomainCheck: null, senderVerdict: { code: 'not_recorded' }, warnings: [] });
+  });
+
+  it('staff, viewer and auditor still get no pending items (no From, no identifiers); no amount anywhere in the gate', async () => {
+    const { order, eventId } = await pendingApproval('boss@evil-s2.example');
+    for (const role of ['staff', 'viewer', 'auditor'] as const) {
+      const gate = await get(role, `/api/film-supply-orders/${order.orderId}/approval-gate`);
+      // Existing permission: staff and auditor read the gate (no pending items), the viewer is refused.
+      expect(gate.status, role).toBe(role === 'viewer' ? 403 : 200);
+      if (gate.status === 200) expect(gate.body.pendingManualVerifications, role).toEqual([]);
+      expect(gate.text, role).not.toMatch(/evil-s2|fromAddress|senderVerdict/);
+    }
+    const { gate } = await gateItem('admin', order.orderId, eventId);
+    expect(gate.text).not.toMatch(/totalAmount|"amounts"|480000/);
   });
 });
