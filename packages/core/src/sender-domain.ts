@@ -116,3 +116,106 @@ export function evaluateEvidenceSenderDomain(input: {
   const matches = fromDomain === registeredDomain || fromDomain.endsWith(`.${registeredDomain}`);
   return { status: matches ? 'match' : 'mismatch', fromAddress, fromDomain, registeredDomain };
 }
+
+/**
+ * P4 server2 (p4-web2b review M-1): what the representative's approval card
+ * says about one evidence's sender, decided by the server so the web draws it
+ * as given. `not_recorded` = no check was stored with the approval (recorded
+ * before P4 N4, or no evidence file). Display only: never a refusal, and the
+ * dual approval and its counting do not change.
+ */
+export type EvidenceSenderVerdictCode =
+  | 'match'
+  | 'mismatch'
+  | 'unverifiable'
+  | 'no_registered_domain'
+  | 'not_email'
+  | 'not_recorded';
+
+export interface EvidenceSenderVerdict {
+  code: EvidenceSenderVerdictCode;
+  /** ok = the sender domain was compared and matches; warning = show as a warning; neutral = not compared. */
+  tone: 'ok' | 'warning' | 'neutral';
+  label: string;
+}
+
+const SENDER_VERDICTS: Readonly<Record<EvidenceSenderVerdictCode, EvidenceSenderVerdict>> = {
+  match: { code: 'match', tone: 'ok', label: '差出人のドメインが登録先と一致' },
+  mismatch: { code: 'mismatch', tone: 'warning', label: '差出人のドメインが登録先と一致しません' },
+  unverifiable: { code: 'unverifiable', tone: 'warning', label: '差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）' },
+  no_registered_domain: { code: 'no_registered_domain', tone: 'neutral', label: '取引先のメールアドレスが未登録のため、差出人は照合していません' },
+  not_email: { code: 'not_email', tone: 'neutral', label: 'メール以外の証跡のため、差出人は照合していません' },
+  not_recorded: { code: 'not_recorded', tone: 'neutral', label: '差出人の照合記録がありません' }
+};
+
+export function evidenceSenderVerdict(check: EvidenceSenderDomainCheck | null | undefined): EvidenceSenderVerdict {
+  if (!check) return SENDER_VERDICTS.not_recorded;
+  switch (check.status) {
+    case 'match': return SENDER_VERDICTS.match;
+    case 'mismatch': return SENDER_VERDICTS.mismatch;
+    case 'from_missing':
+    case 'multiple_from': return SENDER_VERDICTS.unverifiable;
+    case 'no_registered_domain': return SENDER_VERDICTS.no_registered_domain;
+    case 'not_email': return SENDER_VERDICTS.not_email;
+    default: return SENDER_VERDICTS.not_recorded;
+  }
+}
+
+export type ApprovalEvidenceDeclarationLineCode =
+  | 'issuer_differs'
+  | 'shared_evidence'
+  | 'declared_and_sender_match'
+  | 'sender_domain_mismatch'
+  | 'sender_unverifiable'
+  | 'declared_only';
+
+export interface ApprovalEvidenceDeclarationLine {
+  code: ApprovalEvidenceDeclarationLineCode;
+  tone: 'ok' | 'warning' | 'neutral';
+  label: string;
+}
+
+/**
+ * The one line the card shows next to 「発行元（登録時の申告）」. 「申告どおり」 is
+ * said only when the declared issuer is the approving organization AND an
+ * EML's From domain matched the organization's registered domain; a foreign
+ * or unreadable sender is a warning, and an uncompared sender says so.
+ */
+export function approvalEvidenceDeclarationLine(input: {
+  issuerMatchesOrganization: boolean;
+  /** The recorder declared one shared evidence for both organizations (P0 R02). */
+  sharedEvidence?: boolean;
+  senderDomainCheck: EvidenceSenderDomainCheck | null | undefined;
+}): ApprovalEvidenceDeclarationLine {
+  if (!input.issuerMatchesOrganization) {
+    return input.sharedEvidence
+      ? { code: 'shared_evidence', tone: 'warning', label: '申告された発行元は承認組織と異なります（両組織の共通証跡として記録）' }
+      : { code: 'issuer_differs', tone: 'warning', label: '申告された発行元が承認組織と異なります' };
+  }
+  const verdict = evidenceSenderVerdict(input.senderDomainCheck);
+  if (verdict.code === 'match') {
+    return { code: 'declared_and_sender_match', tone: 'ok', label: '申告どおり（差出人のドメインも一致）' };
+  }
+  if (verdict.code === 'mismatch') {
+    return { code: 'sender_domain_mismatch', tone: 'warning', label: '申告は承認組織と一致・差出人のドメインは不一致' };
+  }
+  if (verdict.code === 'unverifiable') {
+    return { code: 'sender_unverifiable', tone: 'warning', label: '申告は承認組織と一致・差出人を確認できません' };
+  }
+  return { code: 'declared_only', tone: 'neutral', label: '申告は承認組織と一致（差出人は照合していません）' };
+}
+
+/** Reads a stored check back from an audit row (jsonb); anything malformed is "not recorded". */
+export function parseStoredEvidenceSenderDomainCheck(value: unknown): EvidenceSenderDomainCheck | null {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  const statuses: readonly string[] = ['not_email', 'from_missing', 'multiple_from', 'no_registered_domain', 'match', 'mismatch'];
+  if (typeof row.status !== 'string' || !statuses.includes(row.status)) return null;
+  const text = (entry: unknown) => (typeof entry === 'string' ? entry : null);
+  return {
+    status: row.status as EvidenceSenderDomainStatus,
+    fromAddress: text(row.fromAddress),
+    fromDomain: text(row.fromDomain),
+    registeredDomain: text(row.registeredDomain)
+  };
+}

@@ -222,6 +222,58 @@ export interface MakerPoSnapshot {
    * exactly what it was.
    */
   deliveryTerms?: MakerPoSnapshotDeliveryTerms;
+  /**
+   * P4 server2 review2 M-1 (conductor decision 2026-11-23): the approval
+   * evidence set the representative approves over — per design and
+   * organization, the latest approval event, its evidence version and the
+   * evidence bytes' SHA-256, in a fixed order. Frozen by the CEO approval (and
+   * shown by the card), so a revoke / re-approval with other evidence after the
+   * card was read changes the digest and the approval answers 409
+   * MAKER_PO_SNAPSHOT_CHANGED. The sender verdict wording is NOT part of it.
+   * Absent on papers frozen before this change — canonicalJson drops an absent
+   * key, so their digest is exactly what it was.
+   */
+  approvalEvidence?: MakerPoSnapshotApprovalEvidence[];
+}
+
+/** P4 server2 review2 M-1: one entry of the frozen approval evidence set. */
+export interface MakerPoSnapshotApprovalEvidence {
+  designKey: string;
+  organization: string;
+  approvalEventId: string;
+  evidenceDocumentVersionId: string | null;
+  /** SHA-256 of the evidence bytes (document_versions.sha256); null without an evidence file. */
+  evidenceSha256: string | null;
+}
+
+/** The fixed order of the evidence set: designKey, then organization, then event id. */
+export function sortMakerPoApprovalEvidence(entries: readonly MakerPoSnapshotApprovalEvidence[]): MakerPoSnapshotApprovalEvidence[] {
+  const key = (entry: MakerPoSnapshotApprovalEvidence) => [entry.designKey, entry.organization, entry.approvalEventId];
+  return entries
+    .map((entry) => ({
+      designKey: entry.designKey,
+      organization: entry.organization,
+      approvalEventId: entry.approvalEventId,
+      evidenceDocumentVersionId: entry.evidenceDocumentVersionId ?? null,
+      evidenceSha256: entry.evidenceSha256 ?? null
+    }))
+    .sort((a, b) => {
+      const [x, y] = [key(a), key(b)];
+      for (let index = 0; index < x.length; index += 1) {
+        if (x[index]! < y[index]!) return -1;
+        if (x[index]! > y[index]!) return 1;
+      }
+      return 0;
+    });
+}
+
+/**
+ * The order-data part of a snapshot (everything but the approval evidence set):
+ * what the card's 「作成後に明細または版が変わりました」 drift warning compares.
+ */
+export function makerPoSnapshotWithoutApprovalEvidence(snapshot: MakerPoSnapshot): MakerPoSnapshot {
+  const { approvalEvidence: _omitted, ...rest } = snapshot;
+  return rest;
 }
 
 /** P2: the schedule and customer-order quantity an approval certifies. */
@@ -245,6 +297,8 @@ export interface MakerPoSnapshotInput {
   recipientAddress: string;
   /** P2: included when given (new papers and every approval); omitted keeps a pre-P2 shape. */
   deliveryTerms?: MakerPoSnapshotDeliveryTerms;
+  /** P4 server2 review2 M-1: included when given (the approval and its card); omitted keeps the earlier shape. */
+  approvalEvidence?: readonly MakerPoSnapshotApprovalEvidence[];
 }
 
 /**
@@ -288,7 +342,8 @@ export function buildMakerPoSnapshot(input: MakerPoSnapshotInput): MakerPoSnapsh
             sevenPoOrderedUnit: input.deliveryTerms.sevenPoOrderedUnit ?? null
           }
         }
-      : {})
+      : {}),
+    ...(input.approvalEvidence ? { approvalEvidence: sortMakerPoApprovalEvidence(input.approvalEvidence) } : {})
   };
 }
 

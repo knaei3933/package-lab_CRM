@@ -92,7 +92,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `PAYMENT_TERMS_REASON_INVALID` | 422 | 支払条件の変更理由が空です。理由を書くか、欄を空のままにしてください |  |
 | `PAYMENT_TERMS_CHANGED` | 409 | 承認画面を開いた後に支払条件が変更されました。最新の支払条件を確認してから、もう一度承認してください |  |
 | `PAYMENT_GATE_UNSATISFIED` | 422 | 支払条件が「未定」のため代表承認できません。フィルム発注の支払条件を「前払い」または「納品後払い」に変更してから承認してください | `paymentTerms`。「この画面で支払条件を選ぶ」ボタン（PATCH /api/film-supply-orders/:orderId/payment-terms）を置く |
-| `PAYMENT_TERMS_UNDETERMINED` | 200 (warnings / attention) | 支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください | 拒否ではない。遷移応答の `warnings[]` と GET /api/projects/:projectId/film-supply-orders の `attention[]` に入る |
+| `PAYMENT_TERMS_UNDETERMINED` | 200 (warnings / attention) | 支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください | 拒否ではない。遷移応答の `warnings[]` と GET /api/projects/:projectId/film-supply-orders の `attention[]` に入る。P4 server2: GET /api/representative-queue の `blocked[].reason` にも同じ `{ code, message }`（作成直後から、`CANCELLED`・`FILM_RECEIPT_ASSUMED_NO_ISSUE` 以外のすべての状態。`attention` と同じ規則 `paymentTermsAttention`） |
 
 ## seven purchase orders / pre-order references
 
@@ -403,8 +403,8 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `AMOUNT_REQUIRED` | 422 | 金額が入力されていないため代表承認できません。承認画面で金額を入力してから承認してください | P4 H4①: POST /api/maker-purchase-orders/:poId/ceo-approval。`missing: ["totalAmount", "requestedDeliveryDate"?]`（足りない項目すべて）。承認カード・代表の確認待ちの `blockers` にも同じコードが出る。金額は PATCH …/amounts（代表者）で入れる |
 | `DELIVERY_DATE_REQUIRED` | 422 | 希望納期が記録されていないため代表承認できません。発注の「希望納期」を入力してから承認してください | P4 H4①: 同上。金額があり希望納期だけ無いとき。希望納期は PATCH /api/film-supply-orders/:orderId/delivery-dates |
 | `IDEMPOTENCY_KEY_REQUIRED` | 400 | 発注コードを自動で付けるには送信の識別キーが必要です。画面を再読み込みしてからやり直してください | P4 H7②: 発注作成で `code` を空（省略・null・空白）にしたのに `Idempotency-Key` が無い。自動採番は `{案件コード}-FILM-{3桁}`、応答 `codeSource: "auto"` |
-| `EVIDENCE_SENDER_DOMAIN_MISMATCH` | — | 承認証跡メールの差出人のドメインが、発行元として登録されている取引先のドメインと一致しません。発行元を確かめてから確認してください | P4 N4: **拒否ではなく警告**（`senderDomainCheck.status = mismatch`）。承認記録の応答 `warnings[]`、代表の確認待ち `detail.warnings[]` に `{ code, message, fromDomain, registeredDomain }`。比較結果は `senderDomainCheck` |
-| `EVIDENCE_SENDER_UNVERIFIABLE` | — | 承認証跡メールの差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）。発行元を確かめてから確認してください | P4 検収 L-1: **拒否ではなく警告**。`senderDomainCheck.status` が `from_missing`（From なし・ASCII でないドメイン＝同形異字の可能性）または `multiple_from`（From ヘッダー 2 つ以上・アドレス 2 つ以上）。IP リテラル（`a@[203.0.113.5]`）は `mismatch`。`not_email`（PDF・画像など）は警告なし |
+| `EVIDENCE_SENDER_DOMAIN_MISMATCH` | — | 承認証跡メールの差出人のドメインが、発行元として登録されている取引先のドメインと一致しません。発行元を確かめてから確認してください | P4 N4: **拒否ではなく警告**（`senderDomainCheck.status = mismatch`）。承認記録の応答 `warnings[]`、代表の確認待ち `detail.warnings[]` に `{ code, message, fromDomain, registeredDomain }`。比較結果は `senderDomainCheck`。P4 server2: 承認カード（GET /api/maker-purchase-orders/:poId/approval-card）の `approvals.designs[].organizations.{customer,seven}.evidence.warnings[]` にも同じ形で入る（`senderVerdict`・`declarationLine` 付き、表示のみ） |
+| `EVIDENCE_SENDER_UNVERIFIABLE` | — | 承認証跡メールの差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）。発行元を確かめてから確認してください | P4 検収 L-1: **拒否ではなく警告**。`senderDomainCheck.status` が `from_missing`（From なし・ASCII でないドメイン＝同形異字の可能性）または `multiple_from`（From ヘッダー 2 つ以上・アドレス 2 つ以上）。IP リテラル（`a@[203.0.113.5]`）は `mismatch`。`not_email`（PDF・画像など）は警告なし。P4 server2: 承認カードの証跡ごとの `warnings[]` にも入る |
 | `ASSIGNMENT_USER_REQUIRED` | 422 | 割り当てる利用者を選んでください | P4 N1: POST /api/projects/:projectId/assignments の `userId`（UUID）が無い・不正 |
 | `ASSIGNMENT_USER_NOT_FOUND` | 422 | 割り当てる利用者が見つかりません（無効化された利用者は割り当てられません） | P4 N1: 存在しない・無効化済みの利用者 |
 | `ASSIGNMENT_ROLE_NOT_ASSIGNABLE` | 422 | 代表者はすべての案件を開けるため、割り当ては不要です | P4 N1: 割り当てられるのは staff・viewer・auditor。`role` |
@@ -415,3 +415,8 @@ P4 で既存コードに足した項目（コードは同じ）:
 - `DOCUMENT_BINDING_CONFLICT`（422）: `existing: { documentId, orderId, orderCode, designKey, makerPurchaseOrderId }` — 同じ書類（案件・種類・発行元・ファイル名）が紐付いている発注とデザイン（N13）。
 - `FILE_DOCUMENT_ORDER_MISMATCH`・`FILE_DOCUMENT_DESIGN_MISMATCH`（422）: `existing: { orderId, orderCode, designKey }`（N13）。
 - `CEO_ONLY`（403）: P4 の割り当て API（GET/POST/DELETE …/assignments）でも返す。
+- `CEO_ONLY`（403）: P4 server2 の GET /api/assignable-users（担当者の選択肢）でも返す。未ログインは 401 `AUTH_REQUIRED`。
+- `PAYMENT_TERMS_LOCKED`: P4 server2 で GET /api/representative-queue の `blocked[]` が、行の PATCH が今通らないときに `paymentTermsEditable: false` と `paymentTermsLock: { code: "PAYMENT_TERMS_LOCKED", reason, message }` を持つ（拒否ではなく表示用。通るときは `true` と `null`）。
+- `MAKER_PO_SNAPSHOT_CHANGED`（409）: P4 server2 review2 M-1 から、承認カードの `approvalSnapshotSha256` は**承認証跡の組**（デザイン×組織ごとの最新の承認イベント id・証跡版 id・証跡の SHA-256、固定順）も含む。カードを開いた後に承認・取消が記録されると、そのカードの値での代表承認（POST …/ceo-approval）と金額入力（PATCH …/amounts）は同じ 409 になる。カードを読み直して新しい値で送る。差出人の判定文言（`senderVerdict`・`declarationLine`）は含まない。コード・文言・形は変えていない。
+- `Cache-Control: private, no-store`: P4 server2 review2 L-1 で承認カードと GET /api/me にも付けた（200・401・403 すべて）。
+- `RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED`（422）: P4 server2（web2a review M-2）から、POST /api/film-supply-orders/:orderId/receipt-assumption で `acknowledgeNoEvidence: true` が必要なのは**証跡なしの完了**（納品なし、または未確認の納品がある）のときだけ。すべての納品が確認済み（検証済みの受領証跡による納品確認）なら不要で、応答・監査は `closureBasis: "delivery_confirmations"`, `evidenceFreeAcknowledgment: false`。判定は注文行ロックの後の事実で行い、待っている間に納品が追加されると証跡なしに戻ってこのコードになる。コード・文言は変えていない。`RECEIPT_ASSUMPTION_NOTE_REQUIRED`・`RECEIPT_ASSUMPTION_ONLY_FROM_FILM_DELIVERED` は両方の完了で同じ。

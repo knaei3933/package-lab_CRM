@@ -13,12 +13,16 @@ import {
   canWriteSevenPoOfficialDate,
   classifyMakerPoCancellation,
   computeMakerPoSnapshotSha256,
+  makerPoSnapshotWithoutApprovalEvidence,
+  type MakerPoSnapshotApprovalEvidence,
   deriveOrderApprovalGate,
   evaluateApprovalEvidenceBinding,
   evaluateApprovalEvidenceIdentifierForBytes,
   evaluateCommissionReadiness,
   evaluateDeliveryEvidence,
-  evaluateFilmReceiptAssumption,
+  evaluateFilmReceiptClosure,
+  filmReceiptClosureBasis,
+  type FilmReceiptClosureBasis,
   evaluateMakerPoAcceptEvidence,
   evaluateMakerPoApproval,
   evaluateMakerPoCancellation,
@@ -32,12 +36,17 @@ import {
   CEO_APPROVAL_FACT_MESSAGES,
   evaluateEvidenceSenderDomain,
   evidenceSenderDomainWarning,
+  evidenceSenderVerdict,
+  approvalEvidenceDeclarationLine,
+  parseStoredEvidenceSenderDomainCheck,
   type EvidenceSenderDomainCheck,
   evaluateRevisionRegistrationGate,
   evaluateSevenPoChecklist,
   evaluateSevenPoPrecedenceGate,
   extractStoredEmlMessageId,
   evaluatePaymentTermsChange,
+  PAYMENT_TERMS_ATTENTION_CLOSED_STATES,
+  paymentTermsAttention,
   PAYMENT_TERMS_LABELS_JA,
   evaluateApprovalEvidenceIssuer,
   normalizedEvidenceText,
@@ -590,6 +599,13 @@ function makerPoActiveUniqueViolation(error: unknown): boolean {
  */
 class ReceiptAssumptionStateConflict extends Error {}
 
+/** P4 server2 (web2a review M-2): the closure basis decided under the order lock refused the request. */
+class ReceiptClosureRefusedUnderLock extends Error {
+  constructor(readonly code: string, readonly refusal: string) {
+    super(code);
+  }
+}
+
 /**
  * Validates one order line against the unit vocabulary of its domain. Unit
  * validation runs first so a cross-domain unit is reported as
@@ -759,6 +775,23 @@ async function readCappedBody(request: Request, cap: number): Promise<Uint8Array
     offset += chunk.byteLength;
   }
   return out;
+}
+
+/**
+ * P0 R01 / P4 server2 review L-1: the one definition of "a maker PO that locks
+ * the payment terms" (policy P-5) — not logically deleted, not cancelled, and
+ * carrying the representative's approval stamp. The PATCH that changes the
+ * terms, the project order list (`paymentTermsEditable`) and the queue's
+ * `blocked` rows all read it, so the screen can never show a lock the PATCH
+ * would not apply (or the reverse).
+ */
+export function liveApprovedPaperOf(filmSupplyOrderIds: string[]) {
+  return and(
+    inArray(makerPurchaseOrders.filmSupplyOrderId, filmSupplyOrderIds),
+    isNull(makerPurchaseOrders.deletedAt),
+    ne(makerPurchaseOrders.status, 'CANCELLED'),
+    isNotNull(makerPurchaseOrders.ceoApprovedAt)
+  );
 }
 
 export function createApp({
@@ -1168,14 +1201,18 @@ export function createApp({
   });
 
   app.get('/api/me', async (context) => {
+    // P4 server2 review2 L-1: the caller's own identity is never kept by a browser or a shared proxy (every answer).
+    context.header('Cache-Control', 'private, no-store');
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     // P2 R29: the stored display language (null = not chosen; the screen keeps the role default).
-    const [preference] = await db.select({ displayLanguage: users.displayLanguage }).from(users)
+    // P4 server2: the caller's own display name (never another user's; no login name).
+    const [preference] = await db.select({ displayLanguage: users.displayLanguage, displayName: users.displayName }).from(users)
       .where(eq(users.id, user.id)).limit(1);
     return context.json({
       id: user.id,
       role: user.role,
+      displayName: preference?.displayName ?? null,
       assignedProjectIds: user.assignedProjectIds,
       displayLanguage: preference?.displayLanguage ?? null
     });
@@ -1822,12 +1859,7 @@ export function createApp({
       if (!locked || locked.deletedAt) return { kind: 'gone' as const };
       const [approvedPaper] = await tx.select({ id: makerPurchaseOrders.id, status: makerPurchaseOrders.status })
         .from(makerPurchaseOrders)
-        .where(and(
-          eq(makerPurchaseOrders.filmSupplyOrderId, orderId),
-          isNull(makerPurchaseOrders.deletedAt),
-          ne(makerPurchaseOrders.status, 'CANCELLED'),
-          isNotNull(makerPurchaseOrders.ceoApprovedAt)
-        ))
+        .where(liveApprovedPaperOf([orderId]))
         .limit(1);
       const gate = evaluatePaymentTermsChange({
         orderStatus: String(locked.status),
@@ -1923,22 +1955,12 @@ export function createApp({
       .orderBy(asc(filmSupplyOrders.code));
     const approvedPapers = rows.length === 0 ? [] : await db.select({ filmSupplyOrderId: makerPurchaseOrders.filmSupplyOrderId })
       .from(makerPurchaseOrders)
-      .where(and(
-        inArray(makerPurchaseOrders.filmSupplyOrderId, rows.map((row) => row.id)),
-        isNull(makerPurchaseOrders.deletedAt),
-        ne(makerPurchaseOrders.status, 'CANCELLED'),
-        isNotNull(makerPurchaseOrders.ceoApprovedAt)
-      ));
+      .where(liveApprovedPaperOf(rows.map((row) => row.id)));
     const approvedOrderIds = new Set(approvedPapers.map((paper) => paper.filmSupplyOrderId));
     const orders = rows.map((row) => {
       const paymentTerms = normalizePaymentTerms(row.paymentTerms);
-      const closed = String(row.status) === 'CANCELLED' || row.status === 'FILM_RECEIPT_ASSUMED_NO_ISSUE';
-      const attention = !closed && paymentTerms === 'undetermined'
-        ? [{
-            code: 'PAYMENT_TERMS_UNDETERMINED',
-            message: '支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください'
-          }]
-        : [];
+      // P4 server2: the same rule the representative queue's `blocked` applies.
+      const attention = paymentTermsAttention({ orderStatus: String(row.status), paymentTerms: row.paymentTerms });
       return {
         ...row,
         paymentTerms,
@@ -2847,8 +2869,41 @@ export function createApp({
   // FILM_DELIVERED → FILM_RECEIPT_ASSUMED_NO_ISSUE is a MANUAL recording
   // action: the waiting period is not decided by the CEO yet, so nothing in
   // the system schedules, times or derives it. An admin or staff member
-  // records it with a required note and an explicit evidence-free
-  // acknowledgment, and the audit row is written in the same transaction.
+  // records it with a required note, and the audit row is written in the same
+  // transaction.
+  //
+  // P4 server2 (p4-web2a review M-2): the server decides what the closure
+  // rests on from the stored facts, read after the order row lock —
+  // `delivery_confirmations` when the order has deliveries and every one is
+  // confirmed (only verified receipt evidence confirms a delivery), otherwise
+  // `evidence_free_acknowledgment`, which alone requires (and records)
+  // `acknowledgeNoEvidence: true`. Until P4 every closure was recorded as
+  // evidence-free, even after the evidence had been confirmed. The audit action
+  // stays FILM_RECEIPT_ASSUMPTION_RECORDED (the web labels it); its afterState
+  // and requestMetadata name the basis. Commission readiness (P-3) still reads
+  // the confirmations only, and confirming deliveries stays the representative's
+  // act on evidence the confirmer did not upload (P-4).
+  async function filmDeliveryConfirmationFacts(executor: MakerPoQueryExecutor, orderId: string) {
+    const rows = await executor.select({
+      deliveryId: filmDeliveries.id,
+      confirmationId: deliveryConfirmations.id,
+      evidenceDocumentVersionId: deliveryConfirmations.evidenceDocumentVersionId
+    }).from(filmDeliveries)
+      .leftJoin(deliveryConfirmations, eq(deliveryConfirmations.filmDeliveryId, filmDeliveries.id))
+      .where(eq(filmDeliveries.filmSupplyOrderId, orderId))
+      .orderBy(asc(filmDeliveries.deliverySequence), asc(filmDeliveries.id));
+    const deliveryIds = new Set(rows.map((row) => row.deliveryId));
+    const confirmed = rows.filter((row) => row.confirmationId !== null);
+    return {
+      counts: { total: deliveryIds.size, confirmed: new Set(confirmed.map((row) => row.deliveryId)).size },
+      confirmations: confirmed.map((row) => ({
+        deliveryId: row.deliveryId,
+        confirmationId: row.confirmationId!,
+        evidenceDocumentVersionId: row.evidenceDocumentVersionId
+      }))
+    };
+  }
+
   app.post('/api/film-supply-orders/:orderId/receipt-assumption', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
@@ -2874,12 +2929,14 @@ export function createApp({
       return context.json({ error: '受領確認日が不正です', code: 'INVALID_RECEIPT_ASSUMED_AT' }, 422);
     }
 
-    const evaluation = evaluateFilmReceiptAssumption({
+    const closureInput = {
       currentStatus: order.status,
       note: body?.note,
       acknowledgeNoEvidence: body?.acknowledgeNoEvidence,
       assumedAt: assumedAtInput.date
-    });
+    };
+    // A first decision on the committed facts (fast refusal); decided again under the lock below.
+    const evaluation = evaluateFilmReceiptClosure({ ...closureInput, deliveries: (await filmDeliveryConfirmationFacts(db, orderId)).counts });
     if (!evaluation.ok) {
       return context.json({ error: evaluation.message, code: evaluation.code, from: order.status }, 422);
     }
@@ -2890,10 +2947,18 @@ export function createApp({
       : new Date(evaluation.receiptAssumedAt);
     const receiptAssumedNote = (body?.note as string).trim();
     try {
-      const auditId = await db.transaction(async (tx) => {
+      const closed = await db.transaction(async (tx) => {
         const [current] = await tx.select().from(filmSupplyOrders)
           .where(eq(filmSupplyOrders.id, orderId)).limit(1).for('update');
         if (!current || current.status !== order.status) throw new ReceiptAssumptionStateConflict();
+        // The basis is decided on the facts read after the lock: a delivery
+        // recorded while this request waited makes the closure evidence-free
+        // again, which then needs the acknowledgment.
+        const facts = await filmDeliveryConfirmationFacts(tx, orderId);
+        const locked = evaluateFilmReceiptClosure({ ...closureInput, deliveries: facts.counts });
+        if (!locked.ok) throw new ReceiptClosureRefusedUnderLock(locked.code, locked.message);
+        const basis: FilmReceiptClosureBasis = locked.basis;
+        const evidenceFree = basis === 'evidence_free_acknowledgment';
 
         const updated = await tx.update(filmSupplyOrders).set({
           status: evaluation.to,
@@ -2919,13 +2984,23 @@ export function createApp({
             status: evaluation.to,
             receiptAssumedAt,
             receiptAssumedNote,
-            evidenceFreeAcknowledgment: true
+            closureBasis: basis,
+            evidenceFreeAcknowledgment: evidenceFree,
+            deliveries: facts.counts,
+            // The confirmations the closure rests on (ids only; empty on the evidence-free basis).
+            deliveryConfirmations: evidenceFree ? [] : facts.confirmations,
+            // What the request said, kept apart from what the closure rests on.
+            requestAcknowledgedNoEvidence: body?.acknowledgeNoEvidence === true
           },
           occurredAt: now,
-          requestMetadata: { operation: 'film_order:assume_receipt', evidenceFreeAcknowledgment: true }
+          requestMetadata: {
+            operation: evidenceFree ? 'film_order:assume_receipt' : 'film_order:close_receipt_on_confirmed_deliveries',
+            closureBasis: basis,
+            evidenceFreeAcknowledgment: evidenceFree
+          }
         };
         await recordAuditEvent(tx, auditRow);
-        return auditRow.id;
+        return { auditId: auditRow.id, basis, evidenceFree, counts: facts.counts };
       });
       return context.json({
         orderId,
@@ -2934,10 +3009,15 @@ export function createApp({
         receiptAssumedAt,
         receiptAssumedNote,
         receiptAssumedByUserId: user.id,
-        evidenceFreeAcknowledgment: true,
-        auditEventId: auditId
+        closureBasis: closed.basis,
+        evidenceFreeAcknowledgment: closed.evidenceFree,
+        deliveries: closed.counts,
+        auditEventId: closed.auditId
       }, 200);
     } catch (error) {
+      if (error instanceof ReceiptClosureRefusedUnderLock) {
+        return context.json({ error: error.refusal, code: error.code, from: order.status }, 422);
+      }
       if (error instanceof ReceiptAssumptionStateConflict) {
         return context.json({ error: 'フィルム発注の状態が既に変わっています', code: 'RECEIPT_ASSUMPTION_STATE_CHANGED' }, 422);
       }
@@ -3202,16 +3282,37 @@ export function createApp({
             : stage === 'quantity_confirmed' && status === 'FILM_DELIVERED'
               ? { action: 'CLOSE_ORDER', label: '受領確認（問題なし）を記録する' }
               : null;
-    let receiptAssumption: { assumedAt: Date; assumedBy: { id: string; displayName: string | null }; note: string | null } | null = null;
+    let receiptAssumption: {
+      assumedAt: Date; assumedBy: { id: string; displayName: string | null }; note: string | null;
+      closureBasis: FilmReceiptClosureBasis;
+    } | null = null;
     if (order.receiptAssumedAt && order.receiptAssumedByUserId) {
       const [assumer] = await db.select({ displayName: users.displayName }).from(users)
         .where(eq(users.id, order.receiptAssumedByUserId)).limit(1);
+      // P4 server2 (web2a review M-2): the basis the closure was recorded on;
+      // closures recorded before P4 were all evidence-free acknowledgments.
+      const [closureRow] = await db.select({ basis: sql<string | null>`${auditEvents.afterState} ->> 'closureBasis'` })
+        .from(auditEvents)
+        .where(and(
+          eq(auditEvents.entityType, 'film_supply_order'),
+          eq(auditEvents.entityId, orderId),
+          eq(auditEvents.action, 'FILM_RECEIPT_ASSUMPTION_RECORDED')
+        ))
+        .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
       receiptAssumption = {
         assumedAt: order.receiptAssumedAt,
         assumedBy: { id: order.receiptAssumedByUserId, displayName: assumer?.displayName ?? null },
-        note: order.receiptAssumedNote
+        note: order.receiptAssumedNote,
+        closureBasis: closureRow?.basis === 'delivery_confirmations' ? 'delivery_confirmations' : 'evidence_free_acknowledgment'
       };
     }
+    // P4 server2 (web2a review M-2): while the order waits for its closure, what
+    // the closure would rest on now and whether it needs acknowledgeNoEvidence.
+    const confirmedCount = deliveries.filter((delivery) => delivery.confirmationId).length;
+    const closureBasisNow = filmReceiptClosureBasis({ total: deliveries.length, confirmed: confirmedCount });
+    const receiptClosure = status === 'FILM_DELIVERED'
+      ? { basis: closureBasisNow, acknowledgeNoEvidenceRequired: closureBasisNow === 'evidence_free_acknowledgment' }
+      : null;
     return context.json({
       orderId,
       orderCode: order.code,
@@ -3221,6 +3322,7 @@ export function createApp({
       stage,
       lines: lineViews,
       receiptAssumption,
+      receiptClosure,
       nextAction
     });
   });
@@ -6471,16 +6573,64 @@ export function createApp({
   }
 
   /**
+   * P4 server2 review2 M-1 (conductor decision): the approval evidence set the
+   * representative approves over — for every design of the current approval
+   * gate and both organizations, the latest approval event (APPROVE or REVOKE),
+   * its evidence version and that version's SHA-256. Read with the caller's
+   * executor: the CEO approval reads it inside its transaction after the film
+   * order row lock, which the approval recording (record / revoke) takes too,
+   * so the set it freezes is the one committed when the lock was granted.
+   */
+  async function loadMakerPoApprovalEvidence(executor: MakerPoQueryExecutor, orderId: string): Promise<MakerPoSnapshotApprovalEvidence[]> {
+    const approvalContext = await loadApprovalContext(orderId, executor);
+    const gate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events, approvalContext.verifications);
+    const latest: Array<{ designKey: string; organization: string; eventId: string; versionId: string | null }> = [];
+    for (const design of gate.designs) {
+      for (const state of [design.customer, design.seven]) {
+        if (!state.latestEventId) continue;
+        const event = approvalContext.events.find((candidate) => candidate.id === state.latestEventId);
+        latest.push({
+          designKey: design.designKey,
+          organization: state.organization,
+          eventId: state.latestEventId,
+          versionId: event?.evidenceDocumentVersionId ?? null
+        });
+      }
+    }
+    const versionIds = latest.map((entry) => entry.versionId).filter((id): id is string => id !== null);
+    const versions = versionIds.length === 0 ? [] : await executor.select({ id: documentVersions.id, sha256: documentVersions.sha256 })
+      .from(documentVersions).where(inArray(documentVersions.id, versionIds));
+    const shaById = new Map(versions.map((row) => [row.id, row.sha256]));
+    return latest.map((entry) => ({
+      designKey: entry.designKey,
+      organization: entry.organization,
+      approvalEventId: entry.eventId,
+      evidenceDocumentVersionId: entry.versionId,
+      evidenceSha256: entry.versionId ? shaById.get(entry.versionId) ?? null : null
+    }));
+  }
+
+  /**
    * Rebuilds the snapshot from current order data plus the frozen request-only
    * parts (amounts, recipient address). Only order-side data can therefore move
    * the digest: a quantity change (T-23) or a new artwork revision (T-24)
    * breaks snapshot identity, an edit of the frozen amounts cannot.
+   *
+   * P4 server2 review2 M-1: 'freeze' also takes the current approval evidence
+   * set (required there); 'stored_shape' carries the stored set verbatim, so the
+   * identity check of an approved paper (G10) is unchanged — evidence recorded
+   * after the approval never voids a paper.
    */
   function rebuildMakerPoSnapshot(
     parts: Awaited<ReturnType<typeof loadMakerPoSnapshotParts>>,
     storedSnapshot: MakerPoSnapshot,
-    mode: 'stored_shape' | 'freeze' = 'stored_shape'
+    mode: 'stored_shape' | 'freeze' = 'stored_shape',
+    approvalEvidence?: MakerPoSnapshotApprovalEvidence[]
   ): MakerPoSnapshot {
+    if (mode === 'freeze' && approvalEvidence === undefined) {
+      throw new Error('rebuildMakerPoSnapshot: freeze needs the current approval evidence set');
+    }
+    const evidenceSet = mode === 'freeze' ? approvalEvidence : storedSnapshot.approvalEvidence;
     // P2 decision: an approval ('freeze': the approval itself, the card that
     // previews it, the representative's amount entry) always freezes the
     // delivery terms. The identity check of an approved paper ('stored_shape')
@@ -6493,7 +6643,8 @@ export function createApp({
       artworkFiles: parts.artworkFiles,
       amounts: storedSnapshot.amounts ?? null,
       recipientAddress: storedSnapshot.recipient.address,
-      ...(withTerms ? { deliveryTerms: parts.deliveryTerms } : {})
+      ...(withTerms ? { deliveryTerms: parts.deliveryTerms } : {}),
+      ...(evidenceSet !== undefined ? { approvalEvidence: evidenceSet } : {})
     });
   }
 
@@ -6690,7 +6841,12 @@ export function createApp({
   async function loadApprovalEvidenceIssuerFacts(
     approvalEventId: string,
     evidenceDocumentVersionId: string
-  ): Promise<{ issuerEntity: string | null; sharedEvidenceException: { reason: string } | null }> {
+  ): Promise<{
+    issuerEntity: string | null;
+    sharedEvidenceException: { reason: string } | null;
+    /** P4 server2: the From-domain check stored with the approval (null = none stored). */
+    senderDomainCheck: EvidenceSenderDomainCheck | null;
+  }> {
     const [document] = await db.select({ issuerEntity: documents.issuerEntity })
       .from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
@@ -6710,7 +6866,8 @@ export function createApp({
       : undefined;
     return {
       issuerEntity: document?.issuerEntity ?? null,
-      sharedEvidenceException: typeof reason === 'string' && reason.length > 0 ? { reason } : null
+      sharedEvidenceException: typeof reason === 'string' && reason.length > 0 ? { reason } : null,
+      senderDomainCheck: parseStoredEvidenceSenderDomainCheck((recorded?.afterState as { senderDomainCheck?: unknown } | null)?.senderDomainCheck)
     };
   }
 
@@ -7060,7 +7217,12 @@ export function createApp({
           artworkFiles: parts.artworkFiles,
           amounts,
           recipientAddress: recipientCheck.address,
-          deliveryTerms: parts.deliveryTerms
+          deliveryTerms: parts.deliveryTerms,
+          // P4 server2 review2 M-1: the paper is created on the dual approval it
+          // was re-checked against just above, so it carries that evidence set
+          // too — a paper nothing touched since creation keeps its digest through
+          // the card and the approval (creation = card = approval).
+          approvalEvidence: await loadMakerPoApprovalEvidence(tx, orderId)
         });
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         // P1 R32: the display number MPO-{year}-{n} is the rank by (created_at,
@@ -7192,10 +7354,11 @@ export function createApp({
         const [po] = await tx.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).for('update');
         if (!po || po.status !== 'DRAFT') throw new MakerPoStateConflict();
         const parts = await loadMakerPoSnapshotParts(tx, po.filmSupplyOrderId);
-        const shown = computeMakerPoSnapshotSha256(rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot, 'freeze'));
+        const approvalEvidence = await loadMakerPoApprovalEvidence(tx, po.filmSupplyOrderId);
+        const shown = computeMakerPoSnapshotSha256(rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot, 'freeze', approvalEvidence));
         if (shown !== expected) throw new MakerPoSnapshotChangedUnderLock(expected, shown);
         const stored = po.snapshot as MakerPoSnapshot;
-        const snapshot = rebuildMakerPoSnapshot(parts, { ...stored, amounts }, 'freeze');
+        const snapshot = rebuildMakerPoSnapshot(parts, { ...stored, amounts }, 'freeze', approvalEvidence);
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         await tx.update(makerPurchaseOrders).set({ snapshot, snapshotSha256, updatedAt: now }).where(eq(makerPurchaseOrders.id, poId));
         await recordAuditEvent(tx, {
@@ -7377,7 +7540,12 @@ export function createApp({
             .where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).for('share');
         }
         const parts = await loadMakerPoSnapshotParts(tx, po.filmSupplyOrderId);
-        const snapshot = rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot, 'freeze');
+        // P4 server2 review2 M-1: the evidence set is read here, after the film
+        // order row lock (approval record / revoke take the same lock), so a
+        // revoke or re-approval committed after the card was read moves the
+        // digest and is refused as MAKER_PO_SNAPSHOT_CHANGED below.
+        const approvalEvidence = await loadMakerPoApprovalEvidence(tx, po.filmSupplyOrderId);
+        const snapshot = rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot, 'freeze', approvalEvidence);
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         if (expectedSnapshotSha256 !== null && expectedSnapshotSha256 !== snapshotSha256) {
           throw new MakerPoSnapshotChangedUnderLock(expectedSnapshotSha256, snapshotSha256);
@@ -7533,6 +7701,8 @@ export function createApp({
   // are decided by the same functions the approval endpoint runs; the card
   // never guesses on its own. Admin only: the amount is in it.
   app.get('/api/maker-purchase-orders/:poId/approval-card', async (context) => {
+    // P4 server2 review2 L-1: amounts, uploader names and From addresses are never kept by a browser or a shared proxy (every answer).
+    context.header('Cache-Control', 'private, no-store');
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const poId = context.req.param('poId');
@@ -7553,7 +7723,9 @@ export function createApp({
       .from(projects).where(eq(projects.id, order.projectId)).limit(1);
     const stored = po.snapshot as MakerPoSnapshot;
     const parts = await loadMakerPoSnapshotParts(db, order.id);
-    const preview = rebuildMakerPoSnapshot(parts, stored, 'freeze');
+    // P4 server2 review2 M-1: the hash the card hands out covers the approval
+    // evidence set it shows (same loader as the approval itself).
+    const preview = rebuildMakerPoSnapshot(parts, stored, 'freeze', await loadMakerPoApprovalEvidence(db, order.id));
     const approvalSnapshotSha256 = computeMakerPoSnapshotSha256(preview);
     const numbers = await loadMakerPoDisplayNumbers(db, [po.id]);
 
@@ -7570,9 +7742,14 @@ export function createApp({
       versionId: documentVersions.id,
       sha256: documentVersions.sha256,
       filename: documents.originalFilename,
-      issuerEntity: documents.issuerEntity
+      issuerEntity: documents.issuerEntity,
+      // P4 server2: who uploaded the file and when (display only: id and display name).
+      uploadedAt: documentVersions.createdAt,
+      uploaderId: documentVersions.createdByUserId,
+      uploaderName: users.displayName
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .leftJoin(users, eq(users.id, documentVersions.createdByUserId))
       .where(inArray(documentVersions.id, evidenceVersionIds));
     const evidenceByVersion = new Map(evidenceRows.map((row) => [row.versionId, row]));
     const eventRows = eventIds.length === 0 ? [] : await db.select({
@@ -7608,8 +7785,15 @@ export function createApp({
       const evidence = event.evidenceDocumentVersionId ? evidenceByVersion.get(event.evidenceDocumentVersionId) : undefined;
       const facts = event.evidenceDocumentVersionId
         ? await loadApprovalEvidenceIssuerFacts(event.id, event.evidenceDocumentVersionId)
-        : { issuerEntity: null, sharedEvidenceException: null };
+        : { issuerEntity: null, sharedEvidenceException: null, senderDomainCheck: null };
       const expectedIssuerEntity = APPROVAL_ORGANIZATION_ISSUER[state.organization];
+      const issuerEntity = facts.issuerEntity ?? evidence?.issuerEntity ?? null;
+      const issuerMatchesOrganization = issuerEntity === expectedIssuerEntity;
+      // P4 server2 (p4-web2b review M-1): the sender check stored with this
+      // approval and the server's wording for it, so the card never reads
+      // 「申告どおり」 for a mail from a foreign domain. Display and warning only.
+      const senderDomainCheck = facts.senderDomainCheck;
+      const senderWarning = evidenceSenderDomainWarning(senderDomainCheck);
       const eventIntegrity = integrity.get(event.id);
       const sameContentEventId = eventIntegrity?.sameContentEventId
         ?? [...integrity.entries()].find(([, other]) => other.sameContentEventId === event.id)?.[0]
@@ -7626,9 +7810,16 @@ export function createApp({
           documentVersionId: event.evidenceDocumentVersionId ?? null,
           filename: evidence?.filename ?? null,
           sha256: evidence?.sha256 ?? null,
-          issuerEntity: facts.issuerEntity ?? evidence?.issuerEntity ?? null,
+          issuerEntity,
           expectedIssuerEntity,
-          issuerMatchesOrganization: (facts.issuerEntity ?? evidence?.issuerEntity ?? null) === expectedIssuerEntity,
+          issuerMatchesOrganization,
+          uploadedAt: evidence?.uploadedAt ?? null,
+          uploadedBy: evidence?.uploaderId ? { id: evidence.uploaderId, displayName: evidence.uploaderName ?? null } : null,
+          fromAddress: senderDomainCheck?.fromAddress ?? null,
+          senderDomainCheck,
+          senderVerdict: evidenceSenderVerdict(senderDomainCheck),
+          declarationLine: approvalEvidenceDeclarationLine({ issuerMatchesOrganization, sharedEvidence: facts.sharedEvidenceException !== null, senderDomainCheck }),
+          warnings: senderWarning ? [senderWarning] : [],
           evidenceSource: row?.evidenceSource ?? null,
           identifierStatus: event.evidenceIdentifierStatus ?? null,
           manualVerification: state.manualVerification,
@@ -7709,7 +7900,14 @@ export function createApp({
     if (!preview.amounts) {
       warnings.push({ code: 'MAKER_PO_AMOUNT_MISSING', message: 'メーカー発注書に金額が記載されていません。担当者に金額の入力を依頼してください' });
     }
-    const snapshotDrifted = approvalSnapshotSha256 !== po.snapshotSha256;
+    // The drift warning is about order data (明細・版) only: the evidence set is
+    // not part of a paper created before its approval, so it is left out of
+    // both sides here (P4 server2 review2 M-1).
+    // A stored paper without the set is compared with its stored digest exactly as before.
+    const snapshotDrifted = computeMakerPoSnapshotSha256(makerPoSnapshotWithoutApprovalEvidence(preview))
+      !== (stored.approvalEvidence === undefined
+        ? po.snapshotSha256
+        : computeMakerPoSnapshotSha256(makerPoSnapshotWithoutApprovalEvidence(stored)));
     if (snapshotDrifted) {
       warnings.push({ code: 'MAKER_PO_SNAPSHOT_DRIFTED', message: '発注書の作成後に明細または版が変わりました。承認すると最新の内容で確定します' });
     }
@@ -8359,7 +8557,8 @@ export function createApp({
         liveOrder,
         sql`not exists (select 1 from delivery_confirmations c where c.film_delivery_id = ${filmDeliveries.id})`,
         sql`exists (select 1 from documents d join document_versions v on v.document_id = d.id join users u on u.id = v.created_by_user_id
-          where d.film_supply_order_id = ${filmDeliveries.filmSupplyOrderId} and d.document_type = 'acceptance_evidence' and u.role::text <> 'admin')`
+          where d.film_supply_order_id = ${filmDeliveries.filmSupplyOrderId} and d.document_type = 'acceptance_evidence'
+            and d.maker_purchase_order_id is null and u.role::text <> 'admin')`
       ))
       .orderBy(asc(filmDeliveries.createdAt), asc(filmDeliveries.id))
       .limit(limit + 1));
@@ -8377,7 +8576,13 @@ export function createApp({
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .innerJoin(users, eq(users.id, documentVersions.createdByUserId))
-      .where(and(eq(documents.documentType, 'acceptance_evidence'), inArray(documents.filmSupplyOrderId, deliveryOrderIds)))
+      // P4 server2 (web2a review L-1): receipt evidence only — an acceptance_evidence
+      // bound to a maker PO is the maker's 受入 of the paper (step 10), not the film's 受領.
+      .where(and(
+        eq(documents.documentType, 'acceptance_evidence'),
+        isNull(documents.makerPurchaseOrderId),
+        inArray(documents.filmSupplyOrderId, deliveryOrderIds)
+      ))
       .orderBy(asc(documentVersions.createdAt), asc(documentVersions.id));
     for (const row of deliveryRows) {
       const evidence = receiptEvidence.filter((candidate) => candidate.orderId === row.orderId);
@@ -8427,27 +8632,47 @@ export function createApp({
       });
     }
 
-    // Blocked: 校了 (or ready) but the payment term is still 未定.
-    const blocked = (await ordersWhere(and(
-      sql`${filmSupplyOrders.status}::text in ('DUAL_APPROVED', 'MAKER_PO_READY')`,
+    // Blocked (P4 server2): every open order whose payment term is still 未定,
+    // from its creation (DRAFT) on and whatever its state — the same rule as the
+    // project order list's `attention` (paymentTermsAttention). Only orders that
+    // are over (PAYMENT_TERMS_ATTENTION_CLOSED_STATES) leave the list. Until P4
+    // only DUAL_APPROVED / MAKER_PO_READY were listed, so a new 未定 order reached
+    // the home screen only once it already blocked the approval.
+    const blockedRows = (await ordersWhere(and(
+      notInArray(sql`${filmSupplyOrders.status}::text`, [...PAYMENT_TERMS_ATTENTION_CLOSED_STATES]),
       sql`coalesce(${filmSupplyOrders.paymentTerms}, 'undetermined') = 'undetermined'`
-    )))
-      .map((row) => ({
-        key: `payment_terms_undetermined:${row.orderId}`,
-        kind: 'payment_terms_undetermined',
-        project: projectOf(row),
-        order: orderOf(row),
-        reason: {
-          code: 'PAYMENT_TERMS_UNDETERMINED',
-          message: '支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください'
-        },
-        fixableBy: ['admin', 'staff'],
-        waitingSince: row.orderUpdatedAt,
-        deepLink: link('payment_terms', row, {
-          subjectId: row.orderId,
-          action: { method: 'PATCH', path: `/api/film-supply-orders/${row.orderId}/payment-terms` }
-        })
-      }));
+    ))).filter((row) => paymentTermsAttention({ orderStatus: row.orderStatus, paymentTerms: row.paymentTerms }).length > 0);
+    // Whether the PATCH in deepLink.action can succeed now (P-5: frozen states
+    // and a CEO-approved paper lock the term). One batch query, no amounts.
+    const blockedApprovedPapers = blockedRows.length === 0 ? [] : await db.select({ filmSupplyOrderId: makerPurchaseOrders.filmSupplyOrderId })
+      .from(makerPurchaseOrders)
+      .where(liveApprovedPaperOf(blockedRows.map((row) => row.orderId)));
+    const blockedApprovedOrderIds = new Set(blockedApprovedPapers.map((paper) => paper.filmSupplyOrderId));
+    const blocked = blockedRows
+      .map((row) => {
+        const termsChange = evaluatePaymentTermsChange({
+          orderStatus: row.orderStatus,
+          approvedPaperExists: blockedApprovedOrderIds.has(row.orderId)
+        });
+        const [reason] = paymentTermsAttention({ orderStatus: row.orderStatus, paymentTerms: row.paymentTerms });
+        return {
+          key: `payment_terms_undetermined:${row.orderId}`,
+          kind: 'payment_terms_undetermined',
+          project: projectOf(row),
+          order: orderOf(row),
+          reason,
+          fixableBy: ['admin', 'staff'],
+          // P4 server2: false when the term is locked (frozen state or approved paper);
+          // `paymentTermsLock` then says why, and the PATCH would answer 422 PAYMENT_TERMS_LOCKED.
+          paymentTermsEditable: termsChange.ok,
+          paymentTermsLock: termsChange.ok ? null : { code: termsChange.code, reason: termsChange.reason, message: termsChange.message },
+          waitingSince: row.orderUpdatedAt,
+          deepLink: link('payment_terms', row, {
+            subjectId: row.orderId,
+            action: { method: 'PATCH', path: `/api/film-supply-orders/${row.orderId}/payment-terms` }
+          })
+        };
+      });
 
     // P4 N11/M13: every item names its organization and design (null when the
     // kind is not about one), so the web never has to dig them out of detail.
