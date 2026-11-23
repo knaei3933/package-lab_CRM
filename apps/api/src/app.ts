@@ -13,6 +13,8 @@ import {
   canWriteSevenPoOfficialDate,
   classifyMakerPoCancellation,
   computeMakerPoSnapshotSha256,
+  makerPoSnapshotWithoutApprovalEvidence,
+  type MakerPoSnapshotApprovalEvidence,
   deriveOrderApprovalGate,
   evaluateApprovalEvidenceBinding,
   evaluateApprovalEvidenceIdentifierForBytes,
@@ -1190,6 +1192,8 @@ export function createApp({
   });
 
   app.get('/api/me', async (context) => {
+    // P4 server2 review2 L-1: the caller's own identity is never kept by a browser or a shared proxy (every answer).
+    context.header('Cache-Control', 'private, no-store');
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     // P2 R29: the stored display language (null = not chosen; the screen keeps the role default).
@@ -6480,16 +6484,64 @@ export function createApp({
   }
 
   /**
+   * P4 server2 review2 M-1 (conductor decision): the approval evidence set the
+   * representative approves over — for every design of the current approval
+   * gate and both organizations, the latest approval event (APPROVE or REVOKE),
+   * its evidence version and that version's SHA-256. Read with the caller's
+   * executor: the CEO approval reads it inside its transaction after the film
+   * order row lock, which the approval recording (record / revoke) takes too,
+   * so the set it freezes is the one committed when the lock was granted.
+   */
+  async function loadMakerPoApprovalEvidence(executor: MakerPoQueryExecutor, orderId: string): Promise<MakerPoSnapshotApprovalEvidence[]> {
+    const approvalContext = await loadApprovalContext(orderId, executor);
+    const gate = deriveOrderApprovalGate(approvalContext.revisions, approvalContext.events, approvalContext.verifications);
+    const latest: Array<{ designKey: string; organization: string; eventId: string; versionId: string | null }> = [];
+    for (const design of gate.designs) {
+      for (const state of [design.customer, design.seven]) {
+        if (!state.latestEventId) continue;
+        const event = approvalContext.events.find((candidate) => candidate.id === state.latestEventId);
+        latest.push({
+          designKey: design.designKey,
+          organization: state.organization,
+          eventId: state.latestEventId,
+          versionId: event?.evidenceDocumentVersionId ?? null
+        });
+      }
+    }
+    const versionIds = latest.map((entry) => entry.versionId).filter((id): id is string => id !== null);
+    const versions = versionIds.length === 0 ? [] : await executor.select({ id: documentVersions.id, sha256: documentVersions.sha256 })
+      .from(documentVersions).where(inArray(documentVersions.id, versionIds));
+    const shaById = new Map(versions.map((row) => [row.id, row.sha256]));
+    return latest.map((entry) => ({
+      designKey: entry.designKey,
+      organization: entry.organization,
+      approvalEventId: entry.eventId,
+      evidenceDocumentVersionId: entry.versionId,
+      evidenceSha256: entry.versionId ? shaById.get(entry.versionId) ?? null : null
+    }));
+  }
+
+  /**
    * Rebuilds the snapshot from current order data plus the frozen request-only
    * parts (amounts, recipient address). Only order-side data can therefore move
    * the digest: a quantity change (T-23) or a new artwork revision (T-24)
    * breaks snapshot identity, an edit of the frozen amounts cannot.
+   *
+   * P4 server2 review2 M-1: 'freeze' also takes the current approval evidence
+   * set (required there); 'stored_shape' carries the stored set verbatim, so the
+   * identity check of an approved paper (G10) is unchanged — evidence recorded
+   * after the approval never voids a paper.
    */
   function rebuildMakerPoSnapshot(
     parts: Awaited<ReturnType<typeof loadMakerPoSnapshotParts>>,
     storedSnapshot: MakerPoSnapshot,
-    mode: 'stored_shape' | 'freeze' = 'stored_shape'
+    mode: 'stored_shape' | 'freeze' = 'stored_shape',
+    approvalEvidence?: MakerPoSnapshotApprovalEvidence[]
   ): MakerPoSnapshot {
+    if (mode === 'freeze' && approvalEvidence === undefined) {
+      throw new Error('rebuildMakerPoSnapshot: freeze needs the current approval evidence set');
+    }
+    const evidenceSet = mode === 'freeze' ? approvalEvidence : storedSnapshot.approvalEvidence;
     // P2 decision: an approval ('freeze': the approval itself, the card that
     // previews it, the representative's amount entry) always freezes the
     // delivery terms. The identity check of an approved paper ('stored_shape')
@@ -6502,7 +6554,8 @@ export function createApp({
       artworkFiles: parts.artworkFiles,
       amounts: storedSnapshot.amounts ?? null,
       recipientAddress: storedSnapshot.recipient.address,
-      ...(withTerms ? { deliveryTerms: parts.deliveryTerms } : {})
+      ...(withTerms ? { deliveryTerms: parts.deliveryTerms } : {}),
+      ...(evidenceSet !== undefined ? { approvalEvidence: evidenceSet } : {})
     });
   }
 
@@ -7075,7 +7128,12 @@ export function createApp({
           artworkFiles: parts.artworkFiles,
           amounts,
           recipientAddress: recipientCheck.address,
-          deliveryTerms: parts.deliveryTerms
+          deliveryTerms: parts.deliveryTerms,
+          // P4 server2 review2 M-1: the paper is created on the dual approval it
+          // was re-checked against just above, so it carries that evidence set
+          // too — a paper nothing touched since creation keeps its digest through
+          // the card and the approval (creation = card = approval).
+          approvalEvidence: await loadMakerPoApprovalEvidence(tx, orderId)
         });
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         // P1 R32: the display number MPO-{year}-{n} is the rank by (created_at,
@@ -7207,10 +7265,11 @@ export function createApp({
         const [po] = await tx.select().from(makerPurchaseOrders).where(eq(makerPurchaseOrders.id, poId)).for('update');
         if (!po || po.status !== 'DRAFT') throw new MakerPoStateConflict();
         const parts = await loadMakerPoSnapshotParts(tx, po.filmSupplyOrderId);
-        const shown = computeMakerPoSnapshotSha256(rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot, 'freeze'));
+        const approvalEvidence = await loadMakerPoApprovalEvidence(tx, po.filmSupplyOrderId);
+        const shown = computeMakerPoSnapshotSha256(rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot, 'freeze', approvalEvidence));
         if (shown !== expected) throw new MakerPoSnapshotChangedUnderLock(expected, shown);
         const stored = po.snapshot as MakerPoSnapshot;
-        const snapshot = rebuildMakerPoSnapshot(parts, { ...stored, amounts }, 'freeze');
+        const snapshot = rebuildMakerPoSnapshot(parts, { ...stored, amounts }, 'freeze', approvalEvidence);
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         await tx.update(makerPurchaseOrders).set({ snapshot, snapshotSha256, updatedAt: now }).where(eq(makerPurchaseOrders.id, poId));
         await recordAuditEvent(tx, {
@@ -7392,7 +7451,12 @@ export function createApp({
             .where(eq(sevenPurchaseOrders.id, order.sevenPurchaseOrderId)).for('share');
         }
         const parts = await loadMakerPoSnapshotParts(tx, po.filmSupplyOrderId);
-        const snapshot = rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot, 'freeze');
+        // P4 server2 review2 M-1: the evidence set is read here, after the film
+        // order row lock (approval record / revoke take the same lock), so a
+        // revoke or re-approval committed after the card was read moves the
+        // digest and is refused as MAKER_PO_SNAPSHOT_CHANGED below.
+        const approvalEvidence = await loadMakerPoApprovalEvidence(tx, po.filmSupplyOrderId);
+        const snapshot = rebuildMakerPoSnapshot(parts, po.snapshot as MakerPoSnapshot, 'freeze', approvalEvidence);
         const snapshotSha256 = computeMakerPoSnapshotSha256(snapshot);
         if (expectedSnapshotSha256 !== null && expectedSnapshotSha256 !== snapshotSha256) {
           throw new MakerPoSnapshotChangedUnderLock(expectedSnapshotSha256, snapshotSha256);
@@ -7548,6 +7612,8 @@ export function createApp({
   // are decided by the same functions the approval endpoint runs; the card
   // never guesses on its own. Admin only: the amount is in it.
   app.get('/api/maker-purchase-orders/:poId/approval-card', async (context) => {
+    // P4 server2 review2 L-1: amounts, uploader names and From addresses are never kept by a browser or a shared proxy (every answer).
+    context.header('Cache-Control', 'private, no-store');
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     const poId = context.req.param('poId');
@@ -7568,7 +7634,9 @@ export function createApp({
       .from(projects).where(eq(projects.id, order.projectId)).limit(1);
     const stored = po.snapshot as MakerPoSnapshot;
     const parts = await loadMakerPoSnapshotParts(db, order.id);
-    const preview = rebuildMakerPoSnapshot(parts, stored, 'freeze');
+    // P4 server2 review2 M-1: the hash the card hands out covers the approval
+    // evidence set it shows (same loader as the approval itself).
+    const preview = rebuildMakerPoSnapshot(parts, stored, 'freeze', await loadMakerPoApprovalEvidence(db, order.id));
     const approvalSnapshotSha256 = computeMakerPoSnapshotSha256(preview);
     const numbers = await loadMakerPoDisplayNumbers(db, [po.id]);
 
@@ -7743,7 +7811,14 @@ export function createApp({
     if (!preview.amounts) {
       warnings.push({ code: 'MAKER_PO_AMOUNT_MISSING', message: 'メーカー発注書に金額が記載されていません。担当者に金額の入力を依頼してください' });
     }
-    const snapshotDrifted = approvalSnapshotSha256 !== po.snapshotSha256;
+    // The drift warning is about order data (明細・版) only: the evidence set is
+    // not part of a paper created before its approval, so it is left out of
+    // both sides here (P4 server2 review2 M-1).
+    // A stored paper without the set is compared with its stored digest exactly as before.
+    const snapshotDrifted = computeMakerPoSnapshotSha256(makerPoSnapshotWithoutApprovalEvidence(preview))
+      !== (stored.approvalEvidence === undefined
+        ? po.snapshotSha256
+        : computeMakerPoSnapshotSha256(makerPoSnapshotWithoutApprovalEvidence(stored)));
     if (snapshotDrifted) {
       warnings.push({ code: 'MAKER_PO_SNAPSHOT_DRIFTED', message: '発注書の作成後に明細または版が変わりました。承認すると最新の内容で確定します' });
     }

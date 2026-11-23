@@ -417,3 +417,5 @@ P4 で既存コードに足した項目（コードは同じ）:
 - `CEO_ONLY`（403）: P4 の割り当て API（GET/POST/DELETE …/assignments）でも返す。
 - `CEO_ONLY`（403）: P4 server2 の GET /api/assignable-users（担当者の選択肢）でも返す。未ログインは 401 `AUTH_REQUIRED`。
 - `PAYMENT_TERMS_LOCKED`: P4 server2 で GET /api/representative-queue の `blocked[]` が、行の PATCH が今通らないときに `paymentTermsEditable: false` と `paymentTermsLock: { code: "PAYMENT_TERMS_LOCKED", reason, message }` を持つ（拒否ではなく表示用。通るときは `true` と `null`）。
+- `MAKER_PO_SNAPSHOT_CHANGED`（409）: P4 server2 review2 M-1 から、承認カードの `approvalSnapshotSha256` は**承認証跡の組**（デザイン×組織ごとの最新の承認イベント id・証跡版 id・証跡の SHA-256、固定順）も含む。カードを開いた後に承認・取消が記録されると、そのカードの値での代表承認（POST …/ceo-approval）と金額入力（PATCH …/amounts）は同じ 409 になる。カードを読み直して新しい値で送る。差出人の判定文言（`senderVerdict`・`declarationLine`）は含まない。コード・文言・形は変えていない。
+- `Cache-Control: private, no-store`: P4 server2 review2 L-1 で承認カードと GET /api/me にも付けた（200・401・403 すべて）。
