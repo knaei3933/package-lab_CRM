@@ -253,6 +253,8 @@ export function MakerPoSendEvidenceForm({
     >
       <input type="hidden" readOnly name="poId" value={poId} />
       <input type="hidden" readOnly name="contentBase64" value={contentBase64} />
+      {/* p6 X3: the picked .eml's own name, kept as the stored version's name (the evidence list shows it). */}
+      <input type="hidden" readOnly name="filename" value={emlFilename} />
 
       <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
         <FieldFeedback name={FILE_FIELD}>

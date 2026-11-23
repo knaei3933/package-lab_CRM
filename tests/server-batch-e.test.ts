@@ -200,7 +200,8 @@ describe('persona friction batch E', () => {
       events: Array<{ action: string; afterState: Record<string, unknown> | null }>
     })
       .events.find((event) => event.action === 'FILM_SUPPLY_ORDER_CREATED');
-    expect(viewerOrder?.afterState).toEqual({ status: 'DRAFT', paymentTerms: 'prepaid' });
+    // p6 H10: the viewer also reads the order code (not the lines, amounts or links).
+    expect(viewerOrder?.afterState).toEqual({ code: expect.any(String), status: 'DRAFT', paymentTerms: 'prepaid' });
 
     // The order row remains selectable as the delivery form's line parent.
     const [order] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, orderId));

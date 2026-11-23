@@ -2,7 +2,7 @@ import Link from 'next/link';
 import { Bilingual } from '../components/Bilingual';
 import { ViewerPageNotice } from '../components/RoleGate';
 import { callApi, loadSessionUser } from '../lib/api';
-import { documentTypeText, issuerText, loadEvidenceMetadata, shortHash } from '../lib/evidence-data';
+import { documentTypeText, issuerText, loadEvidenceMetadata, SEND_VERIFICATION_TEXT, sendVerificationOfDocument, shortHash } from '../lib/evidence-data';
 import { IDENTIFIER_HISTORY_ACTIONS, IDENTIFIER_HISTORY_LIMIT, IDENTIFIER_STATE_TEXT, readIdentifiers, resolveFromGates } from '../lib/evidence-identifier';
 import type { IdentifierState } from '../lib/evidence-identifier';
 import { loadApprovalGate } from '../lib/project-data';
@@ -123,6 +123,9 @@ function EvidenceTable({ documents, identifiers }: { documents: EvidenceDocument
             const latest = [...doc.versions].sort((a, b) => (b.versionNumber ?? 0) - (a.versionNumber ?? 0))[0] ?? null;
             const filename = doc.filenameHidden ? null : (latest?.originalFilename ?? doc.originalFilename);
             const verified = doc.verificationStatus === 'verified';
+            const documentCheck = verified ? (VERIFICATION_STATUS_LABELS.verified ?? '確認済み') : doc.verificationStatus === 'mismatch' ? (VERIFICATION_STATUS_LABELS.mismatch ?? '相違あり') : '未確認';
+            const identifier = identifierState(doc, latest, identifiers);
+            const send = sendVerificationOfDocument(doc);
             return (
               <tr key={doc.documentId} id={`doc-${doc.documentId}`} role="row">
                 <td role="cell" data-label="文書の種類">
@@ -156,12 +159,18 @@ function EvidenceTable({ documents, identifiers }: { documents: EvidenceDocument
                   <span className="p2-audit-sub p1-muted-inline p1-figure">{formatTimestamp(doc.createdAt ?? latest?.uploadedAt)}</span>
                 </td>
                 <td role="cell" data-label="確認状態">
-                  {identifierState(doc, latest, identifiers) ? (
+                  {identifier ? (
                     <>
-                      <span data-check="identifier">識別子: {IDENTIFIER_STATE_TEXT[identifierState(doc, latest, identifiers)!]}</span>
-                      <span className="p2-audit-sub p1-muted-inline" data-check="document">書類の確認: {verified ? (VERIFICATION_STATUS_LABELS.verified ?? '確認済み') : doc.verificationStatus === 'mismatch' ? (VERIFICATION_STATUS_LABELS.mismatch ?? '相違あり') : '未確認'}</span>
+                      <span data-check="identifier">識別子: {IDENTIFIER_STATE_TEXT[identifier]}</span>
+                      <span className="p2-audit-sub p1-muted-inline" data-check="document">書類の確認: {documentCheck}</span>
                     </>
-                  ) : verified ? (VERIFICATION_STATUS_LABELS.verified ?? '確認済み') : doc.verificationStatus === 'mismatch' ? (VERIFICATION_STATUS_LABELS.mismatch ?? '相違あり') : '未確認'}
+                  ) : send ? (
+                    // p6 X3: a send evidence is checked as a send (the EML against the frozen paper), apart from the document check.
+                    <>
+                      <span data-check="send">送信の検証: {SEND_VERIFICATION_TEXT[send]}</span>
+                      <span className="p2-audit-sub p1-muted-inline" data-check="document">書類の確認: {documentCheck}</span>
+                    </>
+                  ) : documentCheck}
                   {verified && (doc.verifiedBy || doc.verifiedAt) ? (
                     <span className="p2-audit-sub p1-muted-inline p1-figure">{[doc.verifiedBy, doc.verifiedAt ? formatTimestamp(doc.verifiedAt) : null].filter(Boolean).join(' ・ ')}</span>
                   ) : null}

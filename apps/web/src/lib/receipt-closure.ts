@@ -11,8 +11,12 @@ import { callApi } from './api';
 export type ClosureBasis = 'delivery_confirmations' | 'evidence_free_acknowledgment';
 
 export interface ReceiptClosureView {
-  /** Null unless the order is FILM_DELIVERED. */
-  pending: { basis: ClosureBasis; acknowledgeNoEvidenceRequired: boolean } | null;
+  /**
+   * Null unless the order is FILM_DELIVERED. p6 X5: `awaitingRepresentative` is the server's
+   * `receiptEvidenceAwaitingRepresentative` (receipt evidence waits for the representative's
+   * confirmation, so only the representative closes evidence-free); null on an older API.
+   */
+  pending: { basis: ClosureBasis; acknowledgeNoEvidenceRequired: boolean; awaitingRepresentative: boolean | null } | null;
   /** Null until the completion is recorded. */
   recorded: { basis: ClosureBasis; at: string | null; by: string | null } | null;
 }
@@ -38,7 +42,11 @@ export function receiptClosureFrom(data: unknown): ReceiptClosureView | null {
   const by = recordedRow ? record(recordedRow.assumedBy) : null;
   return {
     pending: pendingRow && pendingBasis
-      ? { basis: pendingBasis, acknowledgeNoEvidenceRequired: pendingRow.acknowledgeNoEvidenceRequired !== false }
+      ? {
+          basis: pendingBasis,
+          acknowledgeNoEvidenceRequired: pendingRow.acknowledgeNoEvidenceRequired !== false,
+          awaitingRepresentative: typeof pendingRow.receiptEvidenceAwaitingRepresentative === 'boolean' ? pendingRow.receiptEvidenceAwaitingRepresentative : null
+        }
       : null,
     recorded: recordedRow && recordedBasis
       ? {

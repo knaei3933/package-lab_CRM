@@ -1,6 +1,6 @@
 # API エラーコード一覧（P0 サーバー p0/server + P1 サーバー p1/server + P2 サーバー p2/server + P4 サーバー p4/server）
 
-コード数: 289（`ERROR_MESSAGES_JA` の件数。P2 で 10 件、P2 検収反映で 4 件、P4 で 9 件、P4 検収反映で 1 件、P4 server2 再検収3 反映で 1 件（`DELIVERY_EVIDENCE_MAKER_PO_BOUND`）追加）
+コード数: 296（`ERROR_MESSAGES_JA` の件数。P2 で 10 件、P2 検収反映で 4 件、P4 で 9 件、P4 検収反映で 1 件、P4 server2 再検収3 反映で 1 件（`DELIVERY_EVIDENCE_MAKER_PO_BOUND`）、P5 までのその後の追加を含む。p6 X5 で 1 件（`RECEIPT_EVIDENCE_AWAITING_REPRESENTATIVE`）追加）
 
 API の拒否応答（HTTP 400 以上）は必ず JSON `{ "error": "<日本語の文>", "code": "<CODE>", ...追加項目 }` です（R09）。
 `error` には英語の core メッセージ・enum 値・項目名・内部 URL/ポートを入れません。安全でない文はサーバーがこの表の文に置き換えます。
@@ -341,6 +341,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `RECEIPT_ASSUMPTION_NOTE_REQUIRED` | 422 | 問題なしとみなす理由を入力してください |  |
 | `RECEIPT_ASSUMPTION_ONLY_FROM_FILM_DELIVERED` | 422 | 受領確認は「フィルム納品済み」の発注でだけ記録できます |  |
 | `RECEIPT_ASSUMPTION_STATE_CHANGED` | 422 | フィルム発注の状態が別の操作で変わりました。画面を再読み込みしてください |  |
+| `RECEIPT_EVIDENCE_AWAITING_REPRESENTATIVE` | 409 | 受領証跡が代表の確認を待っています。証跡なしでの完了は代表だけが記録できます。代表の確認を待ってください | p6 X5（指揮者決定）: POST /api/film-supply-orders/:orderId/receipt-assumption で、担当者（代表以外）が完了しようとしたとき、この発注に確認されていない納品があり、代表以外が登録した受領証跡（メーカー発注書に紐付かない acceptance_evidence、紐付き文書と同じバイトの写しを除く）がある＝代表の承認箱に「納品の確認」が出ている間は拒否し、何も書かない。判定は注文行のロック後にもう一度行う。代表は従来どおり記録できる（`closureBasis = evidence_free_acknowledgment`）。確認済みの納品にもとづく完了（`delivery_confirmations`）は対象外（未確認の納品がないため）。追加項目 `from`（発注の状態）。担当者画面ではこの間「証跡なしで問題なしとして完了する」フォームを出さない |
 | `INVALID_RECEIPT_ASSUMED_AT` | 422 | 受領確認の日付が正しくありません |  |
 | `INVALID_DATE` | 422 | 日付が正しくありません。日付の形式を確認してください |  |
 

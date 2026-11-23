@@ -111,7 +111,8 @@ describe('E3: loadWorkspace replays the 支払条件 for every role', () => {
   it('the creation value alone stands when nothing was recorded later', async () => {
     serve((rows) => buildAuditViewForRole('viewer', rows), [CREATED]);
     const [order] = (await loadWorkspace(PROJECT_ID)).filmOrders;
-    expect(order).toMatchObject({ paymentTerms: 'undetermined', paymentTermsHidden: false, code: HIDDEN_BY_ROLE_LABEL });
+    // p6 H10: the viewer now reads the order code too.
+    expect(order).toMatchObject({ paymentTerms: 'undetermined', paymentTermsHidden: false, code: 'FSO-E3-001', detailsHidden: true });
   });
 
   for (const role of ['staff', 'viewer'] as const) {

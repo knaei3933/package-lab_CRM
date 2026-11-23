@@ -785,7 +785,7 @@ describe('(3) L-1: a slot that waits for the representative\'s check no longer p
 describe('(3) L-2: the two survivors of the p4/web3 review\'s mutation run are pinned', () => {
   it('V7: a delivery-status that does not say whether the 「証跡なし」 agreement is needed asks for it (the safe default)', () => {
     const missing = closureLib.receiptClosureFrom({ receiptClosure: { basis: 'delivery_confirmations' }, receiptAssumption: null });
-    expect(missing.pending).toEqual({ basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: true });
+    expect(missing.pending).toEqual({ basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: true, awaitingRepresentative: null });
     expect(closureLib.receiptClosureFrom({ receiptClosure: { basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: false }, receiptAssumption: null }).pending.acknowledgeNoEvidenceRequired).toBe(false);
     const html = (closure: unknown) => panel('FILM_DELIVERED', 'admin', { deliveryContext: context('u-admin', [delivery('del-1', true)], { closure }) });
     expect(html(missing)).toContain('name="acknowledgeNoEvidence"');

@@ -115,6 +115,15 @@ const VIEWER_STATE_KEYS: readonly string[] = [
 ];
 
 /**
+ * p6 H10 (conductor decision): the viewer also reads the order code — of a film
+ * order and of a filling order, and only on those rows — so the overview names
+ * the order whose stage it shows. Amounts, notes, file names and partner
+ * contacts stay off the viewer answer (the code is the only key added).
+ */
+const VIEWER_ORDER_CODE_ENTITY_TYPES: readonly string[] = ['film_supply_order', 'filling_order'];
+const VIEWER_ORDER_STATE_KEYS: readonly string[] = [...VIEWER_STATE_KEYS, 'code'];
+
+/**
  * P2 policy P-2: the auditor sees who did what and when, on what, and on what
  * evidence — codes, statuses, the approval facts and the evidence metadata
  * (file name, hash, issuer, who verified it and when). Amounts, unit prices,
@@ -242,10 +251,11 @@ export function buildAuditViewForRole(role: UserRole, rows: readonly AuditHistor
 
     // viewer — and, fail closed, any role this function does not know (P2: the
     // full answer is admin's only, never a fall-through default).
+    const viewerKeys = VIEWER_ORDER_CODE_ENTITY_TYPES.includes(row.entityType) ? VIEWER_ORDER_STATE_KEYS : VIEWER_STATE_KEYS;
     return {
       ...summary,
-      beforeState: allowlistState(row.beforeState, VIEWER_STATE_KEYS),
-      afterState: allowlistState(row.afterState, VIEWER_STATE_KEYS)
+      beforeState: allowlistState(row.beforeState, viewerKeys),
+      afterState: allowlistState(row.afterState, viewerKeys)
     };
   });
 }

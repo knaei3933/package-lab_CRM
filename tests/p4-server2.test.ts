@@ -1066,7 +1066,11 @@ describe('(6) web2a review M-2: a closure on confirmed deliveries is never recor
     expect(refused.body.code).toBe('RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED');
     const [still] = await db.select().from(filmSupplyOrders).where(eq(filmSupplyOrders.id, order.orderId));
     expect(still!.status).toBe('FILM_DELIVERED');
-    const closed = await post('staff', closeUrl(order.orderId), { note: '一部未確認', acknowledgeNoEvidence: true });
+    // p6 X5: the staff-uploaded receipt still waits for the representative on delivery 2 → staff are refused (409), nothing written.
+    const staffRefused = await post('staff', closeUrl(order.orderId), { note: '一部未確認', acknowledgeNoEvidence: true });
+    expect(staffRefused.status).toBe(409);
+    expect(staffRefused.body.code).toBe('RECEIPT_EVIDENCE_AWAITING_REPRESENTATIVE');
+    const closed = await post('admin', closeUrl(order.orderId), { note: '一部未確認', acknowledgeNoEvidence: true });
     expect(closed.status, closed.text).toBe(200);
     expect(closed.body).toMatchObject({ closureBasis: 'evidence_free_acknowledgment', evidenceFreeAcknowledgment: true, deliveries: { total: 2, confirmed: 1 } });
     const audit = await closureAudit(order.orderId);
@@ -1093,10 +1097,11 @@ describe('(6) web2a review M-2: a closure on confirmed deliveries is never recor
   it('delivery-status tells the web which basis a closure would have now (receiptClosure)', async () => {
     const partial = await deliveredOrder(2, 1);
     expect((await get('staff', `/api/film-supply-orders/${partial.orderId}/delivery-status`)).body.receiptClosure)
-      .toEqual({ basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true });
+      // p6 X5: delivery 2 is unconfirmed beside the staff-uploaded receipt → it waits for the representative.
+      .toEqual({ basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true, receiptEvidenceAwaitingRepresentative: true });
     const full = await deliveredOrder(1, 1);
     const status = await get('staff', `/api/film-supply-orders/${full.orderId}/delivery-status`);
-    expect(status.body.receiptClosure).toEqual({ basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: false });
+    expect(status.body.receiptClosure).toEqual({ basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: false, receiptEvidenceAwaitingRepresentative: false });
     expect(status.body.nextAction).toMatchObject({ action: 'CLOSE_ORDER' });
     const shipped = await deliveredOrder(1, 1, 'FILM_SHIPPED');
     expect((await get('staff', `/api/film-supply-orders/${shipped.orderId}/delivery-status`)).body.receiptClosure).toBeNull();
@@ -1229,7 +1234,7 @@ describe('(7) review3 M-1: a maker-PO acceptance document never confirms a deliv
     // The delivery is still waiting, and the order cannot be closed as "confirmed".
     await db.update(filmSupplyOrders).set({ status: 'FILM_DELIVERED' }).where(eq(filmSupplyOrders.id, order.orderId));
     const status = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
-    expect(status.body.receiptClosure).toEqual({ basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true });
+    expect(status.body.receiptClosure).toEqual({ basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true, receiptEvidenceAwaitingRepresentative: false });
     expect((await post('staff', closeUrl(order.orderId), { note: 'メーカー受領書で' })).body.code).toBe('RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED');
   });
 
@@ -1268,7 +1273,7 @@ describe('(7) review3 M-1: a maker-PO acceptance document never confirms a deliv
     expect(status.body.lines[0]).toMatchObject({ deliveredQuantity: '500.000', confirmedQuantity: '500.000' });
     expect(status.body.stage).toBe('quantity_confirmed');
     expect(status.body.nextAction).toMatchObject({ action: 'CLOSE_ORDER' });
-    expect(status.body.receiptClosure).toEqual({ basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true });
+    expect(status.body.receiptClosure).toEqual({ basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true, receiptEvidenceAwaitingRepresentative: false });
     // The queue does not ask for it again: the row is confirmed (read impact recorded in REPORT).
     expect((await queue()).items.find((item) => item.key === `delivery_confirmation:${order.deliveryId}`)).toBeUndefined();
     expect((await post('staff', closeUrl(order.orderId), { note: '旧データ' })).body.code).toBe('RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED');
@@ -1434,7 +1439,7 @@ describe('(8) review4 M-1: the maker acceptance re-uploaded without its binding 
     await db.update(filmSupplyOrders).set({ status: 'FILM_DELIVERED' }).where(eq(filmSupplyOrders.id, order.orderId));
     const status = await get('staff', `/api/film-supply-orders/${order.orderId}/delivery-status`);
     expect(status.body.lines[0].deliveries[0].confirmation.evidenceKind).toBe('maker_po_acceptance');
-    expect(status.body.receiptClosure).toEqual({ basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true });
+    expect(status.body.receiptClosure).toEqual({ basis: 'evidence_free_acknowledgment', acknowledgeNoEvidenceRequired: true, receiptEvidenceAwaitingRepresentative: false });
     expect(status.body.lines[0].confirmedQuantity).toBe('500.000');
   });
 
