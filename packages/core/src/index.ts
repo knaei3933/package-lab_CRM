@@ -13,3 +13,5 @@ export * from './units.js';
 export * from './auto-advance.js';
 export * from './display-format.js';
 export * from './self-verification.js';
+export * from './approval-facts.js';
+export * from './sender-domain.js';

@@ -15,8 +15,10 @@ import type { AppDatabase } from './auth.js';
  * `IdempotencyStore` is kept for the store unit tests and as a fallback.
  *
  * Rules shared by both stores:
- * - the scope is the signed-in user id, so a key never replays another user's
- *   answer; requests without a valid session are not cached (app.ts).
+ * - the scope is the signed-in user id and role (P4 N8,
+ *   `roleScopedIdempotencyKey`), so a key never replays another user's answer
+ *   nor an answer given to the same user under another role; requests without
+ *   a valid session are not cached (app.ts).
  * - only 2xx answers up to 256 KiB are kept: a refusal or an outage is
  *   forgotten, so a corrected or retried submit really runs again.
  * - the same key with a different request is `mismatch` (422 REUSED).
@@ -74,6 +76,25 @@ export function isValidIdempotencyKey(value: string): boolean {
 
 export function sha256Hex(value: string | Uint8Array): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+/**
+ * P4 N8 (conductor decision: scope = userId:role). The stored key is bound to
+ * the role the user had when the write ran, so a role change (admin → staff,
+ * staff → auditor, …) never replays an answer shaped for the earlier role —
+ * that answer can carry the representative's amounts. After a role change the
+ * same client key is a new execution under the new role's permissions; the
+ * earlier role's row stays as it was and expires normally.
+ *
+ * The table's primary key stays (user_id, idempotency_key), so the user part
+ * of the scope is the user_id column and the role part is folded into the
+ * stored key: `r.<role>.<sha256(client key)>` (≤ 128 characters and inside the
+ * key-format CHECK of migration 0027 for every valid client key). Hashing keeps
+ * the stored value a fixed length whatever the client sends.
+ */
+export function roleScopedIdempotencyKey(role: string, clientKey: string): string {
+  const safeRole = /^[a-z_]{1,32}$/.test(role) ? role : 'unknown';
+  return `r.${safeRole}.${sha256Hex(clientKey)}`;
 }
 
 /** P0 R05: in-process store (one process, forgotten on restart). */

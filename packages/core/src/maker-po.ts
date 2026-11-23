@@ -914,6 +914,10 @@ export function evaluateMakerPoSendEvidence(
   // The message's own headers are the stronger record of who sent what to whom,
   // so they replace the request-declared facts whenever the message carries them.
   const provenSenderAddress = emlEvaluation.senderAddress ?? senderAddress;
+  // P4 N2: the same holds for the send time. When the Date header parsed and
+  // agreed with the declared sentAt, its original value (seconds included) is
+  // the recorded send time; otherwise the declared value stays.
+  const provenSentAt = emlEvaluation.effectiveSentAt;
   const messageRecipients = emlEvaluation.recipients.length > 0 ? emlEvaluation.recipients : recipients;
   // The attachments whose bytes match an approved artifact are the signal FIX C1
   // records and — since M8-HARDEN2 FIX 1 — the one a VERIFIED send rests on, so
@@ -927,7 +931,7 @@ export function evaluateMakerPoSendEvidence(
       verificationStatus: 'PENDING_MANUAL_VERIFICATION',
       senderAddress: provenSenderAddress,
       recipients: messageRecipients,
-      sentAt: sentAtValue,
+      sentAt: provenSentAt,
       attachmentHashes: provenAttachmentHashes,
       evidenceDocumentVersionId,
       pendingCode: emlEvaluation.pendingCode,
@@ -942,7 +946,7 @@ export function evaluateMakerPoSendEvidence(
     verificationStatus: 'VERIFIED',
     senderAddress: provenSenderAddress,
     recipients: messageRecipients,
-    sentAt: sentAtValue,
+    sentAt: provenSentAt,
     attachmentHashes: provenAttachmentHashes,
     evidenceDocumentVersionId,
     verification

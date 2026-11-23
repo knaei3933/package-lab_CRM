@@ -1390,6 +1390,13 @@ export type MakerPoEmlEvidenceEvaluation =
       senderAddress: string | null;
       recipients: string[];
       emlDate: Date | null;
+      /**
+       * P4 N2: the send time the evaluation judged by — the EML Date original
+       * value (seconds included) when it parsed and agreed with the recorded
+       * sentAt within the skew tolerance; the recorded sentAt when it already
+       * falls inside the header's own second, or when there is no usable header.
+       */
+      effectiveSentAt: Date;
       attachmentHashes: string[];
       matchedAttachmentHashes: string[];
     }
@@ -1406,9 +1413,21 @@ export type MakerPoEmlEvidenceEvaluation =
       senderAddress: string | null;
       recipients: string[];
       emlDate: Date | null;
+      /**
+       * P4 N2: the send time the evaluation judged by — the EML Date original
+       * value (seconds included) when it parsed and agreed with the recorded
+       * sentAt within the skew tolerance; the recorded sentAt when it already
+       * falls inside the header's own second, or when there is no usable header.
+       */
+      effectiveSentAt: Date;
       attachmentHashes: string[];
       matchedAttachmentHashes: string[];
     };
+
+/** Milliseconds since the epoch, cut to the whole second (a Date header's resolution). */
+function floorToSecond(date: Date): number {
+  return Math.floor(date.getTime() / 1000) * 1000;
+}
 
 function check(key: string, status: MakerPoEmlCheckStatus, detail: string | null = null): MakerPoEmlCheck {
   return { key, status, detail };
@@ -1466,6 +1485,7 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
       senderAddress: null,
       recipients: [],
       emlDate: null,
+      effectiveSentAt: input.sentAt,
       attachmentHashes: [],
       matchedAttachmentHashes: []
     };
@@ -1511,8 +1531,21 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
   if (eml.dateRaw === null) fail('EML_DATE_HEADER_MISSING', 'date_header', 'no Date header');
   else if (eml.date === null) fail('EML_DATE_HEADER_UNPARSABLE', 'date_header', eml.dateRaw);
   else checks.push(check('date_header', 'passed', eml.date.toISOString()));
+  // P4 N2: the time the send is judged by. A form that copies the Date header
+  // into minute-precision inputs drops the seconds (Date 00:10:49 → sentAt
+  // 00:10:00), and the strict approval comparison below then calls a send made
+  // seconds after the approval "before the approval". When the message carries
+  // a parsable Date that agrees with the recorded sentAt (the skew check just
+  // below), that original header value — seconds included — is the stronger
+  // record and is what the plausibility check and the stored event use. A
+  // recorded sentAt inside the header's own second already says the same thing
+  // (more precisely) and is kept.
+  let effectiveSentAt: Date = input.sentAt;
   if (eml.date !== null) {
     const skew = Math.abs(eml.date.getTime() - input.sentAt.getTime());
+    if (skew <= MAKER_PO_EML_DATE_SKEW_TOLERANCE_MS && floorToSecond(input.sentAt) !== eml.date.getTime()) {
+      effectiveSentAt = eml.date;
+    }
     if (skew > MAKER_PO_EML_DATE_SKEW_TOLERANCE_MS) {
       fail(
         'EML_DATE_SENT_AT_CONFLICT',
@@ -1551,14 +1584,22 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
   }
 
   // FIX C2: a send recorded before its own approval is not a plausible send.
-  if (input.ceoApprovedAt !== null && input.sentAt.getTime() < input.ceoApprovedAt.getTime()) {
+  // P4 N2: judged by the EML Date original value when it was accepted above.
+  // M10 keeps zero tolerance and the comparison stays exact (fail closed): a
+  // header that names the approval's own second reads as that second's start,
+  // so a send inside it still goes to the representative's manual check.
+  if (input.ceoApprovedAt !== null && effectiveSentAt.getTime() < input.ceoApprovedAt.getTime()) {
     fail(
       'SENT_AT_PRECEDES_CEO_APPROVAL',
       'sent_at_plausibility',
-      `sentAt=${input.sentAt.toISOString()} ceoApprovedAt=${input.ceoApprovedAt.toISOString()}`
+      `sentAt=${effectiveSentAt.toISOString()} ceoApprovedAt=${input.ceoApprovedAt.toISOString()}`
     );
   } else {
-    checks.push(check('sent_at_plausibility', 'passed'));
+    checks.push(check(
+      'sent_at_plausibility',
+      'passed',
+      effectiveSentAt === input.sentAt ? null : `emlDate=${effectiveSentAt.toISOString()}`
+    ));
   }
 
   // M8-HARDEN2 FIX 1: the attachment gate. Headers alone do not prove that the
@@ -1662,6 +1703,7 @@ export function evaluateMakerPoEmlEvidence(input: MakerPoEmlEvidenceInput): Make
     senderAddress: fromAddress,
     recipients,
     emlDate: eml.date,
+    effectiveSentAt,
     attachmentHashes,
     matchedAttachmentHashes: matched
   };

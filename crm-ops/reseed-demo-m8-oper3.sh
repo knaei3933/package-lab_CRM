@@ -234,6 +234,11 @@ step "POST /api/seven-purchase-orders/:id/supply-orders (paymentTerms)" 201 "$ST
 ORDER_ID="$(extract '"id":"[0-9a-f-]{36}"' 4)"
 require_id "film supply order id" "$ORDER_ID"
 
+# P4 H4①: the CEO approval requires 希望納期 (and 金額, set on the maker PO
+# below). The demo records a synthetic date right after creating the order.
+call PATCH "/api/film-supply-orders/$ORDER_ID/delivery-dates" '{"requestedDeliveryDate":"2027-03-31"}'
+step "PATCH /api/film-supply-orders/:id/delivery-dates (希望納期)" 200 "$STATUS"
+
 for NEXT_STATE in SEVEN_PO_VERIFIED ARTWORK_RECEIVED PROOF_READY APPROVAL_PENDING; do
   call POST "/api/film-supply-orders/$ORDER_ID/transitions" "{\"to\":\"$NEXT_STATE\"}"
   step "transition → $NEXT_STATE" 200 "$STATUS"
@@ -290,7 +295,16 @@ step "POST maker-purchase-orders (dual-approval re-check)" 201 "$STATUS"
 MAKER_PO_ID="$(extract '"id":"[0-9a-f-]{36}"' 4)"
 require_id "maker purchase order id" "$MAKER_PO_ID"
 
-call POST "/api/maker-purchase-orders/$MAKER_PO_ID/ceo-approval" '{}'
+# P1 integration: the approval pins the snapshot hash the approval card shows;
+# P4 H4①: the card's blockers list AMOUNT_REQUIRED / DELIVERY_DATE_REQUIRED when
+# 金額 or 希望納期 is missing (both are set above).
+call GET "/api/maker-purchase-orders/$MAKER_PO_ID/approval-card"
+step "GET maker-PO approval-card" 200 "$STATUS"
+APPROVAL_SNAPSHOT_SHA256="$(extract '"approvalSnapshotSha256":"[0-9a-f]{64}"' 4)"
+require_id "approval snapshot sha256" "$APPROVAL_SNAPSHOT_SHA256"
+
+call POST "/api/maker-purchase-orders/$MAKER_PO_ID/ceo-approval" \
+  "$(printf '{"expectedPaymentTerms":"%s","expectedSnapshotSha256":"%s"}' "$PAYMENT_TERMS" "$APPROVAL_SNAPSHOT_SHA256")"
 step "POST maker-PO ceo-approval (dual-approval re-check)" 200 "$STATUS"
 
 # ----------------------------------------------------------------- summary
