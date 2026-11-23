@@ -1550,3 +1550,95 @@ describe('(9) p4-web3 review M-1: the approval gate\'s pending manual verificati
     expect(gate.text).not.toMatch(/totalAmount|"amounts"|480000/);
   });
 });
+
+// ================================================================ (10) review5 L-2: three surviving mutants
+describe('(10) review5 L-2: the copy rule is project-wide, the gate keeps the shared-evidence line, the queue lists receipts only', () => {
+  const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64');
+
+  async function orderWithDelivery() {
+    const order = await createOrder('prepaid');
+    const delivery = await post('staff', `/api/film-supply-orders/${order.orderId}/deliveries`, { filmSupplyOrderLineId: order.lineId, deliveredQuantity: 500, unit: 'sheets' });
+    expect(delivery.status, delivery.text).toBe(201);
+    return { ...order, deliveryId: delivery.body.id as string };
+  }
+  async function upload(role: Role, order: { orderId: string; sevenPoId: string }, content: string, extra: Record<string, unknown> = {}) {
+    const uploaded = await post(role, `/api/projects/${ids.projectA}/documents`, {
+      documentType: 'acceptance_evidence', issuerEntity: 'kanei', filename: `s2-r5-${tag()}.txt`, contentType: 'text/plain',
+      contentBase64: b64(content), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, ...extra
+    });
+    expect(uploaded.status, uploaded.text).toBe(201);
+    return uploaded.body as { document: { id: string }; version: { id: string } };
+  }
+
+  it('R5-M1: a copy of the maker document of ANOTHER order of the same project is refused too (the scope is the project, not the order)', async () => {
+    const orderA = await orderWithDelivery();
+    const orderB = await orderWithDelivery();
+    const paperA = uuidv7();
+    await db.insert(makerPurchaseOrders).values({
+      id: paperA, filmSupplyOrderId: orderA.orderId, snapshot: {}, snapshotSha256: '0'.repeat(64), status: 'DRAFT', createdByUserId: ids.admin
+    });
+    const bytes = `発注Aのメーカー受入書 ${tag()}\n`;
+    await upload('admin', orderA, bytes, { makerPurchaseOrderId: paperA });
+    // The same bytes, unbound, uploaded as order B's receipt.
+    const copy = await upload('staff', orderB, bytes);
+    expect((await post('admin', `/api/documents/${copy.document.id}/verify`, { verificationStatus: 'verified' })).status).toBe(200);
+    const refused = await post('admin', `/api/film-deliveries/${orderB.deliveryId}/confirmation`, { evidenceDocumentVersionId: copy.version.id });
+    expect(refused.status, refused.text).toBe(422);
+    expect(refused.body.code).toBe('DELIVERY_EVIDENCE_MAKER_PO_BOUND');
+    expect(await db.select().from(deliveryConfirmations).where(eq(deliveryConfirmations.filmDeliveryId, orderB.deliveryId))).toHaveLength(0);
+  });
+
+  it('R5-M2: a declared shared evidence (customer mail cited for セブン化学) shows the shared_evidence line in the gate, not issuer_differs', async () => {
+    const order = await createOrder('prepaid');
+    expect((await post('staff', `/api/film-supply-orders/${order.orderId}/transitions`, { to: 'ARTWORK_RECEIVED' })).status).toBe(200);
+    const proof = await post('staff', `/api/projects/${ids.projectA}/documents`, {
+      documentType: 'proof', issuerEntity: 'kanei', filename: `s2-r5-proof-${tag()}.txt`, contentType: 'text/plain',
+      contentBase64: b64(`s2 r5 artwork ${tag()}\n`), sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, designKey: 'label-front'
+    });
+    const revision = await post('staff', `/api/film-supply-orders/${order.orderId}/artwork-revisions`, { designKey: 'label-front', fileDocumentVersionId: proof.body.version.id });
+    expect(revision.status, revision.text).toBe(201);
+    const identifier = `MSG-S2-R5-${tag()}`;
+    const shared = await post('staff', `/api/projects/${ids.projectA}/documents`, {
+      documentType: 'approval_evidence', issuerEntity: 'customer_generated', filename: `s2-r5-shared-${tag()}.txt`, contentType: 'text/plain',
+      contentBase64: b64(`one mail with both approvals\ncustomer: ${identifier}-C\nseven: ${identifier}-S\n`),
+      sevenPurchaseOrderId: order.sevenPoId, filmSupplyOrderId: order.orderId, designKey: 'label-front'
+    });
+    expect(shared.status, shared.text).toBe(201);
+    const record = (organization: 'customer' | 'seven', suffix: string, extra: Record<string, unknown> = {}) =>
+      post('staff', `/api/artwork-revisions/${revision.body.id}/approvals`, {
+        organization, decision: 'APPROVE', evidenceSource: 'email', eventTime: '2026-11-15T10:00:00.000Z',
+        evidenceIdentifier: `${identifier}-${suffix}`, evidenceDocumentVersionId: shared.body.version.id, ...extra
+      });
+    expect((await record('customer', 'C')).status).toBe(201);
+    const declared = await record('seven', 'S', { sharedEvidence: true, sharedEvidenceReason: '顧客のメールにセブン化学の承認が同報で含まれている' });
+    expect(declared.status, declared.text).toBe(201);
+    expect(declared.body).toMatchObject({ evidenceIdentifierStatus: 'pending_manual_verification', issuerMatchesOrganization: false });
+    const gate = await get('admin', `/api/film-supply-orders/${order.orderId}/approval-gate`);
+    const item = gate.body.pendingManualVerifications.find((entry: { approvalEventId: string }) => entry.approvalEventId === declared.body.approvalEvent.id);
+    expect(item).toMatchObject({
+      organization: 'seven', issuerMatchesOrganization: false, confirmable: true,
+      sharedEvidenceException: { reason: '顧客のメールにセブン化学の承認が同報で含まれている' },
+      declarationLine: { code: 'shared_evidence', tone: 'warning' }
+    });
+    expect(item.declarationLine.label).toContain('共通証跡');
+  });
+
+  it('R5-M3: with a real receipt and an unbound copy of a maker document side by side, the queue item lists only the receipt', async () => {
+    const order = await orderWithDelivery();
+    const paper = uuidv7();
+    await db.insert(makerPurchaseOrders).values({
+      id: paper, filmSupplyOrderId: order.orderId, snapshot: {}, snapshotSha256: '0'.repeat(64), status: 'DRAFT', createdByUserId: ids.admin
+    });
+    const makerBytes = `メーカー受入書 ${tag()}\n`;
+    await upload('admin', order, makerBytes, { makerPurchaseOrderId: paper });
+    const receipt = await upload('staff', order, `お客様受領書 ${tag()}\n`);
+    const copy = await upload('staff', order, makerBytes);
+    const item = (await queue()).items.find((entry) => entry.key === `delivery_confirmation:${order.deliveryId}`);
+    expect(item, 'the receipt raises the item').toBeDefined();
+    const listed = item!.detail.evidence.map((entry: { documentId: string }) => entry.documentId);
+    expect(listed).toEqual([receipt.document.id]);
+    expect(listed).not.toContain(copy.document.id);
+    // The deep link's document action points at the receipt, never at the copy.
+    if (item!.deepLink.documentAction) expect(item!.deepLink.documentAction.path).toBe(`/api/documents/${receipt.document.id}/verify`);
+  });
+});
