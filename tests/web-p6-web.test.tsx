@@ -223,6 +223,12 @@ describe('X1 / T-10 the home link #payment-terms has exactly one target on the r
     return at < 0 ? '' : html.slice(at, html.indexOf('</form>', at) + 7);
   };
 
+  it('the target is made visible when the link lands on it (:target outline on the step panel\'s anchor, like the 「発注の条件」 one)', () => {
+    const css = readSrc('app/p6-web.css').replace(/\/\*[\s\S]*?\*\//g, '');
+    expect(css).toMatch(/\.p6-terms-anchor:target\s*\{[^}]*outline:\s*2px solid var\(--primary\)/);
+    expect(css).toMatch(/\.p6-terms-anchor\s*\{[^}]*scroll-margin-top:\s*var\(--space-4\)/);
+  });
+
   it('the 承認箱 link carries #payment-terms (the hash this test then looks for)', async () => {
     session.user = { id: 'u-admin', role: 'admin' };
     session.projects = [{ id: 'project-a', code: 'PRJ-1', name: '案件A', status: 'ACTIVE' }];

@@ -40,7 +40,7 @@ export function takeSubmitIntent(now: number = Date.now()): string | null {
  */
 export function pastTenseOf(label: string): string {
   const text = label.trim();
-  const core = text.replace(/[（(][^）)]*[）)]$/, '').trim() || text;
+  const core = text.replace(/[（(][^）)]*[）)]$/, '').trim();
   if (core.endsWith('する')) return `${core.slice(0, -2)}しました`;
   if (core.endsWith('作る')) return `${core.slice(0, -1)}りました`;
   if (core.endsWith('す')) return `${core.slice(0, -1)}しました`;
