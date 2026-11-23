@@ -1,5 +1,5 @@
 import type { Hono } from 'hono';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { projectAssignments, projects, users } from '@kanei/db/schema';
 import { uuidv7 } from '@kanei/db';
 import { canPerform, type UserRole } from '@kanei/core';
@@ -14,6 +14,7 @@ import type { AuditInput } from './p2-routes.js';
  * - GET    /api/projects/:projectId/assignments          list (admin only)
  * - POST   /api/projects/:projectId/assignments          { userId } → 201
  * - DELETE /api/projects/:projectId/assignments/:userId  → 200
+ * - GET    /api/assignable-users                          the picker's choices (admin only, P4 server2)
  *
  * Every route answers 401 before reading its target, decides permission with
  * the one authorization core (`project_assignment:manage`, admin only — the
@@ -77,6 +78,44 @@ export function registerP4Routes(app: Hono<any>, { db, recordAuditEvent }: P4Rou
     role: users.role,
     isActive: users.isActive
   };
+
+  /**
+   * P4 server2 (p4-web2b REPORT §3-1): the representative's 担当者 picker.
+   * Only users an assignment can be granted to — active (is_active), not
+   * logically deleted (deleted_at null), role in ASSIGNABLE_ROLES — so every
+   * choice is one POST …/assignments accepts. Each row carries exactly id,
+   * displayName and role: never the login name, password hash, session,
+   * language or timestamps. Users have no organization (every user is KANEI
+   * staff; customers, seven and makers are accounts, never users), so there is
+   * no other organization to hide. Admin only (project_assignment:manage), and
+   * 401 before anything is read. Bounded like the representative queue:
+   * ?limit (default 200, at most 500) with `truncated`.
+   */
+  app.get('/api/assignable-users', async (context) => {
+    const user = await getSessionUser(context.req.raw, db);
+    if (!user) return context.json(unauthorized, 401);
+    if (!canPerform(toActor(user), 'project_assignment:manage', 'F1').allowed) {
+      return context.json(ceoOnly, 403);
+    }
+    const requestedLimit = Number(context.req.query('limit') ?? '200');
+    const limit = Number.isInteger(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 500) : 200;
+    const rows = await db.select({ id: users.id, displayName: users.displayName, role: sql<string>`${users.role}::text` })
+      .from(users)
+      .where(and(
+        eq(users.isActive, true),
+        isNull(users.deletedAt),
+        inArray(sql`${users.role}::text`, [...ASSIGNABLE_ROLES])
+      ))
+      .orderBy(asc(users.displayName), asc(users.id))
+      .limit(limit + 1);
+    const truncated = rows.length > limit;
+    return context.json({
+      users: rows.slice(0, limit).map((row) => ({ id: row.id, displayName: row.displayName, role: row.role })),
+      assignableRoles: ASSIGNABLE_ROLES,
+      limit,
+      truncated
+    });
+  });
 
   app.get('/api/projects/:projectId/assignments', async (context) => {
     const access = await authorize(context);

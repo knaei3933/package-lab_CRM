@@ -144,3 +144,30 @@ export function evaluatePaymentTermsChange(input: {
   }
   return { ok: true };
 }
+
+/**
+ * P4 server2: the order states in which an 'undetermined' term no longer needs
+ * attention — the order is over (cancelled, or the receipt was assumed with no
+ * issue). In every other state, from the creation (DRAFT) on, a 「未定」 term is
+ * an open item because it will block the representative's approval.
+ */
+export const PAYMENT_TERMS_ATTENTION_CLOSED_STATES = ['CANCELLED', 'FILM_RECEIPT_ASSUMED_NO_ISSUE'] as const;
+
+export interface PaymentTermsAttention {
+  code: 'PAYMENT_TERMS_UNDETERMINED';
+  message: string;
+}
+
+/**
+ * P0 R01 / P4 server2: the one rule both the project's order list
+ * (`attention`) and the representative queue (`blocked`) apply, so the two
+ * lists can never disagree about which orders are stopped on 「未定」.
+ */
+export function paymentTermsAttention(input: { orderStatus: string; paymentTerms: string | null | undefined }): PaymentTermsAttention[] {
+  const closed = (PAYMENT_TERMS_ATTENTION_CLOSED_STATES as readonly string[]).includes(input.orderStatus);
+  if (closed || normalizePaymentTerms(input.paymentTerms) !== DEFAULT_PAYMENT_TERMS) return [];
+  return [{
+    code: 'PAYMENT_TERMS_UNDETERMINED',
+    message: '支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください'
+  }];
+}

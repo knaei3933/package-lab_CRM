@@ -92,7 +92,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `PAYMENT_TERMS_REASON_INVALID` | 422 | 支払条件の変更理由が空です。理由を書くか、欄を空のままにしてください |  |
 | `PAYMENT_TERMS_CHANGED` | 409 | 承認画面を開いた後に支払条件が変更されました。最新の支払条件を確認してから、もう一度承認してください |  |
 | `PAYMENT_GATE_UNSATISFIED` | 422 | 支払条件が「未定」のため代表承認できません。フィルム発注の支払条件を「前払い」または「納品後払い」に変更してから承認してください | `paymentTerms`。「この画面で支払条件を選ぶ」ボタン（PATCH /api/film-supply-orders/:orderId/payment-terms）を置く |
-| `PAYMENT_TERMS_UNDETERMINED` | 200 (warnings / attention) | 支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください | 拒否ではない。遷移応答の `warnings[]` と GET /api/projects/:projectId/film-supply-orders の `attention[]` に入る |
+| `PAYMENT_TERMS_UNDETERMINED` | 200 (warnings / attention) | 支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください | 拒否ではない。遷移応答の `warnings[]` と GET /api/projects/:projectId/film-supply-orders の `attention[]` に入る。P4 server2: GET /api/representative-queue の `blocked[].reason` にも同じ `{ code, message }`（作成直後から、`CANCELLED`・`FILM_RECEIPT_ASSUMED_NO_ISSUE` 以外のすべての状態。`attention` と同じ規則 `paymentTermsAttention`） |
 
 ## seven purchase orders / pre-order references
 
@@ -415,3 +415,5 @@ P4 で既存コードに足した項目（コードは同じ）:
 - `DOCUMENT_BINDING_CONFLICT`（422）: `existing: { documentId, orderId, orderCode, designKey, makerPurchaseOrderId }` — 同じ書類（案件・種類・発行元・ファイル名）が紐付いている発注とデザイン（N13）。
 - `FILE_DOCUMENT_ORDER_MISMATCH`・`FILE_DOCUMENT_DESIGN_MISMATCH`（422）: `existing: { orderId, orderCode, designKey }`（N13）。
 - `CEO_ONLY`（403）: P4 の割り当て API（GET/POST/DELETE …/assignments）でも返す。
+- `CEO_ONLY`（403）: P4 server2 の GET /api/assignable-users（担当者の選択肢）でも返す。未ログインは 401 `AUTH_REQUIRED`。
+- `PAYMENT_TERMS_LOCKED`: P4 server2 で GET /api/representative-queue の `blocked[]` が、行の PATCH が今通らないときに `paymentTermsEditable: false` と `paymentTermsLock: { code: "PAYMENT_TERMS_LOCKED", reason, message }` を持つ（拒否ではなく表示用。通るときは `true` と `null`）。

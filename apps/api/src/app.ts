@@ -38,6 +38,8 @@ import {
   evaluateSevenPoPrecedenceGate,
   extractStoredEmlMessageId,
   evaluatePaymentTermsChange,
+  PAYMENT_TERMS_ATTENTION_CLOSED_STATES,
+  paymentTermsAttention,
   PAYMENT_TERMS_LABELS_JA,
   evaluateApprovalEvidenceIssuer,
   normalizedEvidenceText,
@@ -1171,11 +1173,13 @@ export function createApp({
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
     // P2 R29: the stored display language (null = not chosen; the screen keeps the role default).
-    const [preference] = await db.select({ displayLanguage: users.displayLanguage }).from(users)
+    // P4 server2: the caller's own display name (never another user's; no login name).
+    const [preference] = await db.select({ displayLanguage: users.displayLanguage, displayName: users.displayName }).from(users)
       .where(eq(users.id, user.id)).limit(1);
     return context.json({
       id: user.id,
       role: user.role,
+      displayName: preference?.displayName ?? null,
       assignedProjectIds: user.assignedProjectIds,
       displayLanguage: preference?.displayLanguage ?? null
     });
@@ -1932,13 +1936,8 @@ export function createApp({
     const approvedOrderIds = new Set(approvedPapers.map((paper) => paper.filmSupplyOrderId));
     const orders = rows.map((row) => {
       const paymentTerms = normalizePaymentTerms(row.paymentTerms);
-      const closed = String(row.status) === 'CANCELLED' || row.status === 'FILM_RECEIPT_ASSUMED_NO_ISSUE';
-      const attention = !closed && paymentTerms === 'undetermined'
-        ? [{
-            code: 'PAYMENT_TERMS_UNDETERMINED',
-            message: '支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください'
-          }]
-        : [];
+      // P4 server2: the same rule the representative queue's `blocked` applies.
+      const attention = paymentTermsAttention({ orderStatus: String(row.status), paymentTerms: row.paymentTerms });
       return {
         ...row,
         paymentTerms,
@@ -8427,27 +8426,52 @@ export function createApp({
       });
     }
 
-    // Blocked: 校了 (or ready) but the payment term is still 未定.
-    const blocked = (await ordersWhere(and(
-      sql`${filmSupplyOrders.status}::text in ('DUAL_APPROVED', 'MAKER_PO_READY')`,
+    // Blocked (P4 server2): every open order whose payment term is still 未定,
+    // from its creation (DRAFT) on and whatever its state — the same rule as the
+    // project order list's `attention` (paymentTermsAttention). Only orders that
+    // are over (PAYMENT_TERMS_ATTENTION_CLOSED_STATES) leave the list. Until P4
+    // only DUAL_APPROVED / MAKER_PO_READY were listed, so a new 未定 order reached
+    // the home screen only once it already blocked the approval.
+    const blockedRows = (await ordersWhere(and(
+      notInArray(sql`${filmSupplyOrders.status}::text`, [...PAYMENT_TERMS_ATTENTION_CLOSED_STATES]),
       sql`coalesce(${filmSupplyOrders.paymentTerms}, 'undetermined') = 'undetermined'`
-    )))
-      .map((row) => ({
-        key: `payment_terms_undetermined:${row.orderId}`,
-        kind: 'payment_terms_undetermined',
-        project: projectOf(row),
-        order: orderOf(row),
-        reason: {
-          code: 'PAYMENT_TERMS_UNDETERMINED',
-          message: '支払条件が「未定」です。代表承認の前に「前払い」または「納品後払い」を選んでください'
-        },
-        fixableBy: ['admin', 'staff'],
-        waitingSince: row.orderUpdatedAt,
-        deepLink: link('payment_terms', row, {
-          subjectId: row.orderId,
-          action: { method: 'PATCH', path: `/api/film-supply-orders/${row.orderId}/payment-terms` }
-        })
-      }));
+    ))).filter((row) => paymentTermsAttention({ orderStatus: row.orderStatus, paymentTerms: row.paymentTerms }).length > 0);
+    // Whether the PATCH in deepLink.action can succeed now (P-5: frozen states
+    // and a CEO-approved paper lock the term). One batch query, no amounts.
+    const blockedApprovedPapers = blockedRows.length === 0 ? [] : await db.select({ filmSupplyOrderId: makerPurchaseOrders.filmSupplyOrderId })
+      .from(makerPurchaseOrders)
+      .where(and(
+        inArray(makerPurchaseOrders.filmSupplyOrderId, blockedRows.map((row) => row.orderId)),
+        isNull(makerPurchaseOrders.deletedAt),
+        ne(makerPurchaseOrders.status, 'CANCELLED'),
+        isNotNull(makerPurchaseOrders.ceoApprovedAt)
+      ));
+    const blockedApprovedOrderIds = new Set(blockedApprovedPapers.map((paper) => paper.filmSupplyOrderId));
+    const blocked = blockedRows
+      .map((row) => {
+        const termsChange = evaluatePaymentTermsChange({
+          orderStatus: row.orderStatus,
+          approvedPaperExists: blockedApprovedOrderIds.has(row.orderId)
+        });
+        const [reason] = paymentTermsAttention({ orderStatus: row.orderStatus, paymentTerms: row.paymentTerms });
+        return {
+          key: `payment_terms_undetermined:${row.orderId}`,
+          kind: 'payment_terms_undetermined',
+          project: projectOf(row),
+          order: orderOf(row),
+          reason,
+          fixableBy: ['admin', 'staff'],
+          // P4 server2: false when the term is locked (frozen state or approved paper);
+          // `paymentTermsLock` then says why, and the PATCH would answer 422 PAYMENT_TERMS_LOCKED.
+          paymentTermsEditable: termsChange.ok,
+          paymentTermsLock: termsChange.ok ? null : { code: termsChange.code, reason: termsChange.reason, message: termsChange.message },
+          waitingSince: row.orderUpdatedAt,
+          deepLink: link('payment_terms', row, {
+            subjectId: row.orderId,
+            action: { method: 'PATCH', path: `/api/film-supply-orders/${row.orderId}/payment-terms` }
+          })
+        };
+      });
 
     // P4 N11/M13: every item names its organization and design (null when the
     // kind is not about one), so the web never has to dig them out of detail.
