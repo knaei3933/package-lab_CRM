@@ -28,6 +28,8 @@ export interface ActionState {
    * already chosen, so the retry adds to it instead of registering a second one.
    */
   partialPoId?: string | null | undefined;
+  /** p4/web4: a refusal after an earlier write of the same submit was stored (the screen redraws and mounts the step again). */
+  chainStored?: true | undefined;
 }
 
 export interface Choice {

@@ -61,3 +61,66 @@ export function senderWarningsOf(value: unknown): SenderWarning[] {
 export function senderWarningSentence(warnings: readonly SenderWarning[]): string {
   return warnings.length === 0 ? '' : ` ⚠ ${warnings.map((warning) => warning.ja).join(' ')}`;
 }
+
+// ---------------------------------------------------------------------------
+// p4/web4: the server's evidence lines — one parser and one fallback for every screen that draws them
+// (the approval card's 押印欄 and the step-6 manual check both read them here).
+// ---------------------------------------------------------------------------
+
+export type EvidenceTone = 'ok' | 'warning' | 'neutral';
+
+/** P4 server2 §1(4)/§13: one line the server decided (code, tone, Japanese label) — drawn as given. */
+export interface EvidenceLine {
+  code: string;
+  tone: EvidenceTone;
+  label: string;
+}
+
+const TONES: readonly string[] = ['ok', 'warning', 'neutral'];
+/**
+ * The only codes the server gives the 「ok」 tone (core `approvalEvidenceDeclarationLine` /
+ * `evidenceSenderVerdict`): 「申告どおり」 is said only when the declared issuer is the approving organization
+ * AND the mail's From domain matched. A line that claims ok under any other code is not drawn.
+ */
+const OK_CODES: readonly string[] = ['declared_and_sender_match', 'match'];
+/** A server label is plain text of bounded length (never markup; drawn as a React text node). */
+const LINE_LABEL_MAX = 200;
+
+function recordOf(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function textOf(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/** Pure: a server-decided line ({ code, tone, label }), or null when it is missing or malformed. */
+export function evidenceLineFrom(value: unknown): EvidenceLine | null {
+  const record = recordOf(value);
+  if (!record) return null;
+  const code = textOf(record.code);
+  const tone = textOf(record.tone);
+  const label = textOf(record.label);
+  if (!code || !tone || !TONES.includes(tone) || !label) return null;
+  if (tone === 'ok' && !OK_CODES.includes(code)) return null;
+  return { code, tone: tone as EvidenceTone, label: label.replace(/[\u0000-\u001f\u007f]/g, ' ').slice(0, LINE_LABEL_MAX) };
+}
+
+/**
+ * The line drawn beside 「発行元（登録時の申告）」 / 「照合」. The server's own line when it answered one; on an
+ * older API only what the declaration itself says — never 「申告どおり」, which the server says only when the
+ * mail's From domain was compared too (web2b review M-1).
+ */
+export function declarationLineOf(
+  evidence: { declarationLine?: EvidenceLine | null | undefined; issuerMatchesOrganization?: boolean | null | undefined } | null | undefined
+): EvidenceLine | null {
+  if (!evidence) return null;
+  if (evidence.declarationLine) return evidence.declarationLine;
+  if (evidence.issuerMatchesOrganization === false) {
+    return { code: 'issuer_differs', tone: 'warning', label: '申告された発行元が承認組織と異なります' };
+  }
+  if (evidence.issuerMatchesOrganization === true) {
+    return { code: 'declared_only', tone: 'neutral', label: '申告は承認組織と一致（差出人は照合していません）' };
+  }
+  return null;
+}

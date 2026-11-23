@@ -1,10 +1,12 @@
 import { ActionForm } from './ActionForm';
 import { KoGloss } from './RenderedContext';
+import { EvidenceLineText, hasEvidenceWarning, SenderFromLine, SenderStatusNote, SenderWarningNotes } from './EvidenceFacts';
 import { StatusBadge } from './StatusBadge';
 import { TechDetails } from './TechDetails';
 import { SelectField, TextField } from './fields';
 import { verifyEvidenceManualAction } from '../app/actions';
 import { operationRefusal } from '../lib/permissions';
+import { declarationLineOf } from '../lib/sender-check';
 import type { PendingManualVerificationView } from '../lib/project-data';
 import { formatTimestamp, ISSUER_ENTITY_LABELS } from '../lib/vocabulary';
 import type { IssuerEntity } from '@kanei/core';
@@ -41,8 +43,10 @@ export function EvidenceIssuerCheck({
   const issuer = entry.evidenceIssuerEntity ? ISSUER_ENTITY_LABELS[entry.evidenceIssuerEntity as IssuerEntity] ?? '（不明）' : '（記録なし）';
   const expected = entry.expectedIssuerEntity ? ISSUER_ENTITY_LABELS[entry.expectedIssuerEntity as IssuerEntity] ?? '（不明）' : '—';
   const matches = entry.issuerMatchesOrganization;
+  const declaration = declarationLineOf(entry);
+  const warnings = entry.warnings ?? [];
   return (
-    <dl className="issuer-check">
+    <dl className={`issuer-check${hasEvidenceWarning(declaration, entry) ? ' issuer-check--warning' : ''}`} data-evidence-facts="server">
       <div>
         <dt>承認する組織</dt>
         <dd>{organizationText(entry.organization)}</dd>
@@ -53,19 +57,35 @@ export function EvidenceIssuerCheck({
       </div>
       <div>
         <dt>照合</dt>
-        <dd>
-          {matches === true ? (
-            <StatusBadge tone="done" label="一致" />
-          ) : matches === false ? (
+        <dd data-reconciliation={declaration?.code ?? 'none'}>
+          {matches === false ? (
             <>
               <StatusBadge tone="blocked" label="不一致" />
               {` 必要な発行元: ${expected}`}
             </>
+          ) : declaration ? (
+            // p4/web4 (server2 §13): the server's own line — 「申告どおり」 only when it judged the mail's From too.
+            <EvidenceLineText line={declaration} kind="declaration" />
           ) : (
             '（照合結果なし）'
           )}
         </dd>
       </div>
+      {entry.fromAddress || entry.senderVerdict || (!entry.senderVerdict && entry.senderStatus) ? (
+        <div>
+          <dt>差出人</dt>
+          <dd>
+            <SenderFromLine facts={entry} className="p4w4-sender" />
+            <SenderStatusNote facts={entry} className="p4w4-sender" />
+          </dd>
+        </div>
+      ) : null}
+      {warnings.length > 0 ? (
+        <div>
+          <dt>注意</dt>
+          <dd><SenderWarningNotes warnings={warnings} className="p4w4-warning" /></dd>
+        </div>
+      ) : null}
       <div>
         <dt>識別子</dt>
         <dd translate="no">{entry.evidenceIdentifier ?? '（記録なし）'}</dd>
@@ -159,7 +179,7 @@ export function PendingVerificationSection({
           ) : null}
           {readOnly ? (
             <p className="ui-note">
-              {recordHref ? <a href={recordHref}>発注の画面（手順6 校了）で確認を記録する</a> : '確認は発注の画面（手順6 校了）で記録します。'}
+              {recordHref ? <a className="p4w3-target" href={recordHref}>発注の画面（手順6 校了）で確認を記録する</a> : '確認は発注の画面（手順6 校了）で記録します。'}
             </p>
           ) : canVerify && entry.recordedAsPending ? (
             <ActionForm

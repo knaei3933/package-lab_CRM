@@ -1,4 +1,5 @@
 import { ActionForm } from './ActionForm';
+import { RevealDetails } from './RevealDetails';
 import { Bilingual } from './Bilingual';
 import { StepFileField } from './StepFileField';
 import { CheckboxField, SelectField, TextField } from './fields';
@@ -9,8 +10,11 @@ import type { DeliveryView, DocumentView, FilmSupplyOrderView, ReadinessView } f
 import { isOwnDocumentOfStaff } from '../lib/self-verification';
 import { formatQuantityWithUnit } from '../lib/number-format';
 import { formatTimestamp, READINESS_BLOCKING_LABELS, VERIFICATION_STATUS_LABELS } from '../lib/vocabulary';
-import { CLOSURE_BASIS_LABELS } from '../lib/receipt-closure';
-import type { ReceiptClosureView } from '../lib/receipt-closure';
+import { CLOSURE_BASIS_LABELS, EVIDENCE_KIND_TEXT, EVIDENCE_KIND_TEXT_KO } from '../lib/receipt-closure';
+import type { DeliveryEvidenceKind, ReceiptClosureView } from '../lib/receipt-closure';
+import { ALTERNATIVE_RECEIPT_ANCHOR } from '../lib/step-messages';
+import { receiptNoticeText } from '../lib/receipt-notice';
+import type { ReceiptNotice } from '../lib/receipt-notice';
 
 /**
  * P4 H14 (R36 on the order screen): 12 納品 — the delivered quantity is confirmed
@@ -31,6 +35,10 @@ export interface DeliveryContext {
   readinessLabel: (key: string) => string;
   /** p4/web3 (e): what the completion rests on, from the server (null: not read / older API). */
   closure?: ReceiptClosureView | null | undefined;
+  /** p4/web4 (server2 §11/§12): what each confirmation rests on, by delivery id (empty: not read / older API). */
+  evidenceKinds?: Readonly<Record<string, DeliveryEvidenceKind>> | undefined;
+  /** p4/web4: why the last confirmation of THIS order stopped, kept across the redraw (null: none). */
+  notice?: ReceiptNotice | null | undefined;
 }
 
 /** P4 H14 ②: a film delivery's confirmation in its own words (never 「充填製品の…」). */
@@ -96,11 +104,11 @@ export function receiptPlan(role: string | null | undefined, userId: string | nu
   return { kind: 'upload_only' };
 }
 
-function ReceiptFields() {
+function ReceiptFields({ customer = false }: { customer?: boolean }) {
   return (
     <>
       <StepFileField label="受領証跡のファイル" hint="受領書・受領メール（.eml）・納品書の写しなど。5MBまで。この発注に紐付けて保存されます。" />
-      <SelectField name="receiptIssuer" label="受領証跡の発行元" required includeBlank blankLabel="（選ぶ）" choices={RECEIPT_ISSUER_CHOICES} width={300} />
+      <SelectField name="receiptIssuer" label="受領証跡の発行元" required includeBlank blankLabel="（選ぶ）" choices={RECEIPT_ISSUER_CHOICES} width={300} {...(customer ? { defaultValue: 'customer_generated' } : {})} />
     </>
   );
 }
@@ -129,9 +137,16 @@ export function DeliveryReceiptStep({
   const canConfirm = canRoleOperate(role, 'delivery_confirmation:record');
   return (
     <div className="p4w2-receipt">
-      <DeliveryLines deliveries={context.deliveries} />
+      {context.notice && unconfirmed.length > 0 ? <ReceiptStopNotice notice={context.notice} /> : null}
+      <DeliveryLines deliveries={context.deliveries} evidenceKinds={context.evidenceKinds ?? {}} />
       {unconfirmed.length === 0 ? (
-        <p className="p1-done"><span aria-hidden="true">✓ </span>{FILM_DELIVERY_CONFIRMATION_LABELS.CONFIRMED.ja}（受領証跡で数量を確認済み）</p>
+        <p className="p1-done">
+          <span aria-hidden="true">✓ </span>{FILM_DELIVERY_CONFIRMATION_LABELS.CONFIRMED.ja}
+          {context.deliveries.some((delivery) => context.evidenceKinds?.[delivery.id] === 'maker_po_acceptance')
+            // p4/web4 (review): a confirmation on the maker's 受領書 (legacy) is on file, but is not what the completion rests on.
+            ? '（数量は確認済み。メーカー受領書で確認した分は、完了の根拠には数えません）'
+            : '（受領証跡で数量を確認済み）'}
+        </p>
       ) : !canConfirm ? (
         <p className="p1-waiting"><span aria-hidden="true">… </span>担当者か代表が受領証跡で納品を確認します。</p>
       ) : plan.kind === 'wait_representative' ? (
@@ -178,6 +193,9 @@ export function DeliveryReceiptStep({
           )}
         </ActionForm>
       )}
+      {canConfirm && unconfirmed.length > 0 && plan.kind === 'confirm_existing' ? (
+        <AlternativeReceiptForm order={order} projectCode={projectCode} unconfirmed={unconfirmed} evaluate={evaluate} admin={normalizeRole(role) === 'admin'} stopped={Boolean(context.notice)} />
+      ) : null}
 
       <ReadinessLine context={context} />
       {evaluate ? (
@@ -188,6 +206,63 @@ export function DeliveryReceiptStep({
 
       {completed ? <ClosureLine closure={context.closure ?? null} /> : <CompletionForm order={order} projectCode={projectCode} unconfirmed={unconfirmed.length} closure={context.closure ?? null} />}
     </div>
+  );
+}
+
+/** p4/web4: why the last confirmation stopped (kept across the redraw), with the way forward. */
+function ReceiptStopNotice({ notice }: { notice: ReceiptNotice }) {
+  const text = receiptNoticeText(notice.reason);
+  return (
+    <p className="p1-banner p4w3-notice" role="alert" data-notice={notice.reason}>
+      <span aria-hidden="true">⚠ </span>
+      {formatTimestamp(notice.at)} の納品の確認は止まりました。<Bilingual ja={text.ja} ko={text.ko} />{' '}
+      <a href={`#${ALTERNATIVE_RECEIPT_ANCHOR}`}>お客様の受領証跡を登録する</a>
+    </p>
+  );
+}
+
+/**
+ * p4/web4 (server2 §11-2 / §12): the way out of 422 DELIVERY_EVIDENCE_MAKER_PO_BOUND — the customer's own receipt is
+ * registered (and, for the representative, cited in the same submit) instead of the evidence the form above cites.
+ * The refusal's link opens this block. Same action and same API rules as the form above: staff register only (P-4:
+ * the uploader never confirms on their own evidence), the representative confirms.
+ */
+function AlternativeReceiptForm({ order, projectCode, unconfirmed, evaluate, admin, stopped }: {
+  order: FilmSupplyOrderView;
+  projectCode: string;
+  unconfirmed: readonly DeliveryView[];
+  evaluate: boolean;
+  admin: boolean;
+  /** A confirmation of this order was stopped (the notice): the form is waiting, so it starts opened. */
+  stopped: boolean;
+}) {
+  return (
+    <RevealDetails
+      id={ALTERNATIVE_RECEIPT_ANCHOR}
+      className="p4w4-alt"
+      open={stopped}
+      summary={<>お客様の受領証跡を登録して確認する<span className="p1-muted-inline">（上の証跡が使えないとき）</span></>}
+    >
+      <ActionForm
+        action={confirmDeliveryReceiptStepAction}
+        submitLabel={admin ? 'お客様の受領証跡を登録して納品を確認する' : 'お客様の受領証跡を登録する（確認は代表）'}
+        submitContext={order.code}
+        hint={admin
+          ? 'お客様から受け取った納品受領の証跡（受領書・受領メール）を登録し、その証跡で納品の数量を確認します（確認者と日時は自動で記録）。'
+          : '登録した人は自分の証跡で確認できないため、確認は代表が行います（代表の承認箱に出ます）。'}
+        confirm={admin ? {
+          title: '納品を確認済みにしますか？',
+          body: `${order.code} の納品${unconfirmed.length}件を、新しく登録するお客様の受領証跡を引用して確認済みにします。確認は1回だけ記録でき、取り消せません。`,
+          tone: 'primary'
+        } : undefined}
+      >
+        <Hidden order={order} projectCode={projectCode} />
+        <input type="hidden" readOnly name="receiptMode" value={admin ? 'confirm' : 'register'} />
+        <input type="hidden" readOnly name="evaluateReadiness" value={evaluate ? 'true' : 'false'} />
+        {unconfirmed.map((delivery) => <input key={delivery.id} type="hidden" readOnly name="deliveryId" value={delivery.id} />)}
+        <ReceiptFields customer />
+      </ActionForm>
+    </RevealDetails>
   );
 }
 
@@ -257,19 +332,29 @@ function CompletionForm({ order, projectCode, unconfirmed, closure }: { order: F
   );
 }
 
-function DeliveryLines({ deliveries }: { deliveries: readonly DeliveryView[] }) {
+function DeliveryLines({ deliveries, evidenceKinds }: { deliveries: readonly DeliveryView[]; evidenceKinds: Readonly<Record<string, DeliveryEvidenceKind>> }) {
   if (deliveries.length === 0) return null;
   return (
     <ul className="p4w2-delivery-list" aria-label="この発注の納品">
-      {deliveries.map((delivery) => (
-        <li key={delivery.id}>
-          <span>{delivery.detailsHidden ? '（閲覧権限なし）' : formatQuantityWithUnit(delivery.deliveredQuantity, delivery.unit)}</span>
-          <span className="p1-muted-inline">{delivery.deliveredAt ? ` ${formatTimestamp(delivery.deliveredAt)}` : ''}</span>
-          <span className={delivery.confirmed ? 'p4w2-ok' : 'p4w2-wait'}>
-            {' '}{delivery.confirmationHidden ? '（確認状態は閲覧権限なし）' : FILM_DELIVERY_CONFIRMATION_LABELS[delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION'].ja}
-          </span>
-        </li>
-      ))}
+      {deliveries.map((delivery) => {
+        // p4/web4: the evidence kind of a confirmed delivery (a withheld confirmation says nothing).
+        const kind = delivery.confirmed && !delivery.confirmationHidden ? evidenceKinds[delivery.id] ?? null : null;
+        return (
+          <li key={delivery.id} data-delivery-id={delivery.id}>
+            <span>{delivery.detailsHidden ? '（閲覧権限なし）' : formatQuantityWithUnit(delivery.deliveredQuantity, delivery.unit)}</span>
+            <span className="p1-muted-inline">{delivery.deliveredAt ? ` ${formatTimestamp(delivery.deliveredAt)}` : ''}</span>
+            <span className={delivery.confirmed ? 'p4w2-ok' : 'p4w2-wait'}>
+              {' '}{delivery.confirmationHidden ? '（確認状態は閲覧権限なし）' : FILM_DELIVERY_CONFIRMATION_LABELS[delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION'].ja}
+            </span>
+            {kind ? (
+              <span className={`p4w4-kind${kind === 'maker_po_acceptance' ? ' p4w4-kind--legacy' : ''}`} data-evidence-kind={kind}>
+                {kind === 'maker_po_acceptance' ? <span aria-hidden="true">⚠ </span> : null}
+                <Bilingual ja={EVIDENCE_KIND_TEXT[kind]} ko={EVIDENCE_KIND_TEXT_KO[kind]} />
+              </span>
+            ) : null}
+          </li>
+        );
+      })}
     </ul>
   );
 }

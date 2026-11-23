@@ -1,14 +1,15 @@
 import { ActionForm } from './ActionForm';
 import { DateTextField, SelectField, TextareaField, TextField } from './fields';
 import { Bilingual } from './Bilingual';
+import { EvidenceLineText, hasEvidenceWarning, SenderFromLine, SenderStatusNote, SenderWarningNotes } from './EvidenceFacts';
 import { approveFromCardAction, recordRequestedDeliveryDateAction, returnMakerPoAction } from '../app/approval-actions';
 import { approvalCardNeeds, approvalEvidenceStamp, declarationLineOf } from '../lib/approval-card';
-import type { ApprovalCardView, ApprovalNotice, CardOrganization, EvidenceLine, EvidenceTone, SealState } from '../lib/approval-card';
+import type { ApprovalCardView, ApprovalNotice, CardOrganization, SealState } from '../lib/approval-card';
 import { approvalNoticeText } from '../lib/approval-notice';
 import { PAYMENT_TERMS_LABELS } from '../lib/maker-po-data';
 import { ISSUER_ENTITY_LABELS, EVIDENCE_SOURCE_LABELS, formatTimestamp } from '../lib/vocabulary';
 import { webErrorText } from '../lib/error-dictionary';
-import { ISSUER_DECLARED_LABEL, senderStatusText } from '../lib/sender-check';
+import { ISSUER_DECLARED_LABEL } from '../lib/sender-check';
 import { ERROR_DICTIONARY } from '../lib/error-dictionary-data';
 import { dateCell, DeliveryTermsRows } from './OrderTermsSection';
 import type { TermCell } from './OrderTermsSection';
@@ -51,29 +52,13 @@ const SEAL_TEXT: Record<SealState, { ja: string; ko: string }> = {
   missing: { ja: '未承認', ko: '미승인' }
 };
 
-const TONE_MARK: Record<EvidenceTone, string> = { ok: '✓', warning: '⚠', neutral: '' };
-
-/**
- * p4/web3 (a): one evidence line of a 押印欄 as the server decided it (server2 §1(4)) — 「申告どおり」 only
- * when the declared issuer is the organization AND the mail's From domain matched; a foreign or unreadable
- * sender is a warning. Plain text only (the label is a React text node).
- */
-function EvidenceLineText({ line, kind }: { line: EvidenceLine; kind: 'declaration' | 'sender' }) {
-  const mark = TONE_MARK[line.tone];
-  return (
-    <span className={`p4w3-line p4w3-line--${line.tone}`} data-tone={line.tone} {...(kind === 'declaration' ? { 'data-declaration': line.code } : { 'data-sender': line.code })}>
-      {mark ? <span aria-hidden="true">{mark} </span> : null}{line.label}
-    </span>
-  );
-}
-
 function Seal({ name, ko, organization }: { name: string; ko: string; organization: CardOrganization | null }) {
   const state: SealState = organization?.state ?? 'missing';
   const evidence = organization?.evidence ?? null;
   const declaration = declarationLineOf(evidence);
   const warnings = evidence?.warnings ?? [];
-  const warn = declaration?.tone === 'warning' || warnings.length > 0;
-  const statusText = senderStatusText(evidence?.senderStatus ?? null);
+  const facts = evidence ?? {};
+  const warn = hasEvidenceWarning(declaration, facts);
   return (
     <div className={`p1-seal-slot p1-seal-slot--${state === 'approved' ? 'approved' : 'open'}${warn ? ' p4w3-seal--warning' : ''}`} data-seal={name}>
       <p className="p1-seal-name"><Bilingual ja={name} ko={ko} /></p>
@@ -92,25 +77,14 @@ function Seal({ name, ko, organization }: { name: string; ko: string; organizati
       ) : null}
       {declaration ? <p className="p1-seal-state"><EvidenceLineText line={declaration} kind="declaration" /></p> : null}
       {evidence?.filename ? <p className="p1-seal-state p4-seal-file">ファイル <span translate="no">{evidence.filename}</span></p> : null}
-      {evidence?.fromAddress || evidence?.senderVerdict ? (
-        <p className="p1-seal-state p4w3-seal-from">
-          {/* web2b review L-2: with several From lines the server keeps the first one. */}
-          {evidence.fromAddress ? <>{evidence.senderStatus === 'multiple_from' ? '差出人（1件目）' : '差出人'} <span translate="no">{evidence.fromAddress}</span></> : null}
-          {evidence.fromAddress && evidence.senderVerdict ? ' ・ ' : null}
-          {evidence.senderVerdict ? <EvidenceLineText line={evidence.senderVerdict} kind="sender" /> : null}
-        </p>
-      ) : null}
-      {!evidence?.senderVerdict && statusText ? <p className="p1-seal-state"><Bilingual ja={statusText.ja} ko={statusText.ko} /></p> : null}
+      <SenderFromLine facts={facts} className="p1-seal-state p4w3-seal-from" />
+      <SenderStatusNote facts={facts} className="p1-seal-state" />
       {evidence?.uploadedBy ? (
         <p className="p1-seal-state p4w3-seal-uploader">
           登録した人 {evidence.uploadedBy}{evidence.uploadedAt ? `（${formatTimestamp(evidence.uploadedAt)}）` : ''}
         </p>
       ) : null}
-      {warnings.map((warning) => (
-        <p key={warning.code} className="field-warning p1-seal-state" role="note" data-warning={warning.code}>
-          <span aria-hidden="true">⚠</span> <Bilingual ja={warning.ja} ko={warning.ko ?? ''} />
-        </p>
-      ))}
+      <SenderWarningNotes warnings={warnings} className="p1-seal-state" />
     </div>
   );
 }

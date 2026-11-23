@@ -1,0 +1,55 @@
+/*
+ * p4/web4. Loaded last, unlayered, like p4-web2a/2b/3. Existing tokens only (no new colours):
+ * the step-6 manual check draws the server's sender facts (same lines as the approval card),
+ * the delivery confirmation's evidence kind and the alternative receipt form.
+ */
+
+/* (1) A manual check whose evidence carries a warning is marked by its edge, as the card's 押印欄 is. */
+.issuer-check.issuer-check--warning {
+  border: 1px solid var(--warn);
+  background: var(--warn-tint);
+  padding: 8px 12px;
+}
+
+.p4w4-sender,
+.p4w4-warning {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* (2) What a confirmation rests on, beside the delivery line. */
+.p4w4-kind {
+  display: block;
+  color: var(--ink-sub);
+  overflow-wrap: anywhere;
+}
+.p4w4-kind--legacy {
+  color: var(--ink);
+  font-weight: 700;
+}
+.p4w4-kind--legacy > [aria-hidden='true'] { color: var(--warn); }
+
+/* The alternative receipt form: the summary is a 44px target. */
+.p4w4-alt > summary {
+  display: list-item;
+  min-height: 44px;
+  padding-block: 10px;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+.p4w4-alt { scroll-margin-top: 16px; }
+.p4w4-alt:target { outline: 2px solid var(--primary); outline-offset: 4px; }
+
+/*
+ * web3 review L-6: on a narrow screen every <summary> in the content is a 44px target (the old approvals / maker-po lists
+ * and the ID details measured 24px at 390px).
+ */
+@media (max-width: 600px) {
+  main details > summary {
+    display: list-item;
+    min-height: 44px;
+    padding-block: 10px;
+    box-sizing: border-box;
+    cursor: pointer;
+  }
+}

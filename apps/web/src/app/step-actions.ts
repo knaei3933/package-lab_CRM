@@ -13,7 +13,8 @@ import { senderWarningSentence, senderWarningsOf } from '../lib/sender-check';
 import type { ChainStep } from '../lib/step-chain';
 import { RECIPIENT_EMAIL_INVALID_MESSAGE } from '../lib/form-messages';
 import { isPlainAmount, normalizeAmountText } from '../lib/amount';
-import { RECEIPT_WAITS_FOR_REPRESENTATIVE, STEP_REFUSALS } from '../lib/step-messages';
+import { forgetReceiptNotice, rememberReceiptNotice } from '../lib/receipt-notice-server';
+import { DELIVERY_EVIDENCE_BOUND_CODE, RECEIPT_WAITS_FOR_REPRESENTATIVE, STEP_REFUSALS } from '../lib/step-messages';
 import { DUPLICATE_CODE, duplicateFromAnswer } from '../lib/duplicate-check';
 import { deliveryDatesFromForm } from '../lib/delivery-dates';
 import { RECIPIENT_CHOICE_INVALID_MESSAGE, RECIPIENT_UNAVAILABLE_CODE, recipientChoiceOf } from '../lib/maker-master';
@@ -648,14 +649,14 @@ export async function recordDeliveryStepAction(_prev: ActionState | null, formDa
         })
       : [])
   ];
-  return runChain(formData, steps, {
+  return withReceiptNotice(orderId, await runChain(formData, steps, {
     success: receipt
       ? field(formData, 'receiptMode') === 'confirm'
         ? '納品を記録し、受領証跡で納品数量を確認しました。'
         : `納品を記録し、受領証跡（${receipt.file.filename}）を登録しました。${RECEIPT_WAITS_FOR_REPRESENTATIVE}`
       : '納品を記録しました。次は受領証跡を付けて納品を確認します。',
     refusal: STEP_REFUSALS
-  });
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -663,6 +664,19 @@ export async function recordDeliveryStepAction(_prev: ActionState | null, formDa
 // ---------------------------------------------------------------------------
 
 const RECEIPT_ISSUERS = ['customer_generated', 'maker', 'seven', 'kanei'];
+
+/**
+ * p4/web4: a confirmation refused with DELIVERY_EVIDENCE_MAKER_PO_BOUND after the delivery / the evidence were stored moves
+ * the order on and mounts step 12 again, which drops the form's result line — the reason is kept for the redraw (a cookie
+ * bound to the order; lib/receipt-notice). A later submit of THIS order that goes through (a confirmation, or the customer's own receipt registered) ends it. Display only: the answer is unchanged.
+ */
+async function withReceiptNotice(orderId: string, result: ActionState): Promise<ActionState> {
+  // Only a refusal AFTER a stored write needs it (the redraw drops the form's line); a refusal of the first write keeps its
+  // own line on the mounted form, so the banner would say it twice.
+  if (result.code === DELIVERY_EVIDENCE_BOUND_CODE && result.chainStored) await rememberReceiptNotice(orderId, 'maker_po_bound');
+  else if (result.ok) await forgetReceiptNotice(orderId);
+  return result;
+}
 
 interface ReceiptInput {
   file: UploadedFile;
@@ -781,12 +795,12 @@ export async function confirmDeliveryReceiptStepAction(_prev: ActionState | null
     confirm,
     evaluate: field(formData, 'evaluateReadiness') === 'true'
   });
-  return runChain(formData, steps, {
+  return withReceiptNotice(orderId, await runChain(formData, steps, {
     success: confirm
       ? `受領証跡で納品数量を確認しました（${deliveryIds.length}件）。`
       : `受領証跡（${(receipt as ReceiptInput).file.filename}）を登録しました。${RECEIPT_WAITS_FOR_REPRESENTATIVE}`,
     refusal: STEP_REFUSALS
-  });
+  }));
 }
 
 // ---------------------------------------------------------------------------
