@@ -35,6 +35,7 @@ import { DeliveryReceiptStep, RECEIPT_ISSUER_CHOICES } from './DeliveryReceiptSt
 import type { DeliveryContext } from './DeliveryReceiptStep';
 import type { MakerPaperCleanupSummary } from '../lib/maker-po-data';
 import { canRoleOperate, normalizeRole } from '../lib/permissions';
+import { MEMO_ADMIN_ONLY_NOTE } from '../lib/order-records';
 import { VERIFICATION_STATUS_LABELS } from '../lib/vocabulary';
 
 /**
@@ -166,7 +167,7 @@ export function StepPanelView(props: StepPanelProps) {
               name={EVIDENCE_NOTE_FIELD}
               label={action.to === 'ARTWORK_RECEIVED' ? '受け取ったデザインのメモ（履歴に保存）' : '証跡のメモ（履歴に保存）'}
               required={action.evidenceNote === 'required'}
-              hint="例: 表面A・裏面B の入稿データを 11/20 に顧客からメールで受領（ファイル名 …）"
+              hint={`例: 表面A・裏面B の入稿データを 11/20 に顧客からメールで受領（ファイル名 …）${memoReaderNote(props.role)}`}
               rows={2}
             />
           )}
@@ -375,7 +376,7 @@ function waitDetail(action: OrderFlowView['panel']['action']): string {
  * the memo (the P1 way). The file field is not required in the browser for that
  * reason; the server action asks for the file or the memo.
  */
-function ArtworkStep({ order, projectCode }: StepPanelProps) {
+function ArtworkStep({ order, projectCode, role }: StepPanelProps) {
   return (
     <ActionForm
       action={submitArtworkStepAction}
@@ -400,7 +401,7 @@ function ArtworkStep({ order, projectCode }: StepPanelProps) {
         name={EVIDENCE_NOTE_FIELD}
         label="メモ（任意・履歴に保存）"
         rows={2}
-        hint="例: 11/20 に顧客からメールで受領。ファイルがないときは必須です。"
+        hint={`例: 11/20 に顧客からメールで受領。ファイルがないときは必須です。${memoReaderNote(role)}`}
       />
       <CheckboxField name="noFile" label="ファイルがなく、受領だけを記録する" />
     </ActionForm>
@@ -598,4 +599,9 @@ export function SendWaitFacts({ event, approvedAt }: { event: MakerPoEventRow | 
       <div><dt>待っている理由</dt><dd>{event.verificationNote ?? '（理由の記録なし）'}</dd></div>
     </dl>
   );
+}
+
+/** p5 round 2: next to a memo field, a role that cannot read memos back is told so (the representative is not). */
+function memoReaderNote(role: string | null | undefined): string {
+  return normalizeRole(role) === 'admin' ? '' : ` ${MEMO_ADMIN_ONLY_NOTE}`;
 }

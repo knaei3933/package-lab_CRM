@@ -683,13 +683,18 @@ describe('H12 / H2 / M2 the happy path is ≤ 15 submits on ONE screen (no step 
   const ATTACHED = { contentBase64: B64, filename: 'evidence.pdf', contentType: 'application/pdf' };
   const MAIL = { contentBase64: Buffer.from('From: a@customer.example\r\nMessage-ID: <m1@customer.example>\r\nDate: Thu, 20 Nov 2026 10:00:00 +0900\r\n\r\nOK').toString('base64'), filename: 'approval.eml', contentType: 'message/rfc822', mailMessageId: '<m1@customer.example>', mailDate: '2026-11-20T01:00:00.000Z' };
 
-  it('the happy path is WALKED: the screen is asked for its next form, the form is filled and submitted through its real action, until the order is complete — the submits are COUNTED (≤ 15), the writes behind them are not limited', async () => {
+  // p5 round 2 (review M-2): BOTH real paths are walked. Operations is the staff path (staff record the delivery, the representative confirms it on the
+  // receipt evidence — P-4: the uploader never confirms their own evidence): exactly 15 submits, the real count measured on a live order. The
+  // representative's shortcut (records the delivery and confirms in one submit) is 14. A step that grows by one submit turns the first RED.
+  it.each([['staff', 15], ['representative', 14]] as const)('the happy path is WALKED (delivery recorded by the %s): the screen is asked for its next form, the form is filled and submitted through its real action, until the order is complete — the submits are COUNTED (exactly %i; ≤ 15 always), the writes behind them are not limited', async (deliverer, expected) => {
     const approvalActions = await import('../apps/web/src/app/approval-actions.js');
     const actions = await import('../apps/web/src/app/actions.js');
     const makerActions = await import('../apps/web/src/app/maker-po/actions.js');
     const { ApprovalCard } = await import('../apps/web/src/components/ApprovalCard.js');
     type Result = { ok: boolean; message?: string };
-    interface World { status: string; gate: unknown; maker: Record<string, unknown> | null; makerEvents: unknown[]; deliveryContext: unknown }
+    interface World { status: string; gate: unknown; maker: Record<string, unknown> | null; makerEvents: unknown[]; deliveryContext: unknown; documents: unknown[] }
+    const confirmedContext = (userId: string) => ({ deliveries: [confirmedDelivery], userId, filmOnly: true, readiness: null, readinessLabel: (key: string) => key, closure: { pending: { basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: false }, recorded: null } });
+    const staffReceipt = { id: 'doc-r', documentType: 'acceptance_evidence', filename: 'receipt.pdf', filmSupplyOrderId: 'order-1', makerPurchaseOrderId: null, verificationStatus: 'unverified', createdAt: '2026-11-22T02:00:00Z', uploadedByUserId: 'u-staff', versions: [{ id: 'ver-r', versionNumber: 1 }] };
     const mk = (status: string) => ({ id: 'mpo-1', status, displayNumber: 'MPO-2026-0001', ceoApprovedAt: '2026-11-23T00:11:19Z' });
     const bothDesignsSlot = (customer: boolean, seven: boolean) => ({ ...GATE_ONE_DESIGN, designs: [{ ...GATE_ONE_DESIGN.designs[0], customer: slot(customer), seven: slot(seven) }] });
     const confirmedDelivery = { id: 'del-1', kind: 'film', orderId: 'order-1', lineId: 'line-1', unit: 'meters', deliveredQuantity: '500', deliveredAt: '2026-11-22T01:00:00Z', recordedAt: '2026-11-22T01:00:00Z', confirmed: true, confirmationHidden: false, detailsHidden: false };
@@ -711,8 +716,13 @@ describe('H12 / H2 / M2 the happy path is ≤ 15 submits on ONE screen (no step 
       '出荷を記録する': { action: actions.transitionFilmSupplyOrderAction, effect: (w) => ({ ...w, status: 'FILM_SHIPPED' }) },
       '納品を記録する': {
         action: stepActions.recordDeliveryStepAction, typed: { ...ATTACHED, receiptIssuer: 'customer_generated', 'quantity_line-1': '500' },
-        effect: (w) => ({ ...w, status: 'FILM_DELIVERED', deliveryContext: { deliveries: [confirmedDelivery], userId: 'u-admin', filmOnly: true, readiness: null, readinessLabel: (key: string) => key, closure: { pending: { basis: 'delivery_confirmations', acknowledgeNoEvidenceRequired: false }, recorded: null } } })
+        effect: (w) => deliverer === 'representative'
+          // The representative records the delivery AND confirms it on the receipt evidence in the same submit.
+          ? ({ ...w, status: 'FILM_DELIVERED', deliveryContext: confirmedContext('u-admin') })
+          // Staff register the receipt evidence with the delivery; the confirmation waits for the representative (P-4).
+          : ({ ...w, status: 'FILM_DELIVERED', documents: [staffReceipt], deliveryContext: { ...confirmedContext('u-admin'), deliveries: [{ ...confirmedDelivery, confirmed: false, confirmedAt: null }], closure: null } })
       },
+      '受領証跡で納品を確認する': { action: stepActions.confirmDeliveryReceiptStepAction, effect: (w) => ({ ...w, deliveryContext: confirmedContext('u-admin') }) },
       '確認済みの納品で完了する': { action: actions.assumeFilmReceiptAction, typed: { note: '受領書で確認' }, effect: (w) => ({ ...w, status: 'FILM_RECEIPT_ASSUMED_NO_ISSUE' }) }
     };
 
@@ -727,7 +737,7 @@ describe('H12 / H2 / M2 the happy path is ≤ 15 submits on ONE screen (no step 
       { label: '1–3 発注の作成（ウィザード）', role: 'staff', writes: writes(), keys: writeKeys() }
     ];
 
-    let world: World = { status: 'SEVEN_PO_VERIFIED', gate: null, maker: null, makerEvents: [], deliveryContext: undefined };
+    let world: World = { status: 'SEVEN_PO_VERIFIED', gate: null, maker: null, makerEvents: [], deliveryContext: undefined, documents: [] };
     for (let guard = 0; guard < 40; guard += 1) {
       const flowFor = (role: string) => buildOrderFlow({
         order: order(world.status) as never, role, po: PO as never, documents: [], revisions: [], gate: world.gate as never,
@@ -736,14 +746,14 @@ describe('H12 / H2 / M2 the happy path is ≤ 15 submits on ONE screen (no step 
       const seen = flowFor('admin');
       if (seen.phase === 'complete') break;
       // Who does the step: the representative where only they may (and where they record the delivery and confirm it in the same submit); staff otherwise.
-      const role = seen.panel.actor === 'admin' || seen.panel.action.kind === 'deliver' || seen.panel.action.kind === 'receipt' ? 'admin' : 'staff';
+      const role = seen.panel.actor === 'admin' || (deliverer === 'representative' && seen.panel.action.kind === 'deliver') || seen.panel.action.kind === 'receipt' ? 'admin' : 'staff';
       const html = seen.panel.action.kind === 'ceo_approve'
         ? render(<ApprovalCard korean={false} card={{
           source: 'server', poId: 'mpo-1', orderId: 'order-1', displayNumber: 'MPO-2026-0001', status: 'DRAFT', orderCode: 'FSO-1', paymentTerms: 'prepaid', amountDisplay: '¥312,000',
           items: [], artworkFiles: [], recipient: { address: 'order@maker.example', isEmail: true }, sevenPo: null, designs: [], dualApproved: true,
           blockers: [], warnings: [], canApprove: true, canReturn: true, expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: 'a'.repeat(64)
         } as never} />)
-        : panel(world.status, role, { gate: world.gate, maker: world.maker, makerPos: world.maker ? [world.maker] : [], makerEvents: world.makerEvents, deliveryContext: world.deliveryContext });
+        : panel(world.status, role, { gate: world.gate, maker: world.maker, makerPos: world.maker ? [world.maker] : [], makerEvents: world.makerEvents, deliveryContext: world.deliveryContext, documents: world.documents });
       expect(html, `${world.status}: no link to an old screen`).not.toMatch(OLD_SCREEN_HREF);
       // The screen's own primary form: the first form whose submit button is the primary one (not a quiet / danger secondary action).
       const formsOf = [...html.matchAll(/<form\b[\s\S]*?<\/form>/g)].map((match) => match[0]);
@@ -763,8 +773,9 @@ describe('H12 / H2 / M2 the happy path is ≤ 15 submits on ONE screen (no step 
     // The order is complete, and the operator submitted ≤ 15 times — counted from the forms the screens offered.
     expect(buildOrderFlow({ order: order(world.status) as never, role: 'admin', po: PO as never, documents: [], revisions: [], gate: null, makerPos: [], makerEvents: [], settledSendEventIds: new Set(), paymentGate: null, deliveries: [] }).phase).toBe('complete');
     // The walk really visited every step of the path (a walker that stopped early would count too few).
-    expect([...new Set(submits.slice(1).map((entry) => entry.label))].sort(), JSON.stringify(submits.map((entry) => `${entry.role}:${entry.label}`))).toEqual(Object.keys(REGISTRY).sort());
-    expect(submits.length, submits.map((entry) => entry.label).join(' / ')).toBeLessThanOrEqual(15);
+    expect([...new Set(submits.slice(1).map((entry) => entry.label))].sort(), JSON.stringify(submits.map((entry) => `${entry.role}:${entry.label}`))).toEqual(Object.keys(REGISTRY).filter((label) => deliverer === 'staff' || label !== '受領証跡で納品を確認する').sort());
+    expect(submits.length, submits.map((entry) => `${entry.role}:${entry.label}`).join(' / ')).toBe(expected);
+    expect(submits.length).toBeLessThanOrEqual(15);
     // Every submit is a submit (it wrote something) — and HOW MANY writes sit behind it is not limited (a chained step is one submit).
     expect(submits.every((entry) => entry.writes >= 1), JSON.stringify(submits.map((entry) => [entry.label, entry.writes]))).toBe(true);
     // Idempotency is untouched: every write of a submit carries a key derived from that form's own key (the chain's `${KEY}.n`, its fallback `.na`,

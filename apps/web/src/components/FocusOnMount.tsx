@@ -26,10 +26,14 @@ export function focusHeadingIfIdle(doc: FocusDocument, id: string): boolean {
   return true;
 }
 
-/** Renders nothing; on mount, hands the focus to the heading `targetId` (it needs tabIndex={-1}). */
-export function FocusOnMount({ targetId }: { targetId: string }) {
+/**
+ * Renders nothing; on mount, hands the focus to the heading `targetId` (it needs tabIndex={-1}).
+ * `signal` (p5 round 2, review L-1): a value that changes when the SAME element is told something new — an assignment that was
+ * added and then removed keeps one mounted FocusOnMount, so the second result never took the focus (it stayed on <body>).
+ */
+export function FocusOnMount({ targetId, signal }: { targetId: string; signal?: string | undefined }) {
   useEffect(() => {
     focusHeadingIfIdle(document, targetId);
-  }, [targetId]);
+  }, [targetId, signal]);
   return null;
 }

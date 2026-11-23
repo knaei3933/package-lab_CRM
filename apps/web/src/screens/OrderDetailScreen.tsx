@@ -20,7 +20,7 @@ import { newOrderPath, orderPath, projectPath } from '../lib/project-route';
 import { paymentTermsText } from '../lib/decision-facts';
 import { formatTimestamp } from '../lib/vocabulary';
 import { formatQuantityWithUnit } from '../lib/number-format';
-import { orderRecordDetail, orderRecordText } from '../lib/order-records';
+import { MEMO_ADMIN_ONLY_NOTE, orderRecordDetail, orderRecordText } from '../lib/order-records';
 import type { ProjectScreenProps } from './screen-props';
 import { deliveryTermsSummary, OrderTermsSection } from '../components/OrderTermsSection';
 import { readApprovalNotice } from '../lib/approval-notice-server';
@@ -334,6 +334,7 @@ export async function OrderDetailScreen({
 
       <section className="p1-records" aria-labelledby="records-title">
         <h2 id="records-title" className="p1-section-title">記録（新しい順）</h2>
+        {user.role === 'staff' ? <p className="p1-note" data-memo-note="staff">{MEMO_ADMIN_ONLY_NOTE}</p> : null}
         {records.length === 0 ? (
           <p className="p1-muted">{activity.ok ? 'この発注の記録はまだありません。' : '記録を読み込めませんでした。'}</p>
         ) : (
@@ -342,8 +343,8 @@ export async function OrderDetailScreen({
               <li key={event.id}>
                 <span className="p1-record-at">{formatTimestamp(event.occurredAt)}</span>
                 <span className="p1-record-who">{event.actor?.displayName ?? '—'}</span>
-                <span className="p1-record-what">{orderRecordText(event, stateLabel)}</span>
-                <RecordDetail event={event} />
+                {/* p5 round 2 (review L-5): the file and the memo stay in the 「内容」 column, under the words. */}
+                <span className="p1-record-what">{orderRecordText(event, stateLabel)}<RecordDetail event={event} /></span>
               </li>
             ))}
           </ol>

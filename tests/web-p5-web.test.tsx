@@ -56,7 +56,7 @@ vi.mock('next/navigation', () => ({
 /** FocusOnMount renders nothing (its work is an effect): the test double leaves a marker so the DOM says WHICH element is handed the focus. */
 vi.mock('../apps/web/src/components/FocusOnMount.js', () => ({
   focusHeadingIfIdle: () => false,
-  FocusOnMount: ({ targetId }: { targetId: string }) => <span data-focus-on-mount={targetId} />
+  FocusOnMount: ({ targetId, signal }: { targetId: string; signal?: string }) => <span data-focus-on-mount={targetId} data-focus-signal={signal} />
 }));
 const board = vi.hoisted(() => ({ value: null as unknown }));
 const workspaceFixture = vi.hoisted(() => ({ value: null as unknown }));
@@ -85,6 +85,8 @@ const { buildOrderFlow } = await import('../apps/web/src/lib/order-flow.js');
 const { OrderDetailScreen } = await import('../apps/web/src/screens/OrderDetailScreen.js');
 const { IDEMPOTENCY_FIELD, RENDERED_PROJECT_FIELD } = await import('../apps/web/src/lib/project-context.js');
 /** The real project-data module (the mock above only replaces the workspace read). */
+const apiAuditView = await import('../apps/api/src/audit-view.js');
+const { EVIDENCE_VERIFICATION_RESULTS } = await import('@kanei/core');
 const realData = await vi.importActual<typeof import('../apps/web/src/lib/project-data.js')>('../apps/web/src/lib/project-data.js');
 
 const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힯]/;
@@ -127,8 +129,8 @@ const slot = (valid: boolean, pending = false) => ({
   pendingEvidenceIdentifier: pending, manualVerification: null
 });
 /** The step panel of one order state, built the way the order screen builds it. */
-function panel(status: string, role: string, extra: { gate?: unknown; documents?: unknown[]; deliveryContext?: unknown; showKorean?: boolean } = {}) {
-  const o = order(status);
+function panel(status: string, role: string, extra: { gate?: unknown; documents?: unknown[]; deliveryContext?: unknown; showKorean?: boolean; order?: Record<string, unknown> } = {}) {
+  const o = order(status, extra.order ?? {});
   const flow = buildOrderFlow({
     order: o as never, role, po: PO as never, documents: (extra.documents ?? []) as never, revisions: [], gate: (extra.gate ?? null) as never,
     makerPos: [], makerEvents: [], settledSendEventIds: new Set(), paymentGate: null, deliveries: []
@@ -329,9 +331,9 @@ describe('R15 / M4 the 記録 list names the registered file and shows the memo'
   it('R15: 「書類を登録」 / 「書類の版を登録」 carry the file name and the kind of document', async () => {
     serveOrder('admin', 'FILM_SHIPPED', { events });
     const list = records(await orderScreen());
-    expect(list).toMatch(/書類を登録[^<]*<\/span>[\s\S]*?omote\.pdf/);
+    expect(list).toMatch(/書類を登録[\s\S]*?omote\.pdf/);
     expect(list).toContain('校正ゲラ');
-    expect(list).toMatch(/書類の版を登録[^<]*<\/span>[\s\S]*?receipt-0007\.pdf/);
+    expect(list).toMatch(/書類の版を登録[\s\S]*?receipt-0007\.pdf/);
     expect(list).toContain('受領証跡（検収）');
   });
 
@@ -388,21 +390,49 @@ describe('R10 an assignment is 「担当を割り当て」 / 「担当を外す�
 
 // ================================================================================================
 // R11 — the evidence list tells the document check from the identifier check of an approval evidence
+// (round 2, review M-1: the server writes `confirmed`, and staff rows carry no result — the rows below are the REAL answers of
+//  apps/api/src/audit-view.ts per role, built from full server states; nothing here is a hand-written web-side shape)
 // ================================================================================================
 describe('R11 an approval evidence says its identifier check: 自動確認済み / 手動確認待ち / 手動確認済み / 却下', () => {
-  const doc = (id: string, over: Record<string, unknown> = {}) => ({
-    documentId: id, documentType: 'approval_evidence', issuerEntity: 'customer_generated', originalFilename: `${id}.eml`, orderCode: 'FSO-1', designKey: '表面A',
+  const { buildAuditViewForRole } = apiAuditView;
+  const [CONFIRMED, REJECTED] = EVIDENCE_VERIFICATION_RESULTS;
+  const SLOT_ORG = 'customer';
+  const doc = (id: string, designKey: string, over: Record<string, unknown> = {}) => ({
+    documentId: id, documentType: 'approval_evidence', issuerEntity: 'customer_generated', originalFilename: `${id}.eml`, orderCode: 'FSO-1', designKey,
     verificationStatus: 'unverified', verifiedAt: null, verifiedBy: null, createdAt: '2026-11-22T01:00:00Z', createdBy: { displayName: '担当' },
     versions: [{ versionId: `v-${id}`, versionNumber: 1, originalFilename: `${id}.eml`, sha256: SHA, uploadedAt: '2026-11-22T01:00:00Z', uploadedBy: { displayName: '担当' } }], ...over
   });
-  const approval = (id: string, versionId: string, status: string) => ({ id: `a-${id}`, action: 'ARTWORK_APPROVAL_RECORDED', entityType: 'artwork_approval_event', entityId: `ev-${id}`, occurredAt: '2026-11-22T02:00:00Z', actor: null, afterState: { evidenceDocumentVersionId: versionId, evidenceIdentifierStatus: status } });
-  const manual = (id: string, versionId: string, result: string, at: string) => ({ id: `m-${id}`, action: 'EVIDENCE_MANUAL_VERIFICATION_RECORDED', entityType: 'artwork_approval_event', entityId: `ev-${id}`, occurredAt: at, actor: null, afterState: { approvalEventId: `ev-${id}`, evidenceDocumentVersionId: versionId, result } });
-  const serve = (documents: unknown[], events: unknown[] | 'fail', role = 'auditor') => {
+  /** The FULL server rows (what the database holds), before any role trimming. */
+  const row = (id: string, action: string, entityType: string, entityId: string, at: string, afterState: Record<string, unknown>) =>
+    ({ id, action, entityType, entityId, beforeState: null, afterState, occurredAt: new Date(at), requestMetadata: {}, actor: null });
+  const approval = (id: string, designKey: string, status: string, at = '2026-11-22T02:00:00Z', org = SLOT_ORG) =>
+    row(`a-${id}`, 'ARTWORK_APPROVAL_RECORDED', 'artwork_approval_event', `ev-${id}`, at, {
+      id: `ev-${id}`, artworkRevisionId: 'rev-1', organization: org, decision: 'APPROVE', recordedByUserId: 'u1', evidenceDocumentVersionId: `v-${id}`,
+      evidenceIdentifier: 'REV-0001 ¥480,000', evidenceIdentifierStatus: status, evidenceSource: 'email', approvedFileSha256: SHA, designKey, revisionNo: 1,
+      evidenceIssuerEntity: 'customer_generated', issuerMatchesOrganization: true
+    });
+  const check = (id: string, designKey: string, result: string, at: string) =>
+    row(`m-${id}-${at}`, 'EVIDENCE_MANUAL_VERIFICATION_RECORDED', 'artwork_approval_event', `ev-${id}`, at, {
+      id: `ver-${id}`, approvalEventId: `ev-${id}`, artworkRevisionId: 'rev-1', evidenceDocumentVersionId: `v-${id}`, approvedFileSha256: SHA, result,
+      verifierName: '代表', verifiedAt: at, reasonNote: '金額 ¥480,000 の発注書と照合', recordedByUserId: 'u-admin', recordedAt: at,
+      designKey, revisionNo: 1, organization: SLOT_ORG, evidenceIdentifier: 'REV-0001 ¥480,000', verificationType: 'evidence_manual_verification', verifiedByUserId: 'u-admin'
+    });
+  /** The approval gate's slot, as GET …/approval-gate answers every role that may read it. */
+  const gateSlot = (decided: boolean, result: string | null, over: Record<string, unknown> = {}) => ({
+    organization: SLOT_ORG, valid: decided && result !== REJECTED, latestDecision: decided ? 'APPROVE' : null, revoked: false, invalidatedByNewerRevision: false,
+    pendingEvidenceIdentifier: decided && result !== CONFIRMED, manualVerification: result ? { result, verifierName: '代表', verifiedAt: '2026-11-22T03:00:00Z', recordedAt: '2026-11-22T03:00:00Z' } : null, ...over
+  });
+  const gateFor = (slots: Record<string, unknown>) => ({
+    orderId: 'order-1', orderStatus: 'APPROVAL_PENDING', dualApproved: false, missingApprovals: [], pendingManualVerifications: [],
+    designs: Object.entries(slots).map(([designKey, slotValue]) => ({ designKey, currentRevisionId: 'rev-1', currentRevisionNo: 1, fileSha256: SHA, customer: slotValue, seven: gateSlot(false, null), dualApproved: false }))
+  });
+  const serve = (documents: unknown[], rows: unknown[] | 'fail', role: string, gate: unknown | 'fail' = 'fail') => {
     session.user = { id: `u-${role}`, role };
     callApi.mockImplementation(async (url: string) => {
       if (url.includes('/evidence-metadata')) return ok({ documents, truncated: false, limit: 200 });
-      if (url.includes('/audit-history')) return events === 'fail' ? fail(500, 'X') : ok({ events });
-      return ok({ orders: [] });
+      if (url.includes('/audit-history')) return rows === 'fail' ? fail(500, 'X') : ok({ events: buildAuditViewForRole(role as never, (rows as never[]).slice().sort((a: never, b: never) => (b as { occurredAt: Date }).occurredAt.getTime() - (a as { occurredAt: Date }).occurredAt.getTime())) });
+      if (url.includes('/approval-gate')) return gate === 'fail' ? fail(403, 'FORBIDDEN') : ok(gate);
+      return ok({ orders: [{ id: 'order-1', code: 'FSO-1' }] });
     });
   };
   const evidenceHtml = async () => {
@@ -410,33 +440,96 @@ describe('R11 an approval evidence says its identifier check: 自動確認済み
     return render(await EvidenceScreen({ projectId: 'project-a', projectCode: 'PRJ-1' } as never));
   };
   const cell = (html: string, id: string) => new RegExp(`id="doc-${id}"[\\s\\S]*?data-label="確認状態">([\\s\\S]*?)</td>`).exec(html)?.[1] ?? '';
+  const DOCS = [doc('d1', '表面A'), doc('d2', '表面B'), doc('d3', '表面C'), doc('d4', '表面D'), doc('d5', '表面E')];
+  /** d1 auto · d2 pending, nobody checked · d3 checked 確認 · d4 checked 却下 · d5 not applicable — as the database holds them. */
+  const ROWS = () => [
+    approval('d1', '表面A', 'verified_in_document'), approval('d2', '表面B', 'pending_manual_verification'), approval('d3', '表面C', 'pending_manual_verification'),
+    approval('d4', '表面D', 'pending_manual_verification'), approval('d5', '表面E', 'not_applicable'),
+    check('d3', '表面C', CONFIRMED, '2026-11-22T03:00:00Z'), check('d4', '表面D', REJECTED, '2026-11-22T03:00:00Z')
+  ];
+  const GATE = () => gateFor({ 表面A: gateSlot(true, null, { pendingEvidenceIdentifier: false }), 表面B: gateSlot(true, null), 表面C: gateSlot(true, CONFIRMED), 表面D: gateSlot(true, REJECTED), 表面E: gateSlot(true, null, { pendingEvidenceIdentifier: false }) });
 
-  it('the four states, each on its own row; the document check stays on its own line', async () => {
-    serve([doc('d1'), doc('d2'), doc('d3'), doc('d4'), doc('d5')], [
-      approval('d1', 'v-d1', 'verified_in_document'), approval('d2', 'v-d2', 'pending_manual_verification'), approval('d3', 'v-d3', 'pending_manual_verification'),
-      approval('d4', 'v-d4', 'pending_manual_verification'), manual('d3', 'v-d3', 'verified', '2026-11-22T03:00:00Z'), manual('d4', 'v-d4', 'rejected', '2026-11-22T03:00:00Z')
-    ]);
+  it('the server\'s own vocabulary is the one read: 確認 is `confirmed` (core EVIDENCE_VERIFICATION_RESULTS), not `verified`', () => {
+    expect([CONFIRMED, REJECTED]).toEqual(['confirmed', 'rejected']);
+  });
+
+  it.each(['admin', 'auditor'])('%s (rows carry the result): 自動確認済み / 手動確認待ち / 手動確認済み / 却下 / 対象外, each on its own row, the document check on its own line', async (role) => {
+    serve(DOCS, ROWS(), role);
     const html = await evidenceHtml();
     expect(cell(html, 'd1')).toContain('識別子: 自動確認済み');
     expect(cell(html, 'd2')).toContain('識別子: 手動確認待ち');
     expect(cell(html, 'd3')).toContain('識別子: 手動確認済み');
     expect(cell(html, 'd4')).toContain('識別子: 却下');
-    expect(cell(html, 'd5')).not.toContain('識別子');
+    expect(cell(html, 'd5')).toContain('識別子: 確認の対象外');
     expect(cell(html, 'd1')).toContain('書類の確認: 未確認');
+    // The gate is not needed for these roles.
+    expect(callApi.mock.calls.some((call) => String(call[0]).includes('/approval-gate'))).toBe(false);
     expect(html).not.toMatch(HANGUL);
   });
 
+  it('staff (the rows carry NO result): a checked evidence is never 「手動確認待ち」; the result comes from the order\'s approval gate, and no amount is drawn', async () => {
+    serve(DOCS, ROWS(), 'staff', GATE());
+    const html = await evidenceHtml();
+    expect(cell(html, 'd1')).toContain('識別子: 自動確認済み');
+    expect(cell(html, 'd2')).toContain('識別子: 手動確認待ち'); // really nobody checked it
+    expect(cell(html, 'd3')).toContain('識別子: 手動確認済み');
+    expect(cell(html, 'd4')).toContain('識別子: 却下');
+    expect(html).not.toContain('480,000');
+    expect(html).not.toContain('金額');
+    expect(html).not.toMatch(HANGUL);
+    // Only the orders that have a check without a readable result are asked (one gate read for FSO-1).
+    expect(callApi.mock.calls.filter((call) => String(call[0]).includes('/approval-gate'))).toHaveLength(1);
+  });
+
+  it('staff and the gate cannot be read: the checked evidence says 「手動確認を記録済み（結果は代表・監査が確認）」 — true, and never 「待ち」', async () => {
+    serve(DOCS, ROWS(), 'staff', 'fail');
+    const html = await evidenceHtml();
+    for (const id of ['d3', 'd4']) {
+      expect(cell(html, id)).toContain('識別子: 手動確認を記録済み（結果は代表・監査が確認）');
+      expect(cell(html, id)).not.toContain('待ち');
+    }
+    expect(cell(html, 'd2')).toContain('識別子: 手動確認待ち');
+  });
+
+  it('staff: a superseded approval (a newer approval of the same slot exists) keeps 「記録済み」 — the gate speaks only for the newest', async () => {
+    const older = doc('d6', '表面F'); const newer = doc('d7', '表面F', { createdAt: '2026-11-22T05:00:00Z' });
+    const rows = [
+      approval('d6', '表面F', 'pending_manual_verification', '2026-11-22T02:00:00Z'), check('d6', '表面F', REJECTED, '2026-11-22T03:00:00Z'),
+      approval('d7', '表面F', 'pending_manual_verification', '2026-11-22T05:00:00Z'), check('d7', '表面F', CONFIRMED, '2026-11-22T06:00:00Z')
+    ];
+    serve([older, newer], rows, 'staff', gateFor({ 表面F: gateSlot(true, CONFIRMED) }));
+    const html = await evidenceHtml();
+    expect(cell(html, 'd7')).toContain('識別子: 手動確認済み');
+    expect(cell(html, 'd6')).toContain('識別子: 手動確認を記録済み');
+    expect(cell(html, 'd6')).not.toContain('却下');
+  });
+
+  it('staff: a revoked slot, a slot of another revision or a slot with no decision is not read as the result', async () => {
+    for (const odd of [{ revoked: true }, { invalidatedByNewerRevision: true }, { latestDecision: null }]) {
+      serve([doc('d3', '表面C')], [approval('d3', '表面C', 'pending_manual_verification'), check('d3', '表面C', CONFIRMED, '2026-11-22T03:00:00Z')], 'staff', gateFor({ 表面C: gateSlot(true, CONFIRMED, odd) }));
+      expect(cell(await evidenceHtml(), 'd3'), JSON.stringify(odd)).toContain('識別子: 手動確認を記録済み');
+    }
+  });
+
   it('the newest manual check wins (a rejection followed by a later 確認 reads 手動確認済み)', async () => {
-    serve([doc('d6')], [approval('d6', 'v-d6', 'pending_manual_verification'), manual('d6', 'v-d6', 'rejected', '2026-11-22T03:00:00Z'), manual('d6', 'v-d6', 'verified', '2026-11-22T04:00:00Z')]);
+    serve([doc('d6', '表面F')], [approval('d6', '表面F', 'pending_manual_verification'), check('d6', '表面F', REJECTED, '2026-11-22T03:00:00Z'), check('d6', '表面F', CONFIRMED, '2026-11-22T04:00:00Z')], 'admin');
     expect(cell(await evidenceHtml(), 'd6')).toContain('識別子: 手動確認済み');
   });
 
   it('a document that is not an approval evidence keeps the plain check; an unreadable history invents nothing', async () => {
-    serve([doc('p1', { documentType: 'proof' }), doc('d7')], 'fail', 'staff');
+    serve([doc('p1', '表面A', { documentType: 'proof' }), doc('d7', '表面B')], 'fail', 'staff');
     const html = await evidenceHtml();
     expect(cell(html, 'p1')).not.toContain('識別子');
     expect(cell(html, 'd7')).not.toContain('識別子');
     expect(cell(html, 'd7')).toContain('未確認');
+  });
+
+  it('review L-7: when the read window is full, the list says it judges from the newest 500 approval records', async () => {
+    const filler = Array.from({ length: 500 }, (_, index) => approval(`f${index}`, `表面${index}`, 'verified_in_document', new Date(Date.parse('2026-11-22T00:00:00Z') + index * 1000).toISOString()));
+    serve([doc('d1', '表面0')], filler, 'auditor');
+    expect(await evidenceHtml()).toContain('data-identifier-window="full"');
+    serve([doc('d1', '表面A')], ROWS(), 'auditor');
+    expect(await evidenceHtml()).not.toContain('data-identifier-window');
   });
 });
 
@@ -525,6 +618,12 @@ describe('R9 focus: the order heading after the wizard, the result sentence afte
     expect(withNotice).toMatch(/<p id="assignment-status"[^>]*tabindex="-1"[^>]*role="status"|<p id="assignment-status"[^>]*role="status"[^>]*tabindex="-1"/);
     expect(withNotice).toContain('data-focus-on-mount="assignment-status"');
     expect(withNotice).toContain('担当 花子 を担当者に割り当てました');
+    // review L-1: the same element is told again after a REMOVAL — the signal differs, so the focus effect runs again.
+    const removed = render(<ProjectAssignmentsPanel view={view as never} directory={directory as never} notice={{ ...notice, kind: 'removed', at: '2026-11-23T01:05:00Z' } as never} />);
+    const signalOf = (html: string) => /data-focus-signal="([^"]*)"/.exec(html)?.[1];
+    expect(signalOf(withNotice)).toBeTruthy();
+    expect(signalOf(removed)).toBeTruthy();
+    expect(signalOf(removed)).not.toBe(signalOf(withNotice));
     const without = render(<ProjectAssignmentsPanel view={view as never} directory={directory as never} notice={null} />);
     expect(without).not.toContain('data-focus-on-mount');
   });
@@ -687,5 +786,67 @@ describe('R2 / M12 the approval card folds its long evidence and keeps the appro
     const html = render(<ApprovalCard card={clean() as never} korean />, true);
     expect(fold(html)).toMatch(HANGUL);
     expect(html).not.toContain('class="p5-fold" open=""></details>');
+  });
+});
+
+// ================================================================================================
+// round 2 (review Lows + the memo decision)
+// ================================================================================================
+describe('round 2: the memo is the representative\'s — the screens tell the staff who typed it', () => {
+  const NOTE = 'メモは代表のみ閲覧できます（担当者の画面には出ません）。';
+  it('staff: the records say so, and the memo fields say so; the representative is not told', async () => {
+    serveOrder('staff', 'SEVEN_PO_VERIFIED');
+    const staff = await orderScreen();
+    expect(staff).toContain('data-memo-note="staff"');
+    expect(staff).toContain(NOTE);
+    // the memo field of step 4 (ArtworkStep) and the generic memo field both carry it for staff
+    expect(panel('SEVEN_PO_VERIFIED', 'staff')).toContain(NOTE);
+    expect(panel('SEVEN_PO_VERIFIED', 'staff', { order: { sevenPurchaseOrderId: null } })).toContain(NOTE);
+    serveOrder('admin', 'SEVEN_PO_VERIFIED');
+    const admin = await orderScreen();
+    expect(admin).not.toContain(NOTE);
+    expect(panel('SEVEN_PO_VERIFIED', 'admin')).not.toContain(NOTE);
+  });
+  it('no memo and no amount is drawn for staff even when the record carries one (the server trims it; the screen adds nothing)', async () => {
+    serveOrder('staff', 'FILM_SHIPPED', { events: [{ id: 'e', action: 'FILM_SUPPLY_ORDER_TRANSITIONED', entityType: 'film_supply_order', entityId: 'order-1', occurredAt: '2026-11-22T03:00:00Z', actor: null, afterState: { status: 'ARTWORK_RECEIVED' } }] });
+    const html = await orderScreen();
+    expect(html).not.toContain('メモ: ');
+    expect(html).not.toMatch(HANGUL);
+  });
+});
+
+describe('round 2 review Lows', () => {
+  it('L-5: a record\'s file and memo are INSIDE its 「内容」 span (one grid column), not a fourth item of the row', async () => {
+    serveOrder('admin', 'FILM_SHIPPED', { events: [{ id: 'e2', action: 'DOCUMENT_VERSION_UPLOADED', entityType: 'document_version', entityId: 'ver-1', occurredAt: '2026-11-22T02:00:00Z', actor: null, afterState: { documentType: 'acceptance_evidence', originalFilename: 'receipt-0007.pdf', filmSupplyOrderId: 'order-1' } }] });
+    const html = await orderScreen();
+    expect(html).toMatch(/<span class="p1-record-what">書類の版を登録<span class="p1-record-detail">[\s\S]*?receipt-0007\.pdf[\s\S]*?<\/span><\/span><\/li>/);
+  });
+  it('L-5: an auditor reads the long sentence ONCE and 「閲覧のみ」 on the rows', () => {
+    const rows = [delivery('del-a', false, { deliveredQuantity: '—', unit: '—', detailsHidden: true }), delivery('del-b', false, { deliveredQuantity: '—', unit: '—', detailsHidden: true })];
+    const html = panel('FILM_RECEIPT_ASSUMED_NO_ISSUE', 'auditor', { deliveryContext: receiptContext('u-auditor', rows) });
+    expect(html.match(/閲覧のみ（確認状態は監査履歴で見られます）/g) ?? []).toHaveLength(1);
+    expect(html.match(/<span class="p4w2-wait"> 閲覧のみ<\/span>|閲覧のみ<\/span>/g) ?? []).toHaveLength(2);
+    expect(html).not.toContain('確認待ち');
+  });
+  it.each([['no cookie', undefined, false], ['ja-ko', 'u.ja-ko', true], ['ja', 'u.ja', false]] as const)('L-4: RouteGate (a project route without a session), %s → the Korean line is %s', async (_name, cookie, korean) => {
+    session.user = null;
+    if (cookie) session.cookies.set('kanei_web_lang', cookie);
+    session.path = '/p/RE-A/o/FSO-1';
+    const { RouteGate } = await import('../apps/web/src/components/RouteGate.js');
+    const html = render(await RouteGate({ route: { kind: 'no-session', session: { kind: 'anonymous' } } as never }));
+    expect(html).toContain('session-notice');
+    expect(HANGUL.test(html)).toBe(korean);
+  });
+  it('§9: the folded summary also says whether ALL designs are approved (the stamps are the first design\'s)', () => {
+    const seal = (state: string) => ({ state, eventTime: '2026-11-20T01:00:00Z', approvalEventId: 'ev', evidence: null });
+    const card = (dual: boolean) => ({
+      source: 'server', poId: 'mpo-1', orderId: 'order-1', displayNumber: 'MPO-2026-0001', status: 'DRAFT', orderCode: 'FSO-1', paymentTerms: 'prepaid', amountDisplay: null,
+      items: [], artworkFiles: [], recipient: { address: 'order@maker.example', isEmail: true, inMakerMaster: true }, sevenPo: { poNumber: 'SC-1', officialRegisteredAt: '2026-11-01', verificationStatus: 'verified' },
+      designs: [{ designKey: '表面A', currentRevisionNo: 1, customer: seal('approved'), seven: seal('approved') }, { designKey: '裏面B', currentRevisionNo: 1, customer: seal('approved'), seven: seal('missing') }],
+      dualApproved: dual, blockers: [], warnings: [], canApprove: true, canReturn: true, expectedPaymentTerms: 'prepaid', expectedSnapshotSha256: SHA
+    });
+    const summary = (html: string) => /<summary[^>]*>([\s\S]*?)<\/summary>/.exec(html)?.[1] ?? '';
+    expect(summary(render(<ApprovalCard card={card(false) as never} korean={false} />))).toContain('全2デザイン: そろっていません');
+    expect(summary(render(<ApprovalCard card={card(true) as never} korean={false} />))).toContain('全2デザイン: そろっています');
   });
 });

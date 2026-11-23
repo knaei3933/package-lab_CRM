@@ -27,11 +27,14 @@
   /* The list under 「承認の前に、次を入力してください」 already says what to type; its title is not repeated. */
   .p5-card-needs > .p4-needs-title { display: none; }
   /* The currency and the amount side by side: one line of input before the approve button. */
-  .p5-card-actions .p1-row { display: grid; grid-template-columns: minmax(0, 40%) minmax(0, 1fr); gap: var(--space-2); }
+  .p5-card-actions .p1-row { display: grid; grid-template-columns: minmax(0, 48%) minmax(0, 1fr); gap: var(--space-2); }
   .p5-card-actions .p1-row > .field { min-width: 0; }
   .p5-card-actions .p1-row select,
   .p5-card-actions .p1-row input { width: 100%; max-width: none; box-sizing: border-box; }
 
+  /* review L-3: the summary shows whether it is open (the flex layout removed the browser's marker). */
+  .p5-fold-summary::before { content: '▸'; flex: none; }
+  .p5-fold[open] > .p5-fold-summary::before { content: '▾'; }
   .p5-fold-summary {
     display: flex;
     flex-wrap: wrap;
@@ -48,3 +51,7 @@
   }
   .p5-fold[open] > .p5-fold-summary { margin-bottom: var(--space-3); }
 }
+
+/* review L-5: a record's file and memo sit under its words, in the same column. */
+.p1-record-detail,
+.p1-record-memo { display: block; color: var(--ink-sub); overflow-wrap: anywhere; }

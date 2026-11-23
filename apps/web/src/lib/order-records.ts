@@ -17,6 +17,12 @@ export function orderRecordText(event: Pick<AuditEventView, 'action' | 'entityTy
   return base;
 }
 
+/**
+ * p5 round 2 (decision): a memo is free text and may hold an amount, so the server shows it to the representative only — the staff who
+ * typed it cannot read it back. The screens say so instead of pretending the memo is lost.
+ */
+export const MEMO_ADMIN_ONLY_NOTE = 'メモは代表のみ閲覧できます（担当者の画面には出ません）。';
+
 /** What a record row adds under its words: the registered file (R15) and the memo the operator typed (M4). */
 export interface OrderRecordDetail {
   /** 「受領証跡（検収）」 — the kind of document, when the record names one. */

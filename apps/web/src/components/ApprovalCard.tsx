@@ -125,7 +125,11 @@ function FoldSummary({ card }: { card: ApprovalCardView }) {
   return (
     <>
       <Bilingual ja="明細・校了した版・押印・送信先" ko="명세·확정된 판·날인·송신처" />
-      <span className="p1-muted-inline"> ／ 顧客 {say(first?.customer ?? null)}・セブン化学 {say(first?.seven ?? null)}</span>
+      <span className="p1-muted-inline">
+        {' ／ '}顧客 {say(first?.customer ?? null)}・セブン化学 {say(first?.seven ?? null)}
+        {/* p5 round 2 (review §9): the stamps are the FIRST design's — with several designs the summary also says whether all are in. */}
+        {card.designs.length > 1 ? `・全${card.designs.length}デザイン: ${card.dualApproved ? 'そろっています' : 'そろっていません'}` : ''}
+      </span>
     </>
   );
 }

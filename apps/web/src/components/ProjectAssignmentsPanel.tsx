@@ -42,7 +42,7 @@ export function ProjectAssignmentsPanel({ view, directory, notice = null }: { vi
           : null}
       </p>
       {/* p5 R9: after an assignment (or a removal) the result sentence takes the focus — the form that answered is gone. */}
-      {notice && noticeName ? <FocusOnMount targetId="assignment-status" /> : null}
+      {notice && noticeName ? <FocusOnMount targetId="assignment-status" signal={`${notice.kind}:${notice.userId}:${notice.at}`} /> : null}
       <p className="p1-muted">
         <Bilingual
           ja="この案件を開ける人です。代表者は、すべての案件を開けるため、ここには出ません。割り当てると、その人はすぐにこの案件を開けます。"

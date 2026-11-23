@@ -49,6 +49,8 @@ export const FILM_DELIVERY_CONFIRMATION_LABELS = {
 
 /** p5 R4: what a role that cannot confirm reads where an unconfirmed (or masked) delivery used to say 「確認待ち」. */
 export const READ_ONLY_CONFIRMATION_TEXT = '閲覧のみ（確認状態は監査履歴で見られます）';
+/** p5 round 2 (review L-5): on each row the short form — the sentence above is said once, not once per row. */
+export const READ_ONLY_ROW_TEXT = '閲覧のみ';
 /** p5 H14: the commission readiness is the PROJECT's (every order), not this order's. */
 export const PROJECT_READINESS_LABEL = '案件全体の手数料準備（ほかの発注を含む）';
 
@@ -353,7 +355,7 @@ function DeliveryLines({ deliveries, evidenceKinds, readOnly }: { deliveries: re
               {' '}{delivery.confirmationHidden
                 ? '（確認状態は閲覧権限なし）'
                 // p5 R4: a role that cannot confirm cannot tell 「not confirmed」 from 「masked」 — it reads 「閲覧のみ」, never 「確認待ち」.
-                : readOnly && !delivery.confirmed ? READ_ONLY_CONFIRMATION_TEXT : FILM_DELIVERY_CONFIRMATION_LABELS[delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION'].ja}
+                : readOnly && !delivery.confirmed ? READ_ONLY_ROW_TEXT : FILM_DELIVERY_CONFIRMATION_LABELS[delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION'].ja}
             </span>
             {kind ? (
               <span className={`p4w4-kind${kind === 'maker_po_acceptance' ? ' p4w4-kind--legacy' : ''}`} data-evidence-kind={kind}>

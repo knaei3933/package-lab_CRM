@@ -4,6 +4,7 @@ import { SessionRefresh } from './SessionRefresh';
 import { noticeForSession } from '../lib/route-gate';
 import type { RouteProject } from '../lib/project-route-server';
 import { REQUEST_PATH_HEADER } from '../lib/request-path';
+import { displayLanguage } from '../lib/locale-server';
 
 /**
  * P4 H8: what a page draws when its route is not open. A lost session shows the
@@ -15,9 +16,11 @@ export async function RouteGate({ route }: { route: RouteProject }) {
   if (route.kind !== 'no-session') return null;
   const notice = noticeForSession(route.session);
   const path = (await headers()).get(REQUEST_PATH_HEADER) ?? '/';
+  // p5 round 2 (review L-4): this notice follows the language the browser kept, like the layout's (no session = no user to ask).
+  const { showKorean } = await displayLanguage(null);
   return (
     <>
-      <SessionNotice kind={notice.kind} path={path} code={notice.code} />
+      <SessionNotice kind={notice.kind} path={path} code={notice.code} showKorean={showKorean} />
       <SessionRefresh />
     </>
   );

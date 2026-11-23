@@ -3,8 +3,9 @@ import { Bilingual } from '../components/Bilingual';
 import { ViewerPageNotice } from '../components/RoleGate';
 import { callApi, loadSessionUser } from '../lib/api';
 import { documentTypeText, issuerText, loadEvidenceMetadata, shortHash } from '../lib/evidence-data';
-import { IDENTIFIER_HISTORY_ACTIONS, IDENTIFIER_STATE_TEXT, identifierStatesByVersion } from '../lib/evidence-identifier';
+import { IDENTIFIER_HISTORY_ACTIONS, IDENTIFIER_HISTORY_LIMIT, IDENTIFIER_STATE_TEXT, readIdentifiers, resolveFromGates } from '../lib/evidence-identifier';
 import type { IdentifierState } from '../lib/evidence-identifier';
+import { loadApprovalGate } from '../lib/project-data';
 import type { AuditEventView } from '../lib/project-data';
 import type { EvidenceDocumentView } from '../lib/evidence-data';
 import { isAuditorRole, normalizeRole } from '../lib/permissions';
@@ -56,7 +57,7 @@ export async function EvidenceScreen(props: ProjectScreenProps & {
     loadEvidenceMetadata(projectId, { filmSupplyOrderId: filter || null, limit: EVIDENCE_LIST_LIMIT })
   ]);
   // p5 R11: the identifier check of an approval evidence comes from the approval records (a failed read says nothing).
-  const identifiers = read.ok && read.data.documents.some((doc) => doc.documentType === 'approval_evidence') ? await loadIdentifierStates(projectId) : null;
+  const identifiers = read.ok && read.data.documents.some((doc) => doc.documentType === 'approval_evidence') ? await loadIdentifierStates(projectId, read.data.documents, orders) : null;
   const orderById = new Map(orders.map((order) => [order.id, order.code]));
   const filterCode = filter ? (orderById.get(filter) ?? null) : null;
   return (
@@ -92,7 +93,14 @@ export async function EvidenceScreen(props: ProjectScreenProps & {
           {read.data.documents.length === 0 ? (
             <p className="p1-muted">{filter ? `${filterCode ?? '選んだ発注'} の証跡はまだありません。` : 'この案件の証跡はまだありません。'}</p>
           ) : (
-            <EvidenceTable documents={read.data.documents} identifiers={identifiers} />
+            <>
+              <EvidenceTable documents={read.data.documents} identifiers={identifiers?.states ?? null} />
+              {identifiers?.windowFull ? (
+                <p className="field-warning" role="status" data-identifier-window="full">
+                  <span aria-hidden="true">⚠ </span>識別子の確認状態は、新しい{IDENTIFIER_HISTORY_LIMIT}件の承認記録から判定しています。それより古い証跡には出ません。
+                </p>
+              ) : null}
+            </>
           )}
         </>
       )}
@@ -177,10 +185,31 @@ function identifierState(doc: EvidenceDocumentView, latest: EvidenceDocumentView
   return null;
 }
 
-async function loadIdentifierStates(projectId: string): Promise<Map<string, IdentifierState> | null> {
+/**
+ * The identifier states of the approval evidence (p5 R11). A role that cannot read a manual check's result (staff) gets it from the
+ * approval gate of the order — read only for the orders whose check result is missing (at most 8 reads), resolved only when unambiguous.
+ */
+async function loadIdentifierStates(
+  projectId: string,
+  documents: readonly EvidenceDocumentView[],
+  orders: ReadonlyArray<{ id: string; code: string }>
+): Promise<{ states: Map<string, IdentifierState>; windowFull: boolean } | null> {
   const answer = await callApi<{ events: AuditEventView[] }>(
-    `/api/projects/${encodeURIComponent(projectId)}/audit-history?limit=500&order=desc&action=${encodeURIComponent(IDENTIFIER_HISTORY_ACTIONS.join(','))}`
+    `/api/projects/${encodeURIComponent(projectId)}/audit-history?limit=${IDENTIFIER_HISTORY_LIMIT}&order=desc&action=${encodeURIComponent(IDENTIFIER_HISTORY_ACTIONS.join(','))}`
   );
   if (!answer.ok || !answer.data || !Array.isArray(answer.data.events)) return null;
-  return identifierStatesByVersion(answer.data.events);
+  const { states, approvals } = readIdentifiers(answer.data.events);
+  const windowFull = answer.data.events.length >= IDENTIFIER_HISTORY_LIMIT;
+  const byVersion = new Map<string, { orderCode: string | null; designKey: string | null }>();
+  for (const doc of documents) for (const version of doc.versions) byVersion.set(version.versionId, { orderCode: doc.orderCode, designKey: doc.designKey });
+  const recorded = [...states].filter(([, state]) => state === 'manual_recorded').map(([versionId]) => byVersion.get(versionId)?.orderCode).filter((code): code is string => Boolean(code));
+  const codes = [...new Set(recorded)].slice(0, 8);
+  if (codes.length === 0) return { states, windowFull };
+  const orderIdByCode = new Map(orders.map((order) => [order.code, order.id]));
+  const gates = new Map<string, Awaited<ReturnType<typeof loadApprovalGate>>>();
+  await Promise.all(codes.map(async (code) => {
+    const id = orderIdByCode.get(code);
+    gates.set(code, id ? await loadApprovalGate(id) : null);
+  }));
+  return { states: resolveFromGates(states, approvals, (versionId) => byVersion.get(versionId) ?? null, gates), windowFull };
 }
