@@ -234,10 +234,18 @@ step "POST /api/seven-purchase-orders/:id/supply-orders (paymentTerms)" 201 "$ST
 ORDER_ID="$(extract '"id":"[0-9a-f-]{36}"' 4)"
 require_id "film supply order id" "$ORDER_ID"
 
-for NEXT_STATE in SEVEN_PO_VERIFIED ARTWORK_RECEIVED PROOF_READY APPROVAL_PENDING; do
-  call POST "/api/film-supply-orders/$ORDER_ID/transitions" "{\"to\":\"$NEXT_STATE\"}"
-  step "transition → $NEXT_STATE" 200 "$STATUS"
-done
+# P4 H4①: the CEO approval requires 希望納期 (and 金額, set on the maker PO
+# below). The demo records a synthetic date right after creating the order.
+call PATCH "/api/film-supply-orders/$ORDER_ID/delivery-dates" '{"requestedDeliveryDate":"2027-03-31"}'
+step "PATCH /api/film-supply-orders/:id/delivery-dates (希望納期)" 200 "$STATUS"
+
+# P1 R23: SEVEN_PO_VERIFIED (on creation against the verified seven PO),
+# PROOF_READY / APPROVAL_PENDING (on the proof revision) and MAKER_PO_READY
+# (on the dual approval) are automatic steps the API refuses to take by hand
+# (AUTO_TRANSITION_ONLY / INVALID_TRANSITION). Only デザインデータ受領 is a human
+# record.
+call POST "/api/film-supply-orders/$ORDER_ID/transitions" '{"to":"ARTWORK_RECEIVED"}'
+step "transition → ARTWORK_RECEIVED" 200 "$STATUS"
 
 # ------------------------------------------------- proof + artwork revision
 PROOF_PAYLOAD="$(printf '{"documentType":"proof","issuerEntity":"maker","filename":"demo-proof-%s.txt","contentType":"text/plain","designKey":"label-front","filmSupplyOrderId":"%s","sevenPurchaseOrderId":"%s","contentBase64":"%s"}' "$STAMP" "$ORDER_ID" "$PO_ID" "$(base64_content "demo proof label-front rev1 $STAMP")")"
@@ -281,16 +289,22 @@ call GET "/api/film-supply-orders/$ORDER_ID/approval-gate"
 step "GET /api/film-supply-orders/:id/approval-gate" 200 "$STATUS"
 
 # -------------------------------------------------- maker purchase order
-call POST "/api/film-supply-orders/$ORDER_ID/transitions" '{"to":"MAKER_PO_READY"}'
-step "transition → MAKER_PO_READY" 200 "$STATUS"
-
 call POST "/api/film-supply-orders/$ORDER_ID/maker-purchase-orders" \
   '{"recipientAddress":"demo-maker@example.com","amounts":{"currency":"JPY","totalAmount":"480000"}}'
 step "POST maker-purchase-orders (dual-approval re-check)" 201 "$STATUS"
 MAKER_PO_ID="$(extract '"id":"[0-9a-f-]{36}"' 4)"
 require_id "maker purchase order id" "$MAKER_PO_ID"
 
-call POST "/api/maker-purchase-orders/$MAKER_PO_ID/ceo-approval" '{}'
+# P1 integration: the approval pins the snapshot hash the approval card shows;
+# P4 H4①: the card's blockers list AMOUNT_REQUIRED / DELIVERY_DATE_REQUIRED when
+# 金額 or 希望納期 is missing (both are set above).
+call GET "/api/maker-purchase-orders/$MAKER_PO_ID/approval-card"
+step "GET maker-PO approval-card" 200 "$STATUS"
+APPROVAL_SNAPSHOT_SHA256="$(extract '"approvalSnapshotSha256":"[0-9a-f]{64}"' 4)"
+require_id "approval snapshot sha256" "$APPROVAL_SNAPSHOT_SHA256"
+
+call POST "/api/maker-purchase-orders/$MAKER_PO_ID/ceo-approval" \
+  "$(printf '{"expectedPaymentTerms":"%s","expectedSnapshotSha256":"%s"}' "$PAYMENT_TERMS" "$APPROVAL_SNAPSHOT_SHA256")"
 step "POST maker-PO ceo-approval (dual-approval re-check)" 200 "$STATUS"
 
 # ----------------------------------------------------------------- summary

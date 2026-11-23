@@ -54,7 +54,9 @@ export type Operation =
   | 'maker_recipient:read'
   | 'maker_master:manage'
   // P2 P-2: evidence metadata (file name, hash, issuer, who uploaded/verified, when) — never bytes.
-  | 'evidence_metadata:read';
+  | 'evidence_metadata:read'
+  // P4 N1: list, add and remove the users assigned to a project (representative only).
+  | 'project_assignment:manage';
 
 export interface AuthenticatedActor {
   id: string;
@@ -101,7 +103,10 @@ const MAKER_PO_STAFF_OPERATIONS: readonly Operation[] = [
  */
 const P2_ADMIN_ONLY_OPERATIONS: readonly Operation[] = [
   'seven_po:update_amount',
-  'maker_master:manage'
+  'maker_master:manage',
+  // P4 N1: the assignment decides what staff, viewer and auditor may open, so
+  // granting or removing it is the representative's decision.
+  'project_assignment:manage'
 ];
 
 /**

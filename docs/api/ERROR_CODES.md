@@ -1,6 +1,6 @@
-# API エラーコード一覧（P0 サーバー p0/server + P1 サーバー p1/server + P2 サーバー p2/server）
+# API エラーコード一覧（P0 サーバー p0/server + P1 サーバー p1/server + P2 サーバー p2/server + P4 サーバー p4/server）
 
-コード数: 278（`ERROR_MESSAGES_JA` の件数。P2 で 10 件、P2 検収反映で 4 件追加）
+コード数: 288（`ERROR_MESSAGES_JA` の件数。P2 で 10 件、P2 検収反映で 4 件、P4 で 9 件、P4 検収反映で 1 件追加）
 
 API の拒否応答（HTTP 400 以上）は必ず JSON `{ "error": "<日本語の文>", "code": "<CODE>", ...追加項目 }` です（R09）。
 `error` には英語の core メッセージ・enum 値・項目名・内部 URL/ポートを入れません。安全でない文はサーバーがこの表の文に置き換えます。
@@ -9,7 +9,7 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 - 生成元: `apps/api/src/error-codes.ts` の `ERROR_MESSAGES_JA`（`tests/p0-server.test.ts` が API/core の全 `code` リテラルと本表の一致を検査）
 - HTTP 列は API ソースで見つかった応答ステータス（複数あり得る）。
 - 拒否以外: 遷移応答 `warnings[]`、一覧 `attention[]` にも同じ形式の `{ code, message }` が入ります。
-- 新しい要求ヘッダー: `Idempotency-Key`（8〜128 文字 `[A-Za-z0-9_.:-]`、ログイン中の書き込みだけ有効、**ユーザーごと 24 時間・データベース保存**（P2: API の再起動・別プロセス・再ログイン後も同じ応答を再生）。再生応答にはヘッダー `Idempotent-Replayed: true`。同じキーの最初の送信がまだ処理中なら待ち、待っても終わらないときは 409 `IDEMPOTENCY_IN_PROGRESS`（同じキーで後で再送）、最初の送信の結果が分からないときは 409 `IDEMPOTENCY_OUTCOME_UNKNOWN`（再読み込みして確認）。どちらも書き込みはしない。
+- 新しい要求ヘッダー: `Idempotency-Key`（8〜128 文字 `[A-Za-z0-9_.:-]`、ログイン中の書き込みだけ有効、**ユーザーと役割ごと 24 時間・データベース保存**（P4 N8: 役割が変わった後の同じキーは再生せず新しい実行になる）（P2: API の再起動・別プロセス・再ログイン後も同じ応答を再生）。再生応答にはヘッダー `Idempotent-Replayed: true`。同じキーの最初の送信がまだ処理中なら待ち、待っても終わらないときは 409 `IDEMPOTENCY_IN_PROGRESS`（同じキーで後で再送）、最初の送信の結果が分からないときは 409 `IDEMPOTENCY_OUTCOME_UNKNOWN`（再読み込みして確認）。どちらも書き込みはしない。
 - Web 側だけで作るコード（API は返さない）: `API_UNREACHABLE`（Web→API 接続不可）, `SESSION_EXPIRED`（Web の表示用。API は `AUTH_REQUIRED`）。`PROJECT_CONTEXT_MISMATCH` は Web の R03 に加えて P1 から API も返す（`expectedProjectId` 不一致）。
 
 ## authentication / authorization / generic
@@ -395,3 +395,23 @@ Web はこの `code` で辞書を引いてください。表にないコード�
 | `IDEMPOTENCY_OUTCOME_UNKNOWN` | 409 | 前回の送信の結果を確認できませんでした。画面を再読み込みして、記録されたかどうかを確認してください | P2 review M-1/M-2: 同じキーの最初の送信の結果が分からない（処理中のプロセスが止まった・応答を保存できなかった）。書き込みは二度としない。画面を再読み込みして記録を確かめ、必要なら新しいキーで送る（そのキーは 24 時間この応答） |
 | `DELIVERY_TERMS_LOCKED` | 409 | 代表承認済みのメーカー発注書があるため、納期・セブン化学発注書の数量は変更できません。変更する場合はメーカー発注書を取り消して作り直してください | P2 決定: 納期・セブン化学発注書の数量は代表承認でメーカー発注書に固定される。`makerPurchaseOrderId`（承認済みの発注書）。金額は対象外 |
 | `READ_ONLY_ROLE` | 403 | 閲覧・監査の権限では案件を登録できません | P2 決定: 閲覧（viewer）と監査（auditor）は書き込みをしない。POST /api/projects |
+
+## P4 server: approval facts (H4①), order-code numbering (H7②), evidence sender domain (N4), assignments (N1)
+
+| code | HTTP | 意味（サーバー既定の日本語文） | 追加項目・画面での扱い |
+|---|---|---|---|
+| `AMOUNT_REQUIRED` | 422 | 金額が入力されていないため代表承認できません。承認画面で金額を入力してから承認してください | P4 H4①: POST /api/maker-purchase-orders/:poId/ceo-approval。`missing: ["totalAmount", "requestedDeliveryDate"?]`（足りない項目すべて）。承認カード・代表の確認待ちの `blockers` にも同じコードが出る。金額は PATCH …/amounts（代表者）で入れる |
+| `DELIVERY_DATE_REQUIRED` | 422 | 希望納期が記録されていないため代表承認できません。発注の「希望納期」を入力してから承認してください | P4 H4①: 同上。金額があり希望納期だけ無いとき。希望納期は PATCH /api/film-supply-orders/:orderId/delivery-dates |
+| `IDEMPOTENCY_KEY_REQUIRED` | 400 | 発注コードを自動で付けるには送信の識別キーが必要です。画面を再読み込みしてからやり直してください | P4 H7②: 発注作成で `code` を空（省略・null・空白）にしたのに `Idempotency-Key` が無い。自動採番は `{案件コード}-FILM-{3桁}`、応答 `codeSource: "auto"` |
+| `EVIDENCE_SENDER_DOMAIN_MISMATCH` | — | 承認証跡メールの差出人のドメインが、発行元として登録されている取引先のドメインと一致しません。発行元を確かめてから確認してください | P4 N4: **拒否ではなく警告**（`senderDomainCheck.status = mismatch`）。承認記録の応答 `warnings[]`、代表の確認待ち `detail.warnings[]` に `{ code, message, fromDomain, registeredDomain }`。比較結果は `senderDomainCheck` |
+| `EVIDENCE_SENDER_UNVERIFIABLE` | — | 承認証跡メールの差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）。発行元を確かめてから確認してください | P4 検収 L-1: **拒否ではなく警告**。`senderDomainCheck.status` が `from_missing`（From なし・ASCII でないドメイン＝同形異字の可能性）または `multiple_from`（From ヘッダー 2 つ以上・アドレス 2 つ以上）。IP リテラル（`a@[203.0.113.5]`）は `mismatch`。`not_email`（PDF・画像など）は警告なし |
+| `ASSIGNMENT_USER_REQUIRED` | 422 | 割り当てる利用者を選んでください | P4 N1: POST /api/projects/:projectId/assignments の `userId`（UUID）が無い・不正 |
+| `ASSIGNMENT_USER_NOT_FOUND` | 422 | 割り当てる利用者が見つかりません（無効化された利用者は割り当てられません） | P4 N1: 存在しない・無効化済みの利用者 |
+| `ASSIGNMENT_ROLE_NOT_ASSIGNABLE` | 422 | 代表者はすべての案件を開けるため、割り当ては不要です | P4 N1: 割り当てられるのは staff・viewer・auditor。`role` |
+| `PROJECT_ASSIGNMENT_EXISTS` | 409 | この利用者はすでにこの案件に割り当てられています | P4 N1: `existing`（割り当ての表示形）。何も書かない |
+| `PROJECT_ASSIGNMENT_NOT_FOUND` | 404 | この利用者はこの案件に割り当てられていません | P4 N1: DELETE /api/projects/:projectId/assignments/:userId |
+
+P4 で既存コードに足した項目（コードは同じ）:
+- `DOCUMENT_BINDING_CONFLICT`（422）: `existing: { documentId, orderId, orderCode, designKey, makerPurchaseOrderId }` — 同じ書類（案件・種類・発行元・ファイル名）が紐付いている発注とデザイン（N13）。
+- `FILE_DOCUMENT_ORDER_MISMATCH`・`FILE_DOCUMENT_DESIGN_MISMATCH`（422）: `existing: { orderId, orderCode, designKey }`（N13）。
+- `CEO_ONLY`（403）: P4 の割り当て API（GET/POST/DELETE …/assignments）でも返す。

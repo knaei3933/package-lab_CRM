@@ -327,6 +327,18 @@ export const ERROR_MESSAGES_JA: Readonly<Record<string, string>> = {
   IDEMPOTENCY_OUTCOME_UNKNOWN: '前回の送信の結果を確認できませんでした。画面を再読み込みして、記録されたかどうかを確認してください',
   DELIVERY_TERMS_LOCKED: '代表承認済みのメーカー発注書があるため、納期・セブン化学発注書の数量は変更できません。変更する場合はメーカー発注書を取り消して作り直してください',
   READ_ONLY_ROLE: '閲覧・監査の権限では案件を登録できません',
+
+  // ---- P4 server: approval facts (H4①), order-code numbering (H7②), evidence sender domain (N4), assignments (N1)
+  AMOUNT_REQUIRED: '金額が入力されていないため代表承認できません。承認画面で金額を入力してから承認してください',
+  DELIVERY_DATE_REQUIRED: '希望納期が記録されていないため代表承認できません。発注の「希望納期」を入力してから承認してください',
+  IDEMPOTENCY_KEY_REQUIRED: '発注コードを自動で付けるには送信の識別キーが必要です。画面を再読み込みしてからやり直してください',
+  EVIDENCE_SENDER_DOMAIN_MISMATCH: '承認証跡メールの差出人のドメインが、発行元として登録されている取引先のドメインと一致しません。発行元を確かめてから確認してください',
+  EVIDENCE_SENDER_UNVERIFIABLE: '承認証跡メールの差出人を確認できません（差出人がない・複数ある・読めない文字のドメイン）。発行元を確かめてから確認してください',
+  ASSIGNMENT_USER_REQUIRED: '割り当てる利用者を選んでください',
+  ASSIGNMENT_USER_NOT_FOUND: '割り当てる利用者が見つかりません（無効化された利用者は割り当てられません）',
+  ASSIGNMENT_ROLE_NOT_ASSIGNABLE: '代表者はすべての案件を開けるため、割り当ては不要です',
+  PROJECT_ASSIGNMENT_EXISTS: 'この利用者はすでにこの案件に割り当てられています',
+  PROJECT_ASSIGNMENT_NOT_FOUND: 'この利用者はこの案件に割り当てられていません',
 };
 
 /** HTTP status → the code a refusal falls back to when its handler named none. */

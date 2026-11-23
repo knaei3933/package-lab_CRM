@@ -22,7 +22,7 @@ import {
 } from '@kanei/db';
 import { createApp } from '../apps/api/src/app.js';
 import { issueToken, SESSION_COOKIE, type AppDatabase } from '../apps/api/src/auth.js';
-import { DbIdempotencyStore, sha256Hex, type IdempotencyBackend, type StoredResponse } from '../apps/api/src/idempotency.js';
+import { DbIdempotencyStore, roleScopedIdempotencyKey, sha256Hex, type IdempotencyBackend, type StoredResponse } from '../apps/api/src/idempotency.js';
 
 const databaseUrl = process.env.DATABASE_URL!;
 if (!/@127\.0\.0\.1:5434\/kanei_crm_mvp_test($|\?)/.test(databaseUrl)) {
@@ -70,10 +70,18 @@ async function poCount(poNumber: string): Promise<number> {
   return (await db.select().from(sevenPurchaseOrders).where(eq(sevenPurchaseOrders.poNumber, poNumber))).length;
 }
 
+/**
+ * P4 N8: a write through the API stores its key scoped by the caller's role
+ * (`roleScopedIdempotencyKey`); a store-level begin() in these tests uses the
+ * key as given. The row helpers read either form for the user's role.
+ */
+const roleOf = (userId: string) => (userId === adminId ? 'admin' : 'staff');
+const apiStoredKey = (userId: string, key: string) => roleScopedIdempotencyKey(roleOf(userId), key);
+
 async function keyRows(userId: string, key: string) {
   return (await db.execute(sql`
     select state, response_status, fingerprint from idempotency_keys
-    where user_id = ${userId} and idempotency_key = ${key}
+    where user_id = ${userId} and idempotency_key in (${key}, ${apiStoredKey(userId, key)})
   `) as unknown as { rows: Array<{ state: string; response_status: number | null; fingerprint: string }> }).rows;
 }
 
@@ -84,7 +92,7 @@ function fingerprintOf(body: unknown): string {
 async function leaseOver(userId: string, key: string): Promise<boolean> {
   const rows = (await db.execute(sql`
     select lease_expires_at <= now() as over from idempotency_keys
-    where user_id = ${userId} and idempotency_key = ${key}
+    where user_id = ${userId} and idempotency_key in (${key}, ${apiStoredKey(userId, key)})
   `) as unknown as { rows: Array<{ over: boolean }> }).rows;
   return rows[0]!.over;
 }
@@ -288,7 +296,7 @@ describe('P2 R05 Idempotency-Key answers are kept in idempotency_keys', () => {
     const key = `p2h-${nextTag()}-0001`;
     await db.execute(sql`
       insert into idempotency_keys (user_id, idempotency_key, fingerprint, state, lease_expires_at, created_at, expires_at)
-      values (${staffId}, ${key}, ${fingerprintOf({ poNumber })}, 'pending',
+      values (${staffId}, ${apiStoredKey(staffId, key)}, ${fingerprintOf({ poNumber })}, 'pending',
         now() - interval '1 second', now() - interval '5 minutes', now() + interval '23 hours')
     `);
     for (const app of [appA, appB]) {
@@ -303,7 +311,7 @@ describe('P2 R05 Idempotency-Key answers are kept in idempotency_keys', () => {
     expect(await poCount(poNumber)).toBe(0);
     // Several racing processes all fail closed; none claims the key.
     const racers = [0, 1, 2].map(() => new DbIdempotencyStore(db, { leaseMs: 300, pollIntervalMs: 50 }));
-    const results = await Promise.all(racers.map((store) => store.begin(staffId, key, fingerprintOf({ poNumber }))));
+    const results = await Promise.all(racers.map((store) => store.begin(staffId, apiStoredKey(staffId, key), fingerprintOf({ poNumber }))));
     expect(results).toEqual([{ kind: 'unknown' }, { kind: 'unknown' }, { kind: 'unknown' }]);
     expect(await keyRows(staffId, key)).toEqual([expect.objectContaining({ state: 'pending' })]);
     // Another body with that key is still the existing 422.

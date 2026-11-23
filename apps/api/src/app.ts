@@ -6,6 +6,7 @@ import path from 'node:path';
 import { and, asc, desc, eq, inArray, isNotNull, isNull, ne, notInArray, sql } from 'drizzle-orm';
 import { expectedProjectMiddleware } from './project-context.js';
 import { orderFactsViewForRole, parseCalendarDate, registerP2Routes } from './p2-routes.js';
+import { registerP4Routes } from './p4-routes.js';
 import {
   buildMakerPoSnapshot,
   canPerform,
@@ -27,6 +28,11 @@ import {
   evaluateMakerPoSendTransition,
   evaluateMakerPoSentAtCurrency,
   evaluatePaymentGate,
+  evaluateCeoApprovalFacts,
+  CEO_APPROVAL_FACT_MESSAGES,
+  evaluateEvidenceSenderDomain,
+  evidenceSenderDomainWarning,
+  type EvidenceSenderDomainCheck,
   evaluateRevisionRegistrationGate,
   evaluateSevenPoChecklist,
   evaluateSevenPoPrecedenceGate,
@@ -162,6 +168,7 @@ import {
   DbIdempotencyStore,
   IDEMPOTENCY_HEADER,
   isValidIdempotencyKey,
+  roleScopedIdempotencyKey,
   sha256Hex,
   type IdempotencyBackend,
   type StoredResponse
@@ -401,6 +408,84 @@ class MakerPoStateConflict extends Error {}
 class PaymentGateClosedUnderLock extends Error {
   constructor(readonly paymentTerms: string) {
     super('payment gate closed under lock');
+  }
+}
+
+/**
+ * P4 H7② (conductor decision): 発注コード is numbered by the server when the
+ * request leaves it blank — `{案件コード}-FILM-{3 digits}`, one sequence per
+ * project code (001, 002, …; after 999 the number simply grows: 1000). A typed
+ * code is kept exactly as typed (unchanged behaviour).
+ *
+ * Idempotency: until P4 the `code` unique constraint stopped a double submit
+ * without a key (the second insert was 409 DUPLICATE). A numbered code would
+ * let that second submit create a second order, so the numbering path requires
+ * an Idempotency-Key (400 IDEMPOTENCY_KEY_REQUIRED; the web always sends one).
+ */
+type OrderCodeInput =
+  | { ok: true; mode: 'manual'; code: string }
+  | { ok: true; mode: 'auto' }
+  | { ok: false; status: 400 | 422; body: { error: string; code: string } };
+
+function readOrderCodeInput(raw: unknown, idempotencyKey: string | undefined): OrderCodeInput {
+  if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim().length === 0)) {
+    if (idempotencyKey === undefined || idempotencyKey.length === 0) {
+      return {
+        ok: false,
+        status: 400,
+        body: {
+          error: '発注コードを自動で付けるには送信の識別キーが必要です。画面を再読み込みしてからやり直してください',
+          code: 'IDEMPOTENCY_KEY_REQUIRED'
+        }
+      };
+    }
+    return { ok: true, mode: 'auto' };
+  }
+  if (typeof raw !== 'string') return { ok: false, status: 422, body: { error: '発注コードが必要です', code: 'ORDER_CODE_REQUIRED' } };
+  return { ok: true, mode: 'manual', code: raw };
+}
+
+/** The next free `{projectCode}-FILM-NNN`, serialized per prefix inside the creating transaction. */
+async function allocateFilmOrderCode(tx: MakerPoTxExecutor, projectCode: string): Promise<string> {
+  const prefix = `${projectCode}-FILM-`;
+  // Same transaction as the insert: two numbering creates of one project wait
+  // for each other, so they never read the same maximum. A typed code that
+  // happens to take the number is still refused by the unique constraint (409).
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`kanei:film_order_code:${prefix}`}))`);
+  const rows = await tx.select({ code: filmSupplyOrders.code }).from(filmSupplyOrders)
+    .where(sql`starts_with(${filmSupplyOrders.code}, ${prefix})`);
+  let max = 0;
+  for (const row of rows) {
+    const rest = row.code.slice(prefix.length);
+    if (/^\d{3,9}$/.test(rest)) max = Math.max(max, Number(rest));
+  }
+  return `${prefix}${String(max + 1).padStart(3, '0')}`;
+}
+
+/** P4 review M-1: the send time the evidence was judged by lies too far ahead of the server clock. */
+class SentAtInFutureUnderEvidence extends Error {
+  constructor(readonly gate: Extract<ReturnType<typeof evaluateMakerPoSentAtCurrency>, { ok: false }>) {
+    super('judged sentAt in the future');
+  }
+}
+
+/** P4 H4①: the approval card / queue blockers for missing 金額・希望納期 (one per fact). */
+function ceoApprovalFactBlockers(
+  amounts: { currency?: unknown; totalAmount?: unknown } | null,
+  requestedDeliveryDate: string | null
+): Array<{ code: string; message: string }> {
+  const gate = evaluateCeoApprovalFacts({ amounts, requestedDeliveryDate });
+  if (gate.ok) return [];
+  return gate.missing.map((fact) => {
+    const code = fact === 'totalAmount' ? 'AMOUNT_REQUIRED' as const : 'DELIVERY_DATE_REQUIRED' as const;
+    return { code, message: CEO_APPROVAL_FACT_MESSAGES[code] };
+  });
+}
+
+/** P4 H4①: 金額 or 希望納期 missing on the row the approval holds locked. */
+class CeoApprovalFactsMissingUnderLock extends Error {
+  constructor(readonly gate: Extract<ReturnType<typeof evaluateCeoApprovalFacts>, { ok: false }>) {
+    super('ceo approval facts missing under lock');
   }
 }
 
@@ -781,11 +866,14 @@ export function createApp({
       }
     });
     // A database failure here is thrown: app.onError answers 503 DB_UNAVAILABLE.
-    let lookup = await idempotencyStore.begin(sessionUser.id, key, fingerprint);
+    // P4 N8: the scope is (user, role) — an answer given under another role
+    // (for example the representative's, with amounts) is never replayed.
+    const scopedKey = roleScopedIdempotencyKey(String(sessionUser.role), key);
+    let lookup = await idempotencyStore.begin(sessionUser.id, scopedKey, fingerprint);
     for (let waits = 0; lookup.kind === 'wait' && waits < 3; waits += 1) {
       const first = await lookup.pending;
       if (first) return replay(first);
-      lookup = await idempotencyStore.begin(sessionUser.id, key, fingerprint);
+      lookup = await idempotencyStore.begin(sessionUser.id, scopedKey, fingerprint);
     }
     if (lookup.kind === 'mismatch') {
       return context.json({
@@ -1554,9 +1642,9 @@ export function createApp({
     if (!project || project.deletedAt) return context.json({ error: '案件が見つかりません', code: 'PROJECT_NOT_FOUND' }, 404);
 
     const body = await context.req.json().catch(() => null) as any;
-    if (typeof body?.code !== 'string' || body.code.length === 0) {
-      return context.json({ error: '発注コードが必要です', code: 'ORDER_CODE_REQUIRED' }, 422);
-    }
+    // P4 H7②: a blank code is numbered by the server (Idempotency-Key required).
+    const codeInput = readOrderCodeInput(body?.code, context.req.header(IDEMPOTENCY_HEADER));
+    if (!codeInput.ok) return context.json(codeInput.body, codeInput.status);
     const rawLines = Array.isArray(body?.lines) ? body.lines : [];
     const lines: OrderLineInput[] = [];
     for (const rawLine of rawLines) {
@@ -1604,7 +1692,7 @@ export function createApp({
     const order = {
       id: orderId,
       projectId,
-      code: body.code,
+      code: codeInput.mode === 'manual' ? codeInput.code : '',
       status: 'DRAFT' as const,
       sevenPurchaseOrderId,
       paymentTerms: paymentTermsCheck.value,
@@ -1618,6 +1706,7 @@ export function createApp({
     };
     let autoAdvanced: AppliedAutoStep[] = [];
     await db.transaction(async (tx) => {
+      if (codeInput.mode === 'auto') order.code = await allocateFilmOrderCode(tx, project.code);
       await tx.insert(filmSupplyOrders).values(order);
       if (lines.length > 0) {
         const insertedLines = await tx.insert(filmSupplyOrderLines).values(lines.map((line) => ({
@@ -1651,7 +1740,7 @@ export function createApp({
         action: 'FILM_SUPPLY_ORDER_CREATED',
         entityType: 'film_supply_order',
         entityId: orderId,
-        afterState: { ...order, lineCount: lines.length },
+        afterState: { ...order, lineCount: lines.length, codeSource: codeInput.mode },
         occurredAt: now,
         requestMetadata: { operation: 'film_order:create' }
       });
@@ -1666,6 +1755,8 @@ export function createApp({
     return context.json({
       ...order,
       status: createdStatus,
+      // P4 H7②: 'auto' when the server numbered the code, 'manual' when typed.
+      codeSource: codeInput.mode,
       lines: createdLines,
       autoAdvanced,
       // P0 R01 warning, now on the automatic step to SEVEN_PO_VERIFIED.
@@ -3804,7 +3895,24 @@ export function createApp({
         || (existingDocument.designKey ?? null) !== input.designKey
         || (existingDocument.makerPurchaseOrderId ?? null) !== makerPoBindingId;
       if (bindingConflict) {
-        return context.json({ error: '既存の書類は別のアートワーク紐付けを持っています', code: 'DOCUMENT_BINDING_CONFLICT' }, 422);
+        // P4 N13: say which order (and design) the registered document is bound
+        // to, so the screen can name it and link to it. Same project only — the
+        // caller may already read that project's orders.
+        const [boundOrder] = existingDocument.filmSupplyOrderId
+          ? await db.select({ id: filmSupplyOrders.id, code: filmSupplyOrders.code }).from(filmSupplyOrders)
+            .where(eq(filmSupplyOrders.id, existingDocument.filmSupplyOrderId)).limit(1)
+          : [];
+        return context.json({
+          error: '既存の書類は別のアートワーク紐付けを持っています',
+          code: 'DOCUMENT_BINDING_CONFLICT',
+          existing: {
+            documentId: existingDocument.id,
+            orderId: boundOrder?.id ?? null,
+            orderCode: boundOrder?.code ?? null,
+            designKey: existingDocument.designKey ?? null,
+            makerPurchaseOrderId: existingDocument.makerPurchaseOrderId ?? null
+          }
+        }, 422);
       }
       const [existingVersion] = await db.select().from(documentVersions).where(and(
         eq(documentVersions.documentId, existingDocument.id),
@@ -4293,9 +4401,9 @@ export function createApp({
     if (!gate.ok) return context.json({ error: gate.message, code: gate.code }, 422);
 
     const body = await context.req.json().catch(() => null) as any;
-    if (typeof body?.code !== 'string' || body.code.length === 0) {
-      return context.json({ error: '発注コードが必要です', code: 'ORDER_CODE_REQUIRED' }, 422);
-    }
+    // P4 H7②: same numbering rule as POST /api/projects/:projectId/film-supply-orders.
+    const codeInput = readOrderCodeInput(body?.code, context.req.header(IDEMPOTENCY_HEADER));
+    if (!codeInput.ok) return context.json(codeInput.body, codeInput.status);
     const rawLines = Array.isArray(body?.lines) ? body.lines : [];
     const lines: OrderLineInput[] = [];
     for (const rawLine of rawLines) {
@@ -4315,7 +4423,7 @@ export function createApp({
     const order = {
       id: orderId,
       projectId: po.projectId,
-      code: body.code,
+      code: codeInput.mode === 'manual' ? codeInput.code : '',
       status: 'DRAFT' as const,
       sevenPurchaseOrderId: po.id,
       paymentTerms: paymentTermsCheck.value,
@@ -4328,6 +4436,11 @@ export function createApp({
     };
     let autoAdvanced: AppliedAutoStep[] = [];
     await db.transaction(async (tx) => {
+      if (codeInput.mode === 'auto') {
+        const [owner] = await tx.select({ code: projects.code }).from(projects).where(eq(projects.id, po.projectId)).limit(1);
+        if (!owner) throw new Error('seven PO project missing');
+        order.code = await allocateFilmOrderCode(tx, owner.code);
+      }
       await tx.insert(filmSupplyOrders).values(order);
       if (lines.length > 0) {
         const insertedLines = await tx.insert(filmSupplyOrderLines).values(lines.map((line) => ({
@@ -4361,7 +4474,7 @@ export function createApp({
         action: 'FILM_SUPPLY_ORDER_CREATED',
         entityType: 'film_supply_order',
         entityId: orderId,
-        afterState: { ...order, lineCount: lines.length, registeredFromSevenPoId: po.id },
+        afterState: { ...order, lineCount: lines.length, registeredFromSevenPoId: po.id, codeSource: codeInput.mode },
         occurredAt: now,
         requestMetadata: { operation: 'supply_order:create', sevenPurchaseOrderId: po.id }
       });
@@ -4376,6 +4489,8 @@ export function createApp({
     return context.json({
       ...order,
       status: createdStatus,
+      // P4 H7②: 'auto' when the server numbered the code, 'manual' when typed.
+      codeSource: codeInput.mode,
       lines: createdLines,
       autoAdvanced,
       // P0 R01 warning, now on the automatic step to SEVEN_PO_VERIFIED.
@@ -5065,11 +5180,19 @@ export function createApp({
     if (fileVersion.documentType !== 'proof') {
       return context.json({ error: '版ファイルは proof 書類である必要があります', code: 'FILE_DOCUMENT_TYPE_INVALID' }, 422);
     }
+    // P4 N13: a mismatch names the order and design the file is bound to.
+    const boundFileOwner = async () => {
+      const [bound] = fileVersion.boundOrderId
+        ? await db.select({ id: filmSupplyOrders.id, code: filmSupplyOrders.code }).from(filmSupplyOrders)
+          .where(eq(filmSupplyOrders.id, fileVersion.boundOrderId)).limit(1)
+        : [];
+      return { orderId: bound?.id ?? null, orderCode: bound?.code ?? null, designKey: fileVersion.boundDesignKey ?? null };
+    };
     if (fileVersion.boundOrderId !== null && fileVersion.boundOrderId !== orderId) {
-      return context.json({ error: '版ファイルは別の発注に紐付いています', code: 'FILE_DOCUMENT_ORDER_MISMATCH' }, 422);
+      return context.json({ error: '版ファイルは別の発注に紐付いています', code: 'FILE_DOCUMENT_ORDER_MISMATCH', existing: await boundFileOwner() }, 422);
     }
     if (fileVersion.boundDesignKey !== null && fileVersion.boundDesignKey !== designKey) {
-      return context.json({ error: '版ファイルは別のデザインに紐付いています', code: 'FILE_DOCUMENT_DESIGN_MISMATCH' }, 422);
+      return context.json({ error: '版ファイルは別のデザインに紐付いています', code: 'FILE_DOCUMENT_DESIGN_MISMATCH', existing: await boundFileOwner() }, 422);
     }
 
     const [maxRow] = await db.select({ maxRevision: sql<number>`coalesce(max(${artworkRevisions.revisionNo}), 0)` })
@@ -5551,6 +5674,22 @@ export function createApp({
     if (!identifierCheck.ok) {
       return context.json({ error: identifierCheck.message, code: identifierCheck.code }, 422);
     }
+    // P4 N4 (display and warn only): the mail's own From domain against the
+    // issuing organization's registered contact address. Never a refusal.
+    const [issuingAccount] = await db.select({ contactEmail: accounts.contactEmail }).from(accounts)
+      .innerJoin(projects, eq(
+        accounts.id,
+        organization === 'customer' ? projects.endCustomerAccountId : projects.sevenAccountId
+      ))
+      .where(eq(projects.id, order.projectId)).limit(1);
+    const senderDomainCheck = evaluateEvidenceSenderDomain({
+      bytes: evidenceBytes,
+      registeredContactEmail: issuingAccount?.contactEmail ?? null
+    });
+    // Mismatch → EVIDENCE_SENDER_DOMAIN_MISMATCH; no / several / unreadable
+    // From → EVIDENCE_SENDER_UNVERIFIABLE (review L-1). Warnings only.
+    const senderWarning = evidenceSenderDomainWarning(senderDomainCheck);
+    const approvalWarnings = senderWarning ? [senderWarning] : [];
     // A revocation never contributes to an approval, so its status reads
     // not_applicable regardless of the evidence kind — the identifier itself is
     // still checked above and an invented one is refused.
@@ -5681,7 +5820,8 @@ export function createApp({
           revisionNo: revision.revisionNo,
           evidenceIssuerEntity: evidence.issuerEntity,
           issuerMatchesOrganization: issuerCheck.issuerMatchesOrganization,
-          sharedEvidenceException
+          sharedEvidenceException,
+          senderDomainCheck
         },
         occurredAt: now,
         requestMetadata: { operation: 'artwork_approval:record', filmSupplyOrderId: order.id }
@@ -5709,6 +5849,9 @@ export function createApp({
       evidenceIssuerEntity: evidence.issuerEntity,
       issuerMatchesOrganization: issuerCheck.issuerMatchesOrganization,
       sharedEvidenceException,
+      // P4 N4: the From-domain comparison and, on a mismatch, a warning.
+      senderDomainCheck,
+      warnings: approvalWarnings,
       orderStatus: recordedOrderStatus,
       dualApproved: gateAfter.dualApproved,
       missingApprovals: gateAfter.missingApprovals,
@@ -7239,6 +7382,17 @@ export function createApp({
         if (expectedSnapshotSha256 !== null && expectedSnapshotSha256 !== snapshotSha256) {
           throw new MakerPoSnapshotChangedUnderLock(expectedSnapshotSha256, snapshotSha256);
         }
+        // P4 H4① (conductor decision): 金額 and 希望納期 are required at the
+        // representative's approval. Decided once, here, on the snapshot being
+        // frozen and the order row this transaction holds locked — after every
+        // earlier refusal (payment gate, snapshot pin …), so their order and
+        // codes are unchanged, and so a date cleared while the request waited
+        // cannot be approved over.
+        const lockedFactsGate = evaluateCeoApprovalFacts({
+          amounts: snapshot.amounts,
+          requestedDeliveryDate: lockedOrder.requestedDeliveryDate
+        });
+        if (!lockedFactsGate.ok) throw new CeoApprovalFactsMissingUnderLock(lockedFactsGate);
 
         const updated = await tx.update(makerPurchaseOrders).set({
           snapshot,
@@ -7350,6 +7504,9 @@ export function createApp({
           expectedPaymentTerms: error.expected,
           paymentTerms: error.current
         }, 409);
+      }
+      if (error instanceof CeoApprovalFactsMissingUnderLock) {
+        return context.json({ error: error.gate.message, code: error.gate.code, missing: error.gate.missing }, 422);
       }
       if (error instanceof PaymentGateClosedUnderLock) {
         const closed = evaluatePaymentGate({ paymentTerms: error.paymentTerms });
@@ -7538,6 +7695,8 @@ export function createApp({
     }
     const paymentGate = evaluatePaymentGate({ paymentTerms: order.paymentTerms });
     if (!paymentGate.ok) blockers.push({ code: paymentGate.code, message: paymentGate.message });
+    // P4 H4①: one blocker per missing fact (金額, 希望納期), same rule as the endpoint.
+    blockers.push(...ceoApprovalFactBlockers(preview.amounts, order.requestedDeliveryDate));
     if (!gate.dualApproved) blockers.push({ code: 'DUAL_APPROVAL_REQUIRED', message: '全デザインの両組織承認が必要です' });
     const recipientCheck = validateMakerPoRecipientAddress(stored?.recipient?.address);
     if (!recipientCheck.ok) {
@@ -7795,18 +7954,32 @@ export function createApp({
     };
 
     type QueueProject = { id: string; code: string; name: string };
-    type QueueOrder = { id: string; code: string; status: string; paymentTerms: string };
+    // P4 M18: 希望納期・納品予定日 on every queue order (YYYY-MM-DD or null).
+    type QueueOrder = {
+      id: string; code: string; status: string; paymentTerms: string;
+      requestedDeliveryDate: string | null; plannedDeliveryDate: string | null;
+    };
     const projectOf = (row: { projectId: string; projectCode: string; projectName: string }): QueueProject => (
       { id: row.projectId, code: row.projectCode, name: row.projectName }
     );
-    const orderOf = (row: { orderId: string; orderCode: string; orderStatus: string; paymentTerms: string | null }): QueueOrder => (
-      { id: row.orderId, code: row.orderCode, status: row.orderStatus, paymentTerms: normalizePaymentTerms(row.paymentTerms) }
-    );
+    const orderOf = (row: {
+      orderId: string; orderCode: string; orderStatus: string; paymentTerms: string | null;
+      requestedDeliveryDate: string | null; plannedDeliveryDate: string | null;
+    }): QueueOrder => ({
+      id: row.orderId,
+      code: row.orderCode,
+      status: row.orderStatus,
+      paymentTerms: normalizePaymentTerms(row.paymentTerms),
+      requestedDeliveryDate: row.requestedDeliveryDate ?? null,
+      plannedDeliveryDate: row.plannedDeliveryDate ?? null
+    });
     const orderColumns = {
       orderId: filmSupplyOrders.id,
       orderCode: filmSupplyOrders.code,
       orderStatus: sql<string>`${filmSupplyOrders.status}::text`,
       paymentTerms: filmSupplyOrders.paymentTerms,
+      requestedDeliveryDate: filmSupplyOrders.requestedDeliveryDate,
+      plannedDeliveryDate: filmSupplyOrders.plannedDeliveryDate,
       orderUpdatedAt: filmSupplyOrders.updatedAt,
       holdReason: filmSupplyOrders.holdReason,
       projectId: projects.id,
@@ -7835,7 +8008,13 @@ export function createApp({
       revisionNo: artworkRevisions.revisionNo,
       recorderId: users.id,
       recorderName: users.displayName,
-      evidenceIssuerEntity: sql<string | null>`(select d.issuer_entity::text from document_versions v join documents d on d.id = v.document_id where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`
+      evidenceIssuerEntity: sql<string | null>`(select d.issuer_entity::text from document_versions v join documents d on d.id = v.document_id where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`,
+      // P4 N4: what the representative's check card shows about the file.
+      evidenceVersionId: artworkApprovalEvents.evidenceDocumentVersionId,
+      evidenceFilename: sql<string | null>`(select v.original_filename from document_versions v where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`,
+      evidenceUploadedAt: sql<string | null>`(select v.created_at from document_versions v where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`,
+      evidenceUploaderId: sql<string | null>`(select v.created_by_user_id::text from document_versions v where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`,
+      evidenceUploaderName: sql<string | null>`(select u.display_name from document_versions v join users u on u.id = v.created_by_user_id where v.id = ${artworkApprovalEvents.evidenceDocumentVersionId})`
     }).from(artworkApprovalEvents)
       .innerJoin(artworkRevisions, eq(artworkRevisions.id, artworkApprovalEvents.artworkRevisionId))
       .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, artworkRevisions.filmSupplyOrderId))
@@ -7853,7 +8032,9 @@ export function createApp({
       .limit(limit + 1));
     const exceptionRows = pendingEvidenceRows.length === 0 ? [] : await db.select({
       entityId: auditEvents.entityId,
-      reason: sql<string | null>`${auditEvents.afterState} -> 'sharedEvidenceException' ->> 'reason'`
+      reason: sql<string | null>`${auditEvents.afterState} -> 'sharedEvidenceException' ->> 'reason'`,
+      // P4 N4: recorded with the approval (null for approvals recorded before P4).
+      senderDomainCheck: sql<EvidenceSenderDomainCheck | null>`${auditEvents.afterState} -> 'senderDomainCheck'`
     }).from(auditEvents)
       .where(and(
         eq(auditEvents.entityType, 'artwork_approval_event'),
@@ -7861,14 +8042,20 @@ export function createApp({
         inArray(auditEvents.entityId, pendingEvidenceRows.map((row) => row.eventId))
       ));
     const exceptionByEvent = new Map(exceptionRows.filter((row) => row.reason).map((row) => [row.entityId, { reason: row.reason! }]));
+    const senderDomainByEvent = new Map(exceptionRows.filter((row) => row.senderDomainCheck).map((row) => [row.entityId, row.senderDomainCheck!]));
     for (const row of pendingEvidenceRows) {
       const organization = row.organization as ApprovalOrganization;
       const expectedIssuerEntity = APPROVAL_ORGANIZATION_ISSUER[organization];
       const sharedEvidenceException = exceptionByEvent.get(row.eventId) ?? null;
+      const senderDomainCheck = senderDomainByEvent.get(row.eventId) ?? null;
       items.push({
         key: `approval_evidence_verification:${row.eventId}`,
         kind: 'approval_evidence_verification',
         label: '承認証跡の確認',
+        // P4 N11/M13: which organization and design this row is about, so two
+        // rows of one order (顧客 / セブン化学, 表面 / 裏面) can be told apart.
+        organization,
+        designKey: row.designKey,
         project: projectOf(row),
         order: orderOf(row),
         makerPurchaseOrder: null,
@@ -7883,7 +8070,21 @@ export function createApp({
           expectedIssuerEntity,
           issuerMatchesOrganization: row.evidenceIssuerEntity === expectedIssuerEntity,
           sharedEvidenceException,
-          confirmable: row.evidenceIssuerEntity === expectedIssuerEntity || sharedEvidenceException !== null
+          confirmable: row.evidenceIssuerEntity === expectedIssuerEntity || sharedEvidenceException !== null,
+          // P4 N4: the file, who uploaded it and — for an EML — its From check.
+          // A mismatch is a warning only; `confirmable` does not change.
+          evidence: {
+            documentVersionId: row.evidenceVersionId,
+            filename: row.evidenceFilename,
+            uploadedAt: row.evidenceUploadedAt,
+            uploadedBy: row.evidenceUploaderId ? { id: row.evidenceUploaderId, displayName: row.evidenceUploaderName } : null,
+            fromAddress: senderDomainCheck?.fromAddress ?? null,
+            senderDomainCheck
+          },
+          warnings: (() => {
+            const warning = evidenceSenderDomainWarning(senderDomainCheck);
+            return warning ? [warning] : [];
+          })()
         },
         deepLink: link('approval', row, {
           subjectId: row.eventId,
@@ -7989,7 +8190,9 @@ export function createApp({
         ...(isFrozenFilmOrderStatus(row.orderStatus as FilmOrderStatus)
           ? [{ code: 'ORDER_ON_HOLD_MAKER_PO_ACTION_BLOCKED', message: '保留・見直し中の発注のメーカー発注書は進められません。状態を解決後に記録してください' }]
           : []),
-        ...(paymentGate.ok ? [] : [{ code: paymentGate.code, message: paymentGate.message }])
+        ...(paymentGate.ok ? [] : [{ code: paymentGate.code, message: paymentGate.message }]),
+        // P4 H4①: the same 金額・希望納期 gate as the approval endpoint.
+        ...ceoApprovalFactBlockers((row.poSnapshot as MakerPoSnapshot | null)?.amounts ?? null, row.requestedDeliveryDate)
       ];
       items.push({
         key: `maker_po_ceo_approval:${row.poId}`,
@@ -8131,6 +8334,99 @@ export function createApp({
       }
     }
 
+    // 9. P4 H14 (server side): 納品の確認 waiting for the representative. A
+    // film delivery without a confirmation on a live order whose receipt
+    // evidence (acceptance_evidence of that order) was uploaded by someone who
+    // is not the representative: P-4 forbids that uploader to confirm on their
+    // own evidence (SELF_VERIFICATION_FORBIDDEN), so the representative's
+    // confirmation is the way forward. The action is the existing confirmation
+    // endpoint (and, while the evidence is unverified, the document check).
+    // No amounts: quantities only.
+    const deliveryRows = capped(await db.select({
+      ...orderColumns,
+      deliveryId: filmDeliveries.id,
+      deliverySequence: filmDeliveries.deliverySequence,
+      deliveredAt: filmDeliveries.deliveredAt,
+      deliveredQuantity: filmDeliveries.deliveredQuantity,
+      unit: sql<string>`${filmDeliveries.unit}::text`,
+      lineNumber: filmSupplyOrderLines.lineNumber,
+      lineDescription: filmSupplyOrderLines.description
+    }).from(filmDeliveries)
+      .innerJoin(filmSupplyOrders, eq(filmSupplyOrders.id, filmDeliveries.filmSupplyOrderId))
+      .innerJoin(filmSupplyOrderLines, eq(filmSupplyOrderLines.id, filmDeliveries.filmSupplyOrderLineId))
+      .innerJoin(projects, eq(projects.id, filmSupplyOrders.projectId))
+      .where(and(
+        liveOrder,
+        sql`not exists (select 1 from delivery_confirmations c where c.film_delivery_id = ${filmDeliveries.id})`,
+        sql`exists (select 1 from documents d join document_versions v on v.document_id = d.id join users u on u.id = v.created_by_user_id
+          where d.film_supply_order_id = ${filmDeliveries.filmSupplyOrderId} and d.document_type = 'acceptance_evidence' and u.role::text <> 'admin')`
+      ))
+      .orderBy(asc(filmDeliveries.createdAt), asc(filmDeliveries.id))
+      .limit(limit + 1));
+    const deliveryOrderIds = [...new Set(deliveryRows.map((row) => row.orderId))];
+    const receiptEvidence = deliveryOrderIds.length === 0 ? [] : await db.select({
+      orderId: documents.filmSupplyOrderId,
+      documentId: documents.id,
+      verificationStatus: sql<string>`${documents.verificationStatus}::text`,
+      versionId: documentVersions.id,
+      filename: documentVersions.originalFilename,
+      uploadedAt: documentVersions.createdAt,
+      uploaderId: users.id,
+      uploaderName: users.displayName,
+      uploaderRole: sql<string>`${users.role}::text`
+    }).from(documentVersions)
+      .innerJoin(documents, eq(documents.id, documentVersions.documentId))
+      .innerJoin(users, eq(users.id, documentVersions.createdByUserId))
+      .where(and(eq(documents.documentType, 'acceptance_evidence'), inArray(documents.filmSupplyOrderId, deliveryOrderIds)))
+      .orderBy(asc(documentVersions.createdAt), asc(documentVersions.id));
+    for (const row of deliveryRows) {
+      const evidence = receiptEvidence.filter((candidate) => candidate.orderId === row.orderId);
+      const staffEvidence = evidence.filter((candidate) => candidate.uploaderRole !== 'admin');
+      const latest = staffEvidence[staffEvidence.length - 1];
+      items.push({
+        key: `delivery_confirmation:${row.deliveryId}`,
+        kind: 'delivery_confirmation',
+        label: '納品の確認',
+        project: projectOf(row),
+        order: orderOf(row),
+        makerPurchaseOrder: null,
+        subjectId: row.deliveryId,
+        waitingSince: latest?.uploadedAt ?? row.deliveredAt,
+        requestedBy: latest ? { id: latest.uploaderId, displayName: latest.uploaderName } : null,
+        detail: {
+          delivery: {
+            id: row.deliveryId,
+            sequence: row.deliverySequence,
+            deliveredAt: row.deliveredAt,
+            quantity: String(row.deliveredQuantity),
+            unit: row.unit,
+            display: formatQuantityDisplay(row.deliveredQuantity, row.unit),
+            line: { lineNumber: row.lineNumber, description: row.lineDescription }
+          },
+          reason: {
+            code: 'SELF_VERIFICATION_FORBIDDEN',
+            message: '受領証跡を登録した担当者は自分で納品を確認できません。代表者が確認してください'
+          },
+          evidence: evidence.map((candidate) => ({
+            documentId: candidate.documentId,
+            documentVersionId: candidate.versionId,
+            filename: candidate.filename,
+            verificationStatus: candidate.verificationStatus,
+            uploadedAt: candidate.uploadedAt,
+            uploadedBy: { id: candidate.uploaderId, displayName: candidate.uploaderName }
+          })),
+          documentVerificationRequired: !evidence.some((candidate) => candidate.verificationStatus === 'verified')
+        },
+        deepLink: link('delivery', row, {
+          subjectId: row.deliveryId,
+          action: { method: 'POST', path: `/api/film-deliveries/${row.deliveryId}/confirmation` },
+          ...(latest && latest.verificationStatus !== 'verified'
+            ? { documentAction: { method: 'POST', path: `/api/documents/${latest.documentId}/verify` } }
+            : {})
+        })
+      });
+    }
+
     // Blocked: 校了 (or ready) but the payment term is still 未定.
     const blocked = (await ordersWhere(and(
       sql`${filmSupplyOrders.status}::text in ('DUAL_APPROVED', 'MAKER_PO_READY')`,
@@ -8153,6 +8449,12 @@ export function createApp({
         })
       }));
 
+    // P4 N11/M13: every item names its organization and design (null when the
+    // kind is not about one), so the web never has to dig them out of detail.
+    for (const item of items) {
+      if (!('organization' in item)) item.organization = null;
+      if (!('designKey' in item)) item.designKey = null;
+    }
     const time = (value: Date | string | null) => (value ? new Date(value).getTime() : Number.MAX_SAFE_INTEGER);
     items.sort((a, b) => time(a.waitingSince) - time(b.waitingSince) || a.key.localeCompare(b.key));
     const byKind: Record<string, number> = {};
@@ -8504,6 +8806,19 @@ export function createApp({
           };
         }
 
+        // P4 review M-1 (fail closed): the EML Date original value (N2) can be
+        // up to the skew tolerance away from the declared sentAt, so the M8-HARDEN
+        // FIX C2 future gate that already ran on the declared value runs again on
+        // the time this send is judged by and stored with. A send dated more than
+        // the allowed skew ahead of the server clock is refused exactly as before
+        // (422 SENT_AT_IN_FUTURE); throwing rolls the whole registration back,
+        // the inline evidence document included.
+        if (evaluation.verificationStatus !== 'UNVERIFIED') {
+          const judgedSentAt = typeof evaluation.sentAt === 'string' ? new Date(evaluation.sentAt) : evaluation.sentAt;
+          const judgedCurrency = evaluateMakerPoSentAtCurrency({ sentAt: judgedSentAt, now });
+          if (!judgedCurrency.ok) throw new SentAtInFutureUnderEvidence(judgedCurrency);
+        }
+
         // M8-HARDEN FIX C1: only a VERIFIED send moves the paper. A pending one
         // leaves the paper where it is — the send is recorded with its failed
         // checks and a corrected .eml can be registered afterwards; an
@@ -8692,6 +9007,14 @@ export function createApp({
       if (error instanceof MakerPoStateConflict) {
 
         return context.json({ error: 'メーカー発注書の状態が既に変わっています', code: 'MAKER_PO_STATE_CHANGED' }, 422);
+      }
+      if (error instanceof SentAtInFutureUnderEvidence) {
+        return context.json({
+          error: error.gate.message,
+          code: error.gate.code,
+          serverNow: error.gate.serverNow,
+          sentAt: error.gate.sentAt
+        }, 422);
       }
       throw error;
     }
@@ -10006,6 +10329,8 @@ export function createApp({
   // P2 (representative approval 2026-11-21): delivery dates, seven PO facts,
   // maker master, display language, evidence metadata. See p2-routes.ts.
   registerP2Routes(app, { db, recordAuditEvent });
+  // P4 N1: project assignments (admin only, audited). See p4-routes.ts.
+  registerP4Routes(app, { db, recordAuditEvent });
 
   return app;
 }

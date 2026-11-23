@@ -268,6 +268,11 @@ async function createMakerPoReadyOrder(projectId: string, tag: string): Promise<
   });
   expect(created.status).toBe(201);
   const order = created.body as { id: string };
+  // P4 H4①: the representative's approval requires a 希望納期, so the chain
+  // fixture records one before the paper is drawn (the paper then never moves).
+  const datedUrl = `/api/film-supply-orders/${order.id}/delivery-dates`;
+  const dated = await app.request(datedUrl, { ...jsonPost(adminToken, { requestedDeliveryDate: '2027-03-31' }), method: 'PATCH' });
+  expect(dated.status).toBe(200);
   // P1 R23: SEVEN_PO_VERIFIED on creation, PROOF_READY and APPROVAL_PENDING on the revision
   for (const to of ['ARTWORK_RECEIVED']) {
     const transition = await postJson(`/api/film-supply-orders/${order.id}/transitions`, { to });
