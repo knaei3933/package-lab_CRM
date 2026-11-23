@@ -1,4 +1,5 @@
 import { ActionForm } from './ActionForm';
+import { FocusOnMount } from './FocusOnMount';
 import { Bilingual } from './Bilingual';
 import { SelectField, TextField } from './fields';
 import { addAssignmentAction, removeAssignmentAction } from '../app/assignment-actions';
@@ -33,13 +34,15 @@ export function ProjectAssignmentsPanel({ view, directory, notice = null }: { vi
         <Bilingual ja="割り当て（この案件を開ける人）" ko="담당 배정(이 안건을 열 수 있는 사람)" />
       </h2>
       {/* web2b review L-6: always on the page, so a removal (its row and result line are gone) is announced. */}
-      <p className="p4w3-status" role="status" data-assignment-notice={notice?.kind}>
+      <p id="assignment-status" tabIndex={-1} className="p4w3-status" role="status" data-assignment-notice={notice?.kind}>
         {notice && noticeName
           ? notice.kind === 'removed'
             ? `${noticeName} を担当から外しました（${formatTimestamp(notice.at)}）。この人は、この案件を開けなくなりました。`
             : `${noticeName} を担当者に割り当てました（${formatTimestamp(notice.at)}）。この人は、すぐにこの案件を開けます。`
           : null}
       </p>
+      {/* p5 R9: after an assignment (or a removal) the result sentence takes the focus — the form that answered is gone. */}
+      {notice && noticeName ? <FocusOnMount targetId="assignment-status" /> : null}
       <p className="p1-muted">
         <Bilingual
           ja="この案件を開ける人です。代表者は、すべての案件を開けるため、ここには出ません。割り当てると、その人はすぐにこの案件を開けます。"

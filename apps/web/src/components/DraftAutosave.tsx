@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { draftIdentity, draftKey, draftValues, isOrderScreenPath, markDirty } from '../lib/unsaved-guard';
+import { draftIdentity, draftKey, draftLifecycle, draftValues, isOrderScreenPath, markDirty } from '../lib/unsaved-guard';
 
 /**
  * P1 R34 (M9): a long form keeps a draft in sessionStorage while it is typed
@@ -46,10 +46,20 @@ export const DISCARD_CONFIRM_MESSAGE = '復元した入力を破棄します。�
  * on every form). It acts only on /p/{案件}/o/{発注} and names the draft by the form's button AND the record
  * it is about (orderId, designKey, …), so two forms with the same button do not share one.
  */
-export function DraftAutosave({ name, orderScreenOnly = false }: { name: string; orderScreenOnly?: boolean }) {
+export function DraftAutosave({ name, orderScreenOnly = false, pending = false, refusal = null }: { name: string; orderScreenOnly?: boolean; pending?: boolean; refusal?: object | null }) {
   const anchor = useRef<HTMLSpanElement>(null);
   const [restored, setRestored] = useState(false);
   const keyRef = useRef('');
+  // p5 R12: a submitted-and-not-refused form that is re-drawn before its reset leaves no draft behind.
+  const lifecycle = useRef(draftLifecycle());
+  // The action really started (not a held confirm dialog, not a field error): that is a submit. A refusal clears it.
+  useEffect(() => {
+    if (pending) lifecycle.current.submitted();
+  }, [pending]);
+  useEffect(() => {
+    // The result object is new for every answer, so a second refusal after a second submit is seen too.
+    if (refusal) lifecycle.current.refused();
+  }, [refusal]);
 
   useEffect(() => {
     const form = anchor.current?.closest('form');
@@ -92,6 +102,7 @@ export function DraftAutosave({ name, orderScreenOnly = false }: { name: string;
     };
     const drop = () => {
       if (timer) clearTimeout(timer);
+      lifecycle.current.reset();
       write(key, null);
       setRestored(false);
     };
@@ -100,6 +111,7 @@ export function DraftAutosave({ name, orderScreenOnly = false }: { name: string;
     form.addEventListener('reset', drop);
     return () => {
       if (timer) clearTimeout(timer);
+      if (lifecycle.current.dropOnUnmount()) write(key, null);
       form.removeEventListener('input', save);
       form.removeEventListener('change', save);
       form.removeEventListener('reset', drop);

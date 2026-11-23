@@ -64,7 +64,7 @@ export function ActionForm({ action, submitLabel, children, hint, hintKo, submit
       dialogDefaults={confirm ? { options: confirm, confirmLabel: confirm.confirmLabel ?? submitLabel } : undefined}
       style={{ display: 'grid', gap: 10 }}
     >
-      {draft ? <DraftAutosave name={`step:${submitLabel}${submitContext ? `:${submitContext}` : ''}`} orderScreenOnly /> : null}
+      {draft ? <DraftAutosave name={`step:${submitLabel}${submitContext ? `:${submitContext}` : ''}`} orderScreenOnly pending={pending} refusal={state !== null && state.ok === false ? state : null} /> : null}
       {children}
       {hint ? <p style={noteStyle}>{hint}<KoGloss ko={hintKo} /></p> : null}
       <div className="form-actions">

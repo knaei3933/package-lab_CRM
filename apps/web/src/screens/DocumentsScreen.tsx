@@ -136,6 +136,7 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                             <>
                               {' '}
                               <a
+                                className="p4w3-target"
                                 href={documentDownloadHref(version.id)}
                                 rel="nofollow"
                                 aria-label={`${document.filename} 版${version.versionNumber}をダウンロード`}
@@ -157,7 +158,7 @@ export async function DocumentsScreen(props: ProjectScreenProps & {
                       <div>
                         フィルム発注: {workspace.filmOrders.find((order) => order.id === document.filmSupplyOrderId)?.code
                           ?? shortId(document.filmSupplyOrderId)}
-                        {document.designKey ? <div>デザインキー: {document.designKey}</div> : null}
+                        {document.designKey ? <div>デザイン名: {document.designKey}</div> : null}
                       </div>
                     ) : null}
                     {!document.sevenPurchaseOrderId && !document.filmSupplyOrderId

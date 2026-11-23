@@ -116,3 +116,19 @@ export function draftIdentity(controls: ReadonlyArray<{ name: string; value: str
 export function draftKeyPrefix(pathname: string): string {
   return `kanei-draft:${pathname}:`;
 }
+
+/**
+ * p5 R12: when is a draft stale? A form that was SUBMITTED and not refused succeeded — its draft must go. The form's own `reset`
+ * event drops it, but a successful submit re-draws the screen (the step panel is keyed by the order's progress), and the old form
+ * can be unmounted before its reset runs: the draft then outlived the record and came back as 「前回の入力を復元しました」 on the
+ * next form of the same name. The lifecycle remembers the submit and the refusal, so the unmount can finish the job.
+ */
+export function draftLifecycle(): { submitted(): void; refused(): void; reset(): void; dropOnUnmount(): boolean } {
+  let submittedWithoutRefusal = false;
+  return {
+    submitted: () => { submittedWithoutRefusal = true; },
+    refused: () => { submittedWithoutRefusal = false; },
+    reset: () => { submittedWithoutRefusal = false; },
+    dropOnUnmount: () => submittedWithoutRefusal
+  };
+}

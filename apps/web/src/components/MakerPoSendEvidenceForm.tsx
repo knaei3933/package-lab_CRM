@@ -85,6 +85,8 @@ export function MakerPoSendEvidenceForm({
   const [state, formAction, pending] = useActionState(action, null);
   const [contentBase64, setContentBase64] = useState('');
   const [emlFilename, setEmlFilename] = useState('');
+  /** p5 N2: the EML Date to the second (the dialog shows it while the form holds the EML's own minute). */
+  const [emlSentAtExact, setEmlSentAtExact] = useState<string | null>(null);
   const [formState, setFormState] = useState<MakerPoEmlFormState>(INITIAL_FORM_STATE);
   const [message, setMessage] = useState<FileNotice | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -176,6 +178,8 @@ export function MakerPoSendEvidenceForm({
         }
         setContentBase64(utf8TextToBase64(outgoingEml));
         setSelectedSubject(outgoingSubject);
+        // p5 N2: the EML's own time to the second, for the confirmation dialog only.
+        setEmlSentAtExact(defaults.sentAtExact ?? null);
         setFormState((current) => ({
           values: mergeEmlFormValues(current.values, current.edited, defaults),
           edited: current.edited
@@ -207,6 +211,7 @@ export function MakerPoSendEvidenceForm({
 
   function clearFile(): void {
     setContentBase64('');
+    setEmlSentAtExact(null);
     setEmlFilename('');
     setSelectedSubject(null);
     if (fileInput.current) fileInput.current.value = '';
@@ -226,6 +231,7 @@ export function MakerPoSendEvidenceForm({
       senderAddress: read('senderAddress'),
       recipients: read('recipients'),
       sentAtLocal: formState.values.sentAt,
+      sentAtExactIso: emlSentAtExact,
       emlFilename,
       hasEmlContent: contentBase64.length > 0,
       versionText

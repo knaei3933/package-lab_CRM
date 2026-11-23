@@ -191,7 +191,8 @@ export function OrderTermsSection({
   facts,
   lock,
   projectCode,
-  cancelled
+  cancelled,
+  hidePaymentTermsChange = false
 }: {
   order: FilmSupplyOrderView;
   /** The session's raw role (auditor is told apart from viewer). */
@@ -200,6 +201,8 @@ export function OrderTermsSection({
   lock: DeliveryTermsLock;
   projectCode: string;
   cancelled: boolean;
+  /** p5 R13: the step panel shows the 支払条件 form itself (blocked at step 7), so this section does not repeat it. */
+  hidePaymentTermsChange?: boolean;
 }) {
   const isAdmin = role === 'admin';
   const datesRead = order.deliveryDatesRead !== false;
@@ -324,7 +327,7 @@ export function OrderTermsSection({
       ) : null}
 
       {/* An approved maker paper fixes the 支払条件 too (the API: paymentTermsEditable false). */}
-      <PaymentTermsChange order={order} role={role} cancelled={cancelled} locked={locked} />
+      {hidePaymentTermsChange ? null : <PaymentTermsChange order={order} role={role} cancelled={cancelled} locked={locked} />}
 
       {editable && isAdmin && poId && readFacts ? (
         <div key={`amount-${readFacts.amount?.totalAmount ?? ''}-${readFacts.amount?.currency ?? ''}`} className="p2-terms-form p2-terms-forms">

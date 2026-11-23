@@ -1,0 +1,589 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { cloneElement, isValidElement } from 'react';
+import type { ReactElement, ReactNode } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+/**
+ * p5/web (base p4/rc a5dd052): the web-only part of the audit44b leftovers (REMAINING.md) — R4, H14 left, M16 left, M4, R7 (T-8),
+ * R9, R10, R11, R12, R13, R14, R15, the send dialog's seconds, R2/M12 (390px approval card) and the H12 submit counter.
+ * One describe per item; each holds tests that fail on a5dd052's code (evidence: demo-eml/p5-web/evidence/*-base-red.log) and render the real
+ * components (renderToStaticMarkup — never CSS text). Server rules, amounts (staff / viewer / auditor see none), idempotency
+ * semantics and P-7 (Japanese-only screens carry no Hangul) are untouched: the API is mocked and still decides.
+ */
+const session = vi.hoisted(() => ({
+  user: null as { id: string; role: string; displayName?: string | null } | null,
+  projects: [] as Array<{ id: string; code: string; name: string; status: string }>,
+  cookies: new Map<string, string>(),
+  cookieWrites: [] as Array<{ op: 'set' | 'delete'; name: string; value?: string; options?: Record<string, unknown> }>
+}));
+const callApi = vi.hoisted(() => vi.fn());
+const revalidatePath = vi.hoisted(() => vi.fn());
+vi.mock('../apps/web/src/lib/api.js', () => ({
+  SESSION_COOKIE: 'kanei_mvp_session',
+  PROJECT_COOKIE: 'kanei_web_project',
+  apiBaseUrl: 'http://api.test',
+  apiTimeoutMs: () => 10_000,
+  readSessionToken: async () => 'token',
+  readSelectedProjectId: async () => null,
+  loadSessionUser: async () => session.user,
+  loadSession: async () => (session.user ? { kind: 'user', user: session.user } : { kind: 'anonymous' }),
+  callApi: (...args: unknown[]) => callApi(...args)
+}));
+vi.mock('next/cache', () => ({ revalidatePath }));
+vi.mock('next/headers', () => ({
+  cookies: async () => ({
+    get: (name: string) => (session.cookies.has(name) ? { name, value: session.cookies.get(name)! } : undefined),
+    set: (name: string, value: string, options?: Record<string, unknown>) => {
+      session.cookies.set(name, value);
+      session.cookieWrites.push({ op: 'set', name, value, options });
+    },
+    delete: (name: string) => {
+      session.cookies.delete(name);
+      session.cookieWrites.push({ op: 'delete', name });
+    }
+  }),
+  headers: async () => ({ get: () => null })
+}));
+vi.mock('next/navigation', () => ({
+  redirect: () => undefined,
+  usePathname: () => '/p/PRJ-1/o/FSO-1',
+  useRouter: () => ({ refresh: () => undefined, replace: () => undefined }),
+  useSearchParams: () => new URLSearchParams()
+}));
+/** FocusOnMount renders nothing (its work is an effect): the test double leaves a marker so the DOM says WHICH element is handed the focus. */
+vi.mock('../apps/web/src/components/FocusOnMount.js', () => ({
+  focusHeadingIfIdle: () => false,
+  FocusOnMount: ({ targetId }: { targetId: string }) => <span data-focus-on-mount={targetId} />
+}));
+const board = vi.hoisted(() => ({ value: null as unknown }));
+const workspaceFixture = vi.hoisted(() => ({ value: null as unknown }));
+vi.mock('../apps/web/src/lib/maker-po-data.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../apps/web/src/lib/maker-po-data.js')>()),
+  loadMakerPoBoard: async () => board.value,
+  loadMakerPoDetail: async () => ({ purchaseOrder: null, events: [], error: null })
+}));
+vi.mock('../apps/web/src/lib/project-data.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../apps/web/src/lib/project-data.js')>()),
+  loadWorkspace: async () => workspaceFixture.value,
+  loadSelectableProjectList: async () => ({ projects: session.projects, error: null })
+}));
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../apps/web/src');
+const readSrc = (rel: string) => readFileSync(path.join(root, rel), 'utf8');
+/** A module / export this change adds: on the base commit the import is empty and only the tests needing it fail. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const optional = (load: () => Promise<any>): Promise<any> => load().catch(() => ({}));
+
+const { RenderedContextProvider } = await import('../apps/web/src/components/RenderedContext.js');
+const { StepPanelView } = await import('../apps/web/src/components/StepPanel.js');
+const { ApprovalCard } = await import('../apps/web/src/components/ApprovalCard.js');
+const { PendingVerificationSection } = await import('../apps/web/src/components/EvidenceVerificationSection.js');
+const { buildOrderFlow } = await import('../apps/web/src/lib/order-flow.js');
+const { OrderDetailScreen } = await import('../apps/web/src/screens/OrderDetailScreen.js');
+const { IDEMPOTENCY_FIELD, RENDERED_PROJECT_FIELD } = await import('../apps/web/src/lib/project-context.js');
+/** The real project-data module (the mock above only replaces the workspace read). */
+const realData = await vi.importActual<typeof import('../apps/web/src/lib/project-data.js')>('../apps/web/src/lib/project-data.js');
+
+const HANGUL = /[ᄀ-ᇿ㄰-㆏가-힯]/;
+const SHA = 'a'.repeat(64);
+const KEY = '0f6c2c3e-9a51-4b8e-8d1c-2b7f1e6a9c02';
+const B64 = Buffer.from('%PDF-1.4 test').toString('base64');
+const FILE = { contentBase64: B64, filename: 'receipt.pdf', contentType: 'application/pdf' };
+
+const render = (node: ReactNode, showKorean = false) => renderToStaticMarkup(
+  <RenderedContextProvider value={{ projectId: 'project-a', showKorean }}>{node}</RenderedContextProvider>
+).replaceAll('<!-- -->', '');
+const ok = (data: unknown = { id: 'row-1' }, status = 200) => ({ ok: true, status, data, error: null, errorKo: null, code: null, failure: null });
+/** An API refusal as lib/api shapes it (the dictionary text is what the form would show without a step's own words). */
+const fail = (status: number, code: string, data: Record<string, unknown> = {}) => ({
+  ok: false, status, data: { code, ...data }, error: `dictionary text for ${code}`, errorKo: `사전 ${code}`, code, failure: null
+});
+const outage = (status = 503) => ({ ok: false, status, data: null, error: 'API unreachable', errorKo: null, code: null, failure: 'unreachable' });
+function form(entries: Record<string, string | string[]>, key: string | null = KEY): FormData {
+  const data = new FormData();
+  data.set(RENDERED_PROJECT_FIELD, 'project-a');
+  if (key) data.set(IDEMPOTENCY_FIELD, key);
+  for (const [name, value] of Object.entries(entries)) for (const one of Array.isArray(value) ? value : [value]) data.append(name, one);
+  return data;
+}
+const submitLabels = (html: string) => [...html.matchAll(/<button type="submit"[^>]*>([\s\S]*?)<\/button>/g)]
+  .map((match) => match[1]!.replace(/<span class="visually-hidden">[\s\S]*?<\/span>/g, '').replace(/<[^>]+>/g, '').trim());
+const visibleText = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+
+const PO = { id: 'po-1', poNumber: 'SC-1', poNumberHidden: false, officialRegisteredAt: '2026-11-01', officiallyRegistered: true, verificationStatus: 'verified', reviewPending: false, officialRegistrationHidden: false, verificationHidden: false };
+function order(status: string, extra: Record<string, unknown> = {}) {
+  return {
+    id: 'order-1', code: 'FSO-1', status, sevenPurchaseOrderId: 'po-1', lineCount: 1,
+    lines: [{ id: 'line-1', lineNumber: 1, description: '合成フィルム', orderedQuantity: '500', unit: 'meters' }],
+    detailsHidden: false, statusHidden: false, lastNormalStatus: 'MAKER_PO_READY', paymentTerms: 'prepaid', paymentTermsHidden: false,
+    hold: null, createdAt: '2026-11-01T00:00:00Z', updatedAt: '2026-11-01T00:00:00Z', ...extra
+  };
+}
+const slot = (valid: boolean, pending = false) => ({
+  organization: 'customer', valid, latestDecision: valid ? 'APPROVE' : null, revoked: false, invalidatedByNewerRevision: false,
+  pendingEvidenceIdentifier: pending, manualVerification: null
+});
+/** The step panel of one order state, built the way the order screen builds it. */
+function panel(status: string, role: string, extra: { gate?: unknown; documents?: unknown[]; deliveryContext?: unknown; showKorean?: boolean } = {}) {
+  const o = order(status);
+  const flow = buildOrderFlow({
+    order: o as never, role, po: PO as never, documents: (extra.documents ?? []) as never, revisions: [], gate: (extra.gate ?? null) as never,
+    makerPos: [], makerEvents: [], settledSendEventIds: new Set(), paymentGate: null, deliveries: []
+  });
+  return render(
+    <StepPanelView
+      flow={flow} order={o as never} projectCode="PRJ-1" role={role} po={PO as never} gate={(extra.gate ?? null) as never}
+      maker={null} makerEvents={[]} documents={(extra.documents ?? []) as never} stateLabel={(key) => key}
+      deliveryContext={extra.deliveryContext as never}
+    />,
+    extra.showKorean ?? false
+  );
+}
+
+beforeEach(() => {
+  session.user = { id: 'u-admin', role: 'admin', displayName: '代表' };
+  callApi.mockReset();
+  callApi.mockResolvedValue(ok());
+  revalidatePath.mockReset();
+  board.value = null;
+  workspaceFixture.value = null;
+  session.projects = [];
+  session.cookies = new Map();
+  session.cookieWrites = [];
+});
+// ------------------------------------------------------------------------------------------------
+// shared fixtures
+// ------------------------------------------------------------------------------------------------
+const PRJ = { id: 'project-a', code: 'PRJ-1', name: 'A', route: 'F1' };
+const delivery = (id: string, confirmed: boolean, over: Record<string, unknown> = {}) => ({
+  id, kind: 'film', orderId: 'order-1', lineId: 'line-1', unit: 'meters', deliveredQuantity: '300', deliverySequence: 1,
+  deliveredAt: '2026-11-22T01:00:00Z', recordedAt: '2026-11-22T01:00:00Z', note: null, confirmed, evidenceDocumentVersionId: null,
+  confirmedAt: confirmed ? '2026-11-22T02:00:00Z' : null, detailsHidden: false, confirmationHidden: false, ...over
+});
+const receiptContext = (userId: string, deliveries: unknown[], over: Record<string, unknown> = {}) => ({
+  deliveries, userId, filmOnly: true, readiness: null, readinessLabel: (key: string) => key, ...over
+});
+/** A role's screen of one order: the workspace and the order board as the order screen reads them. */
+function serveOrder(role: string, status: string, over: { deliveries?: unknown[]; readiness?: unknown; orderOver?: Record<string, unknown>; documents?: unknown[]; events?: unknown[] } = {}) {
+  session.user = { id: `u-${role}`, role };
+  const o = order(status, { lines: [], ...(over.orderOver ?? {}) });
+  workspaceFixture.value = {
+    error: null, projectRefused: false, project: PRJ, labels: null, filmOrders: [o], fillingOrders: [], sevenPurchaseOrders: [PO],
+    documents: over.documents ?? [], revisions: [], approvalEvents: [], deliveries: over.deliveries ?? [], readiness: over.readiness ?? null,
+    documentVersionsWithheld: false, revisionsWithheld: 0
+  };
+  board.value = { workspace: workspaceFixture.value, boards: [{ order: o, closure: null, makerPurchaseOrders: [], makerPoError: null, paymentGate: null, paymentGateError: null }] };
+  callApi.mockImplementation(async (url: string) => {
+    if (url.endsWith('/order-facts')) return ok({ orderedQuantity: '500', orderedUnit: 'meters', updatedAt: null });
+    if (url.endsWith('/delivery-status')) return ok({ status: status, lines: [] });
+    if (/\/audit-history/.test(url) || /\/film-supply-orders\/[^/]+\/(activity|events)/.test(url)) return ok({ events: over.events ?? [] });
+    return ok({ events: over.events ?? [] });
+  });
+}
+const orderScreen = async (started = false, step?: number) => render(await OrderDetailScreen({ projectId: 'project-a', projectCode: 'PRJ-1', orderCode: 'FSO-1', started, ...(step ? { step } : {}) } as never));
+
+// ================================================================================================
+// R4 — the auditor's order screen: a masked delivery is not 「確認待ち」
+// ================================================================================================
+describe('R4 an auditor reads a masked delivery as read-only, never as 「確認待ち」', () => {
+  const maskedRow = delivery('del-m', false, { deliveredQuantity: '—', unit: '—', detailsHidden: true });
+  const readiness = { readinessState: 'NOT_READY', evaluatedAt: '2026-11-22T03:00:00Z', blocking: ['FILM_ORDER_NOT_DELIVERED'], hidden: false };
+
+  it('step 12 for an auditor: no 「確認待ち」, no 「担当者か代表が…確認します」; it says the view is read-only and where the history is', () => {
+    const html = panel('FILM_RECEIPT_ASSUMED_NO_ISSUE', 'auditor', { deliveryContext: receiptContext('u-auditor', [maskedRow]) });
+    expect(html).not.toContain('確認待ち');
+    expect(html).not.toContain('担当者か代表が受領証跡で納品を確認します');
+    expect(html).toContain('閲覧のみ（確認状態は監査履歴で見られます）');
+  });
+
+  it('a delivery the auditor CAN read as confirmed still reads 「確認済み」 (the honest case is kept)', () => {
+    const html = panel('FILM_RECEIPT_ASSUMED_NO_ISSUE', 'auditor', { deliveryContext: receiptContext('u-auditor', [delivery('del-ok', true)]) });
+    expect(html).toContain('フィルムの納品確認済み');
+    expect(html).not.toContain('閲覧のみ（確認状態は監査履歴で見られます）');
+  });
+
+  it('the project-wide commission readiness is withheld from the auditor (閲覧権限なし), not a 「納品確認待ち」 state', () => {
+    const html = panel('FILM_RECEIPT_ASSUMED_NO_ISSUE', 'auditor', { deliveryContext: receiptContext('u-auditor', [maskedRow], { readiness, readinessLabel: () => '納品確認待ち' }) });
+    expect(html).not.toContain('納品確認待ち');
+    expect(html).not.toContain('未達');
+    expect(html).toContain('閲覧権限なし');
+  });
+
+  it('staff are untouched: an unconfirmed delivery still waits for the representative', () => {
+    const html = panel('FILM_DELIVERED', 'staff', { deliveryContext: receiptContext('u-staff', [delivery('del-s', false)]) });
+    expect(html).toContain('フィルムの納品確認待ち');
+    expect(html).not.toContain('閲覧のみ（確認状態は監査履歴で見られます）');
+  });
+
+  it('T-6: the whole order screen of an auditor (completed order) carries no 「確認待ち」 anywhere, and no Hangul', async () => {
+    serveOrder('auditor', 'FILM_RECEIPT_ASSUMED_NO_ISSUE', { deliveries: [maskedRow], readiness });
+    const html = await orderScreen();
+    expect(html).not.toContain('確認待ち');
+    expect(html).not.toMatch(HANGUL);
+    expect(html).toContain('閲覧のみ（確認状態は監査履歴で見られます）');
+  });
+});
+
+// ================================================================================================
+// H14 left — a completed order is not read through the project's commission readiness
+// ================================================================================================
+describe('H14 left: the order says its own delivery first; the project-wide readiness is named as the project\'s', () => {
+  const notReady = { readinessState: 'NOT_READY', evaluatedAt: '2026-11-22T03:00:00Z', blocking: ['FILM_ORDER_NOT_DELIVERED'], hidden: false };
+  const ctx = (over: Record<string, unknown> = {}) => receiptContext('u-admin', [delivery('del-1', true)], { readiness: notReady, readinessLabel: () => '手数料準備未達', ...over });
+
+  it('a completed order with confirmed deliveries: 「この発注の納品: …確認済み」 first, then 「案件全体の手数料準備（ほかの発注を含む）」', () => {
+    const html = panel('FILM_RECEIPT_ASSUMED_NO_ISSUE', 'admin', { deliveryContext: ctx() });
+    expect(html).toContain('この発注の納品: フィルムの納品確認済み');
+    expect(html).toContain('案件全体の手数料準備（ほかの発注を含む）: 手数料準備未達');
+    expect(html.indexOf('この発注の納品: フィルムの納品確認済み')).toBeLessThan(html.indexOf('案件全体の手数料準備（ほかの発注を含む）'));
+    expect(html).not.toContain('手数料準備: ');
+  });
+
+  it('not evaluated yet: the same project-wide name', () => {
+    const html = panel('FILM_RECEIPT_ASSUMED_NO_ISSUE', 'admin', { deliveryContext: ctx({ readiness: null }) });
+    expect(html).toContain('案件全体の手数料準備（ほかの発注を含む）: まだ評価されていません');
+    expect(html).not.toContain('手数料準備: ');
+  });
+
+  it('a delivery still waiting keeps its own line out of the 「確認済み」 wording', () => {
+    const html = panel('FILM_DELIVERED', 'admin', { deliveryContext: ctx({ deliveries: [delivery('del-2', false)] }) });
+    expect(html).not.toContain('この発注の納品: フィルムの納品確認済み');
+    expect(html).toContain('フィルムの納品確認待ち');
+  });
+});
+
+// ================================================================================================
+// M16 left — the old lists use the product's words
+// ================================================================================================
+const docRow = (over: Record<string, unknown> = {}) => ({
+  id: 'doc-1', documentType: 'proof', issuerEntity: 'kanei', filename: 'omote.pdf', verificationStatus: 'unverified', verificationNote: null,
+  sevenPurchaseOrderId: 'po-1', filmSupplyOrderId: 'order-1', designKey: '表面A', makerPurchaseOrderId: null, detailsHidden: false, typeHidden: false,
+  verificationHidden: false, createdAt: '2026-11-22T01:00:00Z', updatedAt: '2026-11-22T01:00:00Z',
+  versions: [{ id: 'ver-1', versionNumber: 1, filename: 'omote.pdf', sha256: SHA, byteSize: 10, createdAt: '2026-11-22T01:00:00Z', detailsHidden: false }], ...over
+});
+describe('M16 left: 「デザインキー」 / 「製造先」 are gone from the old lists', () => {
+  const { LEGACY_TERMS } = { LEGACY_TERMS: [] as ReadonlyArray<readonly [string, string]> };
+  it('the documents list names the design 「デザイン名」, never 「デザインキー」', async () => {
+    session.user = { id: 'u-admin', role: 'admin' };
+    workspaceFixture.value = {
+      error: null, projectRefused: false, project: PRJ, labels: null, filmOrders: [order('FILM_SHIPPED')], fillingOrders: [], sevenPurchaseOrders: [PO],
+      documents: [docRow()], revisions: [], approvalEvents: [], deliveries: [], readiness: null, documentVersionsWithheld: false, revisionsWithheld: 0
+    };
+    const { DocumentsScreen } = await import('../apps/web/src/screens/DocumentsScreen.js');
+    const html = render(await DocumentsScreen({ projectId: 'project-a', projectCode: 'PRJ-1' } as never));
+    expect(html).toContain('デザイン名: 表面A');
+    expect(html).not.toContain('デザインキー');
+  });
+
+  it('/status: the labels the API serves are drawn in the product\'s words (製造先 → メーカー); the reference codes stay', async () => {
+    session.cookies.set('kanei_mvp_session', 'token');
+    callApi.mockResolvedValue(ok({
+      filmSupplyOrderStates: [{ key: 'MAKER_PO_READY', label: '製造先発注準備完了' }],
+      makerPurchaseOrderStatuses: [{ key: 'MAKER_PO_SENT_MANUALLY', label: '製造先送信済み' }, { key: 'DRAFT', label: '製造先発注承認待ち' }],
+      commissionReadinessStates: [], fillingDeliveryConfirmationStates: [], approvalOrganizations: []
+    }));
+    const { default: StatusPage } = await import('../apps/web/src/app/status/page.js');
+    const html = render(await StatusPage());
+    expect(html).not.toContain('製造先');
+    expect(html).toContain('メーカー送信済み');
+    expect(html).toContain('メーカー発注承認待ち');
+    expect(html).toContain('MAKER_PO_READY');
+    expect(html).toContain('メーカー発注準備完了');
+  });
+
+  it('the legacy-word scan knows 「デザインキー」, and covers the documents list and the status page sources', async () => {
+    const terms = await import('../apps/web/src/lib/terms.js');
+    const words = terms.LEGACY_TERMS.map(([word]: readonly [string, string]) => word);
+    expect(words).toContain('デザインキー');
+    for (const file of ['screens/DocumentsScreen.tsx', 'app/status/page.tsx', 'components/DocumentUploadForm.tsx', 'lib/form-messages.ts', 'app/actions.ts']) {
+      for (const word of words) expect(readSrc(file), `${file}: ${word}`).not.toContain(word);
+    }
+    void LEGACY_TERMS;
+  });
+});
+
+// ================================================================================================
+// R15 / M4 — the order's records say WHICH file and WHAT note
+// ================================================================================================
+describe('R15 / M4 the 記録 list names the registered file and shows the memo', () => {
+  const { orderRecordText, orderRecordDetail } = { orderRecordText: null as never, orderRecordDetail: null as never };
+  void orderRecordText; void orderRecordDetail;
+  const events = [
+    { id: 'e3', action: 'FILM_SUPPLY_ORDER_TRANSITIONED', entityType: 'film_supply_order', entityId: 'order-1', occurredAt: '2026-11-22T03:00:00Z', actor: { id: 'u1', displayName: '担当 花子' }, afterState: { status: 'ARTWORK_RECEIVED', evidenceNote: '表面Aの最終データ（合成・M4確認）' } },
+    { id: 'e2', action: 'DOCUMENT_VERSION_UPLOADED', entityType: 'document_version', entityId: 'ver-1', occurredAt: '2026-11-22T02:00:00Z', actor: { id: 'u1', displayName: '担当 花子' }, afterState: { documentType: 'acceptance_evidence', originalFilename: 'receipt-0007.pdf', versionNumber: 1, filmSupplyOrderId: 'order-1' } },
+    { id: 'e1', action: 'DOCUMENT_CREATED', entityType: 'document', entityId: 'doc-1', occurredAt: '2026-11-22T01:00:00Z', actor: { id: 'u1', displayName: '担当 花子' }, afterState: { documentType: 'proof', filename: 'omote.pdf', filmSupplyOrderId: 'order-1' } }
+  ];
+  const records = (html: string) => /<ol class="p1-record-list">[\s\S]*?<\/ol>/.exec(html)?.[0] ?? '';
+
+  it('R15: 「書類を登録」 / 「書類の版を登録」 carry the file name and the kind of document', async () => {
+    serveOrder('admin', 'FILM_SHIPPED', { events });
+    const list = records(await orderScreen());
+    expect(list).toMatch(/書類を登録[^<]*<\/span>[\s\S]*?omote\.pdf/);
+    expect(list).toContain('校正ゲラ');
+    expect(list).toMatch(/書類の版を登録[^<]*<\/span>[\s\S]*?receipt-0007\.pdf/);
+    expect(list).toContain('受領証跡（検収）');
+  });
+
+  it('M4: a transition\'s memo (evidenceNote) is on the row as 「メモ: …」, printed as text', async () => {
+    serveOrder('admin', 'FILM_SHIPPED', { events: [{ ...events[0], afterState: { status: 'ARTWORK_RECEIVED', evidenceNote: '<b>x</b>最終データ' } }] });
+    const list = records(await orderScreen());
+    expect(list).toContain('メモ: ');
+    expect(list).toContain('&lt;b&gt;x&lt;/b&gt;最終データ');
+    expect(list).not.toContain('<b>x</b>');
+  });
+
+  it('M4: the real memo of the base fixture shows, and a record without a memo or file shows neither label', async () => {
+    serveOrder('admin', 'FILM_SHIPPED', { events });
+    const list = records(await orderScreen());
+    expect(list).toContain('メモ: 表面Aの最終データ（合成・M4確認）');
+    serveOrder('admin', 'FILM_SHIPPED', { events: [{ id: 'e9', action: 'FILM_SUPPLY_ORDER_TRANSITIONED', entityType: 'film_supply_order', entityId: 'order-1', occurredAt: '2026-11-22T03:00:00Z', actor: null, afterState: { status: 'ARTWORK_RECEIVED' } }] });
+    expect(records(await orderScreen())).not.toContain('メモ');
+    // A role whose answer carries no file name (trimmed state) says nothing invented.
+    serveOrder('staff', 'FILM_SHIPPED', { events: [{ ...events[2], afterState: { id: 'doc-1', status: 'x', filmSupplyOrderId: 'order-1' } }] });
+    expect(records(await orderScreen())).not.toContain('omote.pdf');
+  });
+});
+
+// ================================================================================================
+// R10 — the assignment records have words
+// ================================================================================================
+describe('R10 an assignment is 「担当を割り当て」 / 「担当を外す」 in the recent records, not 「記録を記録」', () => {
+  const NOW = new Date('2026-11-23T03:00:00.000Z');
+  const labels = { filmSupplyOrderStates: [], makerPurchaseOrderStatuses: [], commissionReadinessStates: [], fillingDeliveryConfirmationStates: [], approvalOrganizations: [] };
+  const row = (id: string, action: string) => ({ id, action, entityType: 'project_assignment', entityId: id, occurredAt: '2026-11-23T02:00:00Z', actor: { id: 'u1', displayName: '代表' }, afterState: {}, beforeState: null, requestMetadata: {} });
+  it('the dashboard activity', async () => {
+    const { buildDashboard } = await import('../apps/web/src/lib/dashboard.js');
+    const view = buildDashboard({
+      role: 'admin', now: NOW, projectCode: 'PRJ-1', boards: [], activity: [row('a1', 'PROJECT_ASSIGNMENT_CREATED'), row('a2', 'PROJECT_ASSIGNMENT_REMOVED')],
+      workspace: { labels, filmOrders: [], sevenPurchaseOrders: [], revisions: [], revisionsWithheld: 0, documents: [], deliveries: [], readiness: null }
+    } as never);
+    const texts = view.activity.map((item: { text: string }) => item.text);
+    expect(texts).toEqual(expect.arrayContaining(['担当を割り当て', '担当を外す']));
+    expect(texts.join('\n')).not.toContain('記録を記録');
+  });
+  it('the order screen\'s record list (same wording table)', async () => {
+    const { ACTION_LABELS } = await import('../apps/web/src/lib/dashboard.js');
+    expect(ACTION_LABELS.PROJECT_ASSIGNMENT_CREATED).toBe('担当を割り当て');
+    expect(ACTION_LABELS.PROJECT_ASSIGNMENT_REMOVED).toBe('担当を外す');
+  });
+});
+
+// ================================================================================================
+// R11 — the evidence list tells the document check from the identifier check of an approval evidence
+// ================================================================================================
+describe('R11 an approval evidence says its identifier check: 自動確認済み / 手動確認待ち / 手動確認済み / 却下', () => {
+  const doc = (id: string, over: Record<string, unknown> = {}) => ({
+    documentId: id, documentType: 'approval_evidence', issuerEntity: 'customer_generated', originalFilename: `${id}.eml`, orderCode: 'FSO-1', designKey: '表面A',
+    verificationStatus: 'unverified', verifiedAt: null, verifiedBy: null, createdAt: '2026-11-22T01:00:00Z', createdBy: { displayName: '担当' },
+    versions: [{ versionId: `v-${id}`, versionNumber: 1, originalFilename: `${id}.eml`, sha256: SHA, uploadedAt: '2026-11-22T01:00:00Z', uploadedBy: { displayName: '担当' } }], ...over
+  });
+  const approval = (id: string, versionId: string, status: string) => ({ id: `a-${id}`, action: 'ARTWORK_APPROVAL_RECORDED', entityType: 'artwork_approval_event', entityId: `ev-${id}`, occurredAt: '2026-11-22T02:00:00Z', actor: null, afterState: { evidenceDocumentVersionId: versionId, evidenceIdentifierStatus: status } });
+  const manual = (id: string, versionId: string, result: string, at: string) => ({ id: `m-${id}`, action: 'EVIDENCE_MANUAL_VERIFICATION_RECORDED', entityType: 'artwork_approval_event', entityId: `ev-${id}`, occurredAt: at, actor: null, afterState: { approvalEventId: `ev-${id}`, evidenceDocumentVersionId: versionId, result } });
+  const serve = (documents: unknown[], events: unknown[] | 'fail', role = 'auditor') => {
+    session.user = { id: `u-${role}`, role };
+    callApi.mockImplementation(async (url: string) => {
+      if (url.includes('/evidence-metadata')) return ok({ documents, truncated: false, limit: 200 });
+      if (url.includes('/audit-history')) return events === 'fail' ? fail(500, 'X') : ok({ events });
+      return ok({ orders: [] });
+    });
+  };
+  const evidenceHtml = async () => {
+    const { EvidenceScreen } = await import('../apps/web/src/screens/EvidenceScreen.js');
+    return render(await EvidenceScreen({ projectId: 'project-a', projectCode: 'PRJ-1' } as never));
+  };
+  const cell = (html: string, id: string) => new RegExp(`id="doc-${id}"[\\s\\S]*?data-label="確認状態">([\\s\\S]*?)</td>`).exec(html)?.[1] ?? '';
+
+  it('the four states, each on its own row; the document check stays on its own line', async () => {
+    serve([doc('d1'), doc('d2'), doc('d3'), doc('d4'), doc('d5')], [
+      approval('d1', 'v-d1', 'verified_in_document'), approval('d2', 'v-d2', 'pending_manual_verification'), approval('d3', 'v-d3', 'pending_manual_verification'),
+      approval('d4', 'v-d4', 'pending_manual_verification'), manual('d3', 'v-d3', 'verified', '2026-11-22T03:00:00Z'), manual('d4', 'v-d4', 'rejected', '2026-11-22T03:00:00Z')
+    ]);
+    const html = await evidenceHtml();
+    expect(cell(html, 'd1')).toContain('識別子: 自動確認済み');
+    expect(cell(html, 'd2')).toContain('識別子: 手動確認待ち');
+    expect(cell(html, 'd3')).toContain('識別子: 手動確認済み');
+    expect(cell(html, 'd4')).toContain('識別子: 却下');
+    expect(cell(html, 'd5')).not.toContain('識別子');
+    expect(cell(html, 'd1')).toContain('書類の確認: 未確認');
+    expect(html).not.toMatch(HANGUL);
+  });
+
+  it('the newest manual check wins (a rejection followed by a later 確認 reads 手動確認済み)', async () => {
+    serve([doc('d6')], [approval('d6', 'v-d6', 'pending_manual_verification'), manual('d6', 'v-d6', 'rejected', '2026-11-22T03:00:00Z'), manual('d6', 'v-d6', 'verified', '2026-11-22T04:00:00Z')]);
+    expect(cell(await evidenceHtml(), 'd6')).toContain('識別子: 手動確認済み');
+  });
+
+  it('a document that is not an approval evidence keeps the plain check; an unreadable history invents nothing', async () => {
+    serve([doc('p1', { documentType: 'proof' }), doc('d7')], 'fail', 'staff');
+    const html = await evidenceHtml();
+    expect(cell(html, 'p1')).not.toContain('識別子');
+    expect(cell(html, 'd7')).not.toContain('識別子');
+    expect(cell(html, 'd7')).toContain('未確認');
+  });
+});
+
+// ================================================================================================
+// R7 / T-8 — Japanese-only roles read no Hangul on the guide, the session notice, the outage and the 404
+// ================================================================================================
+describe('R7 / T-8 staff, viewer and auditor read no Korean on the guide, the notices and the 404', () => {
+  const ROLES = ['staff', 'viewer', 'auditor'];
+  it.each(ROLES)('/guide for %s: no Hangul (the 「한국어 설명」 blocks follow the display language)', async (role) => {
+    session.user = { id: `u-${role}`, role };
+    const { default: GuidePage } = await import('../apps/web/src/app/guide/page.js');
+    expect(render(await GuidePage())).not.toMatch(HANGUL);
+  });
+
+  it('/guide for the representative (bilingual by default) still carries the Korean explanation; with the Japanese-only mode it does not', async () => {
+    session.user = { id: 'u-admin', role: 'admin' };
+    const { default: GuidePage } = await import('../apps/web/src/app/guide/page.js');
+    const bilingual = render(await GuidePage());
+    expect(bilingual).toContain('한국어 설명');
+    session.cookies.set('kanei_web_lang', 'u-admin.ja');
+    expect(render(await GuidePage())).not.toMatch(HANGUL);
+  });
+
+  it.each(['login', 'expired', 'outage'] as const)('SessionNotice (%s) with the Korean line off: no Hangul; on: the Korean line is there', async (kind) => {
+    const { SessionNotice } = await import('../apps/web/src/components/SessionNotice.js');
+    const off = render(<SessionNotice kind={kind} path="/home" code={kind === 'outage' ? 'DB_UNAVAILABLE' : null} showKorean={false} />);
+    expect(off).not.toMatch(HANGUL);
+    const on = render(<SessionNotice kind={kind} path="/home" code={kind === 'outage' ? 'DB_UNAVAILABLE' : null} showKorean />);
+    expect(on).toMatch(HANGUL);
+  });
+
+  it('no session: the Korean line follows the display language kept in the browser (cookie), hidden when there is none', async () => {
+    const { languageWithoutSession } = await import('../apps/web/src/lib/locale.js');
+    expect(languageWithoutSession(undefined)).toBe('ja');
+    expect(languageWithoutSession('')).toBe('ja');
+    expect(languageWithoutSession('garbage')).toBe('ja');
+    expect(languageWithoutSession('u-admin.ja-ko')).toBe('ja-ko');
+    expect(languageWithoutSession('u-admin.ko')).toBe('ko');
+    expect(languageWithoutSession('u-staff.ja')).toBe('ja');
+    const { displayLanguage } = await import('../apps/web/src/lib/locale-server.js');
+    expect((await displayLanguage(null)).showKorean).toBe(false);
+    session.cookies.set('kanei_web_lang', 'u-admin.ja-ko');
+    expect((await displayLanguage(null)).showKorean).toBe(true);
+  });
+
+  it.each(['site', 'project'] as const)('the 404 (%s) with the Korean line off: no Hangul', async (scope) => {
+    const { NotFoundNotice } = await import('../apps/web/src/components/NotFoundNotice.js');
+    expect(render(<NotFoundNotice scope={scope} />, false)).not.toMatch(HANGUL);
+    expect(render(<NotFoundNotice scope={scope} />, true)).toMatch(HANGUL);
+  });
+});
+
+// ================================================================================================
+// R9 — focus lands somewhere after the wizard and after an assignment
+// ================================================================================================
+describe('R9 focus: the order heading after the wizard, the result sentence after an assignment', () => {
+  it('?started=1: the screen hands the focus to its heading (it is focusable); without it nothing is moved', async () => {
+    serveOrder('staff', 'SEVEN_PO_VERIFIED');
+    const started = await orderScreen(true);
+    expect(started).toContain('data-focus-on-mount="order-title"');
+    expect(started).toMatch(/<h1 id="order-title"[^>]*tabindex="-1"/);
+    serveOrder('staff', 'SEVEN_PO_VERIFIED');
+    expect(await orderScreen(false)).not.toContain('data-focus-on-mount');
+  });
+
+  const view = { assignments: [{ userId: '0192a000-0000-7000-8000-0000000000b1', displayName: '担当 花子', role: 'staff', isActive: true, assignedAt: '2026-11-23T01:00:00Z' }], error: null, truncated: false };
+  const directory = { candidates: [], truncated: false, error: null };
+  it('after an assignment the result sentence takes the focus; with no notice the panel moves nothing', async () => {
+    const { ProjectAssignmentsPanel } = await import('../apps/web/src/components/ProjectAssignmentsPanel.js');
+    const notice = { projectId: 'project-a', kind: 'added', userId: '0192a000-0000-7000-8000-0000000000b1', at: '2026-11-23T01:00:00Z' };
+    const withNotice = render(<ProjectAssignmentsPanel view={view as never} directory={directory as never} notice={notice as never} />);
+    expect(withNotice).toMatch(/<p id="assignment-status"[^>]*tabindex="-1"[^>]*role="status"|<p id="assignment-status"[^>]*role="status"[^>]*tabindex="-1"/);
+    expect(withNotice).toContain('data-focus-on-mount="assignment-status"');
+    expect(withNotice).toContain('担当 花子 を担当者に割り当てました');
+    const without = render(<ProjectAssignmentsPanel view={view as never} directory={directory as never} notice={null} />);
+    expect(without).not.toContain('data-focus-on-mount');
+  });
+});
+
+// ================================================================================================
+// R13 — one 支払条件 form at step 7 (the step panel's), not two
+// ================================================================================================
+describe('R13 a 「未定」 order at step 7 has ONE payment-terms form', () => {
+  const forms = (html: string) => (html.match(/<select[^>]*name="paymentTerms"/g) ?? []).length;
+  const undetermined = { paymentTerms: 'undetermined', paymentTermsUndetermined: true, paymentTermsEditable: true };
+
+  it('MAKER_PO_READY with 未定: only the step panel\'s form (the 「発注の条件」 one is hidden)', async () => {
+    serveOrder('admin', 'MAKER_PO_READY', { orderOver: undetermined });
+    const html = await orderScreen();
+    expect(html).toContain('進められません');
+    expect(forms(html)).toBe(1);
+  });
+
+  it('MAKER_PO_READY with 未定 for staff: the same single form', async () => {
+    serveOrder('staff', 'MAKER_PO_READY', { orderOver: undetermined });
+    expect(forms(await orderScreen())).toBe(1);
+  });
+
+  it('where the step panel carries no such form the 「支払条件を変更する」 form stays (a decided term; an earlier step)', async () => {
+    serveOrder('admin', 'MAKER_PO_READY', { orderOver: { paymentTerms: 'prepaid', paymentTermsUndetermined: false, paymentTermsEditable: true } });
+    expect(forms(await orderScreen())).toBe(1);
+    serveOrder('admin', 'SEVEN_PO_VERIFIED', { orderOver: undetermined });
+    expect(forms(await orderScreen())).toBe(1);
+  });
+});
+
+// ================================================================================================
+// R14 — the 44px download link
+// ================================================================================================
+describe('R14 the 「ダウンロード」 link of the documents list is a touch target', () => {
+  it('every download link carries the touch-target class (its 44px is measured live in ego-browser: evidence/R14-*.txt)', async () => {
+    session.user = { id: 'u-admin', role: 'admin' };
+    workspaceFixture.value = {
+      error: null, projectRefused: false, project: PRJ, labels: null, filmOrders: [order('FILM_SHIPPED')], fillingOrders: [], sevenPurchaseOrders: [PO],
+      documents: [docRow(), docRow({ id: 'doc-2', versions: [{ id: 'ver-2', versionNumber: 1, filename: 'b.pdf', sha256: SHA, byteSize: 10, createdAt: '2026-11-22T01:00:00Z', detailsHidden: false }] })],
+      revisions: [], approvalEvents: [], deliveries: [], readiness: null, documentVersionsWithheld: false, revisionsWithheld: 0
+    };
+    const { DocumentsScreen } = await import('../apps/web/src/screens/DocumentsScreen.js');
+    const html = render(await DocumentsScreen({ projectId: 'project-a', projectCode: 'PRJ-1' } as never));
+    const links = [...html.matchAll(/<a\b[^>]*>(?:ダウンロード)<\/a>/g)].map((match) => match[0]);
+    expect(links).toHaveLength(2);
+    for (const link of links) expect(link).toContain('class="p4w3-target"');
+  });
+});
+
+// ================================================================================================
+// the send dialog shows seconds (N2 left: display)
+// ================================================================================================
+describe('N2 left: the send confirmation shows the EML Date to the second', () => {
+  it('the EML defaults keep the exact instant beside the minute value', async () => {
+    const { readEmlFormDefaults, toDatetimeLocalValue } = await import('../apps/web/src/lib/eml-form.js');
+    const defaults = readEmlFormDefaults('From: a@maker.example\r\nDate: Mon, 23 Nov 2026 08:09:40 +0900\r\n\r\nbody');
+    expect(defaults.sentAtExact).toBe('2026-11-22T23:09:40.000Z');
+    expect(defaults.sentAt).toBe(toDatetimeLocalValue(new Date('2026-11-22T23:09:40.000Z')));
+  });
+
+  it('the dialog row reads 日本時間 …08:09:40 while the value is the EML\'s; an edited time falls back to the minute', async () => {
+    const { makerPoSendConfirmSpec } = await import('../apps/web/src/lib/confirm-summary.js');
+    const { toDatetimeLocalValue } = await import('../apps/web/src/lib/eml-form.js');
+    const exact = '2026-11-22T23:09:40.000Z';
+    const base = { senderAddress: 'a@maker.example', recipients: 'b@kanei.example', emlFilename: 'a.eml', hasEmlContent: true, versionText: '' };
+    const row = (spec: { summary: Array<{ label: string; value: string }> }) => spec.summary.find((item) => item.label === '送信日時')!.value;
+    expect(row(makerPoSendConfirmSpec({ ...base, sentAtLocal: toDatetimeLocalValue(new Date(exact)), sentAtExactIso: exact }))).toMatch(/^日本時間 2026\/11\/23（月）08:09:40$/);
+    expect(row(makerPoSendConfirmSpec({ ...base, sentAtLocal: toDatetimeLocalValue(new Date('2026-11-23T00:30:00.000Z')), sentAtExactIso: exact }))).toMatch(/^日本時間 2026\/11\/23（月）09:30$/);
+    expect(row(makerPoSendConfirmSpec({ ...base, sentAtLocal: toDatetimeLocalValue(new Date(exact)) }))).toMatch(/^日本時間 2026\/11\/23（月）08:09$/);
+  });
+});
+
+// ================================================================================================
+// R12 — a successful submit drops the draft (after a re-draw too)
+// ================================================================================================
+describe('R12 the draft of a form that was submitted is dropped even when the form is re-drawn before its reset', () => {
+  it('drop decision: submitted and not refused → drop at unmount; refused or never submitted → keep', async () => {
+    const { draftLifecycle } = await import('../apps/web/src/lib/unsaved-guard.js');
+    const lifecycle = draftLifecycle();
+    expect(lifecycle.dropOnUnmount()).toBe(false);
+    lifecycle.submitted();
+    expect(lifecycle.dropOnUnmount()).toBe(true);
+    lifecycle.refused();
+    expect(lifecycle.dropOnUnmount()).toBe(false);
+    lifecycle.submitted();
+    expect(lifecycle.dropOnUnmount()).toBe(true);
+    lifecycle.reset();
+    expect(lifecycle.dropOnUnmount()).toBe(false);
+  });
+});

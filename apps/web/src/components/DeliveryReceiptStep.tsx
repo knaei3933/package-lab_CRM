@@ -47,6 +47,11 @@ export const FILM_DELIVERY_CONFIRMATION_LABELS = {
   CONFIRMED: { ja: 'フィルムの納品確認済み', ko: '필름 납품 확인 완료' }
 } as const;
 
+/** p5 R4: what a role that cannot confirm reads where an unconfirmed (or masked) delivery used to say 「確認待ち」. */
+export const READ_ONLY_CONFIRMATION_TEXT = '閲覧のみ（確認状態は監査履歴で見られます）';
+/** p5 H14: the commission readiness is the PROJECT's (every order), not this order's. */
+export const PROJECT_READINESS_LABEL = '案件全体の手数料準備（ほかの発注を含む）';
+
 export const RECEIPT_ISSUER_CHOICES = [
   { value: 'customer_generated', label: '顧客（受領書・受領メール）' },
   { value: 'maker', label: 'メーカー（納品書）' },
@@ -138,17 +143,18 @@ export function DeliveryReceiptStep({
   return (
     <div className="p4w2-receipt">
       {context.notice && unconfirmed.length > 0 ? <ReceiptStopNotice notice={context.notice} /> : null}
-      <DeliveryLines deliveries={context.deliveries} evidenceKinds={context.evidenceKinds ?? {}} />
+      <DeliveryLines deliveries={context.deliveries} evidenceKinds={context.evidenceKinds ?? {}} readOnly={!canConfirm} />
       {unconfirmed.length === 0 ? (
         <p className="p1-done">
-          <span aria-hidden="true">✓ </span>{FILM_DELIVERY_CONFIRMATION_LABELS.CONFIRMED.ja}
+          <span aria-hidden="true">✓ </span>この発注の納品: {FILM_DELIVERY_CONFIRMATION_LABELS.CONFIRMED.ja}
           {context.deliveries.some((delivery) => context.evidenceKinds?.[delivery.id] === 'maker_po_acceptance')
             // p4/web4 (review): a confirmation on the maker's 受領書 (legacy) is on file, but is not what the completion rests on.
             ? '（数量は確認済み。メーカー受領書で確認した分は、完了の根拠には数えません）'
             : '（受領証跡で数量を確認済み）'}
         </p>
       ) : !canConfirm ? (
-        <p className="p1-waiting"><span aria-hidden="true">… </span>担当者か代表が受領証跡で納品を確認します。</p>
+        // p5 R4: a role that cannot confirm (the auditor, the viewer) is not told someone is 「waiting」: its rows may be masked.
+        <p className="p1-note" data-read-only="receipt">{READ_ONLY_CONFIRMATION_TEXT}</p>
       ) : plan.kind === 'wait_representative' ? (
         <p className="p1-waiting">
           <span aria-hidden="true">… </span>
@@ -197,7 +203,7 @@ export function DeliveryReceiptStep({
         <AlternativeReceiptForm order={order} projectCode={projectCode} unconfirmed={unconfirmed} evaluate={evaluate} admin={normalizeRole(role) === 'admin'} stopped={Boolean(context.notice)} />
       ) : null}
 
-      <ReadinessLine context={context} />
+      <ReadinessLine context={context} withheld={!canConfirm} />
       {evaluate ? (
         <ActionForm action={evaluateCommissionReadinessAction} submitLabel="手数料準備の状態を評価し直す" quiet hint="評価はサーバーが記録にもとづいて行います。">
           <input type="hidden" readOnly name="projectCode" value={projectCode} />
@@ -332,7 +338,7 @@ function CompletionForm({ order, projectCode, unconfirmed, closure }: { order: F
   );
 }
 
-function DeliveryLines({ deliveries, evidenceKinds }: { deliveries: readonly DeliveryView[]; evidenceKinds: Readonly<Record<string, DeliveryEvidenceKind>> }) {
+function DeliveryLines({ deliveries, evidenceKinds, readOnly }: { deliveries: readonly DeliveryView[]; evidenceKinds: Readonly<Record<string, DeliveryEvidenceKind>>; readOnly: boolean }) {
   if (deliveries.length === 0) return null;
   return (
     <ul className="p4w2-delivery-list" aria-label="この発注の納品">
@@ -344,7 +350,10 @@ function DeliveryLines({ deliveries, evidenceKinds }: { deliveries: readonly Del
             <span>{delivery.detailsHidden ? '（閲覧権限なし）' : formatQuantityWithUnit(delivery.deliveredQuantity, delivery.unit)}</span>
             <span className="p1-muted-inline">{delivery.deliveredAt ? ` ${formatTimestamp(delivery.deliveredAt)}` : ''}</span>
             <span className={delivery.confirmed ? 'p4w2-ok' : 'p4w2-wait'}>
-              {' '}{delivery.confirmationHidden ? '（確認状態は閲覧権限なし）' : FILM_DELIVERY_CONFIRMATION_LABELS[delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION'].ja}
+              {' '}{delivery.confirmationHidden
+                ? '（確認状態は閲覧権限なし）'
+                // p5 R4: a role that cannot confirm cannot tell 「not confirmed」 from 「masked」 — it reads 「閲覧のみ」, never 「確認待ち」.
+                : readOnly && !delivery.confirmed ? READ_ONLY_CONFIRMATION_TEXT : FILM_DELIVERY_CONFIRMATION_LABELS[delivery.confirmed ? 'CONFIRMED' : 'PENDING_CONFIRMATION'].ja}
             </span>
             {kind ? (
               <span className={`p4w4-kind${kind === 'maker_po_acceptance' ? ' p4w4-kind--legacy' : ''}`} data-evidence-kind={kind}>
@@ -359,14 +368,16 @@ function DeliveryLines({ deliveries, evidenceKinds }: { deliveries: readonly Del
   );
 }
 
-function ReadinessLine({ context }: { context: DeliveryContext }) {
+function ReadinessLine({ context, withheld }: { context: DeliveryContext; withheld: boolean }) {
   const readiness = context.readiness;
   const scope = context.filmOnly ? 'フィルムのみの案件（充填の納品は対象外）' : 'フィルムと充填の案件';
-  if (!readiness) return <p className="p1-note">手数料準備: まだ評価されていません（{scope}）。</p>;
-  if (readiness.hidden) return <p className="p1-note">手数料準備: 閲覧権限なし</p>;
+  // p5 R4: the project's readiness rests on every order's confirmations — a role that cannot read them is not shown a state.
+  if (withheld) return <p className="p1-note" data-readiness="withheld">{PROJECT_READINESS_LABEL}: 閲覧権限なし</p>;
+  if (!readiness) return <p className="p1-note" data-readiness="none">{PROJECT_READINESS_LABEL}: まだ評価されていません（{scope}）。</p>;
+  if (readiness.hidden) return <p className="p1-note" data-readiness="withheld">{PROJECT_READINESS_LABEL}: 閲覧権限なし</p>;
   return (
-    <p className="p1-note">
-      手数料準備: {context.readinessLabel(readiness.readinessState)}（{scope}・評価 {formatTimestamp(readiness.evaluatedAt)}）
+    <p className="p1-note" data-readiness="project">
+      {PROJECT_READINESS_LABEL}: {context.readinessLabel(readiness.readinessState)}（{scope}・評価 {formatTimestamp(readiness.evaluatedAt)}）
       {readiness.blocking.length > 0 ? ` 未達: ${readiness.blocking.map((code) => READINESS_BLOCKING_LABELS[code] ?? code).join('・')}` : ''}
     </p>
   );

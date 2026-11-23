@@ -97,8 +97,20 @@ export const LEGACY_TERMS: ReadonlyArray<readonly [string, string]> = [
   ['受領確認（問題なしとみなす）', '問題なしで完了'],
   // P4 web2b M16 remainder: one 「確認」 — 納品確認 (the receipt evidence is 受領証跡) — in the guide, status and dashboard.
   ['受領確認済', '納品済み'],
-  ['納品・受領確認', '納品の確認']
+  ['納品・受領確認', '納品の確認'],
+  // p5 M16: the old document list's word for a design (the screens say 「デザイン名」).
+  ['デザインキー', 'デザイン名']
 ];
+
+/**
+ * p5 M16: a label that comes from the API (/status serves the shared core labels, which still say 「製造先」) in the product's words:
+ * every legacy word of LEGACY_TERMS is replaced by its standard word. Text with no legacy word is returned as is.
+ */
+export function modernizeLegacyWords(text: string): string {
+  let result = text;
+  for (const [legacy, standard] of LEGACY_TERMS) result = result.split(legacy).join(standard);
+  return result;
+}
 
 /** P4 M16: Korean words that split from the standard (§9 uses 제조사 for メーカー, never 제조처). */
 export const KO_LEGACY_TERMS: ReadonlyArray<readonly [string, string]> = [['제조처', '제조사']];

@@ -654,7 +654,7 @@ export async function registerArtworkRevisionAction(_prev: ActionState | null, f
   const designKey = field(formData, 'designKey');
   const fileDocumentVersionId = field(formData, 'fileDocumentVersionId');
   if (orderId.length === 0) return { ok: false, message: 'フィルム発注を選択してください。' };
-  if (designKey.length === 0) return { ok: false, message: 'デザインキーを入力してください。' };
+  if (designKey.length === 0) return { ok: false, message: 'デザイン名を入力してください。' };
   if (fileDocumentVersionId.length === 0) return { ok: false, message: '版ファイル（校正ゲラのバージョン）を選択してください。' };
   const body: Record<string, unknown> = { designKey, fileDocumentVersionId };
   const lotMarking = optionalField(formData, 'lotMarking');

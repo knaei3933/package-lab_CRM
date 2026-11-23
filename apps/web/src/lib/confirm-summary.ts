@@ -1,5 +1,5 @@
 import { datetimeLocalToIso } from './datetime';
-import { formatJstWithWeekday } from './date-input';
+import { formatJstWithSeconds, formatJstWithWeekday } from './date-input';
 
 /**
  * UI batch C (1-③, review M4): the confirm dialog's rows and texts, without
@@ -130,9 +130,13 @@ export function makerPoSendConfirmSpec(input: {
   hasEmlContent: boolean;
   /** The selected send-evidence version's option text, '' when none. */
   versionText: string;
+  /** p5 N2: the EML Date to the second (ISO). Shown only while the form still holds the EML's own minute. */
+  sentAtExactIso?: string | null;
 }): ConfirmSpec {
   const iso = datetimeLocalToIso(input.sentAtLocal);
-  const jst = iso ? formatJstWithWeekday(iso) : null;
+  const exact = input.sentAtExactIso ?? null;
+  // The seconds belong to the EML's own time: an edited value (another minute) is shown to the minute it was typed to.
+  const jst = iso ? (exact !== null && formatJstWithWeekday(exact) === formatJstWithWeekday(iso) ? formatJstWithSeconds(exact) : formatJstWithWeekday(iso)) : null;
   const evidence = input.hasEmlContent && input.emlFilename
     ? `EMLファイル ${input.emlFilename}`
     : input.versionText

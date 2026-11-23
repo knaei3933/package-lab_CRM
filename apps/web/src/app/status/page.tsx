@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { cookies } from 'next/headers';
 import { callApi, SESSION_COOKIE } from '../../lib/api';
+import { modernizeLegacyWords, standardTerm } from '../../lib/terms';
 
 /**
  * M5 Japanese status surface (design section 8). Server-rendered: the labels
@@ -86,7 +87,8 @@ export default async function StatusPage() {
                 {labels.payload[section.key].map((entry) => (
                   <div key={entry.key} style={rowStyle}>
                     <code className="sx-5ca78ee">{entry.key}</code>
-                    <span>{entry.label}</span>
+                    {/* p5 M16: the standard word first (film states), else the API label with its legacy words replaced. */}
+                    <span>{(section.key === 'filmSupplyOrderStates' ? standardTerm('filmSupplyOrderStates', entry.key)?.ja : null) ?? modernizeLegacyWords(entry.label)}</span>
                   </div>
                 ))}
               </div>

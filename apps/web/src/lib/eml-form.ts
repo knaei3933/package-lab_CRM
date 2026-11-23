@@ -12,6 +12,8 @@ import { DATETIME_LOCAL_PATTERN } from './datetime';
 export interface EmlFormDefaults {
   /** The EML Date header, formatted for <input type="datetime-local">. */
   sentAt?: string;
+  /** p5 N2: the same instant to the second (ISO, UTC) — the dialog shows it; the field above stays to the minute. */
+  sentAtExact?: string;
   /** The usable mailbox in From, without any display name. */
   senderAddress?: string;
   /** The raw EML Subject header, for the compose-subject helper below. */
@@ -98,7 +100,10 @@ export function readEmlFormDefaults(text: string): EmlFormDefaults {
   const rawDate = headers.date?.[0];
   if (rawDate !== undefined) {
     const date = new Date(rawDate);
-    if (!Number.isNaN(date.getTime())) defaults.sentAt = toDatetimeLocalValue(date);
+    if (!Number.isNaN(date.getTime())) {
+      defaults.sentAt = toDatetimeLocalValue(date);
+      defaults.sentAtExact = date.toISOString();
+    }
   }
 
   const rawFrom = headers.from?.[0];

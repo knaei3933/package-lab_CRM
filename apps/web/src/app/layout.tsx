@@ -132,6 +132,7 @@ export default async function RootLayout({ children }: { children: ReactNode }) 
                   kind={gate === 'outage-notice' ? 'outage' : gate === 'expired-notice' ? 'expired' : 'login'}
                   path={path}
                   code={session.kind === 'unavailable' ? session.code : null}
+                  showKorean={display.showKorean}
                 />
               )}
             </main>

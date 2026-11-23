@@ -56,6 +56,17 @@ export function languageFor(
   return defaultLanguageFor(user.role);
 }
 
+/**
+ * p5 R7: with no session there is no user to check the cookie against, so the mode the browser kept is read as it is
+ * (`${userId}.${mode}`): the notices of a lost session follow the language their reader chose, and with no cookie they are Japanese only.
+ */
+export function languageWithoutSession(cookieValue: string | null | undefined): LanguageMode {
+  if (typeof cookieValue !== 'string') return 'ja';
+  const dot = cookieValue.lastIndexOf('.');
+  const mode = cookieValue.slice(dot + 1);
+  return dot > 0 && isLanguageMode(mode) ? mode : 'ja';
+}
+
 /** Whether the Korean text is shown at all. */
 export function showsKorean(mode: LanguageMode): boolean {
   return mode !== 'ja';

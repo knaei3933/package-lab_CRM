@@ -714,6 +714,9 @@ const READ_ONLY_ACTIONS: ReadonlySet<string> = new Set(ACTIVITY_EXCLUDED_ACTIONS
 
 export const ACTION_LABELS: Readonly<Record<string, string>> = {
   PROJECT_CREATED: '案件を作成',
+  // p5 R10: the representative's assignment records (they fell back to 「記録を記録」).
+  PROJECT_ASSIGNMENT_CREATED: '担当を割り当て',
+  PROJECT_ASSIGNMENT_REMOVED: '担当を外す',
   // P2 (contract v1.3): the new records.
   FILM_SUPPLY_ORDER_DELIVERY_DATES_UPDATED: '納期（希望納期・納品予定日）を記録',
   SEVEN_PO_ORDER_FACTS_UPDATED: 'セブン化学発注書の数量・金額を記録',

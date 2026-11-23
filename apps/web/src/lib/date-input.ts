@@ -104,6 +104,15 @@ export function formatJstWithWeekday(iso: string): string | null {
   return `${part('year')}/${part('month')}/${part('day')}（${part('weekday')}）${part('hour')}:${part('minute')}`;
 }
 
+/** p5 N2: 「2026/11/18（水）14:30:05」 — the same instant to the second (null for an unreadable value). */
+export function formatJstWithSeconds(iso: string): string | null {
+  const minute = formatJstWithWeekday(iso);
+  if (minute === null) return null;
+  const date = new Date(iso);
+  const seconds = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Tokyo', second: '2-digit' }).format(date);
+  return `${minute}:${seconds.padStart(2, '0')}`;
+}
+
 export type DateTimeIssue = { part: 'date' | 'time'; message: string };
 
 /**

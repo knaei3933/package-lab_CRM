@@ -102,7 +102,7 @@ export const ACTION_MESSAGE_FIELDS: readonly ActionMessageField[] = [
   { message: 'ファイルを選択してください。', match: 'exact', field: FILE_FIELD, source: 'actions' },
   { message: '検証結果（確認済み／相違あり）を選択してください。', match: 'exact', field: 'verificationStatus', source: 'actions' },
   { message: 'フィルム発注を選択してください。', match: 'exact', field: 'orderId', source: 'actions' },
-  { message: 'デザインキーを入力してください。', match: 'exact', field: 'designKey', source: 'actions' },
+  { message: 'デザイン名を入力してください。', match: 'exact', field: 'designKey', source: 'actions' },
   {
     message: '版ファイル（校正ゲラのバージョン）を選択してください。',
     match: 'exact',

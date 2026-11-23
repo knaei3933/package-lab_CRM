@@ -20,7 +20,7 @@ import { newOrderPath, orderPath, projectPath } from '../lib/project-route';
 import { paymentTermsText } from '../lib/decision-facts';
 import { formatTimestamp } from '../lib/vocabulary';
 import { formatQuantityWithUnit } from '../lib/number-format';
-import { orderRecordText } from '../lib/order-records';
+import { orderRecordDetail, orderRecordText } from '../lib/order-records';
 import type { ProjectScreenProps } from './screen-props';
 import { deliveryTermsSummary, OrderTermsSection } from '../components/OrderTermsSection';
 import { readApprovalNotice } from '../lib/approval-notice-server';
@@ -37,6 +37,7 @@ import { canRoleOperate } from '../lib/permissions';
 import { DesignChangeForms } from '../components/DesignChangeForms';
 import { approvalHistoryKeys, changeEvidenceChoices, printingStartedOrderIds } from '../lib/change-request';
 import { designsOf } from '../lib/order-flow';
+import { FocusOnMount } from '../components/FocusOnMount';
 
 /** States in which the approval gate (designs, 押印 slots, pending checks) is read. */
 const GATE_STATES = new Set(['ARTWORK_RECEIVED', 'PROOF_READY', 'APPROVAL_PENDING', 'DUAL_APPROVED', 'MAKER_PO_READY']);
@@ -231,7 +232,8 @@ export async function OrderDetailScreen({
       </nav>
       <header className="p1-order-head">
         <div className="p1-order-title-row">
-          <h1 id="order-title" className="p1-title" translate="no">{order.code}</h1>
+          {/* p5 R9: after the wizard (?started=1) the heading takes the focus (it was left on <body>). */}
+          <h1 id="order-title" className="p1-title" translate="no" tabIndex={-1}>{order.code}</h1>
           {status ? <StatusBadge domain="filmOrder" status={status} label={stateLabel(status)} /> : null}
           {status ? <KoGloss ko={standardTerm('filmSupplyOrderStates', status)?.ko} /> : null}
         </div>
@@ -256,6 +258,7 @@ export async function OrderDetailScreen({
 
       {started ? (
         <>
+          <FocusOnMount targetId="order-title" />
           <p className="p1-banner p1-banner--ok" role="status">✓ 発注を作成しました。続けて、下の「現在の手順」を進めます。</p>
           {/* R34: the wizard moved here on success, so its draft is dropped here. */}
           <ClearDrafts pathname={newOrderPath(projectCode)} />
@@ -325,6 +328,8 @@ export async function OrderDetailScreen({
         lock={termsLock}
         projectCode={projectCode}
         cancelled={status === 'CANCELLED'}
+        // p5 R13: the step panel already carries the payment-terms form (a 「未定」 order at step 7): one form, not two.
+        hidePaymentTermsChange={flow.panel.blocked?.fix === 'payment_terms' && flow.panel.canAct}
       />
 
       <section className="p1-records" aria-labelledby="records-title">
@@ -338,11 +343,26 @@ export async function OrderDetailScreen({
                 <span className="p1-record-at">{formatTimestamp(event.occurredAt)}</span>
                 <span className="p1-record-who">{event.actor?.displayName ?? '—'}</span>
                 <span className="p1-record-what">{orderRecordText(event, stateLabel)}</span>
+                <RecordDetail event={event} />
               </li>
             ))}
           </ol>
         )}
       </section>
     </article>
+  );
+}
+
+/** p5 R15 / M4: the registered file (and its kind) and the operator's memo, under the record's words. */
+function RecordDetail({ event }: { event: AuditEventView }) {
+  const detail = orderRecordDetail(event);
+  if (!detail) return null;
+  return (
+    <span className="p1-record-detail">
+      {detail.documentKind || detail.filename ? (
+        <span>（{detail.documentKind}{detail.documentKind && detail.filename ? '・' : ''}{detail.filename ? <span translate="no">{detail.filename}</span> : null}）</span>
+      ) : null}
+      {detail.memo ? <span className="p1-record-memo">メモ: {detail.memo}</span> : null}
+    </span>
   );
 }

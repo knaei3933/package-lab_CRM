@@ -12,8 +12,9 @@ import { formatTimestamp } from '../lib/vocabulary';
  */
 export type SessionNoticeKind = 'login' | 'expired' | 'outage';
 
-export function SessionNotice({ kind, path, code, now = new Date() }: { kind: SessionNoticeKind; path: string; code?: string | null; now?: Date }) {
-  if (kind === 'outage') return <OutageNotice path={path} code={code ?? 'API_UNREACHABLE'} now={now} />;
+export function SessionNotice({ kind, path, code, now = new Date(), showKorean = false }: { kind: SessionNoticeKind; path: string; code?: string | null; now?: Date; showKorean?: boolean }) {
+  // p5 R7: the Korean line is the representative's (P-7); a Japanese-only reader (staff, viewer, auditor) never sees it.
+  if (kind === 'outage') return <OutageNotice path={path} code={code ?? 'API_UNREACHABLE'} now={now} showKorean={showKorean} />;
   const expired = kind === 'expired';
   return (
     <section className="session-notice" aria-labelledby="session-notice-title">
@@ -27,9 +28,11 @@ export function SessionNotice({ kind, path, code, now = new Date() }: { kind: Se
           ? 'この画面を続けるには、もう一度ログインしてください。ログインすると、この画面に戻ります。'
           : 'この画面を使うにはログインが必要です。ログインすると、この画面に戻ります。'}
       </p>
-      <p className="session-notice-ko" lang="ko">
-        {expired ? '로그인이 만료되었습니다. 다시 로그인하면 이 화면으로 돌아옵니다.' : '로그인이 필요합니다. 로그인하면 이 화면으로 돌아옵니다.'}
-      </p>
+      {showKorean ? (
+        <p className="session-notice-ko" lang="ko">
+          {expired ? '로그인이 만료되었습니다. 다시 로그인하면 이 화면으로 돌아옵니다.' : '로그인이 필요합니다. 로그인하면 이 화면으로 돌아옵니다.'}
+        </p>
+      ) : null}
       <p className="session-notice-actions">
         <a className="session-notice-primary" href={loginHrefFor(path)}>
           ログインする
@@ -39,7 +42,7 @@ export function SessionNotice({ kind, path, code, now = new Date() }: { kind: Se
   );
 }
 
-function OutageNotice({ path, code, now }: { path: string; code: string; now: Date }) {
+function OutageNotice({ path, code, now, showKorean }: { path: string; code: string; now: Date; showKorean: boolean }) {
   const database = code === 'DB_UNAVAILABLE';
   const text = webErrorText(code);
   return (
@@ -52,7 +55,7 @@ function OutageNotice({ path, code, now }: { path: string; code: string; now: Da
         {database ? 'データベースが応答していません。' : 'サーバーが応答していません。'}
         ログアウトしたわけではありません。数分後にもう一度読み込んでください。
       </p>
-      {text.messageKo ? (
+      {showKorean && text.messageKo ? (
         <p className="session-notice-ko" lang="ko">
           {text.messageKo}
         </p>

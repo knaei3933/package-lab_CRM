@@ -7,6 +7,7 @@ import { Text } from '@astryxdesign/core/Text';
 import { VStack } from '@astryxdesign/core/VStack';
 import { AstryxIsland } from '../../components/AstryxIsland';
 import { loadSessionUser } from '../../lib/api';
+import { displayLanguage } from '../../lib/locale-server';
 import { GUIDE_DAYS, GUIDE_FORBIDDEN, GUIDE_STEPS, GUIDE_TERMS, GUIDE_TROUBLES } from '../../lib/guide';
 import { normalizeRole } from '../../lib/permissions';
 import { SCREEN_NAMES } from '../../lib/project-data';
@@ -19,7 +20,9 @@ export const metadata: Metadata = { title: '使い方ガイド' };
  * The Korean explanation under one guide section: closed by default, marked
  * lang="ko" (the page itself is Japanese, like every screen).
  */
-function KoreanNote({ children }: { children: ReactNode }) {
+function KoreanNote({ children, show }: { children: ReactNode; show: boolean }) {
+  // p5 R7: the explanation follows the display language (P-7): a Japanese-only reader gets none.
+  if (!show) return null;
   return (
     <details className="guide-ko" lang="ko">
       <summary>한국어 설명</summary>
@@ -36,6 +39,7 @@ function KoreanNote({ children }: { children: ReactNode }) {
 export default async function GuidePage() {
   const user = await loadSessionUser();
   const role = user ? normalizeRole(user.role) : null;
+  const { showKorean } = await displayLanguage(user);
   const days = role ? [...GUIDE_DAYS].sort((a, b) => Number(b.role === role) - Number(a.role === role)) : GUIDE_DAYS;
 
   return (
@@ -46,7 +50,7 @@ export default async function GuidePage() {
           <Text as="p" type="supporting">
             KANEI CRM（F1）は、セブン化学発注書の受付から納品の確認・手数料準備までのフィルム発注を記録する台帳です。メールや発注は人が送り、CRMにはその証跡を残します。
           </Text>
-          <KoreanNote>
+          <KoreanNote show={showKorean}>
             <p>KANEI CRM(F1)은 セブン化学発注書 접수부터 납품 확인·수수료 준비까지의 필름 발주를 기록하는 장부입니다. 메일·발주는 사람이 직접 보내고, CRM에는 그 증빙을 남깁니다.</p>
           </KoreanNote>
         </VStack>
@@ -73,7 +77,7 @@ export default async function GuidePage() {
               ))}
             </ol>
             <p className="guide-rule">{GUIDE_FORBIDDEN.text}</p>
-            <KoreanNote>
+            <KoreanNote show={showKorean}>
               <ol>
                 {GUIDE_STEPS.map((step) => <li key={step.name}><span lang="ja">{step.name}</span>: {step.ko}</li>)}
               </ol>
@@ -98,7 +102,7 @@ export default async function GuidePage() {
                 </div>
               ))}
             </div>
-            <KoreanNote>
+            <KoreanNote show={showKorean}>
               {days.map((day) => (
                 <div key={day.role}>
                   <p className="guide-ko-head"><span lang="ja">{day.title}</span></p>
@@ -122,7 +126,7 @@ export default async function GuidePage() {
                 </div>
               ))}
             </dl>
-            <KoreanNote>
+            <KoreanNote show={showKorean}>
               <dl className="guide-terms">
                 {GUIDE_TERMS.map((entry) => (
                   <div key={entry.term}>
@@ -146,7 +150,7 @@ export default async function GuidePage() {
                 </details>
               ))}
             </div>
-            <KoreanNote>
+            <KoreanNote show={showKorean}>
               <ul>
                 {GUIDE_TROUBLES.map((trouble) => (
                   <li key={trouble.question}><span lang="ja">{trouble.question}</span>: {trouble.ko}</li>

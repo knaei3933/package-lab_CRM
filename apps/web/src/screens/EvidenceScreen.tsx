@@ -3,6 +3,9 @@ import { Bilingual } from '../components/Bilingual';
 import { ViewerPageNotice } from '../components/RoleGate';
 import { callApi, loadSessionUser } from '../lib/api';
 import { documentTypeText, issuerText, loadEvidenceMetadata, shortHash } from '../lib/evidence-data';
+import { IDENTIFIER_HISTORY_ACTIONS, IDENTIFIER_STATE_TEXT, identifierStatesByVersion } from '../lib/evidence-identifier';
+import type { IdentifierState } from '../lib/evidence-identifier';
+import type { AuditEventView } from '../lib/project-data';
 import type { EvidenceDocumentView } from '../lib/evidence-data';
 import { isAuditorRole, normalizeRole } from '../lib/permissions';
 import { projectPath } from '../lib/project-route';
@@ -52,6 +55,8 @@ export async function EvidenceScreen(props: ProjectScreenProps & {
     loadOrderOptions(projectId),
     loadEvidenceMetadata(projectId, { filmSupplyOrderId: filter || null, limit: EVIDENCE_LIST_LIMIT })
   ]);
+  // p5 R11: the identifier check of an approval evidence comes from the approval records (a failed read says nothing).
+  const identifiers = read.ok && read.data.documents.some((doc) => doc.documentType === 'approval_evidence') ? await loadIdentifierStates(projectId) : null;
   const orderById = new Map(orders.map((order) => [order.id, order.code]));
   const filterCode = filter ? (orderById.get(filter) ?? null) : null;
   return (
@@ -87,7 +92,7 @@ export async function EvidenceScreen(props: ProjectScreenProps & {
           {read.data.documents.length === 0 ? (
             <p className="p1-muted">{filter ? `${filterCode ?? '選んだ発注'} の証跡はまだありません。` : 'この案件の証跡はまだありません。'}</p>
           ) : (
-            <EvidenceTable documents={read.data.documents} />
+            <EvidenceTable documents={read.data.documents} identifiers={identifiers} />
           )}
         </>
       )}
@@ -97,7 +102,7 @@ export async function EvidenceScreen(props: ProjectScreenProps & {
 
 const COLUMNS = ['文書の種類', 'ファイル名', '発注・デザイン', '版', 'SHA-256', '登録', '確認状態'] as const;
 
-function EvidenceTable({ documents }: { documents: EvidenceDocumentView[] }) {
+function EvidenceTable({ documents, identifiers }: { documents: EvidenceDocumentView[]; identifiers: Map<string, IdentifierState> | null }) {
   return (
     <div className="table-scroll" role="region" aria-label="証跡の一覧" tabIndex={0}>
       <table className="p1-history p2-audit-history p2-evidence-table" role="table">
@@ -143,7 +148,12 @@ function EvidenceTable({ documents }: { documents: EvidenceDocumentView[] }) {
                   <span className="p2-audit-sub p1-muted-inline p1-figure">{formatTimestamp(doc.createdAt ?? latest?.uploadedAt)}</span>
                 </td>
                 <td role="cell" data-label="確認状態">
-                  {verified ? (VERIFICATION_STATUS_LABELS.verified ?? '確認済み') : doc.verificationStatus === 'mismatch' ? (VERIFICATION_STATUS_LABELS.mismatch ?? '相違あり') : '未確認'}
+                  {identifierState(doc, latest, identifiers) ? (
+                    <>
+                      <span data-check="identifier">識別子: {IDENTIFIER_STATE_TEXT[identifierState(doc, latest, identifiers)!]}</span>
+                      <span className="p2-audit-sub p1-muted-inline" data-check="document">書類の確認: {verified ? (VERIFICATION_STATUS_LABELS.verified ?? '確認済み') : doc.verificationStatus === 'mismatch' ? (VERIFICATION_STATUS_LABELS.mismatch ?? '相違あり') : '未確認'}</span>
+                    </>
+                  ) : verified ? (VERIFICATION_STATUS_LABELS.verified ?? '確認済み') : doc.verificationStatus === 'mismatch' ? (VERIFICATION_STATUS_LABELS.mismatch ?? '相違あり') : '未確認'}
                   {verified && (doc.verifiedBy || doc.verifiedAt) ? (
                     <span className="p2-audit-sub p1-muted-inline p1-figure">{[doc.verifiedBy, doc.verifiedAt ? formatTimestamp(doc.verifiedAt) : null].filter(Boolean).join(' ・ ')}</span>
                   ) : null}
@@ -155,4 +165,22 @@ function EvidenceTable({ documents }: { documents: EvidenceDocumentView[] }) {
       </table>
     </div>
   );
+}
+
+/** The identifier state of an approval evidence's newest version (null: not an approval evidence, or not read). */
+function identifierState(doc: EvidenceDocumentView, latest: EvidenceDocumentView['versions'][number] | null, identifiers: Map<string, IdentifierState> | null): IdentifierState | null {
+  if (doc.documentType !== 'approval_evidence' || !identifiers) return null;
+  for (const version of [latest, ...doc.versions].filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null)) {
+    const state = identifiers.get(version.versionId);
+    if (state) return state;
+  }
+  return null;
+}
+
+async function loadIdentifierStates(projectId: string): Promise<Map<string, IdentifierState> | null> {
+  const answer = await callApi<{ events: AuditEventView[] }>(
+    `/api/projects/${encodeURIComponent(projectId)}/audit-history?limit=500&order=desc&action=${encodeURIComponent(IDENTIFIER_HISTORY_ACTIONS.join(','))}`
+  );
+  if (!answer.ok || !answer.data || !Array.isArray(answer.data.events)) return null;
+  return identifierStatesByVersion(answer.data.events);
 }

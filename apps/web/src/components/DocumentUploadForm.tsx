@@ -386,7 +386,7 @@ export function DocumentUploadForm({
           {(designKeyFeedback) => (
             <div className="field" style={fieldLabel(200)}>
               <label style={labelOnly}>
-                <span style={{ fontSize: 13 }}>デザインキー（校正ゲラ・承認証跡を発注に紐付ける場合は必須）</span>
+                <span style={{ fontSize: 13 }}>デザイン名（校正ゲラ・承認証跡を発注に紐付ける場合は必須）</span>
                 <input
                   name="designKey"
                   value={designKey}
@@ -394,7 +394,7 @@ export function DocumentUploadForm({
                   placeholder="例：T-35"
                   aria-describedby={designKeyFeedback.describedBy}
                   aria-invalid={designKeyFeedback.invalid}
-                  data-feedback-label="デザインキー"
+                  data-feedback-label="デザイン名"
                   style={wide(200)}
                 />
               </label>
