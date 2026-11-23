@@ -60,6 +60,13 @@ function isNonBlankNote(value: unknown): value is string {
  * move the machine forbids.
  */
 export function evaluateFilmReceiptAssumption(input: FilmReceiptAssumptionInput): FilmReceiptAssumptionEvaluation {
+  return evaluateReceiptRecording(input, { requireNoEvidenceAcknowledgment: true });
+}
+
+function evaluateReceiptRecording(
+  input: FilmReceiptAssumptionInput,
+  options: { requireNoEvidenceAcknowledgment: boolean }
+): FilmReceiptAssumptionEvaluation {
   if (!isNonBlankNote(input.note)) {
     return {
       ok: false,
@@ -67,7 +74,7 @@ export function evaluateFilmReceiptAssumption(input: FilmReceiptAssumptionInput)
       message: 'note is required: assuming a receipt without issue is a business decision that must say why'
     };
   }
-  if (input.acknowledgeNoEvidence !== true) {
+  if (options.requireNoEvidenceAcknowledgment && input.acknowledgeNoEvidence !== true) {
     return {
       ok: false,
       code: 'RECEIPT_ASSUMPTION_ACKNOWLEDGMENT_REQUIRED',
@@ -115,4 +122,41 @@ export function evaluateFilmReceiptAssumption(input: FilmReceiptAssumptionInput)
       ? input.assumedAt
       : new Date(input.assumedAt);
   return { ok: true, to: FILM_SUPPLY_ORDER_TERMINAL_STATE, receiptAssumedAt: assumedAt };
+}
+
+/**
+ * P4 server2 (p4-web2a review M-2): what a closure of a delivered film order
+ * rests on. `delivery_confirmations` = the order has deliveries and every one
+ * of them carries a delivery confirmation (which only verified receipt evidence
+ * can create); `evidence_free_acknowledgment` = anything less, where the
+ * recorder must acknowledge that no evidence backs the closure. Decided by the
+ * server from the stored facts, never from the request.
+ */
+export type FilmReceiptClosureBasis = 'delivery_confirmations' | 'evidence_free_acknowledgment';
+
+export function filmReceiptClosureBasis(deliveries: { total: number; confirmed: number }): FilmReceiptClosureBasis {
+  return deliveries.total > 0 && deliveries.confirmed === deliveries.total
+    ? 'delivery_confirmations'
+    : 'evidence_free_acknowledgment';
+}
+
+export type FilmReceiptClosureEvaluation =
+  | { ok: true; to: typeof FILM_SUPPLY_ORDER_TERMINAL_STATE; receiptAssumedAt: Date | string; basis: FilmReceiptClosureBasis }
+  | Extract<FilmReceiptAssumptionEvaluation, { ok: false }>;
+
+/**
+ * The closure FILM_DELIVERED → FILM_RECEIPT_ASSUMED_NO_ISSUE on either basis.
+ * The note, the optional date and the state rule are the same for both; only
+ * the evidence-free basis requires `acknowledgeNoEvidence: true` (exactly the
+ * earlier contract). A closure whose deliveries are all confirmed does not need
+ * it — and is never recorded as evidence-free even when the client sends it.
+ */
+export function evaluateFilmReceiptClosure(
+  input: FilmReceiptAssumptionInput & { deliveries: { total: number; confirmed: number } }
+): FilmReceiptClosureEvaluation {
+  const basis = filmReceiptClosureBasis(input.deliveries);
+  const evaluation = evaluateReceiptRecording(input, {
+    requireNoEvidenceAcknowledgment: basis === 'evidence_free_acknowledgment'
+  });
+  return evaluation.ok ? { ...evaluation, basis } : evaluation;
 }

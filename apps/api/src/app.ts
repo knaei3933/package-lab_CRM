@@ -20,7 +20,9 @@ import {
   evaluateApprovalEvidenceIdentifierForBytes,
   evaluateCommissionReadiness,
   evaluateDeliveryEvidence,
-  evaluateFilmReceiptAssumption,
+  evaluateFilmReceiptClosure,
+  filmReceiptClosureBasis,
+  type FilmReceiptClosureBasis,
   evaluateMakerPoAcceptEvidence,
   evaluateMakerPoApproval,
   evaluateMakerPoCancellation,
@@ -596,6 +598,13 @@ function makerPoActiveUniqueViolation(error: unknown): boolean {
  * and only from FILM_DELIVERED.
  */
 class ReceiptAssumptionStateConflict extends Error {}
+
+/** P4 server2 (web2a review M-2): the closure basis decided under the order lock refused the request. */
+class ReceiptClosureRefusedUnderLock extends Error {
+  constructor(readonly code: string, readonly refusal: string) {
+    super(code);
+  }
+}
 
 /**
  * Validates one order line against the unit vocabulary of its domain. Unit
@@ -2860,8 +2869,41 @@ export function createApp({
   // FILM_DELIVERED → FILM_RECEIPT_ASSUMED_NO_ISSUE is a MANUAL recording
   // action: the waiting period is not decided by the CEO yet, so nothing in
   // the system schedules, times or derives it. An admin or staff member
-  // records it with a required note and an explicit evidence-free
-  // acknowledgment, and the audit row is written in the same transaction.
+  // records it with a required note, and the audit row is written in the same
+  // transaction.
+  //
+  // P4 server2 (p4-web2a review M-2): the server decides what the closure
+  // rests on from the stored facts, read after the order row lock —
+  // `delivery_confirmations` when the order has deliveries and every one is
+  // confirmed (only verified receipt evidence confirms a delivery), otherwise
+  // `evidence_free_acknowledgment`, which alone requires (and records)
+  // `acknowledgeNoEvidence: true`. Until P4 every closure was recorded as
+  // evidence-free, even after the evidence had been confirmed. The audit action
+  // stays FILM_RECEIPT_ASSUMPTION_RECORDED (the web labels it); its afterState
+  // and requestMetadata name the basis. Commission readiness (P-3) still reads
+  // the confirmations only, and confirming deliveries stays the representative's
+  // act on evidence the confirmer did not upload (P-4).
+  async function filmDeliveryConfirmationFacts(executor: MakerPoQueryExecutor, orderId: string) {
+    const rows = await executor.select({
+      deliveryId: filmDeliveries.id,
+      confirmationId: deliveryConfirmations.id,
+      evidenceDocumentVersionId: deliveryConfirmations.evidenceDocumentVersionId
+    }).from(filmDeliveries)
+      .leftJoin(deliveryConfirmations, eq(deliveryConfirmations.filmDeliveryId, filmDeliveries.id))
+      .where(eq(filmDeliveries.filmSupplyOrderId, orderId))
+      .orderBy(asc(filmDeliveries.deliverySequence), asc(filmDeliveries.id));
+    const deliveryIds = new Set(rows.map((row) => row.deliveryId));
+    const confirmed = rows.filter((row) => row.confirmationId !== null);
+    return {
+      counts: { total: deliveryIds.size, confirmed: new Set(confirmed.map((row) => row.deliveryId)).size },
+      confirmations: confirmed.map((row) => ({
+        deliveryId: row.deliveryId,
+        confirmationId: row.confirmationId!,
+        evidenceDocumentVersionId: row.evidenceDocumentVersionId
+      }))
+    };
+  }
+
   app.post('/api/film-supply-orders/:orderId/receipt-assumption', async (context) => {
     const user = await getSessionUser(context.req.raw, db);
     if (!user) return context.json({ error: '認証が必要です', code: 'AUTH_REQUIRED' }, 401);
@@ -2887,12 +2929,14 @@ export function createApp({
       return context.json({ error: '受領確認日が不正です', code: 'INVALID_RECEIPT_ASSUMED_AT' }, 422);
     }
 
-    const evaluation = evaluateFilmReceiptAssumption({
+    const closureInput = {
       currentStatus: order.status,
       note: body?.note,
       acknowledgeNoEvidence: body?.acknowledgeNoEvidence,
       assumedAt: assumedAtInput.date
-    });
+    };
+    // A first decision on the committed facts (fast refusal); decided again under the lock below.
+    const evaluation = evaluateFilmReceiptClosure({ ...closureInput, deliveries: (await filmDeliveryConfirmationFacts(db, orderId)).counts });
     if (!evaluation.ok) {
       return context.json({ error: evaluation.message, code: evaluation.code, from: order.status }, 422);
     }
@@ -2903,10 +2947,18 @@ export function createApp({
       : new Date(evaluation.receiptAssumedAt);
     const receiptAssumedNote = (body?.note as string).trim();
     try {
-      const auditId = await db.transaction(async (tx) => {
+      const closed = await db.transaction(async (tx) => {
         const [current] = await tx.select().from(filmSupplyOrders)
           .where(eq(filmSupplyOrders.id, orderId)).limit(1).for('update');
         if (!current || current.status !== order.status) throw new ReceiptAssumptionStateConflict();
+        // The basis is decided on the facts read after the lock: a delivery
+        // recorded while this request waited makes the closure evidence-free
+        // again, which then needs the acknowledgment.
+        const facts = await filmDeliveryConfirmationFacts(tx, orderId);
+        const locked = evaluateFilmReceiptClosure({ ...closureInput, deliveries: facts.counts });
+        if (!locked.ok) throw new ReceiptClosureRefusedUnderLock(locked.code, locked.message);
+        const basis: FilmReceiptClosureBasis = locked.basis;
+        const evidenceFree = basis === 'evidence_free_acknowledgment';
 
         const updated = await tx.update(filmSupplyOrders).set({
           status: evaluation.to,
@@ -2932,13 +2984,23 @@ export function createApp({
             status: evaluation.to,
             receiptAssumedAt,
             receiptAssumedNote,
-            evidenceFreeAcknowledgment: true
+            closureBasis: basis,
+            evidenceFreeAcknowledgment: evidenceFree,
+            deliveries: facts.counts,
+            // The confirmations the closure rests on (ids only; empty on the evidence-free basis).
+            deliveryConfirmations: evidenceFree ? [] : facts.confirmations,
+            // What the request said, kept apart from what the closure rests on.
+            requestAcknowledgedNoEvidence: body?.acknowledgeNoEvidence === true
           },
           occurredAt: now,
-          requestMetadata: { operation: 'film_order:assume_receipt', evidenceFreeAcknowledgment: true }
+          requestMetadata: {
+            operation: evidenceFree ? 'film_order:assume_receipt' : 'film_order:close_receipt_on_confirmed_deliveries',
+            closureBasis: basis,
+            evidenceFreeAcknowledgment: evidenceFree
+          }
         };
         await recordAuditEvent(tx, auditRow);
-        return auditRow.id;
+        return { auditId: auditRow.id, basis, evidenceFree, counts: facts.counts };
       });
       return context.json({
         orderId,
@@ -2947,10 +3009,15 @@ export function createApp({
         receiptAssumedAt,
         receiptAssumedNote,
         receiptAssumedByUserId: user.id,
-        evidenceFreeAcknowledgment: true,
-        auditEventId: auditId
+        closureBasis: closed.basis,
+        evidenceFreeAcknowledgment: closed.evidenceFree,
+        deliveries: closed.counts,
+        auditEventId: closed.auditId
       }, 200);
     } catch (error) {
+      if (error instanceof ReceiptClosureRefusedUnderLock) {
+        return context.json({ error: error.refusal, code: error.code, from: order.status }, 422);
+      }
       if (error instanceof ReceiptAssumptionStateConflict) {
         return context.json({ error: 'フィルム発注の状態が既に変わっています', code: 'RECEIPT_ASSUMPTION_STATE_CHANGED' }, 422);
       }
@@ -3215,16 +3282,37 @@ export function createApp({
             : stage === 'quantity_confirmed' && status === 'FILM_DELIVERED'
               ? { action: 'CLOSE_ORDER', label: '受領確認（問題なし）を記録する' }
               : null;
-    let receiptAssumption: { assumedAt: Date; assumedBy: { id: string; displayName: string | null }; note: string | null } | null = null;
+    let receiptAssumption: {
+      assumedAt: Date; assumedBy: { id: string; displayName: string | null }; note: string | null;
+      closureBasis: FilmReceiptClosureBasis;
+    } | null = null;
     if (order.receiptAssumedAt && order.receiptAssumedByUserId) {
       const [assumer] = await db.select({ displayName: users.displayName }).from(users)
         .where(eq(users.id, order.receiptAssumedByUserId)).limit(1);
+      // P4 server2 (web2a review M-2): the basis the closure was recorded on;
+      // closures recorded before P4 were all evidence-free acknowledgments.
+      const [closureRow] = await db.select({ basis: sql<string | null>`${auditEvents.afterState} ->> 'closureBasis'` })
+        .from(auditEvents)
+        .where(and(
+          eq(auditEvents.entityType, 'film_supply_order'),
+          eq(auditEvents.entityId, orderId),
+          eq(auditEvents.action, 'FILM_RECEIPT_ASSUMPTION_RECORDED')
+        ))
+        .orderBy(desc(auditEvents.occurredAt), desc(auditEvents.id)).limit(1);
       receiptAssumption = {
         assumedAt: order.receiptAssumedAt,
         assumedBy: { id: order.receiptAssumedByUserId, displayName: assumer?.displayName ?? null },
-        note: order.receiptAssumedNote
+        note: order.receiptAssumedNote,
+        closureBasis: closureRow?.basis === 'delivery_confirmations' ? 'delivery_confirmations' : 'evidence_free_acknowledgment'
       };
     }
+    // P4 server2 (web2a review M-2): while the order waits for its closure, what
+    // the closure would rest on now and whether it needs acknowledgeNoEvidence.
+    const confirmedCount = deliveries.filter((delivery) => delivery.confirmationId).length;
+    const closureBasisNow = filmReceiptClosureBasis({ total: deliveries.length, confirmed: confirmedCount });
+    const receiptClosure = status === 'FILM_DELIVERED'
+      ? { basis: closureBasisNow, acknowledgeNoEvidenceRequired: closureBasisNow === 'evidence_free_acknowledgment' }
+      : null;
     return context.json({
       orderId,
       orderCode: order.code,
@@ -3234,6 +3322,7 @@ export function createApp({
       stage,
       lines: lineViews,
       receiptAssumption,
+      receiptClosure,
       nextAction
     });
   });
@@ -8468,7 +8557,8 @@ export function createApp({
         liveOrder,
         sql`not exists (select 1 from delivery_confirmations c where c.film_delivery_id = ${filmDeliveries.id})`,
         sql`exists (select 1 from documents d join document_versions v on v.document_id = d.id join users u on u.id = v.created_by_user_id
-          where d.film_supply_order_id = ${filmDeliveries.filmSupplyOrderId} and d.document_type = 'acceptance_evidence' and u.role::text <> 'admin')`
+          where d.film_supply_order_id = ${filmDeliveries.filmSupplyOrderId} and d.document_type = 'acceptance_evidence'
+            and d.maker_purchase_order_id is null and u.role::text <> 'admin')`
       ))
       .orderBy(asc(filmDeliveries.createdAt), asc(filmDeliveries.id))
       .limit(limit + 1));
@@ -8486,7 +8576,13 @@ export function createApp({
     }).from(documentVersions)
       .innerJoin(documents, eq(documents.id, documentVersions.documentId))
       .innerJoin(users, eq(users.id, documentVersions.createdByUserId))
-      .where(and(eq(documents.documentType, 'acceptance_evidence'), inArray(documents.filmSupplyOrderId, deliveryOrderIds)))
+      // P4 server2 (web2a review L-1): receipt evidence only — an acceptance_evidence
+      // bound to a maker PO is the maker's 受入 of the paper (step 10), not the film's 受領.
+      .where(and(
+        eq(documents.documentType, 'acceptance_evidence'),
+        isNull(documents.makerPurchaseOrderId),
+        inArray(documents.filmSupplyOrderId, deliveryOrderIds)
+      ))
       .orderBy(asc(documentVersions.createdAt), asc(documentVersions.id));
     for (const row of deliveryRows) {
       const evidence = receiptEvidence.filter((candidate) => candidate.orderId === row.orderId);
